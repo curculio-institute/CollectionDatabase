@@ -65,14 +65,8 @@ TABLE_COLS = [
 # Coordinate paste helper
 # ---------------------------------------------------------------------------
 
-_COUNTY_PREFIXES = re.compile(
-    r"^(Landkreis|Kreis|Bezirk|District of|County of|Arrondissement de?)\s+",
-    re.IGNORECASE,
-)
-
-def _clean_county(name: str) -> str:
-    """Strip leading administrative-type prefixes that TaxonWorks omits."""
-    return _COUNTY_PREFIXES.sub("", name).strip()
+# Photon osm_key values that yield a meaningful feature name for DwC locality.
+_LOCALITY_KEYS = {"natural", "leisure", "landuse", "place", "boundary"}
 
 
 def _split_coord_paste(text: str) -> tuple[str, str] | None:
@@ -310,6 +304,8 @@ def index():
       ::-webkit-scrollbar       { width:5px; height:5px; }
       ::-webkit-scrollbar-track { background:var(--tp-base-muted); }
       ::-webkit-scrollbar-thumb { background:var(--tp-base-soft); border-radius:3px; }
+      @keyframes lookup-fade { from { opacity:1; } to { opacity:0; } }
+      .lookup-ok-fade { animation: lookup-fade 1s ease-in 0.3s forwards; }
     </style>""")
 
     # ── header ───────────────────────────────────────────────────────────
@@ -388,7 +384,7 @@ def index():
 
                 # ── TAXON ────────────────────────────────────────────────
                 with ui.card().classes("w-full shadow-sm"):
-                    ui.label("Taxon").classes("section-label")
+                    ui.label("Identification").classes("section-label")
                     ui.separator().classes("mb-3")
                     taxon_state = build_taxon_search(_sf)
                     with ui.row().classes("w-full flex-wrap gap-3 items-end mt-3"):
@@ -425,19 +421,26 @@ def index():
                         Variables are captured by closure — all exist by the time any callback fires.
                         """
                         if level == "country":
-                            state_in.value  = ""
-                            county_in.value = ""
-                            muni_in.value   = ""
-                            for _b in (_state_warn, _county_warn, _muni_warn):
+                            state_in.value    = ""
+                            county_in.value   = ""
+                            muni_in.value     = ""
+                            locality_in.value = ""
+                            for _b in (_state_warn, _county_warn, _muni_warn, _locality_warn):
                                 _b.classes(add="hidden")
                         elif level == "state":
-                            county_in.value = ""
-                            muni_in.value   = ""
-                            for _b in (_county_warn, _muni_warn):
+                            county_in.value   = ""
+                            muni_in.value     = ""
+                            locality_in.value = ""
+                            for _b in (_county_warn, _muni_warn, _locality_warn):
                                 _b.classes(add="hidden")
                         elif level == "county":
-                            muni_in.value = ""
-                            _muni_warn.classes(add="hidden")
+                            muni_in.value     = ""
+                            locality_in.value = ""
+                            for _b in (_muni_warn, _locality_warn):
+                                _b.classes(add="hidden")
+                        elif level == "muni":
+                            locality_in.value = ""
+                            _locality_warn.classes(add="hidden")
 
                     def _on_country_change(_=None):
                         if not state["populating"]:
@@ -454,8 +457,13 @@ def index():
                             _wipe_from("county")
                         _on_event_field_edit()
 
+                    def _on_muni_change(_=None):
+                        if not state["populating"]:
+                            _wipe_from("muni")
+                        _on_event_field_edit()
+
                     def _geocode_input(label, on_change=None, placeholder=""):
-                        """Input + hidden inline warning icon. Returns (input, btn, tooltip, items_col)."""
+                        """Input + hidden inline warning/ok icons. Returns (input, btn, tooltip, items_col, ok_icon)."""
                         with ui.row().classes("col-span-1 items-center gap-0 w-full") as row:
                             inp = ui.input(
                                 label, on_change=on_change, placeholder=placeholder,
@@ -471,331 +479,380 @@ def index():
                                         .classes("text-xs text-grey-7 q-px-sm q-pt-xs")
                                     ui.separator()
                                     items_col = ui.column().classes("q-pa-xs")
-                        return inp, btn, tip, items_col
+                            ok_icon = (
+                                ui.icon("check_circle", size="xs")
+                                .props("color=positive")
+                                .classes("hidden")
+                            )
+                        return inp, btn, tip, items_col, ok_icon
 
-                    with ui.grid(columns=5).classes("w-full gap-3"):
-                        country_in, _cntry_warn, _cntry_tip, _cntry_items = _geocode_input(
+                    def _on_lat_change(e):
+                        # Fallback when JS paste interceptor isn't installed yet.
+                        val = str(e.value) if e.value is not None else ""
+                        pair = _split_coord_paste(val)
+                        if pair:
+                            lat_in.value = pair[0]
+                            lon_in.value = pair[1]
+                        _on_event_field_edit()
+
+                    ui.label("Coordinates").classes("text-xs font-semibold uppercase tracking-wider text-grey-6 mt-2")
+                    with ui.grid(columns=5).classes("w-full gap-3 mt-1"):
+                        lat_in      = ui.input("latitude",      on_change=_on_lat_change).classes("col-span-1 _coord-lat")
+                        lon_in      = ui.input("longitude",     on_change=_on_event_field_edit).classes("col-span-1 _coord-lon")
+                        uncert_in   = ui.input("uncertainty m", on_change=_on_event_field_edit).classes("col-span-1 _coord-unc")
+                        elev_min_in = ui.input("elev min m",    on_change=_on_event_field_edit).classes("col-span-1")
+                        elev_max_in = ui.input("elev max m",    on_change=_on_event_field_edit).classes("col-span-1")
+
+                    # Sink element: receives coord-paste socket events from the JS
+                    # paste interceptor below.  Using the NiceGUI socket bridge
+                    # (same pattern as map_picker) is more reliable than dispatching
+                    # synthetic DOM input events, which Quasar may silently drop.
+                    _coord_sink = ui.element('span').style('display:none')
+
+                    def _on_coord_paste_event(e):
+                        try:
+                            d = e.args  # already a dict: {lat, lon}
+                            lat_in.value = str(d["lat"])
+                            lon_in.value = str(d["lon"])
+                            _on_event_field_edit()
+                        except (KeyError, TypeError):
+                            pass
+
+                    _coord_sink.on('coord-paste', _on_coord_paste_event)
+                    _csink_id  = _coord_sink.id
+                    _clid      = list(_coord_sink._event_listeners.keys())[-1]
+
+                    async def _inject_coord_paste_js():
+                        await ui.run_javascript(f"""
+                        (function install() {{
+                            var latEl = document.querySelector('._coord-lat input');
+                            var lonEl = document.querySelector('._coord-lon input');
+                            if (!latEl) {{ setTimeout(install, 300); return; }}
+                            latEl.addEventListener('paste', function(ev) {{
+                                var text = (ev.clipboardData || window.clipboardData).getData('text');
+                                var nums = text.match(/[-+]?\\d+(?:\\.\\d+)?/g);
+                                if (!nums || nums.length < 2) return;
+                                var lat = parseFloat(nums[0]), lon = parseFloat(nums[1]);
+                                if (lat < -90 || lat > 90 || lon < -180 || lon > 180) return;
+                                ev.preventDefault();
+                                // Update native display directly (bypasses Vue/Quasar focus guard).
+                                var nset = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+                                nset.call(latEl, String(lat));
+                                if (lonEl) nset.call(lonEl, String(lon));
+                                // Notify Python via NiceGUI socket bridge.
+                                window.socket.emit('event', {{
+                                    id: {_csink_id},
+                                    client_id: window.clientId,
+                                    listener_id: '{_clid}',
+                                    args: [JSON.stringify({{lat: String(lat), lon: String(lon)}})]
+                                }});
+                            }});
+                        }})();
+                        """)
+
+                    ui.timer(0.3, _inject_coord_paste_js, once=True)
+
+                    async def _reverse_geocode(lat: float, lon: float) -> dict | None:
+                        """Reverse-geocode via Photon. Returns Photon properties dict or
+                        None on failure. Fills the address fields as a side effect."""
+                        for _b in (_cntry_warn, _code_warn, _state_warn, _county_warn, _muni_warn):
+                            _b.classes(add="hidden")
+                        _locality_warn.classes(add="hidden")
+                        try:
+                            async with httpx.AsyncClient(timeout=10) as client:
+                                r = await client.get(
+                                    "https://photon.komoot.io/reverse",
+                                    params={"lat": lat, "lon": lon, "lang": "en"},
+                                    headers={"User-Agent": "EntomologicalCollection/1.0"},
+                                )
+                                r.raise_for_status()
+                                features = r.json().get("features", [])
+                                if not features:
+                                    ui.notify("Reverse geocoding returned no results.", type="warning")
+                                    return None
+                                p = features[0]["properties"]
+                        except Exception as ex:
+                            ui.notify(f"Reverse geocoding failed: {ex}", type="negative")
+                            return None
+
+                        state["populating"] = True
+                        country_in.value  = p.get("country", "")
+                        code_in.value     = p.get("countrycode", "").upper()
+                        state_in.value    = p.get("state", "")
+                        county_in.value   = p.get("county", "")
+                        muni_in.value     = p.get("city") or p.get("locality") or ""
+                        locality_in.value = (
+                            p["name"]
+                            if p.get("osm_key") in _LOCALITY_KEYS and p.get("name")
+                            else ""
+                        )
+                        state["populating"] = False
+                        _on_event_field_edit()
+                        return p
+
+                    async def _check_boundary_crossing(
+                        lat: float, lon: float, radius_m: float,
+                        photon_props: dict,
+                        ok_icons: list | None = None,
+                    ) -> bool:
+                        """Check whether the uncertainty circle crosses admin boundaries.
+
+                        Samples 4 cardinal points (N/E/S/W) on the circle perimeter,
+                        reverse-geocodes them in parallel via a shared AsyncClient, and
+                        compares with the centre.  4 parallel requests is within Photon's
+                        per-IP concurrency limit; 8 simultaneous causes 503 errors for the
+                        last requests, silently dropping some countries from the result.
+                        """
+                        def _props_to_snap(p: dict) -> dict:
+                            return {
+                                "country":  p.get("country", ""),
+                                "code":     (p.get("countrycode", "") or "").upper(),
+                                "state":    p.get("state", ""),
+                                "county":   p.get("county", ""),
+                                "muni":     p.get("city") or p.get("locality") or "",
+                                "locality": p.get("name", "") if p.get("osm_key") in _LOCALITY_KEYS else "",
+                            }
+
+                        centre = _props_to_snap(photon_props)
+                        snapshots: list[dict] = [centre]
+
+                        # 4 cardinal points: N (0°), E (90°), S (180°), W (270°).
+                        perimeter_pts = []
+                        for a in (0, 90, 180, 270):
+                            la = lat + (radius_m / 111_320) * math.cos(math.radians(a))
+                            lo = lon + (radius_m / (111_320 * math.cos(math.radians(lat)))) * math.sin(math.radians(a))
+                            perimeter_pts.append((la, lo))
+
+                        async def _photon_at(
+                            cl: httpx.AsyncClient, la: float, lo: float
+                        ) -> dict | None:
+                            for attempt in range(3):
+                                try:
+                                    if attempt:
+                                        await asyncio.sleep(0.5 * attempt)
+                                    rp = await cl.get(
+                                        "https://photon.komoot.io/reverse",
+                                        params={"lat": la, "lon": lo, "lang": "en"},
+                                        headers={"User-Agent": "EntomologicalCollection/1.0"},
+                                    )
+                                    if rp.status_code in (429, 503) and attempt < 2:
+                                        continue
+                                    rp.raise_for_status()
+                                    feats = rp.json().get("features", [])
+                                    return feats[0]["properties"] if feats else None
+                                except Exception:
+                                    return None
+                            return None
+
+                        async with httpx.AsyncClient(timeout=10) as cl:
+                            results = await asyncio.gather(
+                                *[_photon_at(cl, la, lo) for la, lo in perimeter_pts]
+                            )
+
+                        for p in results:
+                            if not p:
+                                continue
+                            snap = _props_to_snap(p)
+                            if snap != centre and snap not in snapshots:
+                                snapshots.append(snap)
+
+                        _any_warn: list[bool] = []
+                        _ok_shown: list = []
+
+                        def _show_warn(btn, tip, items_col, field_key, on_pick,
+                                       ok_icon=None, label_fn=None):
+                            """Show warning or ok icon depending on boundary ambiguity."""
+                            seen: dict[str, dict] = {}
+                            for snap in snapshots:
+                                val = snap[field_key]
+                                if val not in seen:
+                                    seen[val] = snap
+                            if len(seen) <= 1:
+                                if ok_icon is not None:
+                                    ok_icon.classes(remove="hidden", add="lookup-ok-fade")
+                                    _ok_shown.append(ok_icon)
+                                return
+                            centre_val = centre[field_key]
+                            alts = [v for v in seen if v != centre_val]
+                            items_col.clear()
+                            with items_col:
+                                for i, (val, snap) in enumerate(seen.items()):
+                                    display = label_fn(val, snap) if label_fn else val
+                                    marker  = " (centre)" if i == 0 else ""
+
+                                    async def _cb(s=snap):
+                                        await on_pick(s)
+
+                                    ui.menu_item(display + marker, on_click=_cb)
+                            tip_alts = [
+                                label_fn(v, seen[v]) if label_fn else v for v in alts
+                            ]
+                            tip.text = "Circle also covers: " + ", ".join(tip_alts)
+                            tip.update()
+                            btn.classes(remove="hidden")
+                            btn.update()
+                            _any_warn.append(True)
+
+                        async def _apply_snap(snap: dict) -> None:
+                            """Fill address fields from a pre-geocoded perimeter snap."""
+                            state["populating"] = True
+                            country_in.value  = snap["country"]
+                            code_in.value     = snap["code"]
+                            state_in.value    = snap["state"]
+                            county_in.value   = snap["county"]
+                            muni_in.value     = snap["muni"]
+                            locality_in.value = snap["locality"]
+                            state["populating"] = False
+                            for _b in (_cntry_warn, _code_warn, _state_warn,
+                                       _county_warn, _muni_warn, _locality_warn):
+                                _b.classes(add="hidden")
+                            _on_event_field_edit()
+
+                        icons = ok_icons or [None] * 6
+                        _show_warn(_cntry_warn,    _cntry_tip,    _cntry_items,
+                                   "country",  _apply_snap, ok_icon=icons[0])
+                        _show_warn(_code_warn,     _code_tip,     _code_items,
+                                   "code",     _apply_snap, ok_icon=icons[1],
+                                   label_fn=lambda c, s: f"{c} ({s['country']})")
+                        _show_warn(_state_warn,    _state_tip,    _state_items,
+                                   "state",    _apply_snap, ok_icon=icons[2])
+                        _show_warn(_county_warn,   _county_tip,   _county_items,
+                                   "county",   _apply_snap, ok_icon=icons[3])
+                        _show_warn(_muni_warn,     _muni_tip,     _muni_items,
+                                   "muni",     _apply_snap, ok_icon=icons[4])
+                        _show_warn(_locality_warn, _locality_tip, _locality_items,
+                                   "locality", _apply_snap, ok_icon=icons[5],
+                                   label_fn=lambda v, s: v if v else "(no named feature)")
+
+                        if _ok_shown:
+                            _fading = list(_ok_shown)
+                            ui.timer(1.4, lambda: [
+                                ok.classes(add="hidden", remove="lookup-ok-fade")
+                                for ok in _fading
+                            ], once=True)
+                        return bool(_any_warn)
+
+                    def _on_map_change(lat: float, lon: float, unc):
+                        lat_in.value    = str(round(lat, 7))
+                        lon_in.value    = str(round(lon, 7))
+                        uncert_in.value = str(int(round(unc))) if unc else ""
+                        _on_event_field_edit()
+                        # Geocoding is triggered manually via the Lookup button, not here.
+                        # Firing on every pin placement/drag caused Nominatim 429 errors.
+
+                    _map = build_map_picker(_on_map_change)
+
+                    with ui.row().classes("items-center gap-2 mt-2"):
+                        def _open_map():
+                            try:
+                                lat = float(lat_in.value)
+                                lon = float(lon_in.value)
+                            except (TypeError, ValueError):
+                                _map["open"]()
+                                return
+                            unc = None
+                            try:
+                                unc = float(uncert_in.value) if uncert_in.value else None
+                            except ValueError:
+                                pass
+                            _map["fly_to"](lat, lon, unc)
+
+                        (
+                            ui.button("Map", icon="map", on_click=_open_map)
+                            .props("flat dense size=sm")
+                            .tooltip("Open map to pick coordinates")
+                        )
+                        def _clear_map_coords():
+                            _map["clear"]()
+                            lat_in.value    = ""
+                            lon_in.value    = ""
+                            uncert_in.value = ""
+                            _on_event_field_edit()
+
+                        (
+                            ui.button("Clear", icon="clear", on_click=_clear_map_coords)
+                            .props("flat dense size=sm")
+                            .tooltip("Remove marker and clear coordinate fields")
+                        )
+
+                        async def _fill_from_coords():
+                            try:
+                                lat = float(lat_in.value)
+                                lon = float(lon_in.value)
+                            except (TypeError, ValueError):
+                                ui.notify("Enter valid coordinates first.", type="warning")
+                                return
+                            unc: float | None = None
+                            try:
+                                unc = float(uncert_in.value) if uncert_in.value else None
+                            except ValueError:
+                                pass
+                            _lookup_btn.props("loading=true")
+                            for _ok in _geocode_ok_icons:
+                                _ok.classes(add="hidden", remove="lookup-ok-fade")
+                            _locality_warn.classes(add="hidden")
+                            p = await _reverse_geocode(lat, lon)
+                            _lookup_btn.props(remove="loading")
+                            if p is None:
+                                return
+                            ui.notify("Location fields filled from coordinates.", type="positive")
+                            if unc and unc > 0:
+                                await _check_boundary_crossing(
+                                    lat, lon, unc, p,
+                                    ok_icons=_geocode_ok_icons,
+                                )
+                            else:
+                                for _ok in _geocode_ok_icons:
+                                    _ok.classes(remove="hidden", add="lookup-ok-fade")
+                                ui.timer(1.4, lambda: [
+                                    _ok.classes(add="hidden", remove="lookup-ok-fade")
+                                    for _ok in _geocode_ok_icons
+                                ], once=True)
+
+                        _lookup_btn = (
+                            ui.button("Lookup", icon="travel_explore",
+                                      on_click=_fill_from_coords)
+                            .props("flat dense size=sm")
+                            .tooltip("Fill country / state / county from coordinates via Photon")
+                        )
+
+                    ui.label("Location").classes("text-xs font-semibold uppercase tracking-wider text-grey-6 mt-4")
+                    with ui.grid(columns=5).classes("w-full gap-3 mt-1"):
+                        country_in, _cntry_warn, _cntry_tip, _cntry_items, _cntry_ok = _geocode_input(
                             "country", on_change=_on_country_change)
-                        code_in,    _code_warn,  _code_tip,  _code_items  = _geocode_input(
+                        code_in,    _code_warn,  _code_tip,  _code_items,  _code_ok  = _geocode_input(
                             "countryCode", on_change=_on_event_field_edit, placeholder="DE")
-                        state_in,   _state_warn, _state_tip, _state_items = _geocode_input(
+                        state_in,   _state_warn, _state_tip, _state_items, _state_ok = _geocode_input(
                             "stateProvince", on_change=_on_state_change)
-                        county_in,  _county_warn, _county_tip, _county_items = _geocode_input(
+                        county_in,  _county_warn, _county_tip, _county_items, _county_ok = _geocode_input(
                             "county", on_change=_on_county_change)
-                        muni_in,    _muni_warn,  _muni_tip,  _muni_items  = _geocode_input(
-                            "municipality", on_change=_on_event_field_edit)
+                        muni_in,    _muni_warn,  _muni_tip,  _muni_items,  _muni_ok  = _geocode_input(
+                            "municipality", on_change=_on_muni_change)
+                    _geocode_ok_icons = [_cntry_ok, _code_ok, _state_ok, _county_ok, _muni_ok]
 
                     with ui.grid(columns=2).classes("w-full gap-3 mt-3"):
-                        locality_in  = ui.input("locality",         on_change=_on_event_field_edit).classes("col-span-1")
+                        locality_in, _locality_warn, _locality_tip, _locality_items, _locality_ok = _geocode_input(
+                            "locality", on_change=_on_event_field_edit)
                         verblocal_in = ui.input("verbatimLocality", on_change=_on_event_field_edit).classes("col-span-1")
+                    _geocode_ok_icons.append(_locality_ok)
 
-                    with ui.grid(columns=4).classes("w-full gap-3 mt-3"):
+                    ui.label("Date").classes("text-xs font-semibold uppercase tracking-wider text-grey-6 mt-4")
+                    with ui.grid(columns=3).classes("w-full gap-3 mt-1"):
                         edate_in    = ui.input("eventDate", placeholder="YYYY-MM-DD or YYYY-MM-DD/YYYY-MM-DD",
                                                 on_change=_on_event_field_edit).classes("col-span-2")
                         verbdate_in = ui.input("verbatimEventDate", on_change=_on_event_field_edit).classes("col-span-1")
-                        recby_in    = ui.input("recordedBy",        on_change=_on_event_field_edit).classes("col-span-1")
 
-                    with ui.expansion("Coordinates, elevation & more").classes("w-full mt-2"):
+                    ui.label("Ecology").classes("text-xs font-semibold uppercase tracking-wider text-grey-6 mt-4")
+                    with ui.grid(columns=2).classes("w-full gap-3 mt-1"):
+                        habitat_in   = ui.input("habitat",       on_change=_on_event_field_edit).classes("col-span-1")
+                        protocol_sel = ui.select(SAMPLING_PROTOCOLS, label="samplingProtocol").classes("col-span-1")
 
-                        def _on_lat_change(e):
-                            # Fallback when JS paste interceptor isn't installed yet.
-                            val = str(e.value) if e.value is not None else ""
-                            pair = _split_coord_paste(val)
-                            if pair:
-                                lat_in.value = pair[0]
-                                lon_in.value = pair[1]
-                            _on_event_field_edit()
+                    ui.label("Recorded by").classes("text-xs font-semibold uppercase tracking-wider text-grey-6 mt-4")
+                    with ui.grid(columns=2).classes("w-full gap-3 mt-1"):
+                        recby_in    = ui.input("recordedBy",  on_change=_on_event_field_edit).classes("col-span-1")
+                        fieldnum_in = ui.input("fieldNumber", on_change=_on_event_field_edit).classes("col-span-1")
 
-                        with ui.grid(columns=5).classes("w-full gap-3"):
-                            lat_in      = ui.input("latitude",      on_change=_on_lat_change).classes("col-span-1 _coord-lat")
-                            lon_in      = ui.input("longitude",     on_change=_on_event_field_edit).classes("col-span-1 _coord-lon")
-                            uncert_in   = ui.input("uncertainty m", on_change=_on_event_field_edit).classes("col-span-1")
-                            elev_min_in = ui.input("elev min m",    on_change=_on_event_field_edit).classes("col-span-1")
-                            elev_max_in = ui.input("elev max m",    on_change=_on_event_field_edit).classes("col-span-1")
-
-                        # Sink element: receives coord-paste socket events from the JS
-                        # paste interceptor below.  Using the NiceGUI socket bridge
-                        # (same pattern as map_picker) is more reliable than dispatching
-                        # synthetic DOM input events, which Quasar may silently drop.
-                        _coord_sink = ui.element('span').style('display:none')
-
-                        def _on_coord_paste_event(e):
-                            try:
-                                d = e.args  # already a dict: {lat, lon}
-                                lat_in.value = str(d["lat"])
-                                lon_in.value = str(d["lon"])
-                                _on_event_field_edit()
-                            except (KeyError, TypeError):
-                                pass
-
-                        _coord_sink.on('coord-paste', _on_coord_paste_event)
-                        _csink_id  = _coord_sink.id
-                        _clid      = list(_coord_sink._event_listeners.keys())[-1]
-
-                        async def _inject_coord_paste_js():
-                            await ui.run_javascript(f"""
-                            (function install() {{
-                                var latEl = document.querySelector('._coord-lat input');
-                                var lonEl = document.querySelector('._coord-lon input');
-                                if (!latEl) {{ setTimeout(install, 300); return; }}
-                                latEl.addEventListener('paste', function(ev) {{
-                                    var text = (ev.clipboardData || window.clipboardData).getData('text');
-                                    var nums = text.match(/[-+]?\\d+(?:\\.\\d+)?/g);
-                                    if (!nums || nums.length < 2) return;
-                                    var lat = parseFloat(nums[0]), lon = parseFloat(nums[1]);
-                                    if (lat < -90 || lat > 90 || lon < -180 || lon > 180) return;
-                                    ev.preventDefault();
-                                    // Update native display directly (bypasses Vue/Quasar focus guard).
-                                    var nset = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
-                                    nset.call(latEl, String(lat));
-                                    if (lonEl) nset.call(lonEl, String(lon));
-                                    // Notify Python via NiceGUI socket bridge.
-                                    window.socket.emit('event', {{
-                                        id: {_csink_id},
-                                        client_id: window.clientId,
-                                        listener_id: '{_clid}',
-                                        args: [JSON.stringify({{lat: String(lat), lon: String(lon)}})]
-                                    }});
-                                }});
-                            }})();
-                            """)
-
-                        ui.timer(0.3, _inject_coord_paste_js, once=True)
-
-                        async def _reverse_geocode(lat: float, lon: float) -> dict | None:
-                            """Reverse-geocode via Photon. Returns Photon properties dict or
-                            None on failure. Fills the address fields as a side effect."""
-                            for _b in (_cntry_warn, _code_warn, _state_warn, _county_warn, _muni_warn):
-                                _b.classes(add="hidden")
-                            try:
-                                async with httpx.AsyncClient(timeout=10) as client:
-                                    r = await client.get(
-                                        "https://photon.komoot.io/reverse",
-                                        params={"lat": lat, "lon": lon, "lang": "en"},
-                                        headers={"User-Agent": "EntomologicalCollection/1.0"},
-                                    )
-                                    r.raise_for_status()
-                                    features = r.json().get("features", [])
-                                    if not features:
-                                        ui.notify("Reverse geocoding returned no results.", type="warning")
-                                        return None
-                                    p = features[0]["properties"]
-                            except Exception as ex:
-                                ui.notify(f"Reverse geocoding failed: {ex}", type="negative")
-                                return None
-
-                            country_in.value = p.get("country", "")
-                            code_in.value    = p.get("countrycode", "").upper()
-                            state_in.value   = p.get("state", "")
-                            county_in.value  = _clean_county(
-                                p.get("county") or p.get("district") or ""
-                            )
-                            muni_in.value    = p.get("city") or p.get("locality") or ""
-                            _on_event_field_edit()
-                            return p
-
-                        async def _check_boundary_crossing(
-                            lat: float, lon: float, radius_m: float,
-                            photon_props: dict,
-                        ) -> None:
-                            """Check whether the uncertainty circle crosses admin boundaries.
-
-                            Samples 4 cardinal points (N/E/S/W) on the circle perimeter,
-                            reverse-geocodes them in parallel via a shared AsyncClient, and
-                            compares with the centre.  4 parallel requests is within Photon's
-                            per-IP concurrency limit; 8 simultaneous causes 503 errors for the
-                            last requests, silently dropping some countries from the result.
-                            """
-                            def _props_to_snap(p: dict) -> dict:
-                                return {
-                                    "country": p.get("country", ""),
-                                    "code":    (p.get("countrycode", "") or "").upper(),
-                                    "state":   p.get("state", ""),
-                                    "county":  _clean_county(
-                                        p.get("county") or p.get("district") or ""
-                                    ),
-                                    "muni":    p.get("city") or p.get("locality") or "",
-                                }
-
-                            centre = _props_to_snap(photon_props)
-                            snapshots: list[dict] = [centre]
-
-                            # 4 cardinal points: N (0°), E (90°), S (180°), W (270°).
-                            perimeter_pts = []
-                            for a in (0, 90, 180, 270):
-                                la = lat + (radius_m / 111_320) * math.cos(math.radians(a))
-                                lo = lon + (radius_m / (111_320 * math.cos(math.radians(lat)))) * math.sin(math.radians(a))
-                                perimeter_pts.append((la, lo))
-
-                            async def _photon_at(
-                                cl: httpx.AsyncClient, la: float, lo: float
-                            ) -> dict | None:
-                                for attempt in range(3):
-                                    try:
-                                        if attempt:
-                                            await asyncio.sleep(0.5 * attempt)
-                                        rp = await cl.get(
-                                            "https://photon.komoot.io/reverse",
-                                            params={"lat": la, "lon": lo, "lang": "en"},
-                                            headers={"User-Agent": "EntomologicalCollection/1.0"},
-                                        )
-                                        if rp.status_code in (429, 503) and attempt < 2:
-                                            continue
-                                        rp.raise_for_status()
-                                        feats = rp.json().get("features", [])
-                                        return feats[0]["properties"] if feats else None
-                                    except Exception:
-                                        return None
-                                return None
-
-                            async with httpx.AsyncClient(timeout=10) as cl:
-                                results = await asyncio.gather(
-                                    *[_photon_at(cl, la, lo) for la, lo in perimeter_pts]
-                                )
-
-                            for p in results:
-                                if not p:
-                                    continue
-                                snap = _props_to_snap(p)
-                                if snap != centre and snap not in snapshots:
-                                    snapshots.append(snap)
-
-                            def _show_warn(btn, tip, items_col, field_key, on_pick,
-                                           label_fn=None):
-                                """Reveal warning button if field has >1 unique value."""
-                                seen: dict[str, dict] = {}
-                                for snap in snapshots:
-                                    val = snap[field_key]
-                                    if val not in seen:
-                                        seen[val] = snap
-                                if len(seen) <= 1:
-                                    return
-                                centre_val = centre[field_key]
-                                alts = [v for v in seen if v != centre_val]
-                                items_col.clear()
-                                with items_col:
-                                    for i, (val, snap) in enumerate(seen.items()):
-                                        display = label_fn(val, snap) if label_fn else val
-                                        marker  = " (centre)" if i == 0 else ""
-
-                                        async def _cb(s=snap):
-                                            await on_pick(s)
-
-                                        ui.menu_item(display + marker, on_click=_cb)
-                                tip_alts = [
-                                    label_fn(v, seen[v]) if label_fn else v for v in alts
-                                ]
-                                tip.text = "Circle also covers: " + ", ".join(tip_alts)
-                                tip.update()
-                                btn.classes(remove="hidden")
-                                btn.update()
-
-                            async def _apply_snap(snap: dict) -> None:
-                                """Fill address fields from a pre-geocoded perimeter snap."""
-                                state["populating"] = True
-                                country_in.value = snap["country"]
-                                code_in.value    = snap["code"]
-                                state_in.value   = snap["state"]
-                                county_in.value  = snap["county"]
-                                muni_in.value    = snap["muni"]
-                                state["populating"] = False
-                                for _b in (_cntry_warn, _code_warn, _state_warn,
-                                           _county_warn, _muni_warn):
-                                    _b.classes(add="hidden")
-                                _on_event_field_edit()
-
-                            _show_warn(_cntry_warn, _cntry_tip, _cntry_items,
-                                       "country", _apply_snap)
-                            _show_warn(_code_warn, _code_tip, _code_items,
-                                       "code", _apply_snap,
-                                       label_fn=lambda c, s: f"{c} ({s['country']})")
-                            _show_warn(_state_warn,  _state_tip,  _state_items,
-                                       "state",   _apply_snap)
-                            _show_warn(_county_warn, _county_tip, _county_items,
-                                       "county",  _apply_snap)
-                            _show_warn(_muni_warn,   _muni_tip,   _muni_items,
-                                       "muni",    _apply_snap)
-
-                        def _on_map_change(lat: float, lon: float, unc):
-                            lat_in.value    = str(round(lat, 7))
-                            lon_in.value    = str(round(lon, 7))
-                            uncert_in.value = str(int(round(unc))) if unc else ""
-                            _on_event_field_edit()
-                            # Geocoding is triggered manually via the Lookup button, not here.
-                            # Firing on every pin placement/drag caused Nominatim 429 errors.
-
-                        _map = build_map_picker(_on_map_change)
-
-                        with ui.row().classes("items-center gap-2 mt-2"):
-                            (
-                                ui.button("Map", icon="map", on_click=_map["open"])
-                                .props("flat dense size=sm")
-                                .tooltip("Open map to pick coordinates")
-                            )
-                            def _locate_on_map():
-                                try:
-                                    lat = float(lat_in.value)
-                                    lon = float(lon_in.value)
-                                except (TypeError, ValueError):
-                                    ui.notify("Enter valid lat / lon first.", type="warning")
-                                    return
-                                unc = None
-                                try:
-                                    unc = float(uncert_in.value) if uncert_in.value else None
-                                except ValueError:
-                                    pass
-                                _map["fly_to"](lat, lon, unc)
-
-                            (
-                                ui.button("Locate", icon="my_location", on_click=_locate_on_map)
-                                .props("flat dense size=sm")
-                                .tooltip("Fly map to current lat / lon")
-                            )
-
-                            def _clear_map_coords():
-                                _map["clear"]()
-                                lat_in.value    = ""
-                                lon_in.value    = ""
-                                uncert_in.value = ""
-                                _on_event_field_edit()
-
-                            (
-                                ui.button("Clear", icon="clear", on_click=_clear_map_coords)
-                                .props("flat dense size=sm")
-                                .tooltip("Remove marker and clear coordinate fields")
-                            )
-
-                            async def _fill_from_coords():
-                                try:
-                                    lat = float(lat_in.value)
-                                    lon = float(lon_in.value)
-                                except (TypeError, ValueError):
-                                    ui.notify("Enter valid coordinates first.", type="warning")
-                                    return
-                                unc: float | None = None
-                                try:
-                                    unc = float(uncert_in.value) if uncert_in.value else None
-                                except ValueError:
-                                    pass
-                                p = await _reverse_geocode(lat, lon)
-                                if p is None:
-                                    return
-                                ui.notify("Location fields filled from coordinates.", type="positive")
-                                if unc and unc > 0:
-                                    await _check_boundary_crossing(lat, lon, unc, p)
-
-                            (
-                                ui.button("Lookup", icon="travel_explore",
-                                          on_click=_fill_from_coords)
-                                .props("flat dense size=sm")
-                                .tooltip("Fill country / state / county from coordinates via Photon")
-                            )
-
-                        with ui.grid(columns=3).classes("w-full gap-3 mt-3"):
-                            habitat_in   = ui.input("habitat",       on_change=_on_event_field_edit).classes("col-span-1")
-                            protocol_sel = ui.select(SAMPLING_PROTOCOLS, label="samplingProtocol").classes("col-span-1")
-                            fieldnum_in  = ui.input("fieldNumber",   on_change=_on_event_field_edit).classes("col-span-1")
-                        verblabel_in = ui.input("verbatimLabel", on_change=_on_event_field_edit).classes("w-full mt-3")
+                    verblabel_in = ui.input("verbatimLabel", on_change=_on_event_field_edit).classes("w-full mt-4")
 
                     def _on_event_selected(e):
                         eid = e.value
@@ -1024,16 +1081,6 @@ def index():
                     table.rows = _table_rows()
                     table.update()
 
-                def _on_row_click(e):
-                    row = e.args[1] if isinstance(e.args, (list, tuple)) else e.args
-                    if not isinstance(row, dict):
-                        return
-                    status_lbl.set_text(
-                        f"Loaded #{row.get('id', '?')} as template — select an identifier and save"
-                    )
-                    ui.notify("Loaded as template — new catalogNumber required", type="info")
-
-                table.on("rowClick", _on_row_click)
 
         # ================================================================
         # TAB: IMPORT & ASSIGN
@@ -1089,68 +1136,72 @@ def index():
 
                     tree_data = _with_session(tax_svc.build_taxonomy_tree)
 
-                    if not tree_data:
-                        ui.label("No taxa in the database yet.") \
-                          .classes("text-sm italic px-4 py-6") \
-                          .style("color:var(--tp-base-soft)")
-                    else:
-                        tax_tree = ui.tree(
-                            nodes=tree_data,
-                            label_key="label",
-                            children_key="children",
-                        ).classes("w-full").props("no-connectors dense")
+                    _NODE_SLOT = r"""
+                        <div style="display:flex; align-items:baseline; gap:7px; padding:2px 0 1px;">
+                          <span v-if="props.node.synonym"
+                                style="color:var(--tp-base-soft); font-size:.8rem;
+                                       font-style:normal; margin-right:-2px;">=</span>
+                          <span :class="'rank-' + props.node.rank">{{ props.node.label }}</span>
+                          <span v-if="props.node.spp_count > 0"
+                                class="tax-stat-chip tax-stat-spp">
+                            {{ props.node.spp_count }}&nbsp;spp.
+                          </span>
+                          <span v-if="props.node.spec_count > 0"
+                                class="tax-stat-chip tax-stat-spec">
+                            {{ props.node.spec_count }}&nbsp;spec.
+                          </span>
+                          <a v-if="props.node.tw_url"
+                             :href="props.node.tw_url" target="_blank"
+                             title="Open in TaxonPages" @click.stop
+                             style="color:var(--tp-secondary); font-size:.72rem;
+                                    text-decoration:none; opacity:.6; line-height:1; margin-left:2px;"
+                             onmouseover="this.style.opacity='1'"
+                             onmouseout="this.style.opacity='.6'">↗</a>
+                        </div>
+                    """
 
-                        _NODE_SLOT = r"""
-                            <div style="display:flex; align-items:baseline; gap:7px; padding:2px 0 1px;">
-                              <span v-if="props.node.synonym"
-                                    style="color:var(--tp-base-soft); font-size:.8rem;
-                                           font-style:normal; margin-right:-2px;">=</span>
-                              <span :class="'rank-' + props.node.rank">{{ props.node.label }}</span>
-                              <span v-if="props.node.spp_count > 0"
-                                    class="tax-stat-chip tax-stat-spp">
-                                {{ props.node.spp_count }}&nbsp;spp.
-                              </span>
-                              <span v-if="props.node.spec_count > 0"
-                                    class="tax-stat-chip tax-stat-spec">
-                                {{ props.node.spec_count }}&nbsp;spec.
-                              </span>
-                              <a v-if="props.node.tw_url"
-                                 :href="props.node.tw_url" target="_blank"
-                                 title="Open in TaxonPages" @click.stop
-                                 style="color:var(--tp-secondary); font-size:.72rem;
-                                        text-decoration:none; opacity:.6; line-height:1; margin-left:2px;"
-                                 onmouseover="this.style.opacity='1'"
-                                 onmouseout="this.style.opacity='.6'">↗</a>
-                            </div>
-                        """
-                        tax_tree.add_slot("default-header", _NODE_SLOT)
+                    # Always create the tree widget so it can be updated after saves.
+                    tax_tree = ui.tree(
+                        nodes=tree_data,
+                        label_key="label",
+                        children_key="children",
+                    ).classes("w-full").props("no-connectors dense")
+                    tax_tree.add_slot("default-header", _NODE_SLOT)
 
-                        async def _expand():
-                            await asyncio.sleep(0.15)
-                            await tax_tree.run_method("expandAll")
+                    async def _expand():
+                        await asyncio.sleep(0.15)
+                        await tax_tree.run_method("expandAll")
 
-                        async def _on_filter_change(e):
-                            key = e.value or ""
-                            if not key:
-                                new_nodes = _with_session(tax_svc.build_taxonomy_tree)
+                    async def _on_filter_change(e):
+                        key = e.value or ""
+                        if not key:
+                            new_nodes = _with_session(tax_svc.build_taxonomy_tree)
+                        else:
+                            part = key.split(":", 1)
+                            rank, val = part[0], part[1] if len(part) > 1 else ""
+                            if rank in ("species", "taxon"):
+                                new_nodes = _with_session(
+                                    lambda s: tax_svc.build_taxonomy_tree(s, filter_id=int(val))
+                                )
                             else:
-                                part = key.split(":", 1)
-                                rank, val = part[0], part[1] if len(part) > 1 else ""
-                                if rank == "species":
-                                    new_nodes = _with_session(
-                                        lambda s: tax_svc.build_taxonomy_tree(s, filter_id=int(val))
+                                new_nodes = _with_session(
+                                    lambda s, r=rank, v=val: tax_svc.build_taxonomy_tree(
+                                        s, filter_rank=r, filter_value=v
                                     )
-                                else:
-                                    new_nodes = _with_session(
-                                        lambda s, r=rank, v=val: tax_svc.build_taxonomy_tree(
-                                            s, filter_rank=r, filter_value=v
-                                        )
-                                    )
-                            tax_tree._props['nodes'] = new_nodes
-                            tax_tree.update()
-                            await _expand()
+                                )
+                        tax_tree._props['nodes'] = new_nodes
+                        tax_tree.update()
+                        await _expand()
 
-                        filter_sel.on_value_change(_on_filter_change)
+                    filter_sel.on_value_change(_on_filter_change)
+
+                    def _refresh_tree():
+                        filter_sel.options = _with_session(tax_svc.checklist_options)
+                        filter_sel.update()
+                        tax_tree._props['nodes'] = _with_session(tax_svc.build_taxonomy_tree)
+                        tax_tree.update()
+
+                    _refreshers["taxonomy_tree"] = _refresh_tree
 
         # ================================================================
         # TAB: LABELS
@@ -1490,9 +1541,7 @@ def index():
     async def _on_tab_change(e):
         if e.value == "taxonomy":
             _refresh_taxonomy_stats()
-            new_nodes = _with_session(tax_svc.build_taxonomy_tree)
-            tax_tree._props['nodes'] = new_nodes
-            tax_tree.update()
+            _refresh_tree()
             await asyncio.sleep(0.15)
             await tax_tree.run_method("expandAll")
 

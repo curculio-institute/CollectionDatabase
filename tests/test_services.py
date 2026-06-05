@@ -12,9 +12,15 @@ from app.services.specimens import save_specimen_entry, recent_specimens
 # ---------------------------------------------------------------------------
 
 def _taxon(session, genus="Carabus", species="coriaceus", authorship="Linnaeus, 1758"):
-    t = Taxon(genus=genus, specific_epithet=species,
-              scientific_name_authorship=authorship,
-              created_at=_utcnow(), updated_at=_utcnow())
+    sci_name = f"{genus} {species}" if species else genus
+    rank = "species" if species else "genus"
+    t = Taxon(
+        scientific_name=sci_name,
+        taxon_rank=rank,
+        taxonomic_status="accepted",
+        scientific_name_authorship=authorship,
+        created_at=_utcnow(), updated_at=_utcnow(),
+    )
     session.add(t)
     session.flush()
     return t
@@ -37,28 +43,33 @@ def _event(session, country="Germany", state="Bavaria", locality="Berchtesgaden"
 # ---------------------------------------------------------------------------
 
 def test_format_scientific_name_full():
-    t = Taxon(genus="Carabus", specific_epithet="coriaceus",
+    t = Taxon(scientific_name="Carabus coriaceus", taxon_rank="species",
+              taxonomic_status="accepted",
               scientific_name_authorship="Linnaeus, 1758")
     assert format_scientific_name(t) == "Carabus coriaceus Linnaeus, 1758"
 
 
 def test_format_scientific_name_no_authorship():
-    t = Taxon(genus="Dytiscus", specific_epithet="marginalis")
+    t = Taxon(scientific_name="Dytiscus marginalis", taxon_rank="species",
+              taxonomic_status="accepted")
     assert format_scientific_name(t) == "Dytiscus marginalis"
 
 
 def test_format_scientific_name_with_subgenus():
-    t = Taxon(genus="Amara", subgenus="Amara", specific_epithet="aenea")
+    t = Taxon(scientific_name="Amara (Amara) aenea", taxon_rank="species",
+              taxonomic_status="accepted")
     assert format_scientific_name(t) == "Amara (Amara) aenea"
 
 
-def test_format_scientific_name_all_none():
-    t = Taxon(id=99)
+def test_format_scientific_name_no_name():
+    t = Taxon(id=99, scientific_name="", taxon_rank="species",
+              taxonomic_status="accepted")
     assert format_scientific_name(t) == "taxon #99"
 
 
 def test_format_scientific_name_genus_only():
-    t = Taxon(genus="Ceutorhynchus")
+    t = Taxon(scientific_name="Ceutorhynchus", taxon_rank="genus",
+              taxonomic_status="accepted")
     assert format_scientific_name(t) == "Ceutorhynchus"
 
 

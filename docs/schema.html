@@ -100,7 +100,7 @@
   <p>Columns prefixed <code>dwc:</code> are Darwin Core terms and link to
      <a href="https://dwc.tdwg.org/list/">dwc.tdwg.org/list</a>.
      Local columns (PKs, FKs, management fields) carry no prefix.
-     All tables use SQLite <code>STRICT</code> mode. Migration head: 0011.</p>
+     All tables use SQLite <code>STRICT</code> mode. Migration head: 0012.</p>
 </header>
 
 <nav>
@@ -125,19 +125,13 @@
 erDiagram
     taxon {
         INTEGER id PK
-        TEXT order
-        TEXT family
-        TEXT subfamily
-        TEXT tribe
-        TEXT subtribe
-        TEXT genus
-        TEXT subgenus
-        TEXT specificEpithet
-        TEXT infraspecificEpithet
-        TEXT scientificNameAuthorship
+        TEXT scientificName
+        TEXT taxonRank
         TEXT taxonomicStatus
-        INTEGER parent_id FK
+        TEXT scientificNameAuthorship
+        INTEGER parentNameUsageID FK
         INTEGER acceptedNameUsageID FK
+        INTEGER taxonworksOtuID
     }
 
     collecting_event {
@@ -254,26 +248,23 @@ erDiagram
 <!-- ── taxon ──────────────────────────────────────────────────── -->
 <div class="table-card" id="taxon">
   <h2>taxon</h2>
-  <div class="desc">Local taxon / OTU. Stores rank-level fields from order down.
-    <code>dwc:scientificName</code> is derived at export (genus + specificEpithet + authorship).
-    <code>parent_id</code> enables tree navigation alongside the denormalised rank columns.
-    <code>dwc:taxonomicStatus</code>: "accepted" | "synonym" | "invalid".</div>
+  <div class="desc">Local taxon / OTU. DwC parent-link model (GBIF checklist best practices).
+    Hierarchy encoded via <code>dwc:parentNameUsageID</code> (FK to self) — no denormalised rank columns.
+    Each ancestor rank (genus, family, order, …) has its own row linked upward by the same FK.
+    <code>dwc:scientificName</code> stores the bare name without authorship.
+    <code>dwc:taxonomicStatus</code>: "accepted" | "synonym" (CHECK constraint).
+    NULL <code>dwc:acceptedNameUsageID</code> = accepted; set = synonym pointing to its accepted taxon.</div>
   <table>
     <thead><tr><th>Type</th><th>Column</th><th>Notes</th></tr></thead>
     <tbody>
       <tr><td><span class="badge badge-INTEGER">INTEGER</span></td><td class="col-local">id</td><td><span class="tag tag-PK">PK</span></td></tr>
-      <tr><td><span class="badge badge-TEXT">TEXT</span></td><td class="col-dwc"><a href="https://dwc.tdwg.org/list/#dwc_order">dwc:order</a></td><td></td></tr>
-      <tr><td><span class="badge badge-TEXT">TEXT</span></td><td class="col-dwc"><a href="https://dwc.tdwg.org/list/#dwc_family">dwc:family</a></td><td></td></tr>
-      <tr><td><span class="badge badge-TEXT">TEXT</span></td><td class="col-dwc"><a href="https://dwc.tdwg.org/list/#dwc_subfamily">dwc:subfamily</a></td><td></td></tr>
-      <tr><td><span class="badge badge-TEXT">TEXT</span></td><td class="col-dwc"><a href="https://dwc.tdwg.org/list/#dwc_tribe">dwc:tribe</a></td><td></td></tr>
-      <tr><td><span class="badge badge-TEXT">TEXT</span></td><td class="col-dwc"><a href="https://dwc.tdwg.org/list/#dwc_subtribe">dwc:subtribe</a></td><td></td></tr>
-      <tr><td><span class="badge badge-TEXT">TEXT</span></td><td class="col-dwc"><a href="https://dwc.tdwg.org/list/#dwc_genus">dwc:genus</a></td><td></td></tr>
-      <tr><td><span class="badge badge-TEXT">TEXT</span></td><td class="col-dwc"><a href="https://dwc.tdwg.org/list/#dwc_subgenus">dwc:subgenus</a></td><td></td></tr>
-      <tr><td><span class="badge badge-TEXT">TEXT</span></td><td class="col-dwc"><a href="https://dwc.tdwg.org/list/#dwc_specificEpithet">dwc:specificEpithet</a></td><td></td></tr>
-      <tr><td><span class="badge badge-TEXT">TEXT</span></td><td class="col-dwc"><a href="https://dwc.tdwg.org/list/#dwc_infraspecificEpithet">dwc:infraspecificEpithet</a></td><td></td></tr>
+      <tr><td><span class="badge badge-TEXT">TEXT</span></td><td class="col-dwc"><a href="https://dwc.tdwg.org/list/#dwc_scientificName">dwc:scientificName</a></td><td><span class="tag tag-NN">NN</span> bare name without authorship</td></tr>
+      <tr><td><span class="badge badge-TEXT">TEXT</span></td><td class="col-dwc"><a href="https://dwc.tdwg.org/list/#dwc_taxonRank">dwc:taxonRank</a></td><td><span class="tag tag-NN">NN</span> e.g. "species", "genus", "family"</td></tr>
+      <tr><td><span class="badge badge-TEXT">TEXT</span></td><td class="col-dwc"><a href="https://dwc.tdwg.org/list/#dwc_taxonomicStatus">dwc:taxonomicStatus</a></td><td><span class="tag tag-NN">NN</span> CHECK "accepted" | "synonym"</td></tr>
       <tr><td><span class="badge badge-TEXT">TEXT</span></td><td class="col-dwc"><a href="https://dwc.tdwg.org/list/#dwc_scientificNameAuthorship">dwc:scientificNameAuthorship</a></td><td></td></tr>
+      <tr><td><span class="badge badge-INTEGER">INTEGER</span></td><td class="col-dwc"><a href="https://dwc.tdwg.org/list/#dwc_parentNameUsageID">dwc:parentNameUsageID</a></td><td><span class="tag tag-FK">FK</span> → taxon (self); encodes hierarchy; RESTRICT delete</td></tr>
       <tr><td><span class="badge badge-INTEGER">INTEGER</span></td><td class="col-dwc"><a href="https://dwc.tdwg.org/list/#dwc_acceptedNameUsageID">dwc:acceptedNameUsageID</a></td><td><span class="tag tag-FK">FK</span> → taxon (self); NULL = accepted, set = synonym; RESTRICT delete</td></tr>
-      <tr><td><span class="badge badge-INTEGER">INTEGER</span></td><td class="col-local">parent_id</td><td><span class="tag tag-FK">FK</span> → taxon (self)</td></tr>
+      <tr><td><span class="badge badge-INTEGER">INTEGER</span></td><td class="col-local">taxonworksOtuID</td><td>TW OTU ID; nullable until linked</td></tr>
       <tr><td><span class="badge badge-TEXT">TEXT</span></td><td class="col-local">created_at / updated_at</td><td></td></tr>
     </tbody>
   </table>

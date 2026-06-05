@@ -254,6 +254,35 @@ def build_taxon_search(session_factory, on_select=None) -> dict:
         if not results:
             return
 
+        # Filter out TW results already in the local DB.
+        # TW autocomplete gives only the bare epithet in `name` (e.g. "lineatus"
+        # for a species, "Sitona" for a genus).  We match both ways:
+        #   exact  — name == scientific_name (uninomials: genus, family, …)
+        #   suffix — scientific_name ends with " " + name  (species, subspecies)
+        # Any name matched either way is already covered by the IN DATABASE section.
+        tw_bare_names = [r.get("name", "") for r in results if r.get("name")]
+        if tw_bare_names:
+            from app.models import Taxon as _Taxon
+            from sqlalchemy import or_
+
+            def _already_local(s) -> set[str]:
+                clauses = []
+                for n in tw_bare_names:
+                    clauses.append(_Taxon.scientific_name == n)
+                    clauses.append(_Taxon.scientific_name.endswith(" " + n))
+                matched = {row[0] for row in s.query(_Taxon.scientific_name).filter(or_(*clauses)).all()}
+                found = set()
+                for n in tw_bare_names:
+                    if n in matched or any(sci.endswith(" " + n) for sci in matched):
+                        found.add(n)
+                return found
+
+            already_local = _with_session(_already_local)
+            results = [r for r in results if r.get("name", "") not in already_local]
+
+        if not results:
+            return
+
         # Batch-fetch valid names for synonym entries
         valid_name_cache: dict[int, str] = {}
         syn_ids = list({

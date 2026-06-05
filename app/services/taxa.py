@@ -15,60 +15,46 @@ class TaxonOption:
 
 
 def format_scientific_name(taxon: Taxon) -> str:
-    """Build the display name from component parts. None-safe.
-
-    For species and below uses genus + subgenus + epithets.
-    For higher taxa (no genus) falls back through subtribe → tribe →
-    subfamily → family → order.
-    """
-    parts = [
-        taxon.genus,
-        f"({taxon.subgenus})" if taxon.subgenus else None,
-        taxon.specific_epithet,
-        taxon.infraspecific_epithet,
-    ]
-    name = " ".join(p for p in parts if p)
-    if not name:
-        name = (taxon.subtribe or taxon.tribe or taxon.subfamily
-                or taxon.family or taxon.taxon_order or "")
-    if name and taxon.scientific_name_authorship:
-        name = f"{name} {taxon.scientific_name_authorship}"
-    return name.strip() or f"taxon #{taxon.id}"
+    """Return display name: scientificName + authorship (if present)."""
+    name = taxon.scientific_name or ""
+    auth = taxon.scientific_name_authorship or ""
+    if name and auth:
+        return f"{name} {auth}"
+    return name or f"taxon #{taxon.id}"
 
 
 def find_taxon_by_name(session: Session, scientific_name: str) -> "Taxon | None":
-    """Find an accepted local taxon matching a DwC scientificName string.
+    """Find an accepted taxon matching a name string.
 
-    Parses 'Genus [(Subgenus)] epithet [authorship]' and matches on genus +
-    specific_epithet.  Returns None when the name is empty, unparseable, or
-    matches more than one accepted taxon (ambiguous genus-only query).
+    Tries exact match on dwc:scientificName first; then falls back to a
+    two-token match (strips trailing authorship tokens) to handle spreadsheets
+    that include authorship in the scientificName column.
+    Returns None when the name is empty or matches more than one accepted row.
     """
-    parts = scientific_name.strip().split()
-    if not parts:
+    name = scientific_name.strip()
+    if not name:
         return None
-    genus = parts[0]
-    # Skip a subgenus token in parentheses
-    idx = 1
-    if len(parts) > 1 and parts[1].startswith("("):
-        idx = 2
-    # Next token is the epithet only if it starts with a lowercase letter
-    epithet: str | None = None
-    if idx < len(parts) and parts[idx][0].islower():
-        epithet = parts[idx]
 
-    q = (session.query(Taxon)
-         .filter(Taxon.accepted_name_usage_id.is_(None), Taxon.genus == genus))
-    if epithet:
-        q = q.filter(Taxon.specific_epithet == epithet)
+    base_q = session.query(Taxon).filter(Taxon.accepted_name_usage_id.is_(None))
 
-    results = q.all()
+    results = base_q.filter(Taxon.scientific_name == name).all()
     if len(results) == 1:
         return results[0]
-    # Exact authorship tie-break when multiple species share the same epithet
-    if len(results) > 1 and epithet:
-        for t in results:
-            if t.specific_epithet == epithet:
-                return t
+    if len(results) > 1:
+        return None
+
+    # Strip potential authorship: take the first 2 tokens (or 3 for subgenus form).
+    parts = name.split()
+    if len(parts) >= 2:
+        if len(parts) >= 3 and parts[1].startswith("("):
+            short = " ".join(parts[:3])
+        else:
+            short = " ".join(parts[:2])
+        if short != name:
+            results = base_q.filter(Taxon.scientific_name == short).all()
+            if len(results) == 1:
+                return results[0]
+
     return None
 
 
@@ -87,19 +73,38 @@ def create_taxon_manual(
 ) -> "Taxon":
     """Create a new accepted taxon from manually entered fields.
 
-    Used when a DwC scientificName is not found locally or in TaxonWorks.
-    The taxon is created without a TW link (taxonworks_otu_id = NULL).
+    Builds scientificName and taxonRank from components, creates any missing
+    parent-rank rows, and links the new row via parentNameUsageID.
     """
+    if specific_epithet:
+        if subgenus:
+            sci_name = f"{genus} ({subgenus}) {specific_epithet}"
+        else:
+            sci_name = f"{genus} {specific_epithet}"
+        if infraspecific_epithet:
+            sci_name = f"{sci_name} {infraspecific_epithet}"
+        rank = "subspecies" if infraspecific_epithet else "species"
+    else:
+        sci_name = genus
+        rank = "genus"
+
+    fields = {
+        "taxon_rank": rank,
+        "genus": genus or None,
+        "subgenus": subgenus or None,
+        "subtribe": subtribe or None,
+        "tribe": tribe or None,
+        "subfamily": subfamily or None,
+        "family": family or None,
+    }
+    parent_id = _ensure_parent_rows(session, fields)
+
     t = Taxon(
-        genus=genus or None,
-        specific_epithet=specific_epithet or None,
-        infraspecific_epithet=infraspecific_epithet or None,
+        scientific_name=sci_name,
+        taxon_rank=rank,
+        taxonomic_status="accepted",
         scientific_name_authorship=scientific_name_authorship or None,
-        family=family or None,
-        subfamily=subfamily or None,
-        tribe=tribe or None,
-        subtribe=subtribe or None,
-        subgenus=subgenus or None,
+        parent_name_usage_id=parent_id,
         created_at=_utcnow(),
         updated_at=_utcnow(),
     )
@@ -113,37 +118,28 @@ class TaxonSearchResult:
     id: int
     label: str
     is_synonym: bool
-    accepted_label: str | None   # label of the accepted taxon when is_synonym
+    accepted_label: str | None
 
 
 def search_taxa_for_display(
     session: Session, query: str, limit: int = 10
 ) -> list[TaxonSearchResult]:
-    """Search taxa for the search widget: valid names first, synonyms flagged.
+    """Search taxa for the search widget: accepted names first, synonyms flagged.
 
-    Returns up to `limit` results ordered: accepted taxa → synonyms,
-    then alphabetically within each group.
+    Splits query on whitespace so multi-token input like "Sit lin" matches
+    "Sitona lineatus" (each token must appear somewhere in the name).
     """
     from sqlalchemy import case as sa_case
     from sqlalchemy.orm import joinedload
 
     q = session.query(Taxon).options(joinedload(Taxon.accepted_name_usage))
-    if query.strip():
-        pat = f"%{query.strip()}%"
-        q = q.filter(
-            Taxon.genus.ilike(pat)
-            | Taxon.subgenus.ilike(pat)
-            | Taxon.specific_epithet.ilike(pat)
-            | Taxon.infraspecific_epithet.ilike(pat)
-            | Taxon.subtribe.ilike(pat)
-            | Taxon.tribe.ilike(pat)
-            | Taxon.subfamily.ilike(pat)
-            | Taxon.family.ilike(pat)
-        )
+    for token in query.split():
+        q = q.filter(Taxon.scientific_name.ilike(f"%{token}%"))
+
     order_valid_first = sa_case(
         (Taxon.accepted_name_usage_id.is_(None), 0), else_=1
     )
-    q = q.order_by(order_valid_first, Taxon.genus, Taxon.specific_epithet).limit(limit)
+    q = q.order_by(order_valid_first, Taxon.scientific_name).limit(limit)
 
     out = []
     for t in q:
@@ -163,22 +159,12 @@ def search_taxa_for_display(
 
 
 def search_taxa(session: Session, query: str, limit: int = 1000) -> list[TaxonOption]:
-    """Return taxa matching query (case-insensitive across genus + epithets).
+    """Return taxa matching query (case-insensitive, multi-token).
     Empty query returns first `limit` taxa alphabetically."""
     q = session.query(Taxon)
-    if query.strip():
-        pat = f"%{query.strip()}%"
-        q = q.filter(
-            Taxon.genus.ilike(pat)
-            | Taxon.subgenus.ilike(pat)
-            | Taxon.specific_epithet.ilike(pat)
-            | Taxon.infraspecific_epithet.ilike(pat)
-            | Taxon.subtribe.ilike(pat)
-            | Taxon.tribe.ilike(pat)
-            | Taxon.subfamily.ilike(pat)
-            | Taxon.family.ilike(pat)
-        )
-    q = q.order_by(Taxon.genus, Taxon.specific_epithet).limit(limit)
+    for token in query.split():
+        q = q.filter(Taxon.scientific_name.ilike(f"%{token}%"))
+    q = q.order_by(Taxon.scientific_name).limit(limit)
     return [TaxonOption(id=t.id, label=format_scientific_name(t)) for t in q]
 
 
@@ -186,226 +172,156 @@ def search_taxa(session: Session, query: str, limit: int = 1000) -> list[TaxonOp
 # TaxonWorks integration
 # ---------------------------------------------------------------------------
 
-# Maps TW rank strings to the ORM attribute they fill.
-_RANK_TO_ATTR: dict[str, str] = {
-    "order":       "taxon_order",
-    "suborder":    "taxon_order",
-    "family":      "family",
-    "subfamily":   "subfamily",
-    "tribe":       "tribe",
-    "subtribe":    "subtribe",
-    "genus":       "genus",
-    "subgenus":    "subgenus",
-    "species":     "specific_epithet",
-    "subspecies":  "infraspecific_epithet",
-    "variety":     "infraspecific_epithet",
-    "form":        "infraspecific_epithet",
-}
+def _scientific_name_from_tw(tw: dict, ancestor_fields: dict) -> str:
+    """Build the bare scientificName (without authorship) from a TW record."""
+    rank = (tw.get("rank") or "").lower()
+    name = tw.get("name") or ""
+    genus = ancestor_fields.get("genus", "")
+    subgenus = ancestor_fields.get("subgenus", "")
+
+    if rank == "species":
+        if subgenus:
+            return f"{genus} ({subgenus}) {name}".strip()
+        return f"{genus} {name}".strip()
+
+    if rank in ("subspecies", "variety", "form"):
+        # Use TW's cached value (full name with authorship), strip authorship.
+        cached = (tw.get("cached") or "").strip()
+        auth = tw.get("cached_author_year") or tw.get("cached_author") or ""
+        if auth and cached.endswith(auth):
+            return cached[: -len(auth)].strip()
+        return f"{genus} {name}".strip() if genus else name
+
+    # Uninomials: genus, subgenus, family, subfamily, tribe, subtribe, order …
+    return name
 
 
 def _fields_from_tw(tw: dict) -> dict:
-    """Extract local Taxon field values from a TW taxon_names record.
+    """Extract Taxon field values from an augmented TW taxon_names record.
 
-    `tw` may be a plain record or an augmented one from fetch_full_classification,
-    which adds ancestor fields (family, subfamily, tribe, subtribe, genus, subgenus,
-    taxon_order) directly as top-level keys.
+    Returns a dict containing:
+      scientific_name, taxon_rank, scientific_name_authorship
+      + ancestor keys used by _ensure_parent_rows:
+        taxon_order, family, family_authorship, subfamily, subfamily_authorship,
+        tribe, tribe_authorship, subtribe, subtribe_authorship,
+        genus, genus_authorship, subgenus, subgenus_authorship
     """
-    name    = tw.get("name") or ""
-    rank    = (tw.get("rank") or "").lower()
-    cached  = (tw.get("cached") or "").strip()
-    auth    = tw.get("cached_author_year") or tw.get("cached_author") or None
+    rank = (tw.get("rank") or "").lower()
+    auth = tw.get("cached_author_year") or tw.get("cached_author") or None
 
-    fields: dict = {}
-    if auth:
-        fields["scientific_name_authorship"] = auth
-
-    # Ancestor fields injected by fetch_full_classification
-    for attr in ("taxon_order", "family", "subfamily", "tribe", "subtribe", "genus", "subgenus"):
-        val = tw.get(attr)
+    # Collect ancestor info injected by fetch_full_classification.
+    anc: dict = {}
+    for key in (
+        "taxon_order", "taxon_order_authorship",
+        "family", "family_authorship",
+        "subfamily", "subfamily_authorship",
+        "tribe", "tribe_authorship",
+        "subtribe", "subtribe_authorship",
+        "genus", "genus_authorship",
+        "subgenus", "subgenus_authorship",
+    ):
+        val = tw.get(key)
         if val:
-            fields[attr] = val
+            anc[key] = val
 
-    # Authorship for each rank (also injected by fetch_full_classification)
-    for rank_key in ("family", "subfamily", "tribe", "subtribe", "genus", "subgenus"):
-        val = tw.get(f"{rank_key}_authorship")
-        if val:
-            fields[f"{rank_key}_authorship"] = val
+    sci_name = _scientific_name_from_tw(tw, anc)
 
-    # Target taxon's own rank
-    attr = _RANK_TO_ATTR.get(rank)
-    if attr:
-        fields[attr] = name
-
-    # Fallback: genus from first word of cached when not supplied by ancestor walk
-    if rank in ("species", "subspecies", "variety", "form") and "genus" not in fields:
-        parts = cached.split()
-        if parts:
-            fields["genus"] = parts[0]
-    if rank in ("subspecies", "variety", "form") and "specific_epithet" not in fields:
-        parts = cached.split()
-        if len(parts) > 1:
-            fields["specific_epithet"] = parts[1]
-
-    return fields
+    return {
+        "scientific_name": sci_name,
+        "taxon_rank": rank,
+        "scientific_name_authorship": auth,
+        **anc,
+    }
 
 
 # ---------------------------------------------------------------------------
 # Parent-row helpers
 # ---------------------------------------------------------------------------
 
-# Supra-generic rank levels in order highest → lowest.
-# Each entry: (rank_attr, auth_attr, next_lower_attr | None)
-# A row at rank X has: ranks [family..X] set, everything below X null, genus null.
-_SUPRA_GENERIC: list[tuple[str, str, str | None]] = [
-    ("family",    "family_authorship",    "subfamily"),
-    ("subfamily", "subfamily_authorship", "tribe"),
-    ("tribe",     "tribe_authorship",     "subtribe"),
-    ("subtribe",  "subtribe_authorship",  None),
+# Ordered rank chain highest → lowest (excludes species-rank and below).
+# Each entry: (rank_name_stored, ancestor_dict_key, authorship_dict_key)
+_RANK_CHAIN: list[tuple[str, str, str]] = [
+    ("order",     "taxon_order",  "taxon_order_authorship"),
+    ("family",    "family",       "family_authorship"),
+    ("subfamily", "subfamily",    "subfamily_authorship"),
+    ("tribe",     "tribe",        "tribe_authorship"),
+    ("subtribe",  "subtribe",     "subtribe_authorship"),
+    ("genus",     "genus",        "genus_authorship"),
+    ("subgenus",  "subgenus",     "subgenus_authorship"),
 ]
 
 
-def _ensure_parent_rows(session: Session, fields: dict) -> None:
-    """Create all missing parent-rank Taxon rows for a species being imported.
+def _ensure_parent_rows(session: Session, fields: dict) -> int | None:
+    """Create all missing ancestor rows and return the immediate parent taxon ID.
 
-    Covers family → subfamily → tribe → subtribe → genus → subgenus.
-    Each rank row sets ONLY ancestor fields + its own rank; never lower ranks.
+    Walks _RANK_CHAIN from highest to lowest rank, stopping when it reaches
+    the target rank so the caller can create that row itself.  Each row is
+    created only once (matched by scientific_name + taxon_rank); existing rows
+    get their parent_name_usage_id filled in if not already set.
     """
-    # Supra-generic ranks (genus IS NULL)
-    for i, (rank_attr, auth_attr, next_lower) in enumerate(_SUPRA_GENERIC):
-        val = fields.get(rank_attr)
-        if not val:
+    target_rank = fields.get("taxon_rank", "")
+    parent_id: int | None = None
+
+    for rank_name, field_key, auth_key in _RANK_CHAIN:
+        if rank_name == target_rank:
+            break
+
+        name = fields.get(field_key)
+        if not name:
             continue
 
-        # Uniqueness: rank column set, next-lower column null, genus null
-        q = session.query(Taxon).filter(
-            getattr(Taxon, rank_attr) == val,
-            Taxon.genus.is_(None),
+        auth = fields.get(auth_key)
+
+        existing = (
+            session.query(Taxon)
+            .filter(Taxon.scientific_name == name, Taxon.taxon_rank == rank_name)
+            .first()
         )
-        if next_lower:
-            q = q.filter(getattr(Taxon, next_lower).is_(None))
-        if q.first():
-            continue
+        if not existing:
+            existing = Taxon(
+                scientific_name=name,
+                taxon_rank=rank_name,
+                taxonomic_status="accepted",
+                scientific_name_authorship=auth or None,
+                parent_name_usage_id=parent_id,
+                created_at=_utcnow(),
+                updated_at=_utcnow(),
+            )
+            session.add(existing)
+            session.flush()
+        elif parent_id and not existing.parent_name_usage_id:
+            existing.parent_name_usage_id = parent_id
+            existing.updated_at = _utcnow()
+            session.flush()
 
-        # Build row: set only ranks up to and including i (ancestors + self)
-        row = Taxon(created_at=_utcnow(), updated_at=_utcnow())
-        for j, (a, aa, _) in enumerate(_SUPRA_GENERIC[:i + 1]):
-            v = fields.get(a)
-            if v:
-                setattr(row, a, v)
-            av = fields.get(aa)
-            if av:
-                setattr(row, aa, av)
-        session.add(row)
+        parent_id = existing.id
 
-    # Genus row: genus set, subgenus null, specific_epithet null
-    genus    = fields.get("genus")
-    subgenus = fields.get("subgenus")
-    if genus:
-        if not session.query(Taxon).filter(
-            Taxon.genus == genus,
-            Taxon.subgenus.is_(None),
-            Taxon.specific_epithet.is_(None),
-        ).first():
-            session.add(Taxon(
-                genus=genus,
-                family=fields.get("family"),
-                subfamily=fields.get("subfamily"),
-                tribe=fields.get("tribe"),
-                subtribe=fields.get("subtribe"),
-                genus_authorship=fields.get("genus_authorship"),
-                family_authorship=fields.get("family_authorship"),
-                subfamily_authorship=fields.get("subfamily_authorship"),
-                tribe_authorship=fields.get("tribe_authorship"),
-                subtribe_authorship=fields.get("subtribe_authorship"),
-                created_at=_utcnow(), updated_at=_utcnow(),
-            ))
-
-        # Subgenus row: genus set, subgenus set, specific_epithet null
-        if subgenus and not session.query(Taxon).filter(
-            Taxon.genus == genus,
-            Taxon.subgenus == subgenus,
-            Taxon.specific_epithet.is_(None),
-        ).first():
-            session.add(Taxon(
-                genus=genus,
-                subgenus=subgenus,
-                family=fields.get("family"),
-                subfamily=fields.get("subfamily"),
-                tribe=fields.get("tribe"),
-                subtribe=fields.get("subtribe"),
-                family_authorship=fields.get("family_authorship"),
-                subfamily_authorship=fields.get("subfamily_authorship"),
-                tribe_authorship=fields.get("tribe_authorship"),
-                subtribe_authorship=fields.get("subtribe_authorship"),
-                created_at=_utcnow(), updated_at=_utcnow(),
-            ))
-
-    session.flush()
+    return parent_id
 
 
 def ensure_higher_taxa(session: Session) -> int:
-    """Backfill all parent-rank rows derived from existing species rows.
+    """No-op in the DwC parent-link model.
 
-    Cleans up any incorrectly-structured rows from previous runs first,
-    then recreates them with the correct logic.  Safe to call at every startup.
-    Returns the number of rows created.
+    Parent rows are created during TW import via _ensure_parent_rows; no
+    startup backfill is needed.  Kept for API compatibility with main.py.
     """
-    from app.models import TaxonDetermination
-
-    # Remove auto-generated parent rows that have no TW link and no determinations.
-    # These may be structurally wrong from an earlier buggy run; recreate correctly.
-    orphan_ids = [
-        row.id for row in
-        session.query(Taxon.id)
-        .filter(
-            Taxon.specific_epithet.is_(None),
-            Taxon.taxonworks_otu_id.is_(None),
-            Taxon.accepted_name_usage_id.is_(None),
-            ~session.query(TaxonDetermination.id)
-              .filter(TaxonDetermination.taxon_id == Taxon.id)
-              .exists(),
-        )
-        .all()
-    ]
-    if orphan_ids:
-        session.query(Taxon).filter(Taxon.id.in_(orphan_ids)).delete(
-            synchronize_session=False
-        )
-        session.flush()
-
-    species = session.query(Taxon).filter(Taxon.specific_epithet.isnot(None)).all()
-    before  = session.query(Taxon).count()
-
-    for sp in species:
-        _ensure_parent_rows(session, {
-            "family":    sp.family,    "subfamily":  sp.subfamily,
-            "tribe":     sp.tribe,     "subtribe":   sp.subtribe,
-            "genus":     sp.genus,     "subgenus":   sp.subgenus,
-            "family_authorship":    sp.family_authorship,
-            "subfamily_authorship": sp.subfamily_authorship,
-            "tribe_authorship":     sp.tribe_authorship,
-            "subtribe_authorship":  sp.subtribe_authorship,
-            "genus_authorship":     sp.genus_authorship,
-        })
-
-    after = session.query(Taxon).count()
-    return after - before
+    return 0
 
 
 def get_or_create_from_tw_data(
     session: Session, tw: dict, otu_id: int | None = None
 ) -> Taxon:
-    """Find the matching local Taxon or create it from a TW taxon_names record.
+    """Find the matching local Taxon or create it from an augmented TW record.
 
-    Matching key: genus + specific_epithet (or just genus for genus-rank names).
-    Creates the row if absent; never updates existing rows.
+    Matching key: (scientific_name, taxon_rank).
+    All ancestor rows are created first via _ensure_parent_rows.
 
     Synonym handling: if fetch_full_classification detected the name is invalid
     (cached_is_valid=False), tw contains '_valid_tw_data' and '_valid_otu_id'.
     The valid taxon is imported first; the synonym row gets accepted_name_usage_id
     set to point at it.
     """
-    # If this is a synonym, ensure the valid taxon exists first.
+    # If this is a synonym, ensure the valid (accepted) taxon exists first.
     accepted_id: int | None = None
     valid_tw = tw.get("_valid_tw_data")
     if valid_tw:
@@ -415,42 +331,17 @@ def get_or_create_from_tw_data(
         accepted_id = valid_taxon.id
 
     fields = _fields_from_tw(tw)
-    rank    = (tw.get("rank") or "").lower()
-    genus   = fields.get("genus")
-    species = fields.get("specific_epithet")
-    infra   = fields.get("infraspecific_epithet")
+    sci_name = fields["scientific_name"]
+    rank = fields["taxon_rank"]
 
-    # Higher-rank taxa (no genus): match on the specific rank column only.
-    # Matching on genus+epithet when both are NULL would be dangerously broad.
-    _HIGHER_RANKS = {
-        "subtribe": "subtribe", "tribe": "tribe",
-        "subfamily": "subfamily", "family": "family",
-        "order": "taxon_order", "suborder": "taxon_order",
-    }
-    if rank in _HIGHER_RANKS and not genus:
-        rank_attr = _HIGHER_RANKS[rank]
-        rank_val  = fields.get(rank_attr)
-        existing  = (
-            session.query(Taxon)
-            .filter(
-                getattr(Taxon, rank_attr) == rank_val,
-                Taxon.genus.is_(None),
-                Taxon.specific_epithet.is_(None),
-            )
-            .first()
-        ) if rank_val else None
-    else:
-        # Species / genus / subgenus: match on genus + epithet
-        q = session.query(Taxon)
-        if genus:
-            q = q.filter(Taxon.genus == genus)
-        if species:
-            q = q.filter(Taxon.specific_epithet == species)
-        else:
-            q = q.filter(Taxon.specific_epithet.is_(None))
-        if infra:
-            q = q.filter(Taxon.infraspecific_epithet == infra)
-        existing = q.first()
+    # Ensure all ancestor rows exist; get the immediate parent ID.
+    parent_id = _ensure_parent_rows(session, fields)
+
+    existing = (
+        session.query(Taxon)
+        .filter(Taxon.scientific_name == sci_name, Taxon.taxon_rank == rank)
+        .first()
+    )
     if existing:
         dirty = False
         if otu_id and not existing.taxonworks_otu_id:
@@ -458,29 +349,27 @@ def get_or_create_from_tw_data(
             dirty = True
         if accepted_id and not existing.accepted_name_usage_id:
             existing.accepted_name_usage_id = accepted_id
+            existing.taxonomic_status = "synonym"
             dirty = True
-        for attr in ("family_authorship", "subfamily_authorship", "tribe_authorship",
-                     "subtribe_authorship", "genus_authorship", "subgenus_authorship"):
-            if fields.get(attr) and not getattr(existing, attr):
-                setattr(existing, attr, fields[attr])
-                dirty = True
+        if parent_id and not existing.parent_name_usage_id:
+            existing.parent_name_usage_id = parent_id
+            dirty = True
         if dirty:
             existing.updated_at = _utcnow()
             session.flush()
         return existing
 
-    # Create new
-    t = Taxon(created_at=_utcnow(), updated_at=_utcnow())
-    for attr, val in fields.items():
-        if val:
-            setattr(t, attr, val)
-    if otu_id:
-        t.taxonworks_otu_id = otu_id
-    if accepted_id:
-        t.accepted_name_usage_id = accepted_id
+    t = Taxon(
+        scientific_name=sci_name,
+        taxon_rank=rank,
+        taxonomic_status="synonym" if accepted_id else "accepted",
+        scientific_name_authorship=fields.get("scientific_name_authorship"),
+        parent_name_usage_id=parent_id,
+        accepted_name_usage_id=accepted_id,
+        taxonworks_otu_id=otu_id,
+        created_at=_utcnow(),
+        updated_at=_utcnow(),
+    )
     session.add(t)
     session.flush()
-    # Ensure all parent-rank rows exist (genus, subgenus, tribe, etc.)
-    if species or (genus and not species):
-        _ensure_parent_rows(session, fields)
     return t

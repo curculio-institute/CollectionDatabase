@@ -8,17 +8,18 @@ Tree structure mirrors a scientific paper checklist:
           Genus
             Genus species Author, Year          [↗ TaxonPages]
               = Synonym species Author, Year
-              = Synonym species Author, Year
 
-Ranks are skipped when no taxon in the current group has a value for them.
+The tree is built by walking the dwc:parentNameUsageID parent-child links
+stored in the taxon table (DwC parent-link model).  All accepted taxa are
+loaded into memory; children are grouped by their parent taxon id.
 Synonyms (accepted_name_usage_id IS NOT NULL) appear as leaf children of
-their valid name, prefixed with '='.
+their accepted name, prefixed with '='.
 """
 from __future__ import annotations
 
 from collections import defaultdict
 from dataclasses import dataclass
-from sqlalchemy import and_, func
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.models import CollectionObject, Taxon, TaxonDetermination
@@ -26,22 +27,10 @@ from app.services.taxa import format_scientific_name
 from app.services.taxonworks import taxonpages_url
 
 
-# Ordered rank levels used to build the hierarchy.
-# Each entry: (rank_key used in node id/rank field, Taxon attribute name)
-_RANK_LEVELS: list[tuple[str, str]] = [
-    ("family",    "family"),
-    ("subfamily", "subfamily"),
-    ("tribe",     "tribe"),
-    ("subtribe",  "subtribe"),
-    ("genus",     "genus"),
-    ("subgenus",  "subgenus"),
-]
-
-
 @dataclass
 class TaxonomyStats:
-    total_accepted: int      # accepted taxa (synonyms excluded)
-    total_species: int       # accepted species-rank taxa
+    total_accepted: int
+    total_species: int
     total_specimens: int
 
 
@@ -50,54 +39,39 @@ def get_stats(session: Session) -> TaxonomyStats:
         Taxon.accepted_name_usage_id.is_(None)
     )
     return TaxonomyStats(
-        total_accepted  = accepted_base.scalar() or 0,
-        total_species   = accepted_base.filter(Taxon.specific_epithet.isnot(None)).scalar() or 0,
-        total_specimens = session.query(func.count(CollectionObject.id)).scalar() or 0,
+        total_accepted=accepted_base.scalar() or 0,
+        total_species=accepted_base.filter(Taxon.taxon_rank == "species").scalar() or 0,
+        total_specimens=session.query(func.count(CollectionObject.id)).scalar() or 0,
     )
 
 
 # ---------------------------------------------------------------------------
-# Tree builder
+# Checklist filter options
 # ---------------------------------------------------------------------------
 
 def checklist_options(session: Session) -> dict[str, str]:
     """Return {key: label} for the taxonomy filter select widget.
 
-    Keys encode rank and value: 'genus:Otiorhynchus' or 'species:42'.
-    Labels are searchable: 'Otiorhynchus — Genus'.
+    Keys use format 'taxon:{id}' for all entries; the UI splits on ':' and
+    routes to build_taxonomy_tree(filter_id=id).
+    Labels: '{scientificName + authorship}  — {Rank}'.
     """
-    opts: dict[str, str] = {}
-
-    rank_meta = [
-        ("family",    "Family"),
-        ("subfamily", "Subfamily"),
-        ("tribe",     "Tribe"),
-        ("subtribe",  "Subtribe"),
-        ("genus",     "Genus"),
-        ("subgenus",  "Subgenus"),
-    ]
-    for rank_attr, rank_label in rank_meta:
-        col = getattr(Taxon, rank_attr)
-        rows = (
-            session.query(col).distinct()
-            .filter(col.isnot(None), Taxon.accepted_name_usage_id.is_(None))
-            .order_by(col)
-            .all()
-        )
-        for (val,) in rows:
-            opts[f"{rank_attr}:{val}"] = f"{val}  — {rank_label}"
-
     taxa = (
         session.query(Taxon)
-        .filter(Taxon.specific_epithet.isnot(None), Taxon.accepted_name_usage_id.is_(None))
-        .order_by(Taxon.genus, Taxon.specific_epithet)
+        .filter(Taxon.accepted_name_usage_id.is_(None))
+        .order_by(Taxon.scientific_name)
         .all()
     )
+    opts: dict[str, str] = {}
     for t in taxa:
-        opts[f"species:{t.id}"] = f"{format_scientific_name(t)}  — Species"
-
+        rank_label = (t.taxon_rank or "unknown").title()
+        opts[f"taxon:{t.id}"] = f"{format_scientific_name(t)}  — {rank_label}"
     return opts
 
+
+# ---------------------------------------------------------------------------
+# Tree builder
+# ---------------------------------------------------------------------------
 
 def build_taxonomy_tree(
     session: Session,
@@ -105,142 +79,102 @@ def build_taxonomy_tree(
     filter_value: str | None = None,
     filter_id: int | None = None,
 ) -> list[dict]:
-    """Build the full checklist tree as a list of NiceGUI tree node dicts."""
+    """Build the full checklist tree as a list of NiceGUI tree-node dicts.
 
-    # Accepted taxa — optionally pre-filtered by a rank value or species id.
-    # Exclude parent-rank rows (specific_epithet IS NULL) unless at least one
-    # determination to that taxon exists.  Those rows exist only as determination
-    # targets; they must not appear as leaf nodes or "(unplaced)" entries in the tree.
-    # Taxon IDs that have at least one determination — used to include higher-rank
-    # taxa (genus, tribe…) only when a specimen is actually determined to them.
-    # Non-correlated subquery avoids the auto-correlation problem that arises
-    # because the outer query already joins taxon_determination.
-    from sqlalchemy import select as sa_select
-    taxa_with_dets = sa_select(TaxonDetermination.taxon_id).distinct()
-    q = (
-        session.query(Taxon, func.count(CollectionObject.id).label("spec_count"))
-        .filter(
-            Taxon.accepted_name_usage_id.is_(None),
-            (Taxon.specific_epithet.isnot(None)) | Taxon.id.in_(taxa_with_dets),
-        )
-    )
-    if filter_id is not None:
-        q = q.filter(Taxon.id == filter_id)
-    elif filter_rank and filter_value:
-        _VALID_RANKS = {"family", "subfamily", "tribe", "subtribe", "genus", "subgenus"}
-        if filter_rank in _VALID_RANKS:
-            q = q.filter(getattr(Taxon, filter_rank) == filter_value)
-
-    rows = (
-        q
-        .outerjoin(
-            TaxonDetermination,
-            and_(
-                TaxonDetermination.taxon_id == Taxon.id,
-                TaxonDetermination.is_current == 1,
-            ),
-        )
-        .outerjoin(CollectionObject, CollectionObject.id == TaxonDetermination.collection_object_id)
-        .group_by(Taxon.id)
+    filter_id: show only the subtree rooted at this taxon id.
+    filter_rank + filter_value: show only subtrees for taxa of that rank and name.
+    No filter: show the full tree from all root taxa (parentNameUsageID IS NULL).
+    """
+    all_accepted = (
+        session.query(Taxon)
+        .filter(Taxon.accepted_name_usage_id.is_(None))
         .all()
     )
+    taxa_by_id: dict[int, Taxon] = {t.id: t for t in all_accepted}
 
+    children_map: dict[int | None, list[Taxon]] = defaultdict(list)
+    for t in all_accepted:
+        children_map[t.parent_name_usage_id].append(t)
 
-    # Synonyms keyed by accepted taxon id
+    # Specimen counts (current determinations only).
+    spec_counts: dict[int, int] = {}
+    for taxon_id, cnt in (
+        session.query(TaxonDetermination.taxon_id, func.count(CollectionObject.id))
+        .join(CollectionObject, CollectionObject.id == TaxonDetermination.collection_object_id)
+        .filter(TaxonDetermination.is_current == 1)
+        .group_by(TaxonDetermination.taxon_id)
+        .all()
+    ):
+        spec_counts[taxon_id] = cnt
+
+    # Synonyms by accepted_name_usage_id.
     syn_map: dict[int, list[Taxon]] = defaultdict(list)
     for syn in session.query(Taxon).filter(Taxon.accepted_name_usage_id.isnot(None)):
         syn_map[syn.accepted_name_usage_id].append(syn)
 
-    return _build_level(rows, 0, syn_map, path="")
+    # Determine root taxa to display.
+    if filter_id is not None:
+        root_taxon = taxa_by_id.get(filter_id)
+        roots = [root_taxon] if root_taxon else []
+    elif filter_rank and filter_value:
+        roots = [
+            t for t in all_accepted
+            if t.taxon_rank == filter_rank and t.scientific_name == filter_value
+        ]
+    else:
+        roots = children_map.get(None, [])
+
+    return [
+        _build_node(t, children_map, spec_counts, syn_map)
+        for t in sorted(roots, key=lambda t: t.scientific_name or "")
+    ]
 
 
-# ---------------------------------------------------------------------------
-# Recursive helpers
-# ---------------------------------------------------------------------------
-
-def _build_level(
-    rows: list,
-    rank_index: int,
+def _build_node(
+    taxon: Taxon,
+    children_map: dict,
+    spec_counts: dict,
     syn_map: dict,
-    path: str,
-) -> list[dict]:
-    """Recursively partition `rows` into tree nodes for `_RANK_LEVELS[rank_index]`."""
+) -> dict:
+    """Recursively build a tree node dict for `taxon`."""
+    child_taxa = sorted(
+        children_map.get(taxon.id, []), key=lambda t: t.scientific_name or ""
+    )
+    child_nodes = [
+        _build_node(c, children_map, spec_counts, syn_map) for c in child_taxa
+    ]
 
-    # All ranks consumed → emit species leaf nodes
-    if rank_index >= len(_RANK_LEVELS):
-        return _species_nodes(rows, syn_map)
-
-    rank_key, rank_attr = _RANK_LEVELS[rank_index]
-
-    # Skip this rank when none of the taxa have a value for it
-    if all(getattr(t, rank_attr) is None for t, _ in rows):
-        return _build_level(rows, rank_index + 1, syn_map, path)
-
-    # Group by rank value
-    groups: dict[str, dict] = {}
-    for taxon, spec_count in rows:
-        val = getattr(taxon, rank_attr) or "(unplaced)"
-        if val not in groups:
-            groups[val] = {"rows": [], "spp_count": 0, "spec_count": 0}
-        g = groups[val]
-        g["rows"].append((taxon, spec_count))
-        g["spec_count"] += spec_count
-        if taxon.specific_epithet:   # species-rank taxa count as spp
-            g["spp_count"] += 1
-
-    nodes = []
-    for val in sorted(groups):
-        g = groups[val]
-        node_id = f"{path}{rank_key}-{val}".replace(" ", "_")
-        children = _build_level(g["rows"], rank_index + 1, syn_map, path=node_id + "/")
-
-        # Authorship: look it up from the first taxon in this group.
-        # All taxa sharing the same rank value should share the same authorship.
-        first_taxon: Taxon = g["rows"][0][0]
-        auth = getattr(first_taxon, f"{rank_attr}_authorship", None)
-        if rank_key == "subgenus":
-            label = f"({val}) {auth}" if auth else f"({val})"
-        else:
-            label = f"{val} {auth}" if auth else val
-
-        node: dict = {
-            "id":         node_id,
-            "label":      label,
-            "rank":       rank_key,
-            "spp_count":  g["spp_count"],
-            "spec_count": g["spec_count"],
+    syns = sorted(syn_map.get(taxon.id, []), key=format_scientific_name)
+    syn_nodes = [
+        {
+            "id": f"syn-{s.id}",
+            "label": format_scientific_name(s),
+            "rank": "synonym",
+            "synonym": True,
         }
-        if children:
-            node["children"] = children
-        nodes.append(node)
+        for s in syns
+    ]
 
-    return nodes
+    # Aggregate counts bottom-up.
+    own_spec = spec_counts.get(taxon.id, 0)
+    total_spec = own_spec + sum(n.get("spec_count", 0) for n in child_nodes)
+    total_spp = (
+        (1 if taxon.taxon_rank == "species" else 0)
+        + sum(n.get("spp_count", 0) for n in child_nodes)
+    )
 
+    node: dict = {
+        "id":         f"taxon-{taxon.id}",
+        "label":      format_scientific_name(taxon),
+        "rank":       taxon.taxon_rank or "unknown",
+        "spec_count": total_spec,
+        "spp_count":  total_spp,
+    }
+    if taxon.taxonworks_otu_id:
+        node["tw_url"] = taxonpages_url(taxon.taxonworks_otu_id)
 
-def _species_nodes(rows: list, syn_map: dict) -> list[dict]:
-    """Build leaf nodes for species-rank taxa, with synonyms as their children."""
-    nodes = []
-    for taxon, spec_count in rows:
-        node: dict = {
-            "id":         f"sp-{taxon.id}",
-            "label":      format_scientific_name(taxon),
-            "rank":       "species",
-            "spec_count": spec_count,
-        }
-        if taxon.taxonworks_otu_id:
-            node["tw_url"] = taxonpages_url(taxon.taxonworks_otu_id)
+    all_children = child_nodes + syn_nodes
+    if all_children:
+        node["children"] = all_children
 
-        syns = sorted(syn_map.get(taxon.id, []), key=format_scientific_name)
-        if syns:
-            node["children"] = [
-                {
-                    "id":      f"syn-{s.id}",
-                    "label":   format_scientific_name(s),
-                    "rank":    "synonym",
-                    "synonym": True,
-                }
-                for s in syns
-            ]
-        nodes.append(node)
-
-    return sorted(nodes, key=lambda n: n["label"])
+    return node

@@ -5,9 +5,7 @@ Project context and working agreement for Claude Code. Read this before writing 
 ---
 
 ## To do:
-- taxonomy table: Darwin core stores taxonomy strictly by linking parents. Read https://ipt.gbif.org/manual/en/ipt/latest/best-practices-checklists to understand how to store taxonomic information.
-The fields would only be taxonID, taxonRank, scientificName, parentNameUsageID and of course scientificNameAuthorship, acceptedNameID, taxonomicStatus. That way, the table is easier to maintain in case something changes. You need to rework how the table is read and written accordingly. Wipe taxonomy and repopulate using the updated import logic (everything works as usual, except how the table is written)
-- Searching a taxon: I have found an instance where i can import a genus from TaxonWorks thats already in local database: /home/jakobj/Data/01Aktuelle_Projekte/0_Datenbank/Database/pasted file.png
+- Map popup: place "locate" button next to "clear marker"; both should be formatted the same way (blue) as the map, ✕ clear and lookup buttons.
 
 ## 1. What this project is
 
@@ -80,7 +78,7 @@ attributes. Mermaid diagrams use plain camelCase. Do not deviate from this patte
 |-------|---------|
 | `collection_object` | One physical specimen or lot. `catalog_number` (NOT NULL) is the stable sync join key. `dwc:basisOfRecord`, `dwc:sex`, `dwc:preparations`, `dwc:typeStatus`, etc. |
 | `collecting_event` | Where/when collected; shared by many specimens. Full DwC locality + coordinate block. `dwc:eventDate` supports ISO 8601 intervals (`2024-06-15/2024-06-20`). |
-| `taxon` | Local OTU analogue. Stores denormalised classification columns (`family`…`subgenus`) plus `specific_epithet`, `infraspecific_epithet`. `accepted_name_usage_id` self-FK marks synonyms. `taxonworks_otu_id` links to TW. |
+| `taxon` | Local OTU analogue. DwC parent-link model (GBIF best practices). Columns: `dwc:scientificName` (bare name without authorship), `dwc:taxonRank`, `dwc:taxonomicStatus` ("accepted"/"synonym"), `dwc:scientificNameAuthorship`, `dwc:parentNameUsageID` (self-FK, encodes hierarchy), `dwc:acceptedNameUsageID` (self-FK, marks synonyms), `taxonworksOtuID`. No denormalised rank columns. |
 | `taxon_determination` | `collection_object` → `taxon` link. `is_current` flag. `taxon_id` may reference a synonym row (deliberate design). |
 | `biological_relationship` | Kind of association (`collected_on`, `feeds_on`, …). |
 | `biological_association` | Exclusive-arc pattern: (`subject_collection_object_id` XOR `subject_taxon_id`) and (`object_collection_object_id` XOR `object_taxon_id`). CHECK enforces exactly-one-non-null per role. |
@@ -92,22 +90,20 @@ attributes. Mermaid diagrams use plain camelCase. Do not deviate from this patte
 
 - **`identifier` table** — dropped (migration 0006). `catalog_number` lives directly on
   `collection_object`; `occurrenceID` is not separately stored at this stage.
-- **`taxon.taxonomic_status` column** — dropped (migration 0011); synonym status is encoded
-  entirely by `accepted_name_usage_id IS NOT NULL`.
+- **Denormalised rank columns** — removed (migration 0012). `dwc:family`, `dwc:genus`,
+  `dwc:specificEpithet`, etc. replaced by the DwC parent-link model.
+- **`dwc:taxonomicStatus`** — originally dropped (migration 0011) as redundant with
+  `acceptedNameUsageID`; restored in migration 0012 as an explicit CHECK-constrained
+  column (`"accepted"` | `"synonym"`), which is required by the DwC Taxon core.
 
 ### Parent-rank taxon rows
 
-Every species import also creates dedicated `taxon` rows for each ancestor rank (genus,
-subgenus, tribe, subfamily, etc.) so users can select them as determination targets. These
-rows have `specific_epithet IS NULL` and appear in search results but are filtered out of
-the taxonomy tree unless at least one specimen is actually determined to that rank.
+Every TW species import creates dedicated `taxon` rows for each ancestor rank (genus,
+subgenus, tribe, subfamily, family, order) via `_ensure_parent_rows()` in
+`app/services/taxa.py`. Each ancestor row is linked to its own parent via
+`dwc:parentNameUsageID`. Rows are matched by `(dwc:scientificName, dwc:taxonRank)`.
 
-`_ensure_parent_rows()` in `app/services/taxa.py` creates these after every species import.
-`ensure_higher_taxa()` backfills them at app startup (idempotent cleanup + recreation).
-
-**Invariant:** a row at rank X must have only ancestor fields + X itself set; all fields
-lower than X must be NULL. (Tribe row: `family`, `subfamily`, `tribe` set; `subtribe`,
-`genus`, `specific_epithet` all NULL.)
+`ensure_higher_taxa()` is a no-op in the DwC parent-link model (backfill not needed).
 
 ---
 
@@ -160,7 +156,7 @@ Re-verify if targeting a different TW release.
 | Tab | Purpose |
 |-----|---------|
 | **Digitize** | Main specimen entry form: collecting event (search/create), taxon (local-first search + TW fallback), sex, count, preparations, notes. Saves to DB and pushes to print queue. |
-| **Taxonomy** | Checklist tree (family → synonyms). Filter by rank. Links to TaxonPages. Rebuilds on every tab switch. |
+| **Taxonomy** | Checklist tree (family → synonyms). Filter by rank. Links to TaxonPages. Rebuilds on every tab switch and on every save (via `_refreshers["taxonomy_tree"]`). |
 | **Labels** | Generate identifier label batches (4-char codes). Preview + download PDF. Reprint a whole batch if unused. Staged-codes dashboard. |
 | **Print queue** | Preview and print all staged labels in one PDF (identifier, locality, identification types). |
 | **Import & Assign** | Upload a DwC CSV; live-filter rows; assign taxon + per-specimen fields; save to DB. |
@@ -171,7 +167,7 @@ Re-verify if targeting a different TW release.
 |--------|---------------|
 | `taxa.py` | Taxon search, TW import, parent-row creation, `format_scientific_name()` |
 | `taxonomy.py` | Checklist tree builder, stats, filter options |
-| `taxonworks.py` | All TW API calls (async). Token read from `~/.config/tw_token` or env var. |
+| `taxonworks.py` | All TW API calls (async). Token hardcoded as `TW_TOKEN` at the top of the file. |
 | `events.py` | Collecting event CRUD + search |
 | `specimens.py` | `CollectionObject` + `TaxonDetermination` creation |
 | `identifiers.py` | `reserve_codes()` → `(batch_id, codes_list)` — always unpack the tuple |
@@ -182,7 +178,13 @@ Re-verify if targeting a different TW release.
 ### Taxon search widget (`app/ui/taxon_search.py`)
 
 - **Local-first**: searches local DB (150 ms debounce), then appends TW results in parallel.
-- **Both sections always shown** — never fallback-only.
+- **Multi-token search**: query is split on whitespace; each token must appear in the name.
+  `"Sit lin"` matches `"Sitona lineatus"`.
+- **Both sections always shown** unless all TW results are already in the local DB (deduplication
+  filters them out, causing the TW section to be skipped entirely).
+- **TW deduplication**: before rendering the TW section, bare names from TW results are matched
+  against local `dwc:scientificName` via exact match or suffix (`endswith(" " + bare_name)`).
+  Names already present locally are removed from the TW list.
 - **TW pick imports the clicked name** (synonym or valid) via `fetch_full_classification(r["id"])`.
   `get_or_create_from_tw_data` handles valid-name backfill: imports accepted name first, then
   the synonym with `accepted_name_usage_id` set. The determination `taxon_id` is the clicked

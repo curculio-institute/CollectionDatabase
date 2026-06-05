@@ -6,54 +6,45 @@ from .base import Base, TimestampMixin
 
 
 class Taxon(Base, TimestampMixin):
-    """Local taxon / OTU record. DwC columns carry dwc: prefix.
+    """Local taxon row — DwC parent-link model (GBIF checklist best practices).
 
-    Stores rank-level fields from order down. dwc:scientificName is derived
-    at export time (genus + specificEpithet + authorship).
+    Each row carries only the core DwC Taxon fields; hierarchy is encoded via
+    dwc:parentNameUsageID (FK to self) rather than denormalised rank columns.
 
-    parent_id provides a navigable tree alongside the denormalised rank
-    columns — both coexist: the columns make DwC export a flat read,
-    parent_id supports taxonomy browsing and tree queries.
+    scientificName stores the bare name without authorship (e.g. "Otiorhynchus
+    sulcatus"). format_scientific_name() appends scientificNameAuthorship for
+    display.  DwC export concatenates them at export time.
 
-    dwc:taxonomicStatus: "accepted" | "synonym" | "invalid".
-    When a name is synonymised, update this field; add the accepted name as a
-    new row. Determinations keep pointing to whichever row was used —
-    verbatimIdentification preserves the label text.
+    taxonomicStatus: "accepted" | "synonym".
+    Synonyms also set acceptedNameUsageID → the accepted taxon row.
     """
 
     __tablename__ = "taxon"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
 
-    taxon_order: Mapped[Optional[str]] = mapped_column("dwc:order", String, nullable=True)
-    family: Mapped[Optional[str]] = mapped_column("dwc:family", String, nullable=True)
-    subfamily: Mapped[Optional[str]] = mapped_column("dwc:subfamily", String, nullable=True)
-    tribe: Mapped[Optional[str]] = mapped_column("dwc:tribe", String, nullable=True)
-    subtribe: Mapped[Optional[str]] = mapped_column("dwc:subtribe", String, nullable=True)
-    genus: Mapped[Optional[str]] = mapped_column("dwc:genus", String, nullable=True)
-    subgenus: Mapped[Optional[str]] = mapped_column("dwc:subgenus", String, nullable=True)
-    specific_epithet: Mapped[Optional[str]] = mapped_column("dwc:specificEpithet", String, nullable=True)
-    infraspecific_epithet: Mapped[Optional[str]] = mapped_column("dwc:infraspecificEpithet", String, nullable=True)
-    scientific_name_authorship: Mapped[Optional[str]] = mapped_column("dwc:scientificNameAuthorship", String, nullable=True)
-    parent_id: Mapped[Optional[int]] = mapped_column(
-        Integer, ForeignKey("taxon.id", ondelete="RESTRICT"), nullable=True
+    scientific_name: Mapped[str] = mapped_column(
+        "dwc:scientificName", String, nullable=False
+    )
+    taxon_rank: Mapped[str] = mapped_column(
+        "dwc:taxonRank", String, nullable=False
+    )
+    taxonomic_status: Mapped[str] = mapped_column(
+        "dwc:taxonomicStatus", String, nullable=False, default="accepted"
+    )
+    scientific_name_authorship: Mapped[Optional[str]] = mapped_column(
+        "dwc:scientificNameAuthorship", String, nullable=True
     )
 
-    # TaxonWorks OTU id — set on first TW selection; used for TaxonPages deep-links.
-    taxonworks_otu_id: Mapped[Optional[int]] = mapped_column(
-        "taxonworksOtuID", Integer, nullable=True
+    # Parent link — encodes the hierarchy (replaces denormalised rank columns).
+    parent_name_usage_id: Mapped[Optional[int]] = mapped_column(
+        "dwc:parentNameUsageID",
+        Integer,
+        ForeignKey("taxon.id", ondelete="RESTRICT"),
+        nullable=True,
     )
 
-    # Authorship strings for higher-rank names (captured during TW parent-chain walk).
-    family_authorship:    Mapped[Optional[str]] = mapped_column("familyAuthorship",    String, nullable=True)
-    subfamily_authorship: Mapped[Optional[str]] = mapped_column("subfamilyAuthorship", String, nullable=True)
-    tribe_authorship:     Mapped[Optional[str]] = mapped_column("tribeAuthorship",     String, nullable=True)
-    subtribe_authorship:  Mapped[Optional[str]] = mapped_column("subtribeAuthorship",  String, nullable=True)
-    genus_authorship:     Mapped[Optional[str]] = mapped_column("genusAuthorship",     String, nullable=True)
-    subgenus_authorship:  Mapped[Optional[str]] = mapped_column("subgenusAuthorship",  String, nullable=True)
-
-    # Set when taxonomicStatus = "synonym" or "invalid"; NULL on accepted taxa.
-    # dwc:acceptedNameUsage (the name string) is derived at export time — not stored.
+    # Synonym link — NULL for accepted names.
     accepted_name_usage_id: Mapped[Optional[int]] = mapped_column(
         "dwc:acceptedNameUsageID",
         Integer,
@@ -61,12 +52,18 @@ class Taxon(Base, TimestampMixin):
         nullable=True,
     )
 
+    # TaxonWorks OTU id — set on first TW selection; used for TaxonPages links.
+    taxonworks_otu_id: Mapped[Optional[int]] = mapped_column(
+        "taxonworksOtuID", Integer, nullable=True
+    )
+
     parent: Mapped[Optional[Taxon]] = relationship(
-        "Taxon", foreign_keys="Taxon.parent_id",
+        "Taxon", foreign_keys="Taxon.parent_name_usage_id",
         remote_side="Taxon.id", back_populates="children",
     )
     children: Mapped[List[Taxon]] = relationship(
-        "Taxon", foreign_keys="Taxon.parent_id", back_populates="parent",
+        "Taxon", foreign_keys="Taxon.parent_name_usage_id",
+        back_populates="parent",
     )
     accepted_name_usage: Mapped[Optional[Taxon]] = relationship(
         "Taxon", foreign_keys="Taxon.accepted_name_usage_id",
@@ -75,10 +72,18 @@ class Taxon(Base, TimestampMixin):
     synonyms: Mapped[List[Taxon]] = relationship(
         "Taxon", foreign_keys="Taxon.accepted_name_usage_id",
         back_populates="accepted_name_usage",
-        passive_deletes=True,  # let the DB RESTRICT fire, don't auto-null
+        passive_deletes=True,
     )
-    determinations: Mapped[List["TaxonDetermination"]] = relationship("TaxonDetermination", back_populates="taxon")
+    determinations: Mapped[List["TaxonDetermination"]] = relationship(
+        "TaxonDetermination", back_populates="taxon"
+    )
     subject_associations: Mapped[List["BiologicalAssociation"]] = relationship(
-        "BiologicalAssociation", foreign_keys="BiologicalAssociation.subject_taxon_id", back_populates="subject_taxon")
+        "BiologicalAssociation",
+        foreign_keys="BiologicalAssociation.subject_taxon_id",
+        back_populates="subject_taxon",
+    )
     object_associations: Mapped[List["BiologicalAssociation"]] = relationship(
-        "BiologicalAssociation", foreign_keys="BiologicalAssociation.object_taxon_id", back_populates="object_taxon")
+        "BiologicalAssociation",
+        foreign_keys="BiologicalAssociation.object_taxon_id",
+        back_populates="object_taxon",
+    )

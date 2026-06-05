@@ -22,9 +22,12 @@ from app.models.base import _utcnow
 
 def _taxon(session, name="Carabus coriaceus") -> Taxon:
     parts = name.split()
+    sci_name = " ".join(parts[:2]) if len(parts) >= 2 else parts[0]
+    rank = "species" if len(parts) >= 2 else "genus"
     t = Taxon(
-        genus=parts[0],
-        specific_epithet=parts[1] if len(parts) > 1 else None,
+        scientific_name=sci_name,
+        taxon_rank=rank,
+        taxonomic_status="accepted",
         created_at=_utcnow(), updated_at=_utcnow(),
     )
     session.add(t)
@@ -123,7 +126,7 @@ def test_fk_restrict_blocks_deleting_accepted_taxon(session):
     """Cannot delete an accepted taxon while a synonym still points to it."""
     accepted = _taxon(session, "Curtonotus aeneus")
     synonym  = _taxon(session, "Amara aenea")
-    synonym.taxonomic_status       = "synonym"
+    synonym.taxonomic_status = "synonym"
     synonym.accepted_name_usage_id = accepted.id
     session.flush()
     session.delete(accepted)

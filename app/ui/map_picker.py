@@ -84,6 +84,14 @@ def add_map_assets() -> None:
         font-size: .65rem;
         background: rgba(255,255,255,.75) !important;
       }
+      ._mp-btn {
+        display: inline-flex; align-items: center; gap: 4px;
+        background: none; border: none; border-radius: 4px;
+        cursor: pointer; padding: 4px 8px;
+        font-size: .75rem; font-weight: 500; letter-spacing: .04em;
+        color: var(--tp-secondary, #0369a1);
+      }
+      ._mp-btn:hover { background: rgba(3,105,161,.08); }
     </style>
     """)
 
@@ -143,18 +151,21 @@ def build_map_picker(
       </span>
       <!-- editable uncertainty (hidden until marker placed) -->
       <span id="{uid}uncrow" style="
-          display:none; align-items:center; gap:3px;
+          display:none; align-items:center; gap:6px; flex:1; min-width:0;
           font-size:.82rem; color:var(--tp-base-soft,#9ca3af);">
         <span>&#xB1;</span>
         <input id="{uid}uncinput" type="number" min="1" step="1"
           style="
-            width:70px; font-size:.82rem;
+            width:70px; font-size:.82rem; flex-shrink:0;
             color:#111; background:#fff; caret-color:#111;
             border:none; border-bottom:1px solid #aaa;
             outline:none; padding:1px 3px; text-align:right;
             -moz-appearance:textfield;"
           title="Uncertainty radius in metres">
-        <span>m</span>
+        <span style="flex-shrink:0;">m</span>
+        <input id="{uid}uncslider" type="range" min="0" max="2000" value="0" step="1"
+          style="flex:1; min-width:0; accent-color:var(--tp-secondary,#0369a1); cursor:pointer;"
+          title="Uncertainty radius (0–2000 m)">
       </span>
       <span style="flex:1;"></span>
       <button onclick="document.getElementById('{uid}ov').style.display='none'"
@@ -169,11 +180,8 @@ def build_map_picker(
         display:flex; align-items:center; flex-shrink:0;
         padding:8px 16px; gap:12px;
         border-top:1px solid var(--tp-base-border,#e2e8f0);">
-      <button id="{uid}clr"
-        style="background:none;border:none;cursor:pointer;
-               font-size:.85rem;padding:4px 8px;
-               color:var(--tp-base-content,#374151);">
-        Clear marker
+      <button id="{uid}loc" class="_mp-btn">
+        <i class="material-icons" style="font-size:1.1rem;">my_location</i>Locate
       </button>
       <span style="flex:1;"></span>
       <button onclick="document.getElementById('{uid}ov').style.display='none'"
@@ -284,17 +292,20 @@ def build_map_picker(
         var coordEl   = document.getElementById(uid + 'coord');
         var uncRow    = document.getElementById(uid + 'uncrow');
         var uncInput  = document.getElementById(uid + 'uncinput');
+        var uncSlider = document.getElementById(uid + 'uncslider');
 
         function updateDisplay(lat, lng, u) {{
-            if (coordEl) coordEl.textContent = lat.toFixed(6) + ', ' + lng.toFixed(6);
-            if (uncRow)   uncRow.style.display  = 'flex';
-            if (uncInput) uncInput.value = u ? Math.round(u) : '';
+            if (coordEl)   coordEl.textContent    = lat.toFixed(6) + ', ' + lng.toFixed(6);
+            if (uncRow)    uncRow.style.display   = 'flex';
+            if (uncInput)  uncInput.value         = u ? Math.round(u) : '';
+            if (uncSlider) uncSlider.value        = Math.min(u ? Math.round(u) : 0, 2000);
         }}
 
         function resetDisplay() {{
-            if (coordEl)  coordEl.textContent = 'Click the map to set a point';
-            if (uncRow)   uncRow.style.display = 'none';
-            if (uncInput) uncInput.value = '';
+            if (coordEl)   coordEl.textContent  = 'Click the map to set a point';
+            if (uncRow)    uncRow.style.display = 'none';
+            if (uncInput)  uncInput.value       = '';
+            if (uncSlider) uncSlider.value      = 0;
         }}
 
         var mkIcon = L.divIcon({{
@@ -384,7 +395,7 @@ def build_map_picker(
             emitCoords(ev.latlng.lat, ev.latlng.lng, r);
         }});
 
-        /* ── Editable uncertainty input ──────────────────────────────────── */
+        /* ── Editable uncertainty input + slider ────────────────────────── */
         function applyUncInput() {{
             if (!marker) return;
             var v = parseInt(uncInput.value, 10);
@@ -396,6 +407,14 @@ def build_map_picker(
             uncInput.addEventListener('change', applyUncInput);
             uncInput.addEventListener('keydown', function(e) {{
                 if (e.key === 'Enter') {{ applyUncInput(); this.blur(); }}
+            }});
+        }}
+        if (uncSlider) {{
+            uncSlider.addEventListener('input', function() {{
+                if (!marker) return;
+                var v = parseInt(this.value, 10);
+                placeAt(marker.getLatLng(), v);
+                emitCoords(marker.getLatLng().lat, marker.getLatLng().lng, v || null);
             }});
         }}
 
@@ -422,11 +441,20 @@ def build_map_picker(
             }}
         }};
 
-        /* "Clear marker" button inside the overlay */
-        var clrBtn = document.getElementById(uid + 'clr');
-        if (clrBtn) {{
-            clrBtn.onclick = function() {{
-                window['_mpapi_' + uid].clear();
+        /* "Locate" button — fly to coordinates currently entered in the form */
+        var locBtn = document.getElementById(uid + 'loc');
+        if (locBtn) {{
+            locBtn.onclick = function() {{
+                var latEl = document.querySelector('._coord-lat input');
+                var lonEl = document.querySelector('._coord-lon input');
+                var uncEl = document.querySelector('._coord-unc input');
+                if (!latEl || !lonEl) return;
+                var lat = parseFloat(latEl.value);
+                var lon = parseFloat(lonEl.value);
+                if (isNaN(lat) || isNaN(lon)) return;
+                var u = uncEl ? parseFloat(uncEl.value) : NaN;
+                placeAt(L.latLng(lat, lon), isNaN(u) ? (unc || 0) : u);
+                map.setView([lat, lon], Math.max(map.getZoom(), 10));
             }};
         }}
     }}
