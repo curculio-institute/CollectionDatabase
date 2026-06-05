@@ -649,13 +649,17 @@ def index():
                                     r = await c.post(
                                         "https://overpass-api.de/api/interpreter",
                                         data={"data": overpass_query},
+                                        # Overpass blocks non-browser User-Agents with 406.
+                                        headers={"User-Agent": "Mozilla/5.0 (compatible; EntomologicalCollection/1.0)"},
                                     )
                                     if not r.is_success:
+                                        ui.notify(f"Boundary check failed: HTTP {r.status_code}", type="warning")
                                         return
                                     elements = r.json().get("elements", [])
                             except asyncio.CancelledError:
                                 return
-                            except Exception:
+                            except Exception as ex:
+                                ui.notify(f"Boundary check error: {ex}", type="warning")
                                 return
 
                             for el in elements:
