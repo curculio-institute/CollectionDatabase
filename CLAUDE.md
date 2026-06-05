@@ -6,7 +6,8 @@ Project context and working agreement for Claude Code. Read this before writing 
 
 ## To do:
 - taxonomy table: Darwin core stores taxonomy strictly by linking parents. Read https://ipt.gbif.org/manual/en/ipt/latest/best-practices-checklists to understand how to store taxonomic information.
-The fields would only be taxonID, taxonRank, scientificName, parentNameUsageID and of course scientificNameAuthorship, acceptedNameID, taxonomicStatus.
+The fields would only be taxonID, taxonRank, scientificName, parentNameUsageID and of course scientificNameAuthorship, acceptedNameID, taxonomicStatus. That way, the table is easier to maintain in case something changes. You need to rework how the table is read and written accordingly. Wipe taxonomy and repopulate using the updated import logic (everything works as usual, except how the table is written)
+- Searching a taxon: I have found an instance where i can import a genus from TaxonWorks thats already in local database: /home/jakobj/Data/01Aktuelle_Projekte/0_Datenbank/Database/pasted file.png
 
 ## 1. What this project is
 

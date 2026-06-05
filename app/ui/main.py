@@ -562,19 +562,9 @@ def index():
 
                         ui.timer(0.3, _inject_coord_paste_js, once=True)
 
-                        # Holds the running boundary-check Task so it can be cancelled when
-                        # the user moves the pin before the previous check finishes.
-                        _bchk_task: list[asyncio.Task | None] = [None]
-
-                        async def _reverse_geocode(lat: float, lon: float,
-                                                       unc: float | None = None) -> None:
-                            """Fill address fields via Photon (photon.komoot.io).
-
-                            Photon is OSM-based and has no strict per-IP rate limit, unlike
-                            Nominatim.  One request per Lookup click; no secondary request needed
-                            because Photon returns 'state' for city-states like Berlin directly.
-                            """
-                            # Dismiss stale per-field warnings on every fresh geocode.
+                        async def _reverse_geocode(lat: float, lon: float) -> dict | None:
+                            """Reverse-geocode via Photon. Returns Photon properties dict or
+                            None on failure. Fills the address fields as a side effect."""
                             for _b in (_cntry_warn, _code_warn, _state_warn, _county_warn, _muni_warn):
                                 _b.classes(add="hidden")
                             try:
@@ -588,11 +578,11 @@ def index():
                                     features = r.json().get("features", [])
                                     if not features:
                                         ui.notify("Reverse geocoding returned no results.", type="warning")
-                                        return
+                                        return None
                                     p = features[0]["properties"]
                             except Exception as ex:
                                 ui.notify(f"Reverse geocoding failed: {ex}", type="negative")
-                                return
+                                return None
 
                             country_in.value = p.get("country", "")
                             code_in.value    = p.get("countrycode", "").upper()
@@ -602,133 +592,68 @@ def index():
                             )
                             muni_in.value    = p.get("city") or p.get("locality") or ""
                             _on_event_field_edit()
-
-                            if unc and unc > 0:
-                                if _bchk_task[0] and not _bchk_task[0].done():
-                                    _bchk_task[0].cancel()
-                                _bchk_task[0] = asyncio.ensure_future(
-                                    _check_boundary_crossing(lat, lon, unc, p)
-                                )
+                            return p
 
                         async def _check_boundary_crossing(
                             lat: float, lon: float, radius_m: float,
                             photon_props: dict,
                         ) -> None:
-                            """Find admin boundaries crossing the uncertainty circle.
+                            """Check whether the uncertainty circle crosses admin boundaries.
 
-                            Single Overpass request with out center tags — returns every
-                            admin-boundary relation whose member ways have a node inside the
-                            circle, plus the bounding-box centroid of each relation.
-
-                            When the user picks an alternative, we reverse-geocode that
-                            centroid via Photon to get the correct full hierarchy for the
-                            chosen area (correct even across state/country borders).
-
-                            Admin levels: 2=country, 4=state, 6=county, 8=municipality.
+                            Samples 8 points on the circle perimeter, reverse-geocodes each
+                            via Photon in parallel, and compares the results with the centre.
+                            If any field differs, the corresponding warning button appears and
+                            lets the user pick the correct alternative.
                             """
-                            # Build centre snapshot from the already-geocoded Photon result.
-                            c_country = photon_props.get("country", "")
-                            c_code    = photon_props.get("countrycode", "").upper()
-                            c_state   = photon_props.get("state", "")
-                            c_county  = _clean_county(
-                                photon_props.get("county") or photon_props.get("district") or ""
-                            )
-                            c_muni    = photon_props.get("city") or photon_props.get("locality") or ""
-                            centre = {
-                                "country": c_country, "code": c_code, "state": c_state,
-                                "county": c_county, "muni": c_muni,
-                                "_clat": lat, "_clon": lon, "_level": 8,
-                            }
+                            def _props_to_snap(p: dict) -> dict:
+                                return {
+                                    "country": p.get("country", ""),
+                                    "code":    (p.get("countrycode", "") or "").upper(),
+                                    "state":   p.get("state", ""),
+                                    "county":  _clean_county(
+                                        p.get("county") or p.get("district") or ""
+                                    ),
+                                    "muni":    p.get("city") or p.get("locality") or "",
+                                }
+
+                            centre = _props_to_snap(photon_props)
                             snapshots: list[dict] = [centre]
 
-                            # is_in at 8 perimeter points finds areas that CONTAIN each point,
-                            # regardless of how sparse the boundary way nodes are. This works
-                            # correctly for small circles (< 1 km) where relation(around:r)
-                            # fails because no boundary nodes fall within the circle.
-                            # One merged query; out center tags gives each relation's bounding-box
-                            # centroid, used for the Photon reverse lookup on pick.
-                            r_m = int(radius_m)
-                            isin_parts = ["[out:json][timeout:20];"]
+                            # 8 perimeter points at 45° intervals.
                             perimeter_pts = []
-                            for i, a in enumerate(range(0, 360, 45)):
-                                la = lat + (r_m / 111_320) * math.cos(math.radians(a))
-                                lo = lon + (r_m / (111_320 * math.cos(math.radians(lat)))) * math.sin(math.radians(a))
+                            for a in range(0, 360, 45):
+                                la = lat + (radius_m / 111_320) * math.cos(math.radians(a))
+                                lo = lon + (radius_m / (111_320 * math.cos(math.radians(lat)))) * math.sin(math.radians(a))
                                 perimeter_pts.append((la, lo))
-                                isin_parts.append(f"is_in({la:.6f},{lo:.6f})->.p{i};")
-                            isin_parts.append("(")
-                            for i in range(len(perimeter_pts)):
-                                isin_parts.append(
-                                    f'  rel(pivot.p{i})["boundary"="administrative"]["admin_level"~"^(2|4|6|8)$"];'
-                                )
-                            isin_parts.append(");")
-                            isin_parts.append("out center tags;")
-                            overpass_query = "\n".join(isin_parts)
-                            try:
-                                async with httpx.AsyncClient(timeout=25) as c:
-                                    r = await c.post(
-                                        "https://overpass-api.de/api/interpreter",
-                                        data={"data": overpass_query},
-                                        headers={"User-Agent": "Mozilla/5.0 (compatible; EntomologicalCollection/1.0)"},
-                                    )
-                                    if not r.is_success:
-                                        ui.notify(f"Boundary check failed: HTTP {r.status_code}", type="warning")
-                                        return
-                                    elements = r.json().get("elements", [])
-                            except asyncio.CancelledError:
-                                return
-                            except Exception as ex:
-                                ui.notify(f"Boundary check error: {ex}", type="warning")
-                                return
 
-                            for el in elements:
-                                tags = el.get("tags", {})
+                            async def _photon_at(la: float, lo: float) -> dict | None:
                                 try:
-                                    level = int(tags.get("admin_level", 0))
-                                except (ValueError, TypeError):
-                                    continue
-                                name = tags.get("name:en") or tags.get("name") or ""
-                                if not name:
-                                    continue
-                                ctr  = el.get("center", {})
-                                clat = ctr.get("lat", lat)
-                                clon = ctr.get("lon", lon)
-                                # Snap carries the display name at this level, approximate
-                                # parent fields from the centre (shown in dropdown only),
-                                # and the centroid for Photon reverse lookup on pick.
-                                if level == 2:
-                                    snap = {"country": name,
-                                            "code": tags.get("ISO3166-1:alpha2", "").upper(),
-                                            "state": "", "county": "", "muni": "",
-                                            "_clat": clat, "_clon": clon, "_level": 2}
-                                elif level == 4:
-                                    snap = {"country": c_country, "code": c_code,
-                                            "state": name, "county": "", "muni": "",
-                                            "_clat": clat, "_clon": clon, "_level": 4}
-                                elif level == 6:
-                                    snap = {"country": c_country, "code": c_code,
-                                            "state": c_state, "county": _clean_county(name),
-                                            "muni": "",
-                                            "_clat": clat, "_clon": clon, "_level": 6}
-                                elif level == 8:
-                                    snap = {"country": c_country, "code": c_code,
-                                            "state": c_state, "county": c_county,
-                                            "muni": name,
-                                            "_clat": clat, "_clon": clon, "_level": 8}
-                                else:
-                                    continue
-                                # Deduplicate by display fields only (ignore private _ keys).
-                                display = {k: v for k, v in snap.items() if not k.startswith("_")}
-                                if display != {k: v for k, v in centre.items() if not k.startswith("_")} \
-                                        and not any(
-                                            display == {k: v for k, v in s.items() if not k.startswith("_")}
-                                            for s in snapshots
-                                        ):
-                                    snapshots.append(snap)
+                                    async with httpx.AsyncClient(timeout=8) as cl:
+                                        rp = await cl.get(
+                                            "https://photon.komoot.io/reverse",
+                                            params={"lat": la, "lon": lo, "lang": "en"},
+                                            headers={"User-Agent": "EntomologicalCollection/1.0"},
+                                        )
+                                        rp.raise_for_status()
+                                        feats = rp.json().get("features", [])
+                                        return feats[0]["properties"] if feats else None
+                                except Exception:
+                                    return None
 
+                            results = await asyncio.gather(
+                                *[_photon_at(la, lo) for la, lo in perimeter_pts]
+                            )
+
+                            for p in results:
+                                if not p:
+                                    continue
+                                snap = _props_to_snap(p)
+                                if snap != centre and snap not in snapshots:
+                                    snapshots.append(snap)
 
                             def _show_warn(btn, tip, items_col, field_key, on_pick,
                                            label_fn=None):
-                                """Reveal warning for one field if it has >1 unique value."""
+                                """Reveal warning button if field has >1 unique value."""
                                 seen: dict[str, dict] = {}
                                 for snap in snapshots:
                                     val = snap[field_key]
@@ -736,7 +661,6 @@ def index():
                                         seen[val] = snap
                                 if len(seen) <= 1:
                                     return
-
                                 centre_val = centre[field_key]
                                 alts = [v for v in seen if v != centre_val]
                                 items_col.clear()
@@ -744,10 +668,11 @@ def index():
                                     for i, (val, snap) in enumerate(seen.items()):
                                         display = label_fn(val, snap) if label_fn else val
                                         marker  = " (centre)" if i == 0 else ""
-                                        ui.menu_item(
-                                            display + marker,
-                                            on_click=lambda s=snap: on_pick(s),
-                                        )
+
+                                        async def _cb(s=snap):
+                                            await on_pick(s)
+
+                                        ui.menu_item(display + marker, on_click=_cb)
                                 tip_alts = [
                                     label_fn(v, seen[v]) if label_fn else v for v in alts
                                 ]
@@ -757,53 +682,30 @@ def index():
                                 btn.update()
 
                             async def _apply_snap(snap: dict) -> None:
-                                """Reverse-geocode the snap's centroid via Photon to get the
-                                correct full hierarchy, then fill fields down to snap's level."""
-                                clat  = snap["_clat"]
-                                clon  = snap["_clon"]
-                                level = snap["_level"]
-                                try:
-                                    async with httpx.AsyncClient(timeout=8) as cl:
-                                        rp = await cl.get(
-                                            "https://photon.komoot.io/reverse",
-                                            params={"lat": clat, "lon": clon, "lang": "en"},
-                                            headers={"User-Agent": "EntomologicalCollection/1.0"},
-                                        )
-                                        rp.raise_for_status()
-                                        feats = rp.json().get("features", [])
-                                        p = feats[0]["properties"] if feats else {}
-                                except Exception:
-                                    p = {}
+                                """Fill address fields from a pre-geocoded perimeter snap."""
                                 state["populating"] = True
-                                country_in.value = p.get("country", "") or snap["country"]
-                                code_in.value    = (p.get("countrycode", "") or snap["code"]).upper()
-                                state_in.value   = p.get("state", "")   if level >= 4 else ""
-                                county_in.value  = _clean_county(
-                                    p.get("county") or p.get("district") or ""
-                                ) if level >= 6 else ""
-                                muni_in.value    = (
-                                    p.get("city") or p.get("locality") or ""
-                                ) if level >= 8 else ""
+                                country_in.value = snap["country"]
+                                code_in.value    = snap["code"]
+                                state_in.value   = snap["state"]
+                                county_in.value  = snap["county"]
+                                muni_in.value    = snap["muni"]
                                 state["populating"] = False
                                 for _b in (_cntry_warn, _code_warn, _state_warn,
                                            _county_warn, _muni_warn):
                                     _b.classes(add="hidden")
                                 _on_event_field_edit()
 
-                            def _pick(snap: dict) -> None:
-                                asyncio.ensure_future(_apply_snap(snap))
-
                             _show_warn(_cntry_warn, _cntry_tip, _cntry_items,
-                                       "country", _pick)
+                                       "country", _apply_snap)
                             _show_warn(_code_warn, _code_tip, _code_items,
-                                       "code", _pick,
+                                       "code", _apply_snap,
                                        label_fn=lambda c, s: f"{c} ({s['country']})")
                             _show_warn(_state_warn,  _state_tip,  _state_items,
-                                       "state",   _pick)
+                                       "state",   _apply_snap)
                             _show_warn(_county_warn, _county_tip, _county_items,
-                                       "county",  _pick)
+                                       "county",  _apply_snap)
                             _show_warn(_muni_warn,   _muni_tip,   _muni_items,
-                                       "muni",    _pick)
+                                       "muni",    _apply_snap)
 
                         def _on_map_change(lat: float, lon: float, unc):
                             lat_in.value    = str(round(lat, 7))
@@ -866,8 +768,12 @@ def index():
                                     unc = float(uncert_in.value) if uncert_in.value else None
                                 except ValueError:
                                     pass
-                                await _reverse_geocode(lat, lon, unc)
+                                p = await _reverse_geocode(lat, lon)
+                                if p is None:
+                                    return
                                 ui.notify("Location fields filled from coordinates.", type="positive")
+                                if unc and unc > 0:
+                                    await _check_boundary_crossing(lat, lon, unc, p)
 
                             (
                                 ui.button("Lookup", icon="travel_explore",
