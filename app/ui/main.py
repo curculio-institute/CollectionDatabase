@@ -634,16 +634,31 @@ def index():
                             }
                             snapshots: list[dict] = [centre]
 
-                            # Single Overpass query: find any ways with nodes inside the
-                            # uncertainty circle, then get their parent admin-boundary relations.
-                            # Ways themselves are NOT tagged boundary=administrative in OSM —
-                            # that tag lives on the relation, so we must not filter the way query.
-                            overpass_query = (
-                                f"[out:json][timeout:20];"
-                                f"way(around:{int(radius_m)},{lat},{lon})->.w;"
-                                f'relation["boundary"="administrative"]["admin_level"~"^[2-8]$"](bw.w);'
-                                f"out tags;"
-                            )
+                            # Sample 8 equally-spaced points on the circle perimeter and use
+                            # Overpass is_in() to find which admin areas contain each point.
+                            # is_in() uses precomputed area data — much fewer results than
+                            # way(around:...) which returns every way inside the full disk.
+                            # Levels 2=country, 4=state, 6=county, 8=municipality only;
+                            # 3/5/7 are sub-state intermediaries not used in DwC fields.
+                            r_m = int(radius_m)
+                            perimeter_pts = [
+                                (
+                                    lat  + (r_m / 111_320) * math.cos(math.radians(a)),
+                                    lon  + (r_m / (111_320 * math.cos(math.radians(lat)))) * math.sin(math.radians(a)),
+                                )
+                                for a in range(0, 360, 45)
+                            ]
+                            isin_lines = ["[out:json][timeout:20];"]
+                            for i, (la, lo) in enumerate(perimeter_pts):
+                                isin_lines.append(f"is_in({la:.6f},{lo:.6f})->.p{i};")
+                            isin_lines.append("(")
+                            for i in range(len(perimeter_pts)):
+                                isin_lines.append(
+                                    f'  rel(pivot.p{i})["boundary"="administrative"]["admin_level"~"^(2|4|6|8)$"];'
+                                )
+                            isin_lines.append(");")
+                            isin_lines.append("out tags;")
+                            overpass_query = "\n".join(isin_lines)
                             try:
                                 async with httpx.AsyncClient(timeout=25) as c:
                                     r = await c.post(
@@ -677,10 +692,10 @@ def index():
                                     code = tags.get("ISO3166-1:alpha2", "").upper()
                                     snap = {"country": name, "code": code,
                                             "state": "", "county": "", "muni": ""}
-                                elif level in (3, 4, 5):
+                                elif level == 4:
                                     snap = {"country": c_country, "code": c_code,
                                             "state": name, "county": "", "muni": ""}
-                                elif level in (6, 7):
+                                elif level == 6:
                                     snap = {"country": c_country, "code": c_code,
                                             "state": c_state,
                                             "county": _clean_county(name), "muni": ""}
