@@ -1,0 +1,114 @@
+%%{init: {"er": {"useMaxWidth": false}}}%%
+%% All DwC-term columns are stored as dwc:columnName in the DB (e.g. dwc:scientificName).
+%% Local columns (id, FKs, catalogNamespace, taxonworksID, is_current,
+%% habitat_enriched, habitat_ambiguous, created_at, updated_at) carry no prefix.
+
+erDiagram
+    taxon {
+        INTEGER id PK
+        TEXT order
+        TEXT family
+        TEXT subfamily
+        TEXT tribe
+        TEXT subtribe
+        TEXT genus
+        TEXT subgenus
+        TEXT specificEpithet
+        TEXT infraspecificEpithet
+        TEXT scientificNameAuthorship
+        INTEGER parent_id FK
+        INTEGER acceptedNameUsageID FK
+    }
+
+    collecting_event {
+        INTEGER id PK
+        TEXT verbatimLabel
+        TEXT continent
+        TEXT country
+        TEXT countryCode
+        TEXT stateProvince
+        TEXT county
+        TEXT municipality
+        TEXT locality
+        TEXT verbatimLocality
+        TEXT locationRemarks
+        REAL decimalLatitude
+        REAL decimalLongitude
+        TEXT geodeticDatum
+        REAL coordinateUncertaintyInMeters
+        REAL coordinatePrecision
+        TEXT verbatimCoordinates
+        TEXT verbatimCoordinateSystem
+        REAL minimumElevationInMeters
+        REAL maximumElevationInMeters
+        TEXT verbatimElevation
+        TEXT georeferencedBy
+        TEXT georeferencedDate
+        TEXT georeferenceProtocol
+        TEXT georeferenceSources
+        TEXT georeferenceRemarks
+        TEXT georeferenceVerificationStatus
+        TEXT eventDate
+        TEXT verbatimEventDate
+        TEXT fieldNumber
+        TEXT habitat
+        TEXT samplingProtocol
+        TEXT recordedBy
+        TEXT eventRemarks
+        TEXT habitat_enriched
+        INTEGER habitat_ambiguous
+    }
+
+    collection_object {
+        INTEGER id PK
+        INTEGER collecting_event_id FK
+        TEXT catalogNumber
+        TEXT catalogNamespace
+        TEXT basisOfRecord
+        INTEGER individualCount
+        TEXT lifeStage
+        TEXT sex
+        TEXT disposition
+        TEXT ownerInstitutionCode
+        TEXT preparations
+        TEXT typeStatus
+        TEXT occurrenceRemarks
+    }
+
+    taxon_determination {
+        INTEGER id PK
+        INTEGER collection_object_id FK
+        INTEGER taxon_id FK
+        TEXT verbatimIdentification
+        TEXT identifiedBy
+        TEXT dateIdentified
+        TEXT identificationQualifier
+        TEXT identificationRemarks
+        INTEGER is_current
+    }
+
+    biological_relationship {
+        INTEGER id PK
+        TEXT name
+        INTEGER taxonworksID
+    }
+
+    biological_association {
+        INTEGER id PK
+        INTEGER biological_relationship_id FK
+        INTEGER subject_collection_object_id FK "arc: exactly one"
+        INTEGER subject_taxon_id FK "arc: exactly one"
+        INTEGER object_collection_object_id FK "arc: exactly one"
+        INTEGER object_taxon_id FK "arc: exactly one"
+        TEXT notes
+    }
+
+    taxon ||--o{ taxon : "parent of"
+    collecting_event ||--o{ collection_object : "collected at"
+    collection_object ||--o{ taxon_determination : "determined as"
+    taxon ||--o{ taxon_determination : "applied in"
+    biological_relationship ||--o{ biological_association : "typed by"
+    collection_object |o--o{ biological_association : "subject (specimen)"
+    taxon |o--o{ biological_association : "subject (taxon)"
+    collection_object |o--o{ biological_association : "object (specimen)"
+    taxon |o--o{ biological_association : "object (taxon)"

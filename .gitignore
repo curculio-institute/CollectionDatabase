@@ -1,0 +1,26 @@
+# Database files — never commit the live collection
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+
+# Python bytecode
+__pycache__/
+*.py[cod]
+
+# Test cache
+.pytest_cache/
+
+# Editor swap/backup files
+*.kate-swp
+*.swp
+*~
+
+# TaxonWorks API token
+~/.config/tw_token
+
+# Environment / secrets
+.env
+
+# Misc
+*.png
