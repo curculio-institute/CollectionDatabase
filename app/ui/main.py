@@ -641,14 +641,30 @@ def index():
                             }
                             snapshots: list[dict] = [centre]
 
-                            overpass_query = (
-                                f"[out:json][timeout:25];"
-                                f'relation["boundary"="administrative"]["admin_level"~"^(2|4|6|8)$"]'
-                                f"(around:{int(radius_m)},{lat},{lon});"
-                                f"out center tags;"
-                            )
+                            # is_in at 8 perimeter points finds areas that CONTAIN each point,
+                            # regardless of how sparse the boundary way nodes are. This works
+                            # correctly for small circles (< 1 km) where relation(around:r)
+                            # fails because no boundary nodes fall within the circle.
+                            # One merged query; out center tags gives each relation's bounding-box
+                            # centroid, used for the Photon reverse lookup on pick.
+                            r_m = int(radius_m)
+                            isin_parts = ["[out:json][timeout:20];"]
+                            perimeter_pts = []
+                            for i, a in enumerate(range(0, 360, 45)):
+                                la = lat + (r_m / 111_320) * math.cos(math.radians(a))
+                                lo = lon + (r_m / (111_320 * math.cos(math.radians(lat)))) * math.sin(math.radians(a))
+                                perimeter_pts.append((la, lo))
+                                isin_parts.append(f"is_in({la:.6f},{lo:.6f})->.p{i};")
+                            isin_parts.append("(")
+                            for i in range(len(perimeter_pts)):
+                                isin_parts.append(
+                                    f'  rel(pivot.p{i})["boundary"="administrative"]["admin_level"~"^(2|4|6|8)$"];'
+                                )
+                            isin_parts.append(");")
+                            isin_parts.append("out center tags;")
+                            overpass_query = "\n".join(isin_parts)
                             try:
-                                async with httpx.AsyncClient(timeout=30) as c:
+                                async with httpx.AsyncClient(timeout=25) as c:
                                     r = await c.post(
                                         "https://overpass-api.de/api/interpreter",
                                         data={"data": overpass_query},
@@ -708,6 +724,7 @@ def index():
                                             for s in snapshots
                                         ):
                                     snapshots.append(snap)
+
 
                             def _show_warn(btn, tip, items_col, field_key, on_pick,
                                            label_fn=None):
