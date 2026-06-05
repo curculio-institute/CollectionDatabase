@@ -600,10 +600,11 @@ def index():
                         ) -> None:
                             """Check whether the uncertainty circle crosses admin boundaries.
 
-                            Samples 8 points on the circle perimeter, reverse-geocodes each
-                            via Photon in parallel, and compares the results with the centre.
-                            If any field differs, the corresponding warning button appears and
-                            lets the user pick the correct alternative.
+                            Samples 4 cardinal points (N/E/S/W) on the circle perimeter,
+                            reverse-geocodes them in parallel via a shared AsyncClient, and
+                            compares with the centre.  4 parallel requests is within Photon's
+                            per-IP concurrency limit; 8 simultaneous causes 503 errors for the
+                            last requests, silently dropping some countries from the result.
                             """
                             def _props_to_snap(p: dict) -> dict:
                                 return {
@@ -619,30 +620,38 @@ def index():
                             centre = _props_to_snap(photon_props)
                             snapshots: list[dict] = [centre]
 
-                            # 8 perimeter points at 45° intervals.
+                            # 4 cardinal points: N (0°), E (90°), S (180°), W (270°).
                             perimeter_pts = []
-                            for a in range(0, 360, 45):
+                            for a in (0, 90, 180, 270):
                                 la = lat + (radius_m / 111_320) * math.cos(math.radians(a))
                                 lo = lon + (radius_m / (111_320 * math.cos(math.radians(lat)))) * math.sin(math.radians(a))
                                 perimeter_pts.append((la, lo))
 
-                            async def _photon_at(la: float, lo: float) -> dict | None:
-                                try:
-                                    async with httpx.AsyncClient(timeout=8) as cl:
+                            async def _photon_at(
+                                cl: httpx.AsyncClient, la: float, lo: float
+                            ) -> dict | None:
+                                for attempt in range(3):
+                                    try:
+                                        if attempt:
+                                            await asyncio.sleep(0.5 * attempt)
                                         rp = await cl.get(
                                             "https://photon.komoot.io/reverse",
                                             params={"lat": la, "lon": lo, "lang": "en"},
                                             headers={"User-Agent": "EntomologicalCollection/1.0"},
                                         )
+                                        if rp.status_code in (429, 503) and attempt < 2:
+                                            continue
                                         rp.raise_for_status()
                                         feats = rp.json().get("features", [])
                                         return feats[0]["properties"] if feats else None
-                                except Exception:
-                                    return None
+                                    except Exception:
+                                        return None
+                                return None
 
-                            results = await asyncio.gather(
-                                *[_photon_at(la, lo) for la, lo in perimeter_pts]
-                            )
+                            async with httpx.AsyncClient(timeout=10) as cl:
+                                results = await asyncio.gather(
+                                    *[_photon_at(cl, la, lo) for la, lo in perimeter_pts]
+                                )
 
                             for p in results:
                                 if not p:
