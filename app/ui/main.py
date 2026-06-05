@@ -614,11 +614,17 @@ def index():
                             lat: float, lon: float, radius_m: float,
                             photon_props: dict,
                         ) -> None:
-                            """Query Overpass for admin boundaries within the uncertainty circle.
+                            """Find admin boundaries crossing the uncertainty circle.
 
-                            Uses one Overpass request (no Nominatim rate-limit concerns).
-                            OSM admin_level mapping (approximate, valid across most of Europe):
-                              2 → country   4/5 → state   6/7 → county   8 → municipality
+                            Single Overpass request with out center tags — returns every
+                            admin-boundary relation whose member ways have a node inside the
+                            circle, plus the bounding-box centroid of each relation.
+
+                            When the user picks an alternative, we reverse-geocode that
+                            centroid via Photon to get the correct full hierarchy for the
+                            chosen area (correct even across state/country borders).
+
+                            Admin levels: 2=country, 4=state, 6=county, 8=municipality.
                             """
                             # Build centre snapshot from the already-geocoded Photon result.
                             c_country = photon_props.get("country", "")
@@ -631,73 +637,76 @@ def index():
                             centre = {
                                 "country": c_country, "code": c_code, "state": c_state,
                                 "county": c_county, "muni": c_muni,
+                                "_clat": lat, "_clon": lon, "_level": 8,
                             }
                             snapshots: list[dict] = [centre]
 
-                            # Query each of 8 perimeter points individually so we get the
-                            # complete admin hierarchy (country→state→county→muni) per point.
-                            # A merged query loses point association, making parent fields wrong
-                            # when a municipality sits in a different state than the centre.
-                            r_m = int(radius_m)
-                            perimeter_pts = [
-                                (
-                                    lat  + (r_m / 111_320) * math.cos(math.radians(a)),
-                                    lon  + (r_m / (111_320 * math.cos(math.radians(lat)))) * math.sin(math.radians(a)),
-                                )
-                                for a in range(0, 360, 45)
-                            ]
-                            _OVP_UA = {"User-Agent": "Mozilla/5.0 (compatible; EntomologicalCollection/1.0)"}
-                            _OVP_URL = "https://overpass-api.de/api/interpreter"
-
-                            async def _isin(client, la, lo):
-                                q = (
-                                    f"[out:json][timeout:10];"
-                                    f"is_in({la:.6f},{lo:.6f})->.p;"
-                                    f'rel(pivot.p)["boundary"="administrative"]["admin_level"~"^(2|4|6|8)$"];'
-                                    f"out tags;"
-                                )
-                                try:
-                                    resp = await client.post(_OVP_URL, data={"data": q}, headers=_OVP_UA)
-                                    if resp.is_success:
-                                        return resp.json().get("elements", [])
-                                except asyncio.CancelledError:
-                                    raise
-                                except Exception:
-                                    pass
-                                return []
-
+                            overpass_query = (
+                                f"[out:json][timeout:25];"
+                                f'relation["boundary"="administrative"]["admin_level"~"^(2|4|6|8)$"]'
+                                f"(around:{int(radius_m)},{lat},{lon});"
+                                f"out center tags;"
+                            )
                             try:
-                                async with httpx.AsyncClient(timeout=15) as c:
-                                    point_results = await asyncio.gather(
-                                        *[_isin(c, la, lo) for la, lo in perimeter_pts]
+                                async with httpx.AsyncClient(timeout=30) as c:
+                                    r = await c.post(
+                                        "https://overpass-api.de/api/interpreter",
+                                        data={"data": overpass_query},
+                                        headers={"User-Agent": "Mozilla/5.0 (compatible; EntomologicalCollection/1.0)"},
                                     )
+                                    if not r.is_success:
+                                        ui.notify(f"Boundary check failed: HTTP {r.status_code}", type="warning")
+                                        return
+                                    elements = r.json().get("elements", [])
                             except asyncio.CancelledError:
                                 return
                             except Exception as ex:
                                 ui.notify(f"Boundary check error: {ex}", type="warning")
                                 return
 
-                            for elements in point_results:
-                                snap: dict = {"country": "", "code": "", "state": "", "county": "", "muni": ""}
-                                for el in elements:
-                                    tags = el.get("tags", {})
-                                    try:
-                                        level = int(tags.get("admin_level", 0))
-                                    except (ValueError, TypeError):
-                                        continue
-                                    name = tags.get("name:en") or tags.get("name") or ""
-                                    if not name:
-                                        continue
-                                    if level == 2:
-                                        snap["country"] = name
-                                        snap["code"]    = tags.get("ISO3166-1:alpha2", "").upper()
-                                    elif level == 4:
-                                        snap["state"]  = name
-                                    elif level == 6:
-                                        snap["county"] = _clean_county(name)
-                                    elif level == 8:
-                                        snap["muni"]   = name
-                                if snap != centre and snap not in snapshots and any(snap.values()):
+                            for el in elements:
+                                tags = el.get("tags", {})
+                                try:
+                                    level = int(tags.get("admin_level", 0))
+                                except (ValueError, TypeError):
+                                    continue
+                                name = tags.get("name:en") or tags.get("name") or ""
+                                if not name:
+                                    continue
+                                ctr  = el.get("center", {})
+                                clat = ctr.get("lat", lat)
+                                clon = ctr.get("lon", lon)
+                                # Snap carries the display name at this level, approximate
+                                # parent fields from the centre (shown in dropdown only),
+                                # and the centroid for Photon reverse lookup on pick.
+                                if level == 2:
+                                    snap = {"country": name,
+                                            "code": tags.get("ISO3166-1:alpha2", "").upper(),
+                                            "state": "", "county": "", "muni": "",
+                                            "_clat": clat, "_clon": clon, "_level": 2}
+                                elif level == 4:
+                                    snap = {"country": c_country, "code": c_code,
+                                            "state": name, "county": "", "muni": "",
+                                            "_clat": clat, "_clon": clon, "_level": 4}
+                                elif level == 6:
+                                    snap = {"country": c_country, "code": c_code,
+                                            "state": c_state, "county": _clean_county(name),
+                                            "muni": "",
+                                            "_clat": clat, "_clon": clon, "_level": 6}
+                                elif level == 8:
+                                    snap = {"country": c_country, "code": c_code,
+                                            "state": c_state, "county": c_county,
+                                            "muni": name,
+                                            "_clat": clat, "_clon": clon, "_level": 8}
+                                else:
+                                    continue
+                                # Deduplicate by display fields only (ignore private _ keys).
+                                display = {k: v for k, v in snap.items() if not k.startswith("_")}
+                                if display != {k: v for k, v in centre.items() if not k.startswith("_")} \
+                                        and not any(
+                                            display == {k: v for k, v in s.items() if not k.startswith("_")}
+                                            for s in snapshots
+                                        ):
                                     snapshots.append(snap)
 
                             def _show_warn(btn, tip, items_col, field_key, on_pick,
@@ -730,43 +739,54 @@ def index():
                                 btn.classes(remove="hidden")
                                 btn.update()
 
-                            def _apply_snap(snap: dict) -> None:
-                                """Write all hierarchy fields from snap and dismiss all warnings."""
+                            async def _apply_snap(snap: dict) -> None:
+                                """Reverse-geocode the snap's centroid via Photon to get the
+                                correct full hierarchy, then fill fields down to snap's level."""
+                                clat  = snap["_clat"]
+                                clon  = snap["_clon"]
+                                level = snap["_level"]
+                                try:
+                                    async with httpx.AsyncClient(timeout=8) as cl:
+                                        rp = await cl.get(
+                                            "https://photon.komoot.io/reverse",
+                                            params={"lat": clat, "lon": clon, "lang": "en"},
+                                            headers={"User-Agent": "EntomologicalCollection/1.0"},
+                                        )
+                                        rp.raise_for_status()
+                                        feats = rp.json().get("features", [])
+                                        p = feats[0]["properties"] if feats else {}
+                                except Exception:
+                                    p = {}
                                 state["populating"] = True
-                                country_in.value = snap["country"]
-                                code_in.value    = snap["code"]
-                                state_in.value   = snap["state"]
-                                county_in.value  = snap["county"]
-                                muni_in.value    = snap["muni"]
+                                country_in.value = p.get("country", "") or snap["country"]
+                                code_in.value    = (p.get("countrycode", "") or snap["code"]).upper()
+                                state_in.value   = p.get("state", "")   if level >= 4 else ""
+                                county_in.value  = _clean_county(
+                                    p.get("county") or p.get("district") or ""
+                                ) if level >= 6 else ""
+                                muni_in.value    = (
+                                    p.get("city") or p.get("locality") or ""
+                                ) if level >= 8 else ""
                                 state["populating"] = False
                                 for _b in (_cntry_warn, _code_warn, _state_warn,
                                            _county_warn, _muni_warn):
                                     _b.classes(add="hidden")
                                 _on_event_field_edit()
 
-                            def _pick_country(snap: dict) -> None:
-                                _apply_snap(snap)
-
-                            def _pick_state(snap: dict) -> None:
-                                _apply_snap(snap)
-
-                            def _pick_county(snap: dict) -> None:
-                                _apply_snap(snap)
-
-                            def _pick_muni(snap: dict) -> None:
-                                _apply_snap(snap)
+                            def _pick(snap: dict) -> None:
+                                asyncio.ensure_future(_apply_snap(snap))
 
                             _show_warn(_cntry_warn, _cntry_tip, _cntry_items,
-                                       "country", _pick_country)
+                                       "country", _pick)
                             _show_warn(_code_warn, _code_tip, _code_items,
-                                       "code", _pick_country,
+                                       "code", _pick,
                                        label_fn=lambda c, s: f"{c} ({s['country']})")
                             _show_warn(_state_warn,  _state_tip,  _state_items,
-                                       "state",   _pick_state)
+                                       "state",   _pick)
                             _show_warn(_county_warn, _county_tip, _county_items,
-                                       "county",  _pick_county)
+                                       "county",  _pick)
                             _show_warn(_muni_warn,   _muni_tip,   _muni_items,
-                                       "muni",    _pick_muni)
+                                       "muni",    _pick)
 
                         def _on_map_change(lat: float, lon: float, unc):
                             lat_in.value    = str(round(lat, 7))
