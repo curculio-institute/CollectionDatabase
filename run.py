@@ -7,6 +7,6 @@ ui.run(
     title="Collection",
     port=8080,
     reload=False,
-    show=True,
+    show=False,
     favicon="🪲",
 )
