@@ -634,12 +634,10 @@ def index():
                             }
                             snapshots: list[dict] = [centre]
 
-                            # Sample 8 equally-spaced points on the circle perimeter and use
-                            # Overpass is_in() to find which admin areas contain each point.
-                            # is_in() uses precomputed area data — much fewer results than
-                            # way(around:...) which returns every way inside the full disk.
-                            # Levels 2=country, 4=state, 6=county, 8=municipality only;
-                            # 3/5/7 are sub-state intermediaries not used in DwC fields.
+                            # Query each of 8 perimeter points individually so we get the
+                            # complete admin hierarchy (country→state→county→muni) per point.
+                            # A merged query loses point association, making parent fields wrong
+                            # when a municipality sits in a different state than the centre.
                             r_m = int(radius_m)
                             perimeter_pts = [
                                 (
@@ -648,65 +646,58 @@ def index():
                                 )
                                 for a in range(0, 360, 45)
                             ]
-                            isin_lines = ["[out:json][timeout:20];"]
-                            for i, (la, lo) in enumerate(perimeter_pts):
-                                isin_lines.append(f"is_in({la:.6f},{lo:.6f})->.p{i};")
-                            isin_lines.append("(")
-                            for i in range(len(perimeter_pts)):
-                                isin_lines.append(
-                                    f'  rel(pivot.p{i})["boundary"="administrative"]["admin_level"~"^(2|4|6|8)$"];'
+                            _OVP_UA = {"User-Agent": "Mozilla/5.0 (compatible; EntomologicalCollection/1.0)"}
+                            _OVP_URL = "https://overpass-api.de/api/interpreter"
+
+                            async def _isin(client, la, lo):
+                                q = (
+                                    f"[out:json][timeout:10];"
+                                    f"is_in({la:.6f},{lo:.6f})->.p;"
+                                    f'rel(pivot.p)["boundary"="administrative"]["admin_level"~"^(2|4|6|8)$"];'
+                                    f"out tags;"
                                 )
-                            isin_lines.append(");")
-                            isin_lines.append("out tags;")
-                            overpass_query = "\n".join(isin_lines)
+                                try:
+                                    resp = await client.post(_OVP_URL, data={"data": q}, headers=_OVP_UA)
+                                    if resp.is_success:
+                                        return resp.json().get("elements", [])
+                                except asyncio.CancelledError:
+                                    raise
+                                except Exception:
+                                    pass
+                                return []
+
                             try:
-                                async with httpx.AsyncClient(timeout=25) as c:
-                                    r = await c.post(
-                                        "https://overpass-api.de/api/interpreter",
-                                        data={"data": overpass_query},
-                                        # Overpass blocks non-browser User-Agents with 406.
-                                        headers={"User-Agent": "Mozilla/5.0 (compatible; EntomologicalCollection/1.0)"},
+                                async with httpx.AsyncClient(timeout=15) as c:
+                                    point_results = await asyncio.gather(
+                                        *[_isin(c, la, lo) for la, lo in perimeter_pts]
                                     )
-                                    if not r.is_success:
-                                        ui.notify(f"Boundary check failed: HTTP {r.status_code}", type="warning")
-                                        return
-                                    elements = r.json().get("elements", [])
                             except asyncio.CancelledError:
                                 return
                             except Exception as ex:
                                 ui.notify(f"Boundary check error: {ex}", type="warning")
                                 return
 
-                            for el in elements:
-                                tags = el.get("tags", {})
-                                try:
-                                    level = int(tags.get("admin_level", 0))
-                                except (ValueError, TypeError):
-                                    continue
-                                # Prefer English name to match Photon's lang=en output.
-                                name = tags.get("name:en") or tags.get("name") or ""
-                                if not name:
-                                    continue
-
-                                if level == 2:
-                                    code = tags.get("ISO3166-1:alpha2", "").upper()
-                                    snap = {"country": name, "code": code,
-                                            "state": "", "county": "", "muni": ""}
-                                elif level == 4:
-                                    snap = {"country": c_country, "code": c_code,
-                                            "state": name, "county": "", "muni": ""}
-                                elif level == 6:
-                                    snap = {"country": c_country, "code": c_code,
-                                            "state": c_state,
-                                            "county": _clean_county(name), "muni": ""}
-                                elif level == 8:
-                                    snap = {"country": c_country, "code": c_code,
-                                            "state": c_state, "county": c_county,
-                                            "muni": name}
-                                else:
-                                    continue
-
-                                if snap not in snapshots:
+                            for elements in point_results:
+                                snap: dict = {"country": "", "code": "", "state": "", "county": "", "muni": ""}
+                                for el in elements:
+                                    tags = el.get("tags", {})
+                                    try:
+                                        level = int(tags.get("admin_level", 0))
+                                    except (ValueError, TypeError):
+                                        continue
+                                    name = tags.get("name:en") or tags.get("name") or ""
+                                    if not name:
+                                        continue
+                                    if level == 2:
+                                        snap["country"] = name
+                                        snap["code"]    = tags.get("ISO3166-1:alpha2", "").upper()
+                                    elif level == 4:
+                                        snap["state"]  = name
+                                    elif level == 6:
+                                        snap["county"] = _clean_county(name)
+                                    elif level == 8:
+                                        snap["muni"]   = name
+                                if snap != centre and snap not in snapshots and any(snap.values()):
                                     snapshots.append(snap)
 
                             def _show_warn(btn, tip, items_col, field_key, on_pick,
@@ -739,30 +730,31 @@ def index():
                                 btn.classes(remove="hidden")
                                 btn.update()
 
-                            def _pick_country(snap: dict) -> None:
+                            def _apply_snap(snap: dict) -> None:
+                                """Write all hierarchy fields from snap and dismiss all warnings."""
+                                state["populating"] = True
                                 country_in.value = snap["country"]
                                 code_in.value    = snap["code"]
-                                _wipe_from("country")
-                                _cntry_warn.classes(add="hidden")
-                                _code_warn.classes(add="hidden")
+                                state_in.value   = snap["state"]
+                                county_in.value  = snap["county"]
+                                muni_in.value    = snap["muni"]
+                                state["populating"] = False
+                                for _b in (_cntry_warn, _code_warn, _state_warn,
+                                           _county_warn, _muni_warn):
+                                    _b.classes(add="hidden")
                                 _on_event_field_edit()
+
+                            def _pick_country(snap: dict) -> None:
+                                _apply_snap(snap)
 
                             def _pick_state(snap: dict) -> None:
-                                state_in.value = snap["state"]
-                                _wipe_from("state")
-                                _state_warn.classes(add="hidden")
-                                _on_event_field_edit()
+                                _apply_snap(snap)
 
                             def _pick_county(snap: dict) -> None:
-                                county_in.value = snap["county"]
-                                _wipe_from("county")
-                                _county_warn.classes(add="hidden")
-                                _on_event_field_edit()
+                                _apply_snap(snap)
 
                             def _pick_muni(snap: dict) -> None:
-                                muni_in.value = snap["muni"]
-                                _muni_warn.classes(add="hidden")
-                                _on_event_field_edit()
+                                _apply_snap(snap)
 
                             _show_warn(_cntry_warn, _cntry_tip, _cntry_items,
                                        "country", _pick_country)
