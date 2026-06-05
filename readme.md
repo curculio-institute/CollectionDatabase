@@ -15,4 +15,5 @@ On Linux, having python and conda installed should be sufficient.
 - conda activate collection
 - alembic upgrade head (create/migrate the database)
 - python run.py (starts the app at http://127.0.0.1:8080)
+
 On Windows it will also run, but I have not tested to figure out how.
