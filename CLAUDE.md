@@ -5,7 +5,12 @@ Project context and working agreement for Claude Code. Read this before writing 
 ---
 
 ## To do:
-- Map popup: place "locate" button next to "clear marker"; both should be formatted the same way (blue) as the map, ✕ clear and lookup buttons.
+- Workflows: getting printing of locality labels in order, get print queue in order
+- Workflows
+  - staging while mounting specimens: Adding occurrence, add number of specimen and assign identifiers, prepare to print, records will later be updated when identifications are added
+  - import whole dataset: will need some work on things like having taxon names that are not linked to parentNameUsageID
+  - data analysis tools, map of the collection
+  - data security: what happens if program crashes unexpectedly? warning when closing page?
 
 ## 1. What this project is
 

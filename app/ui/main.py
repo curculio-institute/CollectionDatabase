@@ -24,10 +24,17 @@ import app.services.taxonomy as tax_svc
 import app.services.identifiers as id_svc
 import app.services.labels as lbl_svc
 import app.services.print_queue as pq_svc
+from app.config import get_config, save_config
 from app.models import CollectionObject, CollectingEvent, TaxonDetermination, LabelCode
 from app.ui.taxon_search import build_taxon_search
 from app.ui.import_assign import build_import_assign_tab
 from app.ui.map_picker import add_map_assets, build_map_picker
+from app.ui.bio_object_search import build_bio_object_search
+from app.services.biological import (
+    sync_biological_relationships,
+    get_relationship_options,
+    save_biological_association,
+)
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -287,7 +294,10 @@ def index():
       .rank-subtribe  { font-size:.85rem; font-style:italic; }
       .rank-genus     { font-size:.875rem;font-weight:700; font-style:italic; }
       .rank-subgenus  { font-size:.85rem; font-style:italic; }
-      .rank-species   { font-size:.85rem; font-style:italic; }
+      .rank-species     { font-size:.85rem; font-style:italic; }
+      .rank-subspecies  { font-size:.85rem; font-style:italic; }
+      .rank-variety     { font-size:.85rem; font-style:italic; }
+      .rank-form        { font-size:.85rem; font-style:italic; }
       .rank-synonym   { font-size:.82rem; font-style:italic;
                         color:var(--tp-base-soft); }
       /* count chips */
@@ -308,12 +318,25 @@ def index():
       .lookup-ok-fade { animation: lookup-fade 1s ease-in 0.3s forwards; }
     </style>""")
 
+    # ── Mutable list — bio-object search reads this on each keystroke ────
+    # Mutated in-place by the "Show animals" toggle and the settings dialog.
+    bio_codes: list[str] = list(get_config().bio_assoc_default_codes)
+
+    # ── Settings dialog (content appended at end of index()) ─────────────
+    settings_dialog = ui.dialog()
+
     # ── header ───────────────────────────────────────────────────────────
     with ui.header().classes("app-header items-center gap-4"):
         ui.label("Collection").style(
             "font-size:1.1rem; font-weight:300; letter-spacing:.12em;"
         )
         ui.space()
+        (
+            ui.button(icon="settings", on_click=settings_dialog.open)
+            .props("flat round dense")
+            .style("color:rgb(156,163,175)")
+            .tooltip("Settings")
+        )
         (
             ui.button(icon="restart_alt", on_click=lambda: os.execv(sys.executable, [sys.executable] + sys.argv))
             .props("flat round dense")
@@ -328,6 +351,17 @@ def index():
         )
 
     ui.timer(0.1, _init_theme, once=True)
+
+    # ── Sync TW biological relationships once per session (background) ───
+    async def _bio_sync():
+        try:
+            with _sf() as s:
+                with s.begin():
+                    await sync_biological_relationships(s)
+        except Exception:
+            pass  # TW unreachable — local rows serve as fallback
+
+    asyncio.create_task(_bio_sync())
 
     # ── tab bar ──────────────────────────────────────────────────────────
     with ui.element("div").classes("app-tabs w-full sticky top-0").style("z-index:200"):
@@ -355,6 +389,9 @@ def index():
         with ui.tab_panel("digitize"):
             # ── per-connection state ─────────────────────────────────────
             state = {"event_id": None, "populating": False}
+            bio_state: dict = {
+                "associations": [],  # list of {rel_id, rel_name, taxon_id, taxon_label}
+            }
 
             def _event_opts() -> dict:
                 return _with_session(
@@ -382,7 +419,35 @@ def index():
 
             with ui.column().classes("w-full max-w-5xl mx-auto px-4 pt-6 pb-16 gap-4"):
 
-                # ── TAXON ────────────────────────────────────────────────
+                # ── SPECIMEN ─────────────────────────────────────────────
+                with ui.card().classes("w-full shadow-sm"):
+                    ui.label("Specimen").classes("section-label")
+                    ui.separator().classes("mb-3")
+
+                    def _reserved_opts() -> dict:
+                        return _with_session(id_svc.reserved_codes)
+
+                    with ui.row().classes("w-full flex-wrap gap-3 items-end"):
+                        cat_num = ui.select(
+                            options={c: c for c in _reserved_opts()},
+                            with_input=True,
+                            clearable=True,
+                            label="identifier *",
+                        ).classes("w-32")
+                        sex_sel  = ui.select(SEX_OPTIONS, label="sex").classes("w-28")
+                        count_in = ui.number("n", value=1, min=0, precision=0).classes("w-20")
+                        preps_in = ui.input("preparations", placeholder="pinned, in ethanol…").classes("flex-1 min-w-40")
+                    with ui.expansion("More fields").classes("w-full mt-2"):
+                        with ui.grid(columns=4).classes("w-full gap-3"):
+                            stage_sel = ui.select(LIFE_STAGE_OPTIONS, label="lifeStage").classes("col-span-1")
+                            type_in   = ui.input("typeStatus").classes("col-span-1")
+                            disp_sel  = ui.select(DISPOSITION_OPTIONS, label="disposition",
+                                                   value="in collection").classes("col-span-1")
+                            basis_sel = ui.select(BASIS_OPTIONS, label="basisOfRecord",
+                                                   value="PreservedSpecimen").classes("col-span-1")
+                        rem_in = ui.input("occurrenceRemarks").classes("w-full mt-3")
+
+                # ── IDENTIFICATION ────────────────────────────────────────
                 with ui.card().classes("w-full shadow-sm"):
                     ui.label("Identification").classes("section-label")
                     ui.separator().classes("mb-3")
@@ -891,32 +956,98 @@ def index():
 
                     event_sel.on_value_change(_on_event_selected)
 
-                # ── SPECIMEN ─────────────────────────────────────────────
+                # ── BIOLOGICAL ASSOCIATIONS ───────────────────────────────
                 with ui.card().classes("w-full shadow-sm"):
-                    ui.label("Specimen").classes("section-label")
+                    ui.label("Biological Associations").classes("section-label")
                     ui.separator().classes("mb-3")
-                    def _reserved_opts() -> dict:
-                        return _with_session(id_svc.reserved_codes)
 
-                    with ui.row().classes("w-full flex-wrap gap-3 items-end"):
-                        cat_num = ui.select(
-                            options={c: c for c in _reserved_opts()},
-                            with_input=True,
+                    # Relationship selector
+                    rel_options_list = _with_session(get_relationship_options)
+                    rel_sel = (
+                        ui.select(
+                            options={r.id: r.name for r in rel_options_list},
+                            label="Relationship",
                             clearable=True,
-                            label="identifier *",
-                        ).classes("w-32")
-                        sex_sel  = ui.select(SEX_OPTIONS, label="sex").classes("w-28")
-                        count_in = ui.number("n", value=1, min=0, precision=0).classes("w-20")
-                        preps_in = ui.input("preparations", placeholder="pinned, in ethanol…").classes("flex-1 min-w-40")
-                    with ui.expansion("More fields").classes("w-full mt-2"):
-                        with ui.grid(columns=4).classes("w-full gap-3"):
-                            stage_sel = ui.select(LIFE_STAGE_OPTIONS, label="lifeStage").classes("col-span-1")
-                            type_in   = ui.input("typeStatus").classes("col-span-1")
-                            disp_sel  = ui.select(DISPOSITION_OPTIONS, label="disposition",
-                                                   value="in collection").classes("col-span-1")
-                            basis_sel = ui.select(BASIS_OPTIONS, label="basisOfRecord",
-                                                   value="PreservedSpecimen").classes("col-span-1")
-                        rem_in = ui.input("occurrenceRemarks").classes("w-full mt-3")
+                        )
+                        .classes("w-full mb-3")
+                        .tooltip("Select the type of biological association")
+                    )
+
+                    # Object taxon search — bio_codes list is read on each keystroke
+                    bio_obj_state = build_bio_object_search(_sf, bio_codes)
+
+                    with ui.row().classes("items-center gap-3 mt-3"):
+                        show_animals_cb = ui.checkbox(
+                            "Show animals too",
+                            value=False,
+                        )
+
+                        def _on_show_animals(e):
+                            if e.value:
+                                bio_codes.clear()  # empty = no nomenclatural code filter
+                            else:
+                                bio_codes.clear()
+                                bio_codes.extend(get_config().bio_assoc_default_codes)
+                            bio_obj_state["clear"]()
+
+                        show_animals_cb.on_value_change(_on_show_animals)
+
+                        ui.space()
+
+                        def _add_assoc():
+                            rel_id   = rel_sel.value
+                            taxon_id = bio_obj_state["taxon_id"]
+                            if not rel_id:
+                                ui.notify("Select a relationship first.", type="warning")
+                                return
+                            if not taxon_id:
+                                ui.notify("Select an associated taxon first.", type="warning")
+                                return
+                            if taxon_id == -1:
+                                ui.notify("Taxon is still being imported — please wait a moment.", type="warning")
+                                return
+                            rel_name = rel_sel.options.get(rel_id, str(rel_id))
+                            bio_state["associations"].append({
+                                "rel_id":      rel_id,
+                                "rel_name":    rel_name,
+                                "taxon_id":    taxon_id,
+                                "taxon_label": bio_obj_state["label"],
+                            })
+                            bio_obj_state["clear"]()
+                            rel_sel.value = None
+                            _refresh_assoc_list()
+
+                        (
+                            ui.button("Add association", icon="add", on_click=_add_assoc)
+                            .props("flat color=secondary")
+                        )
+
+                    assoc_list_col = ui.column().classes("w-full gap-1 mt-3")
+
+                    def _refresh_assoc_list():
+                        assoc_list_col.clear()
+                        with assoc_list_col:
+                            if not bio_state["associations"]:
+                                ui.label("No associations added — associations are saved atomically when the specimen is saved.") \
+                                    .classes("text-sm italic") \
+                                    .style("color:var(--tp-base-soft)")
+                            for i, a in enumerate(bio_state["associations"]):
+                                with ui.row().classes("items-center gap-2 w-full"):
+                                    ui.icon("link", size="xs") \
+                                        .style("color:var(--tp-secondary); opacity:.7")
+                                    ui.label(f"{a['rel_name']} — {a['taxon_label']}") \
+                                        .classes("text-sm flex-1")
+                                    (
+                                        ui.button("", icon="close")
+                                        .props("flat dense round size=xs")
+                                        .on_click(lambda _, idx=i: _remove_assoc(idx))
+                                    )
+
+                    def _remove_assoc(idx: int):
+                        bio_state["associations"].pop(idx)
+                        _refresh_assoc_list()
+
+                    _refresh_assoc_list()
 
                 # ── SAVE BAR ─────────────────────────────────────────────
                 with ui.row().classes("w-full items-center gap-4 px-1"):
@@ -1025,6 +1156,11 @@ def index():
                     stage_sel.value = ""
                     disp_sel.value  = "in collection"
                     basis_sel.value = "PreservedSpecimen"
+                    # Clear bio associations
+                    bio_state["associations"].clear()
+                    bio_obj_state["clear"]()
+                    rel_sel.value = None
+                    _refresh_assoc_list()
                     if not keep_event.value:
                         event_sel.value = None
                         state["event_id"] = None
@@ -1062,6 +1198,14 @@ def index():
                                 pq_svc.enqueue_data(session, co.id)
                                 if taxon_state["taxon_id"]:
                                     pq_svc.enqueue_determination(session, co.id)
+                                # Save biological associations atomically with the specimen
+                                for assoc in bio_state["associations"]:
+                                    save_biological_association(
+                                        session,
+                                        collection_object_id=co.id,
+                                        biological_relationship_id=assoc["rel_id"],
+                                        object_taxon_id=assoc["taxon_id"],
+                                    )
                         event_sel.options = _event_opts()
                         cat_num.options = {c: c for c in _reserved_opts()}
                         cat_num.update()
@@ -1141,7 +1285,10 @@ def index():
                           <span v-if="props.node.synonym"
                                 style="color:var(--tp-base-soft); font-size:.8rem;
                                        font-style:normal; margin-right:-2px;">=</span>
-                          <span :class="'rank-' + props.node.rank">{{ props.node.label }}</span>
+                          <span :class="'rank-' + props.node.rank">{{ props.node.name }}</span>
+                          <span v-if="props.node.auth"
+                                style="font-style:normal; font-size:.78rem;
+                                       color:var(--tp-base-soft);">{{ props.node.auth }}</span>
                           <span v-if="props.node.spp_count > 0"
                                 class="tax-stat-chip tax-stat-spp">
                             {{ props.node.spp_count }}&nbsp;spp.
@@ -1546,3 +1693,70 @@ def index():
             await tax_tree.run_method("expandAll")
 
     main_tabs.on_value_change(_on_tab_change)
+
+    # ── Settings dialog content ───────────────────────────────────────────
+    # Filled here so bio_codes (defined earlier in index()) is in scope.
+    _known_codes = ["ICN", "ICZN", "ICNP", "ICVCN"]
+    _code_cbs: dict[str, object] = {}
+
+    with settings_dialog:
+        with ui.card().classes("min-w-96"):
+            ui.label("Settings").classes("section-label mb-3")
+            ui.separator().classes("mb-3")
+
+            # ── TaxonWorks connection ────────────────────────────────────
+            ui.label("TaxonWorks connection").classes("text-sm font-medium mb-1")
+            cfg_now = get_config()
+            tw_base_in = ui.input(
+                "API base URL",
+                value=cfg_now.tw_base,
+                placeholder="https://sfg.taxonworks.org/api/v1",
+            ).classes("w-full mt-1")
+            tw_token_in = ui.input(
+                "Project token",
+                value=cfg_now.tw_token,
+                password=True,
+                password_toggle_button=True,
+            ).classes("w-full mt-2")
+            tp_base_in = ui.input(
+                "TaxonPages base URL",
+                value=cfg_now.taxonpages_base,
+                placeholder="https://catalog.curculionoidea.org",
+            ).classes("w-full mt-2")
+
+            ui.separator().classes("my-3")
+
+            # ── Bio-association default codes ────────────────────────────
+            ui.label("Biological association default nomenclatural codes") \
+                .classes("text-sm font-medium mb-1")
+            ui.label(
+                "The bio-association object search filters to these codes by default. "
+                "Override per-session with the 'Show animals too' checkbox."
+            ).classes("text-xs mb-2").style("color:var(--tp-base-soft)")
+
+            cfg_now2 = get_config()
+            for code in _known_codes:
+                _code_cbs[code] = ui.checkbox(
+                    code, value=code in cfg_now2.bio_assoc_default_codes
+                )
+
+            def _save_settings():
+                selected = [c for c, cb in _code_cbs.items() if cb.value]
+                if not selected:
+                    ui.notify("Select at least one nomenclatural code.", type="warning")
+                    return
+                cfg = get_config()
+                cfg.tw_base        = tw_base_in.value.strip() or cfg.tw_base
+                cfg.tw_token       = tw_token_in.value.strip()
+                cfg.taxonpages_base = tp_base_in.value.strip() or cfg.taxonpages_base
+                cfg.bio_assoc_default_codes = selected
+                save_config(cfg)
+                # Propagate to active bio_codes filter in place
+                bio_codes.clear()
+                bio_codes.extend(selected)
+                settings_dialog.close()
+                ui.notify("Settings saved.", type="positive")
+
+            with ui.row().classes("mt-4 gap-2 justify-end w-full"):
+                ui.button("Cancel", on_click=settings_dialog.close).props("flat")
+                ui.button("Save", on_click=_save_settings).props("color=secondary")

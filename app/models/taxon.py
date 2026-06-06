@@ -57,6 +57,13 @@ class Taxon(Base, TimestampMixin):
         "taxonworksOtuID", Integer, nullable=True
     )
 
+    # Nomenclatural code governing this name, uppercased DwC value.
+    # Set from source API: TW returns "iczn"/"icn"/… → stored as "ICZN"/"ICN"/…
+    # POWO returns "Botanical" → stored as "ICN".
+    nomenclatural_code: Mapped[Optional[str]] = mapped_column(
+        "dwc:nomenclaturalCode", String, nullable=True
+    )
+
     parent: Mapped[Optional[Taxon]] = relationship(
         "Taxon", foreign_keys="Taxon.parent_name_usage_id",
         remote_side="Taxon.id", back_populates="children",

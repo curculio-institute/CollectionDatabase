@@ -1,0 +1,8 @@
+{
+  "tw_base": "https://sfg.taxonworks.org/api/v1",
+  "tw_token": "Ots0-yen4dVefn0Etyxvgw",
+  "taxonpages_base": "https://catalog.curculionoidea.org",
+  "bio_assoc_default_codes": [
+    "ICN"
+  ]
+}

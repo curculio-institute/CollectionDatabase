@@ -147,9 +147,11 @@ def _build_node(
     syns = sorted(syn_map.get(taxon.id, []), key=format_scientific_name)
     syn_nodes = [
         {
-            "id": f"syn-{s.id}",
+            "id":    f"syn-{s.id}",
             "label": format_scientific_name(s),
-            "rank": "synonym",
+            "name":  s.scientific_name or f"taxon #{s.id}",
+            "auth":  s.scientific_name_authorship or "",
+            "rank":  "synonym",
             "synonym": True,
         }
         for s in syns
@@ -166,6 +168,8 @@ def _build_node(
     node: dict = {
         "id":         f"taxon-{taxon.id}",
         "label":      format_scientific_name(taxon),
+        "name":       taxon.scientific_name or f"taxon #{taxon.id}",
+        "auth":       taxon.scientific_name_authorship or "",
         "rank":       taxon.taxon_rank or "unknown",
         "spec_count": total_spec,
         "spp_count":  total_spp,

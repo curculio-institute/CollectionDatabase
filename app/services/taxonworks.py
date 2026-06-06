@@ -2,6 +2,9 @@
 
 Only read-access (autocomplete + fetch). No writes — TW is a downstream mirror.
 Verified endpoint shapes against sfg.taxonworks.org @2026-06-04.
+
+Connection settings (base URL, token, TaxonPages URL) are read from AppConfig on
+every call so changes made in the settings dialog take effect without a restart.
 """
 from __future__ import annotations
 
@@ -9,14 +12,21 @@ import asyncio
 
 import httpx
 
-TW_BASE        = "https://sfg.taxonworks.org/api/v1"
-TW_TOKEN       = "Ots0-yen4dVefn0Etyxvgw"
-TAXONPAGES_BASE = "https://catalog.curculionoidea.org"
-_TIMEOUT       = httpx.Timeout(6.0)
+from app.config import get_config
+
+_TIMEOUT = httpx.Timeout(6.0)
+
+
+def _base() -> str:
+    return get_config().tw_base.rstrip("/")
+
+
+def _token() -> str:
+    return get_config().tw_token
 
 
 def taxonpages_url(otu_id: int) -> str:
-    return f"{TAXONPAGES_BASE}/#/otus/{otu_id}"
+    return f"{get_config().taxonpages_base.rstrip('/')}/#/otus/{otu_id}"
 
 
 async def search_taxon_names(term: str, limit: int = 20) -> list[dict]:
@@ -25,8 +35,8 @@ async def search_taxon_names(term: str, limit: int = 20) -> list[dict]:
         return []
     async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
         r = await client.get(
-            f"{TW_BASE}/taxon_names/autocomplete",
-            params={"term": term.strip(), "project_token": TW_TOKEN},
+            f"{_base()}/taxon_names/autocomplete",
+            params={"term": term.strip(), "project_token": _token()},
         )
         r.raise_for_status()
         return r.json()[:limit]
@@ -36,8 +46,8 @@ async def fetch_taxon_name(tw_id: int) -> dict | None:
     """Full taxon_name record: name, rank, cached, cached_author_year, parent_id, …"""
     async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
         r = await client.get(
-            f"{TW_BASE}/taxon_names/{tw_id}",
-            params={"project_token": TW_TOKEN},
+            f"{_base()}/taxon_names/{tw_id}",
+            params={"project_token": _token()},
         )
         if r.status_code == 404:
             return None
@@ -56,6 +66,7 @@ _ANCESTOR_RANKS: dict[str, str] = {
     "subtribe":   "subtribe",
     "genus":      "genus",
     "subgenus":   "subgenus",
+    "species":    "specific_epithet",  # needed for subspecies/variety/form name building
 }
 # Stop climbing once we hit one of these — nothing above is useful.
 _STOP_RANKS = {"order", "class", "phylum", "kingdom", "subphylum", "superorder"}
@@ -81,13 +92,14 @@ async def fetch_full_classification(tw_id: int, _depth: int = 0) -> dict | None:
     augmented = dict(record)
     parent_id = record.get("parent_id")
     seen: set[int] = {tw_id}
+    ancestor_tw_ids: dict[str, int] = {}  # field key → TW taxon_name id
 
     async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
         while parent_id and parent_id not in seen:
             seen.add(parent_id)
             r = await client.get(
-                f"{TW_BASE}/taxon_names/{parent_id}",
-                params={"project_token": TW_TOKEN},
+                f"{_base()}/taxon_names/{parent_id}",
+                params={"project_token": _token()},
             )
             if r.status_code == 404:
                 break
@@ -99,7 +111,9 @@ async def fetch_full_classification(tw_id: int, _depth: int = 0) -> dict | None:
             field  = _ANCESTOR_RANKS.get(p_rank)
 
             if field and p_name:
-                augmented.setdefault(field, p_name)   # first (nearest) ancestor wins
+                if field not in augmented:
+                    augmented[field] = p_name
+                    ancestor_tw_ids[field] = parent_id  # record TW id for OTU lookup
                 p_auth = parent.get("cached_author_year") or parent.get("cached_author")
                 if p_auth:
                     augmented.setdefault(f"{field}_authorship", p_auth)
@@ -108,6 +122,27 @@ async def fetch_full_classification(tw_id: int, _depth: int = 0) -> dict | None:
                 break
 
             parent_id = parent.get("parent_id")
+
+    # Fetch OTU IDs for all collected ancestors concurrently.
+    if ancestor_tw_ids:
+        fields_list = list(ancestor_tw_ids.keys())
+        otu_results = await asyncio.gather(
+            *[fetch_otu_id_for_taxon_name(tid) for tid in ancestor_tw_ids.values()],
+            return_exceptions=True,
+        )
+        for field, otu_id in zip(fields_list, otu_results):
+            if isinstance(otu_id, int):
+                augmented[f"{field}_otu_id"] = otu_id
+
+    # For subspecies/variety/form: build the full species name from genus + epithet
+    # so _ensure_parent_rows can create the species row as the immediate parent.
+    if "specific_epithet" in augmented and "genus" in augmented:
+        augmented.setdefault(
+            "species_name",
+            f"{augmented['genus']} {augmented['specific_epithet']}",
+        )
+        if "specific_epithet_otu_id" in augmented:
+            augmented["species_name_otu_id"] = augmented["specific_epithet_otu_id"]
 
     # Synonym detection — verified via cached_is_valid / cached_valid_taxon_name_id
     # (taxon_names API, e.g. /api/v1/taxon_names/824298).
@@ -125,13 +160,29 @@ async def fetch_full_classification(tw_id: int, _depth: int = 0) -> dict | None:
     return augmented
 
 
+async def fetch_biological_relationships() -> list[dict]:
+    """Return all BiologicalRelationship records from TW for this project.
+
+    Each record: {id, name, definition, inverted_name, …}
+    Used by sync_biological_relationships() at session start.
+    Verified endpoint: GET /api/v1/biological_relationships (no show endpoint).
+    """
+    async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
+        r = await client.get(
+            f"{_base()}/biological_relationships",
+            params={"project_token": _token(), "per": 500},
+        )
+        r.raise_for_status()
+        return r.json()
+
+
 async def fetch_otu_id_for_taxon_name(taxon_name_id: int) -> int | None:
     """Return the OTU id associated with a taxon_name_id, or None if not found.
     Used to build TaxonPages deep-link URLs."""
     async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
         r = await client.get(
-            f"{TW_BASE}/otus",
-            params={"taxon_name_id[]": taxon_name_id, "project_token": TW_TOKEN},
+            f"{_base()}/otus",
+            params={"taxon_name_id[]": taxon_name_id, "project_token": _token()},
         )
         r.raise_for_status()
         data = r.json()

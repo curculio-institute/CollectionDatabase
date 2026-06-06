@@ -116,13 +116,31 @@ def create_taxon_manual(
 @dataclass(frozen=True)
 class TaxonSearchResult:
     id: int
-    label: str
+    label: str             # full display name: "Name Authorship"
     is_synonym: bool
-    accepted_label: str | None
+    accepted_label: str | None  # full display name of accepted taxon (if synonym)
+    scientific_name: str = ""
+    authorship: str | None = None
+    family: str | None = None
+
+
+def _get_family(taxon: Taxon) -> str | None:
+    """Walk parent chain (max 10 hops) to find the family-rank ancestor."""
+    t = taxon
+    seen: set[int] = set()
+    for _ in range(10):
+        if t is None or t.id in seen:
+            break
+        if t.taxon_rank == "family":
+            return t.scientific_name
+        seen.add(t.id)
+        t = t.parent
+    return None
 
 
 def search_taxa_for_display(
-    session: Session, query: str, limit: int = 10
+    session: Session, query: str, limit: int = 10,
+    nomenclatural_codes: list[str] | None = None,
 ) -> list[TaxonSearchResult]:
     """Search taxa for the search widget: accepted names first, synonyms flagged.
 
@@ -135,6 +153,8 @@ def search_taxa_for_display(
     q = session.query(Taxon).options(joinedload(Taxon.accepted_name_usage))
     for token in query.split():
         q = q.filter(Taxon.scientific_name.ilike(f"%{token}%"))
+    if nomenclatural_codes:
+        q = q.filter(Taxon.nomenclatural_code.in_(nomenclatural_codes))
 
     order_valid_first = sa_case(
         (Taxon.accepted_name_usage_id.is_(None), 0), else_=1
@@ -154,6 +174,9 @@ def search_taxa_for_display(
             label=format_scientific_name(t),
             is_synonym=is_syn,
             accepted_label=accepted_label,
+            scientific_name=t.scientific_name or "",
+            authorship=t.scientific_name_authorship or None,
+            family=_get_family(t),
         ))
     return out
 
@@ -185,7 +208,12 @@ def _scientific_name_from_tw(tw: dict, ancestor_fields: dict) -> str:
         return f"{genus} {name}".strip()
 
     if rank in ("subspecies", "variety", "form"):
-        # Use TW's cached value (full name with authorship), strip authorship.
+        specific_epithet = ancestor_fields.get("specific_epithet", "")
+        if specific_epithet:
+            if subgenus:
+                return f"{genus} ({subgenus}) {specific_epithet} {name}".strip()
+            return f"{genus} {specific_epithet} {name}".strip()
+        # Fallback: strip authorship from TW's cached full name.
         cached = (tw.get("cached") or "").strip()
         auth = tw.get("cached_author_year") or tw.get("cached_author") or ""
         if auth and cached.endswith(auth):
@@ -212,13 +240,15 @@ def _fields_from_tw(tw: dict) -> dict:
     # Collect ancestor info injected by fetch_full_classification.
     anc: dict = {}
     for key in (
-        "taxon_order", "taxon_order_authorship",
-        "family", "family_authorship",
-        "subfamily", "subfamily_authorship",
-        "tribe", "tribe_authorship",
-        "subtribe", "subtribe_authorship",
-        "genus", "genus_authorship",
-        "subgenus", "subgenus_authorship",
+        "taxon_order", "taxon_order_authorship", "taxon_order_otu_id",
+        "family", "family_authorship", "family_otu_id",
+        "subfamily", "subfamily_authorship", "subfamily_otu_id",
+        "tribe", "tribe_authorship", "tribe_otu_id",
+        "subtribe", "subtribe_authorship", "subtribe_otu_id",
+        "genus", "genus_authorship", "genus_otu_id",
+        "subgenus", "subgenus_authorship", "subgenus_otu_id",
+        "specific_epithet", "specific_epithet_authorship",
+        "species_name", "species_name_otu_id",
     ):
         val = tw.get(key)
         if val:
@@ -226,10 +256,15 @@ def _fields_from_tw(tw: dict) -> dict:
 
     sci_name = _scientific_name_from_tw(tw, anc)
 
+    # nomenclatural_code: TW returns lowercase ("iczn", "icn", …); store uppercase.
+    raw_code = tw.get("nomenclatural_code") or ""
+    nomen_code = raw_code.upper() or None
+
     return {
         "scientific_name": sci_name,
         "taxon_rank": rank,
         "scientific_name_authorship": auth,
+        "nomenclatural_code": nomen_code,
         **anc,
     }
 
@@ -248,18 +283,23 @@ _RANK_CHAIN: list[tuple[str, str, str]] = [
     ("subtribe",  "subtribe",     "subtribe_authorship"),
     ("genus",     "genus",        "genus_authorship"),
     ("subgenus",  "subgenus",     "subgenus_authorship"),
+    ("species",   "species_name", "specific_epithet_authorship"),
 ]
 
 
-def _ensure_parent_rows(session: Session, fields: dict) -> int | None:
+def _ensure_parent_rows(
+    session: Session, fields: dict, nomenclatural_code: str | None = None
+) -> int | None:
     """Create all missing ancestor rows and return the immediate parent taxon ID.
 
     Walks _RANK_CHAIN from highest to lowest rank, stopping when it reaches
     the target rank so the caller can create that row itself.  Each row is
     created only once (matched by scientific_name + taxon_rank); existing rows
-    get their parent_name_usage_id filled in if not already set.
+    get their parent_name_usage_id and nomenclatural_code filled in if not set.
     """
     target_rank = fields.get("taxon_rank", "")
+    # Prefer explicit field value; fall back to the passed-in code.
+    nomen_code = fields.get("nomenclatural_code") or nomenclatural_code
     parent_id: int | None = None
 
     for rank_name, field_key, auth_key in _RANK_CHAIN:
@@ -271,6 +311,7 @@ def _ensure_parent_rows(session: Session, fields: dict) -> int | None:
             continue
 
         auth = fields.get(auth_key)
+        otu_id = fields.get(f"{field_key}_otu_id")
 
         existing = (
             session.query(Taxon)
@@ -284,15 +325,27 @@ def _ensure_parent_rows(session: Session, fields: dict) -> int | None:
                 taxonomic_status="accepted",
                 scientific_name_authorship=auth or None,
                 parent_name_usage_id=parent_id,
+                taxonworks_otu_id=otu_id,
+                nomenclatural_code=nomen_code,
                 created_at=_utcnow(),
                 updated_at=_utcnow(),
             )
             session.add(existing)
             session.flush()
-        elif parent_id and not existing.parent_name_usage_id:
-            existing.parent_name_usage_id = parent_id
-            existing.updated_at = _utcnow()
-            session.flush()
+        else:
+            dirty = False
+            if parent_id and not existing.parent_name_usage_id:
+                existing.parent_name_usage_id = parent_id
+                dirty = True
+            if otu_id and not existing.taxonworks_otu_id:
+                existing.taxonworks_otu_id = otu_id
+                dirty = True
+            if nomen_code and not existing.nomenclatural_code:
+                existing.nomenclatural_code = nomen_code
+                dirty = True
+            if dirty:
+                existing.updated_at = _utcnow()
+                session.flush()
 
         parent_id = existing.id
 
@@ -333,9 +386,10 @@ def get_or_create_from_tw_data(
     fields = _fields_from_tw(tw)
     sci_name = fields["scientific_name"]
     rank = fields["taxon_rank"]
+    nomen_code = fields.get("nomenclatural_code")
 
     # Ensure all ancestor rows exist; get the immediate parent ID.
-    parent_id = _ensure_parent_rows(session, fields)
+    parent_id = _ensure_parent_rows(session, fields, nomenclatural_code=nomen_code)
 
     existing = (
         session.query(Taxon)
@@ -354,6 +408,9 @@ def get_or_create_from_tw_data(
         if parent_id and not existing.parent_name_usage_id:
             existing.parent_name_usage_id = parent_id
             dirty = True
+        if nomen_code and not existing.nomenclatural_code:
+            existing.nomenclatural_code = nomen_code
+            dirty = True
         if dirty:
             existing.updated_at = _utcnow()
             session.flush()
@@ -367,6 +424,90 @@ def get_or_create_from_tw_data(
         parent_name_usage_id=parent_id,
         accepted_name_usage_id=accepted_id,
         taxonworks_otu_id=otu_id,
+        nomenclatural_code=nomen_code,
+        created_at=_utcnow(),
+        updated_at=_utcnow(),
+    )
+    session.add(t)
+    session.flush()
+    return t
+
+
+# ---------------------------------------------------------------------------
+# POWO integration
+# ---------------------------------------------------------------------------
+
+def get_or_create_from_powo_data(
+    session: Session,
+    powo_fields: dict,
+    *,
+    accepted_fields: dict | None = None,
+) -> Taxon:
+    """Find or create a local Taxon from a POWO-derived field dict.
+
+    powo_fields comes from powo.fields_from_powo(powo_record).
+    Creates family and genus ancestor rows if missing, then the species row.
+    nomenclatural_code is propagated to all rows from the POWO record.
+
+    Synonym handling: if powo_fields["is_synonym"] is True and accepted_fields
+    is provided, the accepted name is created first and the synonym row is
+    linked to it via accepted_name_usage_id.
+
+    Matching key: (scientific_name, taxon_rank) — same as TW imports.
+    """
+    sci_name   = powo_fields["scientific_name"]
+    rank       = (powo_fields.get("taxon_rank") or "species").lower()
+    auth       = powo_fields.get("scientific_name_authorship")
+    nomen_code = powo_fields.get("nomenclatural_code")
+    family     = powo_fields.get("family")
+    genus      = powo_fields.get("genus")
+    is_synonym = powo_fields.get("is_synonym", False)
+
+    # Create the accepted name first so the synonym can link to it.
+    accepted_taxon: Taxon | None = None
+    if is_synonym and accepted_fields:
+        accepted_taxon = get_or_create_from_powo_data(session, accepted_fields)
+
+    # POWO gives family → genus → species (no subfamily/tribe available).
+    ancestor_fields: dict = {"taxon_rank": rank, "nomenclatural_code": nomen_code}
+    if family:
+        ancestor_fields["family"] = family
+    if genus and rank != "genus":
+        ancestor_fields["genus"] = genus
+
+    parent_id = _ensure_parent_rows(session, ancestor_fields, nomenclatural_code=nomen_code)
+
+    existing = (
+        session.query(Taxon)
+        .filter(Taxon.scientific_name == sci_name, Taxon.taxon_rank == rank)
+        .first()
+    )
+    if existing:
+        dirty = False
+        if parent_id and not existing.parent_name_usage_id:
+            existing.parent_name_usage_id = parent_id
+            dirty = True
+        if nomen_code and not existing.nomenclatural_code:
+            existing.nomenclatural_code = nomen_code
+            dirty = True
+        if accepted_taxon and not existing.accepted_name_usage_id:
+            existing.accepted_name_usage_id = accepted_taxon.id
+            existing.taxonomic_status = "synonym"
+            dirty = True
+        if dirty:
+            existing.updated_at = _utcnow()
+            session.flush()
+        return existing
+
+    taxonomic_status = "synonym" if (is_synonym and accepted_taxon) else "accepted"
+    t = Taxon(
+        scientific_name=sci_name,
+        taxon_rank=rank,
+        taxonomic_status=taxonomic_status,
+        scientific_name_authorship=auth,
+        parent_name_usage_id=parent_id,
+        accepted_name_usage_id=accepted_taxon.id if accepted_taxon else None,
+        nomenclatural_code=nomen_code,
         created_at=_utcnow(),
         updated_at=_utcnow(),
     )
