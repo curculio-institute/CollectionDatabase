@@ -60,7 +60,7 @@ def _build_taxon_form(container, session_factory, *, taxon: Taxon | None = None)
 
         auth_in = ui.input(
             "Authorship, e.g. Linnaeus, 1758 or (Linnaeus, 1758)",
-            value=taxon.scientific_name_authorship if taxon else "",
+            value=taxon.scientific_name_authorship or "" if taxon else "",
         ).classes("w-full")
 
         nomen_sel = ui.select(
@@ -105,14 +105,15 @@ def _build_taxon_form(container, session_factory, *, taxon: Taxon | None = None)
 
     def get_fields() -> dict:
         try:
-            otu_id = int(tw_in.value.strip()) if tw_in.value.strip() else None
+            raw_otu = (tw_in.value or "").strip()
+            otu_id = int(raw_otu) if raw_otu else None
         except ValueError:
             otu_id = None
         return {
-            "scientific_name": name_in.value.strip(),
+            "scientific_name": (name_in.value or "").strip(),
             "taxon_rank": rank_sel.value or "",
             "taxonomic_status": status_sel.value or "accepted",
-            "scientific_name_authorship": auth_in.value.strip() or None,
+            "scientific_name_authorship": (auth_in.value or "").strip() or None,
             "parent_name_usage_id": parent_sel.value or None,
             "accepted_name_usage_id": accepted_sel.value or None,
             "nomenclatural_code": nomen_sel.value or None,

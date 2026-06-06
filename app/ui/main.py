@@ -1431,7 +1431,7 @@ def index():
 
                 # ── nomenclatural code tabs + manage buttons ──────────────
                 # Current code filter: None = all, "ICZN", "ICN", etc.
-                _nomen_filter: dict = {"code": None}
+                _nomen_filter: dict = {"code": "ICZN"}
 
                 with ui.card().classes("w-full shadow-sm"):
                     with ui.row().classes("items-center gap-0 w-full"):
@@ -1586,6 +1586,8 @@ def index():
                         print_btn  = ui.button("Print all", icon="print").props("color=secondary")
 
                     preview_col = ui.column().classes("w-full gap-1")
+                    # Plain-text edits keyed by print_queue.id; passed to build_pdf on print.
+                    _label_overrides: dict[int, str] = {}
 
                     TYPE_ICON  = {"data": "place", "determination": "science", "identifier": "label"}
                     TYPE_COLOR = {"data": "blue-grey", "determination": "teal", "identifier": "secondary"}
@@ -1610,13 +1612,31 @@ def index():
                                 for item in items:
                                     with ui.row().classes("items-center gap-2 w-full"):
                                         ui.icon(TYPE_ICON[item["type"]], size="xs") \
-                                          .style(f"color:var(--tp-secondary); opacity:.7")
-                                        ui.label(item["text"]).classes("text-sm flex-1")
+                                          .style("color:var(--tp-secondary); opacity:.7")
+                                        if item["type"] == "data":
+                                            # Editable field — persists user corrections
+                                            # across refreshes via _label_overrides.
+                                            init_val = _label_overrides.get(
+                                                item["id"], item.get("label_text", item["text"])
+                                            )
+                                            inp = (
+                                                ui.input(value=init_val)
+                                                .classes("flex-1")
+                                                .props("dense outlined")
+                                                .style("font-size:0.75rem")
+                                            )
+                                            inp.on_value_change(
+                                                lambda e, qid=item["id"]:
+                                                    _label_overrides.__setitem__(qid, e.value)
+                                            )
+                                        else:
+                                            ui.label(item["text"]).classes("text-sm flex-1")
                                         ui.button("", icon="close") \
                                           .props("flat dense round size=xs") \
                                           .on_click(lambda _, qid=item["id"]: _remove_item(qid))
 
                     def _remove_item(queue_id: int):
+                        _label_overrides.pop(queue_id, None)
                         with _sf() as session:
                             with session.begin():
                                 pq_svc.remove_item(session, queue_id)
@@ -1627,12 +1647,15 @@ def index():
                         if summary.total == 0:
                             ui.notify("Queue is empty.", type="warning")
                             return
-                        pdf = _with_session(pq_svc.build_pdf)
+                        pdf = _with_session(
+                            lambda s: pq_svc.build_pdf(s, dict(_label_overrides))
+                        )
                         ui.download(pdf, filename="labels_queue.pdf",
                                     media_type="application/pdf")
                         with _sf() as session:
                             with session.begin():
                                 pq_svc.clear_queue(session)
+                        _label_overrides.clear()
                         _refresh_queue()
                         ui.notify("Labels downloaded — queue cleared.", type="positive")
 
@@ -1874,21 +1897,31 @@ def index():
                                         from app.services.taxa import format_scientific_name
                                         taxon_label = format_scientific_name(det.taxon)
 
+                                    assoc_names = [
+                                        ba.object_taxon.scientific_name
+                                        for ba in co.subject_associations
+                                        if ba.object_taxon
+                                    ]
+
                                     rows.append(lbl_svc.OccurrenceLabel(
                                         code=code,
                                         country=ev.country if ev else None,
+                                        country_code=ev.country_code if ev else None,
                                         state_province=ev.state_province if ev else None,
+                                        municipality=ev.municipality if ev else None,
                                         county=ev.county if ev else None,
                                         locality=ev.locality if ev else None,
                                         verbatim_locality=ev.verbatim_locality if ev else None,
                                         latitude=ev.decimal_latitude if ev else None,
                                         longitude=ev.decimal_longitude if ev else None,
+                                        coordinate_uncertainty_m=ev.coordinate_uncertainty_in_meters if ev else None,
                                         elevation_min=ev.minimum_elevation_in_meters if ev else None,
                                         elevation_max=ev.maximum_elevation_in_meters if ev else None,
                                         event_date=ev.event_date if ev else None,
                                         recorded_by=ev.recorded_by if ev else None,
                                         habitat=ev.habitat if ev else None,
                                         taxon=taxon_label,
+                                        associated_species=assoc_names or None,
                                     ))
 
                         pdf = lbl_svc.occurrence_sheet(rows)

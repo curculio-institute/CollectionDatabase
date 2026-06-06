@@ -30,6 +30,8 @@ from typing import Optional
 import qrcode
 from weasyprint import HTML
 
+from app.services.label_text import abbreviate_name
+
 
 def _e(v: str | None) -> str:
     """HTML-escape a field value; returns empty string for None."""
@@ -81,44 +83,82 @@ em {{ font-style: italic; }}
 
 @dataclass
 class DataLabel:
-    country: Optional[str]           = None
-    state_province: Optional[str]    = None
-    county: Optional[str]            = None
-    locality: Optional[str]          = None
-    verbatim_locality: Optional[str] = None
-    latitude: Optional[float]        = None
-    longitude: Optional[float]       = None
-    elevation_min: Optional[int]     = None
-    elevation_max: Optional[int]     = None
-    event_date: Optional[str]        = None
-    recorded_by: Optional[str]       = None
-    habitat: Optional[str]           = None
+    country: Optional[str]                  = None
+    country_code: Optional[str]             = None
+    state_province: Optional[str]           = None
+    municipality: Optional[str]             = None
+    county: Optional[str]                   = None
+    locality: Optional[str]                 = None
+    verbatim_locality: Optional[str]        = None
+    latitude: Optional[float]               = None
+    longitude: Optional[float]              = None
+    coordinate_uncertainty_m: Optional[float] = None
+    elevation_min: Optional[int]            = None
+    elevation_max: Optional[int]            = None
+    event_date: Optional[str]               = None
+    recorded_by: Optional[str]              = None
+    habitat: Optional[str]                  = None
+    associated_species: Optional[list[str]] = None
+    # When set, bypasses computed formatting and renders this plain text directly.
+    text_override: Optional[str]            = None
+
+
+_COUNTRY_THRESHOLD = 10  # chars; longer names use the 2-letter code
 
 
 def _data_line1(lbl: DataLabel) -> str:
-    header = ": ".join(p for p in [_e(lbl.country), _e(lbl.state_province)] if p)
-    place  = _e(lbl.verbatim_locality or lbl.locality or "")
+    if lbl.text_override is not None:
+        return _e(lbl.text_override)
+
+    country = lbl.country or ""
+    code = lbl.country_code or ""
+    if country and len(country) > _COUNTRY_THRESHOLD and code:
+        country_str = _e(code)
+    else:
+        country_str = _e(country)
+
+    parts: list[str] = []
+
+    for f in (lbl.state_province, lbl.municipality, lbl.verbatim_locality or lbl.locality):
+        if f:
+            parts.append(_e(f))
+
     if lbl.latitude is not None and lbl.longitude is not None:
         coords = f"{lbl.latitude:.4f}, {lbl.longitude:.4f}"
-    else:
-        coords = ""
+        if lbl.coordinate_uncertainty_m is not None:
+            u = lbl.coordinate_uncertainty_m
+            coords += f" ±{round(u)}m" if u < 1000 else f" ±{u / 1000:.1f}km"
+        parts.append(coords)
+
     if lbl.elevation_min is not None:
         elev = (f"{lbl.elevation_min}–{lbl.elevation_max} m"
                 if lbl.elevation_max and lbl.elevation_max != lbl.elevation_min
                 else f"{lbl.elevation_min} m")
-    else:
-        elev = ""
-    parts = [p for p in [header, _e(lbl.county), place, coords, elev, _e(lbl.habitat)] if p]
-    return ", ".join(parts)
+        parts.append(elev)
+
+    if lbl.habitat:
+        parts.append(_e(lbl.habitat))
+
+    if lbl.associated_species:
+        for sp in lbl.associated_species:
+            parts.append(f"<em>{_html.escape(sp)}</em>")
+
+    body = ", ".join(parts)
+    if country_str:
+        return f"{country_str}: {body}" if body else country_str
+    return body
 
 
 def _data_line2(lbl: DataLabel) -> str:
-    leg  = f"leg. {_e(lbl.recorded_by)}" if lbl.recorded_by else ""
+    if lbl.text_override is not None:
+        return ""
+    name = abbreviate_name(lbl.recorded_by)
+    leg  = f"leg. {_e(name)}" if name else ""
     date = _e(lbl.event_date) if lbl.event_date else ""
     return "  ".join(p for p in [leg, date] if p)
 
 
-_DATA_CSS = _BASE_CSS + ".label { height: 2.5mm; }"
+_DATA_CSS = _BASE_CSS + ".label { min-height: 2.5mm; }"
 
 
 def data_sheet(rows: list[DataLabel]) -> bytes:
@@ -264,7 +304,7 @@ def identifier_sheet(codes: list[str]) -> bytes:
 _COMBINED_CSS = _BASE_CSS + """
 /* data labels */
 .lbl-data {
-    width: 18mm; height: 2.5mm;
+    width: 18mm; min-height: 2.5mm;
     border: 0.1mm dashed #aaa;
     padding: 0.19mm 0.53mm;
     overflow: hidden;
@@ -289,8 +329,8 @@ _COMBINED_CSS = _BASE_CSS + """
     font-family: 'Fira Code', 'DejaVu Sans Mono', monospace;
     font-size: 6.5pt; font-weight: bold; letter-spacing: 0.5pt; text-align: center;
 }
-/* section break: pushes remaining items to a new row */
-.section-break { width: 100%; height: 0; }
+/* section break: forces subsequent labels to a new flex row */
+.section-break { flex: 0 0 100%; height: 2mm; }
 """
 
 
@@ -339,29 +379,37 @@ def combined_sheet(
 @dataclass
 class OccurrenceLabel:
     code: str
-    country: Optional[str]           = None
-    state_province: Optional[str]    = None
-    county: Optional[str]            = None
-    locality: Optional[str]          = None
-    verbatim_locality: Optional[str] = None
-    latitude: Optional[float]        = None
-    longitude: Optional[float]       = None
-    elevation_min: Optional[int]     = None
-    elevation_max: Optional[int]     = None
-    event_date: Optional[str]        = None
-    recorded_by: Optional[str]       = None
-    habitat: Optional[str]           = None
-    taxon: Optional[str]             = None
+    country: Optional[str]                  = None
+    country_code: Optional[str]             = None
+    state_province: Optional[str]           = None
+    municipality: Optional[str]             = None
+    county: Optional[str]                   = None
+    locality: Optional[str]                 = None
+    verbatim_locality: Optional[str]        = None
+    latitude: Optional[float]               = None
+    longitude: Optional[float]              = None
+    coordinate_uncertainty_m: Optional[float] = None
+    elevation_min: Optional[int]            = None
+    elevation_max: Optional[int]            = None
+    event_date: Optional[str]               = None
+    recorded_by: Optional[str]              = None
+    habitat: Optional[str]                  = None
+    taxon: Optional[str]                    = None
+    associated_species: Optional[list[str]] = None
 
 
 def occurrence_sheet(rows: list[OccurrenceLabel]) -> bytes:
     """Data label + identifier label for each specimen, interleaved on one sheet."""
     data_rows = [DataLabel(
-        country=r.country, state_province=r.state_province, county=r.county,
+        country=r.country, country_code=r.country_code,
+        state_province=r.state_province, municipality=r.municipality,
+        county=r.county,
         locality=r.locality, verbatim_locality=r.verbatim_locality,
         latitude=r.latitude, longitude=r.longitude,
+        coordinate_uncertainty_m=r.coordinate_uncertainty_m,
         elevation_min=r.elevation_min, elevation_max=r.elevation_max,
         event_date=r.event_date, recorded_by=r.recorded_by, habitat=r.habitat,
+        associated_species=r.associated_species,
     ) for r in rows]
 
     # Build interleaved HTML: data label then identifier label per specimen,
@@ -383,7 +431,7 @@ def occurrence_sheet(rows: list[OccurrenceLabel]) -> bytes:
     css = _BASE_CSS + """
 .sheet { display: flex; flex-wrap: wrap; gap: 0.3mm; align-content: flex-start; }
 .data-label {
-    width: 18mm; height: 2.5mm;
+    width: 18mm; min-height: 2.5mm;
     border: 0.1mm dashed #aaa;
     padding: 0.19mm 0.53mm;
     overflow: hidden;

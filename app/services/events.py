@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session
 
 from app.models import CollectingEvent
 from app.models.base import _utcnow
+from app.services.label_text import format_locality_label
 
 _FLOAT_ATTRS = frozenset({
     "decimal_latitude",
@@ -24,18 +25,9 @@ class EventOption:
 
 
 def format_event_summary(event: CollectingEvent) -> str:
-    """One-line label for the picker dropdown. Skips blank parts."""
-    parts = [
-        event.country or event.country_code,
-        event.state_province,
-        event.municipality or event.county,
-        event.island,
-        event.locality or event.verbatim_locality,
-        event.event_date or event.verbatim_event_date,
-        f"leg. {event.recorded_by}" if event.recorded_by else None,
-    ]
-    label = " · ".join(p for p in parts if p)
-    return label or f"Event #{event.id}"
+    """One-line label for the picker dropdown."""
+    summary = format_locality_label(event, html=False)
+    return summary or f"Event #{event.id}"
 
 
 def search_collecting_events(
