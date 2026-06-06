@@ -20,6 +20,9 @@ class AppConfig:
     # Nomenclatural codes shown in the biological-association object search by default.
     # DwC values: "ICN" (plants/fungi), "ICZN" (animals).
     bio_assoc_default_codes: list[str] = field(default_factory=lambda: ["ICN"])
+    # Default tile layer shown when the map picker opens.
+    # Values: "street" | "satellite" | "satellite_labels"
+    map_default_layer: str = "street"
 
 
 _instance: AppConfig | None = None

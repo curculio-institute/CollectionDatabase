@@ -98,6 +98,7 @@ def add_map_assets() -> None:
 
 def build_map_picker(
     on_change: Callable[[float, float, float | None], None],
+    default_layer: str = "street",
 ) -> dict:
     """
     Build the map-picker and return an API dict::
@@ -257,11 +258,12 @@ def build_map_picker(
             L.tileLayer(_img, {{attribution:_att, maxZoom:18}}),
             L.tileLayer(_ref, {{maxZoom:18}})
         ]);
-        osm.addTo(map);
+        var _defaultLayers = {{street: osm, satellite: sat, satellite_labels: satLabel}};
+        (_defaultLayers['{default_layer}'] || osm).addTo(map);
         L.control.layers(
             {{'Street map':osm, 'Satellite':sat, 'Satellite + labels':satLabel}},
             {{}},
-            {{position:'topright'}}
+            {{position:'topright', collapsed:false}}
         ).addTo(map);
 
         /* ── Photon geocoder (OSM data, better address coverage than Nominatim) */
@@ -283,7 +285,8 @@ def build_map_picker(
                     map.setView(g.center, 14);
                 }}
             }})
-            .addTo(map);
+            .addTo(map)
+            ._expand();
         }}
 
         /* ── State ───────────────────────────────────────────────────────── */

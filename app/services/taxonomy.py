@@ -78,23 +78,37 @@ def build_taxonomy_tree(
     filter_rank: str | None = None,
     filter_value: str | None = None,
     filter_id: int | None = None,
+    nomenclatural_code: str | None = None,
 ) -> list[dict]:
     """Build the full checklist tree as a list of NiceGUI tree-node dicts.
 
     filter_id: show only the subtree rooted at this taxon id.
     filter_rank + filter_value: show only subtrees for taxa of that rank and name.
+    nomenclatural_code: if set, restrict to taxa with that code (or NULL).
     No filter: show the full tree from all root taxa (parentNameUsageID IS NULL).
     """
-    all_accepted = (
-        session.query(Taxon)
-        .filter(Taxon.accepted_name_usage_id.is_(None))
-        .all()
-    )
+    q = session.query(Taxon).filter(Taxon.accepted_name_usage_id.is_(None))
+    if nomenclatural_code:
+        from sqlalchemy import or_
+        q = q.filter(
+            or_(
+                Taxon.nomenclatural_code == nomenclatural_code,
+                Taxon.nomenclatural_code.is_(None),
+            )
+        )
+    all_accepted = q.all()
     taxa_by_id: dict[int, Taxon] = {t.id: t for t in all_accepted}
 
+    # Kingdom-rank taxa are navigation scaffolding only; exclude them from the
+    # checklist display and promote their children as top-level display roots.
+    kingdom_ids: set[int] = {t.id for t in all_accepted if t.taxon_rank == "kingdom"}
+    display_taxa = [t for t in all_accepted if t.taxon_rank != "kingdom"]
+
     children_map: dict[int | None, list[Taxon]] = defaultdict(list)
-    for t in all_accepted:
-        children_map[t.parent_name_usage_id].append(t)
+    for t in display_taxa:
+        # Remap children of kingdoms to the display root (None).
+        parent = t.parent_name_usage_id
+        children_map[None if parent in kingdom_ids else parent].append(t)
 
     # Specimen counts (current determinations only).
     spec_counts: dict[int, int] = {}
@@ -115,10 +129,10 @@ def build_taxonomy_tree(
     # Determine root taxa to display.
     if filter_id is not None:
         root_taxon = taxa_by_id.get(filter_id)
-        roots = [root_taxon] if root_taxon else []
+        roots = [root_taxon] if root_taxon and root_taxon.taxon_rank != "kingdom" else []
     elif filter_rank and filter_value:
         roots = [
-            t for t in all_accepted
+            t for t in display_taxa
             if t.taxon_rank == filter_rank and t.scientific_name == filter_value
         ]
     else:

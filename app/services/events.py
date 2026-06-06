@@ -29,6 +29,7 @@ def format_event_summary(event: CollectingEvent) -> str:
         event.country or event.country_code,
         event.state_province,
         event.municipality or event.county,
+        event.island,
         event.locality or event.verbatim_locality,
         event.event_date or event.verbatim_event_date,
         f"leg. {event.recorded_by}" if event.recorded_by else None,
@@ -50,6 +51,7 @@ def search_collecting_events(
             | CollectingEvent.state_province.ilike(pat)
             | CollectingEvent.county.ilike(pat)
             | CollectingEvent.municipality.ilike(pat)
+            | CollectingEvent.island.ilike(pat)
             | CollectingEvent.locality.ilike(pat)
             | CollectingEvent.verbatim_locality.ilike(pat)
             | CollectingEvent.event_date.ilike(pat)

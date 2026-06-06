@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 
 from sqlalchemy.orm import Session
@@ -230,9 +231,8 @@ def _fields_from_tw(tw: dict) -> dict:
     Returns a dict containing:
       scientific_name, taxon_rank, scientific_name_authorship
       + ancestor keys used by _ensure_parent_rows:
-        taxon_order, family, family_authorship, subfamily, subfamily_authorship,
-        tribe, tribe_authorship, subtribe, subtribe_authorship,
-        genus, genus_authorship, subgenus, subgenus_authorship
+        taxon_order, suborder, superfamily, family, subfamily, tribe, subtribe,
+        genus, subgenus (each optionally with _authorship and _otu_id suffixes)
     """
     rank = (tw.get("rank") or "").lower()
     auth = tw.get("cached_author_year") or tw.get("cached_author") or None
@@ -241,6 +241,8 @@ def _fields_from_tw(tw: dict) -> dict:
     anc: dict = {}
     for key in (
         "taxon_order", "taxon_order_authorship", "taxon_order_otu_id",
+        "suborder", "suborder_authorship", "suborder_otu_id",
+        "superfamily", "superfamily_authorship", "superfamily_otu_id",
         "family", "family_authorship", "family_otu_id",
         "subfamily", "subfamily_authorship", "subfamily_otu_id",
         "tribe", "tribe_authorship", "tribe_otu_id",
@@ -273,17 +275,20 @@ def _fields_from_tw(tw: dict) -> dict:
 # Parent-row helpers
 # ---------------------------------------------------------------------------
 
-# Ordered rank chain highest → lowest (excludes species-rank and below).
-# Each entry: (rank_name_stored, ancestor_dict_key, authorship_dict_key)
+# Ordered rank chain highest → lowest.
+# Each entry: (rank_name_stored_in_db, ancestor_dict_key, authorship_dict_key).
+# "taxon_order" keeps the taxon_ prefix to avoid confusion with SQL's ORDER keyword.
 _RANK_CHAIN: list[tuple[str, str, str]] = [
-    ("order",     "taxon_order",  "taxon_order_authorship"),
-    ("family",    "family",       "family_authorship"),
-    ("subfamily", "subfamily",    "subfamily_authorship"),
-    ("tribe",     "tribe",        "tribe_authorship"),
-    ("subtribe",  "subtribe",     "subtribe_authorship"),
-    ("genus",     "genus",        "genus_authorship"),
-    ("subgenus",  "subgenus",     "subgenus_authorship"),
-    ("species",   "species_name", "specific_epithet_authorship"),
+    ("order",       "taxon_order",  "taxon_order_authorship"),
+    ("suborder",    "suborder",     "suborder_authorship"),
+    ("superfamily", "superfamily",  "superfamily_authorship"),
+    ("family",      "family",       "family_authorship"),
+    ("subfamily",   "subfamily",    "subfamily_authorship"),
+    ("tribe",       "tribe",        "tribe_authorship"),
+    ("subtribe",    "subtribe",     "subtribe_authorship"),
+    ("genus",       "genus",        "genus_authorship"),
+    ("subgenus",    "subgenus",     "subgenus_authorship"),
+    ("species",     "species_name", "specific_epithet_authorship"),
 ]
 
 
@@ -350,6 +355,116 @@ def _ensure_parent_rows(
         parent_id = existing.id
 
     return parent_id
+
+
+def update_taxon(
+    session: Session,
+    taxon_id: int,
+    *,
+    scientific_name: str,
+    taxon_rank: str,
+    taxonomic_status: str,
+    scientific_name_authorship: str | None,
+    parent_name_usage_id: int | None,
+    accepted_name_usage_id: int | None,
+    nomenclatural_code: str | None,
+    taxonworks_otu_id: int | None,
+) -> "Taxon":
+    t = session.get(Taxon, taxon_id)
+    if t is None:
+        raise ValueError(f"Taxon {taxon_id} not found")
+    t.scientific_name = scientific_name
+    t.taxon_rank = taxon_rank
+    t.taxonomic_status = taxonomic_status
+    t.scientific_name_authorship = scientific_name_authorship or None
+    t.parent_name_usage_id = parent_name_usage_id
+    t.accepted_name_usage_id = accepted_name_usage_id
+    t.nomenclatural_code = nomenclatural_code or None
+    t.taxonworks_otu_id = taxonworks_otu_id
+    t.updated_at = _utcnow()
+    session.flush()
+    return t
+
+
+def delete_taxon(session: Session, taxon_id: int) -> None:
+    """Delete a taxon. Raises ValueError if it has children, synonyms, or determinations."""
+    from app.models import TaxonDetermination
+    t = session.get(Taxon, taxon_id)
+    if t is None:
+        raise ValueError(f"Taxon {taxon_id} not found")
+    child_count = session.query(Taxon).filter(Taxon.parent_name_usage_id == taxon_id).count()
+    if child_count:
+        raise ValueError(f"Cannot delete: taxon has {child_count} child taxon(s)")
+    syn_count = session.query(Taxon).filter(Taxon.accepted_name_usage_id == taxon_id).count()
+    if syn_count:
+        raise ValueError(f"Cannot delete: taxon has {syn_count} synonym(s)")
+    det_count = session.query(TaxonDetermination).filter(TaxonDetermination.taxon_id == taxon_id).count()
+    if det_count:
+        raise ValueError(f"Cannot delete: taxon is used in {det_count} determination(s)")
+    session.delete(t)
+    session.flush()
+
+
+def create_taxon_direct(
+    session: Session,
+    *,
+    scientific_name: str,
+    taxon_rank: str,
+    taxonomic_status: str = "accepted",
+    scientific_name_authorship: str | None = None,
+    parent_name_usage_id: int | None = None,
+    accepted_name_usage_id: int | None = None,
+    nomenclatural_code: str | None = None,
+    taxonworks_otu_id: int | None = None,
+) -> "Taxon":
+    """Create a taxon row directly from fully specified fields (no parent inference)."""
+    t = Taxon(
+        scientific_name=scientific_name,
+        taxon_rank=taxon_rank,
+        taxonomic_status=taxonomic_status,
+        scientific_name_authorship=scientific_name_authorship or None,
+        parent_name_usage_id=parent_name_usage_id,
+        accepted_name_usage_id=accepted_name_usage_id,
+        nomenclatural_code=nomenclatural_code or None,
+        taxonworks_otu_id=taxonworks_otu_id,
+        created_at=_utcnow(),
+        updated_at=_utcnow(),
+    )
+    session.add(t)
+    session.flush()
+    return t
+
+
+def seed_root_taxa(session: Session) -> None:
+    """Ensure one root taxon per nomenclatural code exists.
+
+    These are the only taxa allowed to have parentNameUsageID = NULL.
+    Called once at startup; idempotent.
+    """
+    _ROOTS = [
+        ("Animalia", "kingdom", "ICZN"),
+        ("Plantae",  "kingdom", "ICN"),
+        ("Fungi",    "kingdom", "ICN"),
+        ("Bacteria", "kingdom", "ICNP"),
+        ("Viruses",  "kingdom", "ICVCV"),
+    ]
+    for sci_name, rank, code in _ROOTS:
+        exists = (
+            session.query(Taxon)
+            .filter(Taxon.scientific_name == sci_name, Taxon.taxon_rank == rank)
+            .first()
+        )
+        if not exists:
+            session.add(Taxon(
+                scientific_name=sci_name,
+                taxon_rank=rank,
+                taxonomic_status="accepted",
+                nomenclatural_code=code,
+                parent_name_usage_id=None,
+                created_at=_utcnow(),
+                updated_at=_utcnow(),
+            ))
+    session.flush()
 
 
 def ensure_higher_taxa(session: Session) -> int:
@@ -474,6 +589,15 @@ def get_or_create_from_powo_data(
         ancestor_fields["family"] = family
     if genus and rank != "genus":
         ancestor_fields["genus"] = genus
+    # For infraspecific taxa, extract the parent species name so _ensure_parent_rows
+    # creates the species row as the immediate parent instead of stopping at genus.
+    if rank in ("subspecies", "variety", "subvariety", "form", "subform") and genus:
+        # sci_name format: "Genus epithet subsp./var./f. infraepithet"
+        # (or "Genus (Subgenus) epithet …"); grab the first lowercase word after the genus.
+        rest = sci_name[len(genus):].strip()
+        m = re.match(r"(?:\([^)]+\)\s+)?([a-z×][a-z\-]*)", rest)
+        if m:
+            ancestor_fields["species_name"] = f"{genus} {m.group(1)}"
 
     parent_id = _ensure_parent_rows(session, ancestor_fields, nomenclatural_code=nomen_code)
 

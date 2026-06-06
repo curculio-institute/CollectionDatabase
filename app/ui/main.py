@@ -30,6 +30,7 @@ from app.ui.taxon_search import build_taxon_search
 from app.ui.import_assign import build_import_assign_tab
 from app.ui.map_picker import add_map_assets, build_map_picker
 from app.ui.bio_object_search import build_bio_object_search
+from app.ui.taxon_editor import build_taxon_editor
 from app.services.biological import (
     sync_biological_relationships,
     get_relationship_options,
@@ -72,8 +73,44 @@ TABLE_COLS = [
 # Coordinate paste helper
 # ---------------------------------------------------------------------------
 
-# Photon osm_key values that yield a meaningful feature name for DwC locality.
-_LOCALITY_KEYS = {"natural", "leisure", "landuse", "place", "boundary"}
+# (osm_key, osm_value) → priority for DwC locality (higher = preferred).
+# Only meaningful collecting localities are included; cemeteries, industrial
+# areas, etc. are intentionally absent.
+_LOCALITY_KV: dict[tuple[str, str], int] = {
+    ("natural",  "peak"):           5,
+    ("natural",  "spring"):         4,
+    ("natural",  "water"):          4,
+    ("natural",  "wood"):           4,
+    ("natural",  "heath"):          4,
+    ("natural",  "wetland"):        4,
+    ("natural",  "moor"):           4,
+    ("natural",  "scrub"):          3,
+    ("natural",  "grassland"):      3,
+    ("natural",  "cliff"):          3,
+    ("natural",  "sand"):           3,
+    ("leisure",  "nature_reserve"): 5,
+    ("leisure",  "park"):           3,
+    ("boundary", "protected_area"): 4,
+    ("landuse",  "forest"):         3,
+    ("landuse",  "wood"):           3,
+    ("landuse",  "meadow"):         2,
+    ("place",    "island"):         2,
+    ("place",    "islet"):          2,
+    ("place",    "region"):         1,
+    ("place",    "hamlet"):         1,
+    ("place",    "suburb"):         1,
+    ("place",    "village"):        1,
+}
+
+
+def _pick_locality(props_list: list[dict]) -> str:
+    """Return the most meaningful collecting locality name from Photon feature properties."""
+    best, best_pri = "", -1
+    for p in props_list:
+        pri = _LOCALITY_KV.get((p.get("osm_key", ""), p.get("osm_value", "")), -1)
+        if pri > best_pri and p.get("name"):
+            best_pri, best = pri, p["name"]
+    return best
 
 
 def _split_coord_paste(text: str) -> tuple[str, str] | None:
@@ -108,8 +145,9 @@ _sf     = get_session_factory(_engine)
 # for any species imported before this logic existed.  Idempotent.
 with _sf() as _s:
     with _s.begin():
-        from app.services.taxa import ensure_higher_taxa as _eht
+        from app.services.taxa import ensure_higher_taxa as _eht, seed_root_taxa as _srt
         _eht(_s)
+        _srt(_s)
 
 
 def _with_session(fn):
@@ -204,6 +242,11 @@ def index():
         }, 30);
     }, true);
     </script>""")
+
+    # ── SVG favicon (vector, sharp at any size; ICO kept as fallback) ────
+    ui.add_head_html(
+        '<link rel="icon" type="image/svg+xml" href="/static/favicon.svg">'
+    )
 
     # ── flash-prevention (runs before CSS paint) ─────────────────────────
     ui.add_head_html("""
@@ -314,6 +357,45 @@ def index():
       ::-webkit-scrollbar       { width:5px; height:5px; }
       ::-webkit-scrollbar-track { background:var(--tp-base-muted); }
       ::-webkit-scrollbar-thumb { background:var(--tp-base-soft); border-radius:3px; }
+            /* ── Beetle (ICZN) icon — from Scan230308213350-0001.svg via potrace */
+      .iczn-tab .q-tab__label::before {
+        content: '';
+        display: inline-block;
+        width: 1.7em; height: 1.7em;
+        background-image: url('/static/beetle_blue.svg');
+        background-size: contain;
+        background-repeat: no-repeat;
+        background-position: center;
+        vertical-align: text-bottom;
+        margin-right: 3px;
+      }
+      .dark .iczn-tab .q-tab__label::before {
+        background-image: url('/static/beetle_blue_dark.svg');
+      }
+      /* Reusable inline beetle — <span class="beetle-icon"></span> */
+      .beetle-icon {
+        display: inline-block;
+        width: 1.65em; height: 1.65em;
+        background-image: url('/static/beetle_blue.svg');
+        background-size: contain;
+        background-repeat: no-repeat;
+        background-position: center;
+        vertical-align: middle;
+      }
+      .dark .beetle-icon {
+        background-image: url('/static/beetle_blue_dark.svg');
+      }
+      /* Header beetle (white, larger) */
+      .header-beetle {
+        display: inline-block;
+        width: 2.2rem; height: 2.2rem;
+        background-image: url('/static/beetle_white.svg');
+        background-size: contain;
+        background-repeat: no-repeat;
+        background-position: center;
+        vertical-align: middle;
+        flex-shrink: 0;
+      }
       @keyframes lookup-fade { from { opacity:1; } to { opacity:0; } }
       .lookup-ok-fade { animation: lookup-fade 1s ease-in 0.3s forwards; }
     </style>""")
@@ -327,6 +409,7 @@ def index():
 
     # ── header ───────────────────────────────────────────────────────────
     with ui.header().classes("app-header items-center gap-4"):
+        ui.html('<span class="header-beetle"></span>')
         ui.label("Collection").style(
             "font-size:1.1rem; font-weight:300; letter-spacing:.12em;"
         )
@@ -618,41 +701,121 @@ def index():
                     ui.timer(0.3, _inject_coord_paste_js, once=True)
 
                     async def _reverse_geocode(lat: float, lon: float) -> dict | None:
-                        """Reverse-geocode via Photon. Returns Photon properties dict or
-                        None on failure. Fills the address fields as a side effect."""
+                        """Reverse-geocode via Photon (address fields) + Overpass is_in
+                        (enclosing named natural/protected areas). Returns Photon
+                        properties dict or None on failure. Fills fields as a side effect."""
                         for _b in (_cntry_warn, _code_warn, _state_warn, _county_warn, _muni_warn):
                             _b.classes(add="hidden")
                         _locality_warn.classes(add="hidden")
-                        try:
-                            async with httpx.AsyncClient(timeout=10) as client:
-                                r = await client.get(
+
+                        async def _photon() -> list[dict]:
+                            """Raises on failure so the outer try/except can notify."""
+                            async with httpx.AsyncClient(timeout=10) as cl:
+                                r = await cl.get(
                                     "https://photon.komoot.io/reverse",
-                                    params={"lat": lat, "lon": lon, "lang": "en"},
+                                    params={"lat": lat, "lon": lon, "lang": "en", "limit": 15},
                                     headers={"User-Agent": "EntomologicalCollection/1.0"},
                                 )
                                 r.raise_for_status()
-                                features = r.json().get("features", [])
-                                if not features:
-                                    ui.notify("Reverse geocoding returned no results.", type="warning")
-                                    return None
-                                p = features[0]["properties"]
+                                return [f["properties"] for f in r.json().get("features", [])]
+
+                        async def _overpass() -> list[dict]:
+                            """Overpass is_in: enclosing named natural/protected/island areas.
+                            Returns list of {name, kind} dicts where kind is
+                            'island' | 'locality'. Best-effort — returns [] on failure."""
+                            q = (
+                                f"[out:json][timeout:10];"
+                                f"is_in({lat},{lon})->.a;"
+                                f"("
+                                f"  way(pivot.a)[name][boundary=protected_area];"
+                                f"  way(pivot.a)[name][leisure=nature_reserve];"
+                                f'  way(pivot.a)[name][landuse~"^(forest|wood)$"];'
+                                f"  way(pivot.a)[name][place~\"^(island|islet)$\"];"
+                                f"  relation(pivot.a)[name][boundary=protected_area];"
+                                f"  relation(pivot.a)[name][leisure=nature_reserve];"
+                                f'  relation(pivot.a)[name][landuse~"^(forest|wood)$"];'
+                                f"  relation(pivot.a)[name][place~\"^(island|islet|region)$\"];"
+                                f");"
+                                f"out tags;"
+                            )
+                            try:
+                                async with httpx.AsyncClient(timeout=12) as cl:
+                                    r = await cl.post(
+                                        "https://overpass-api.de/api/interpreter",
+                                        data={"data": q},
+                                        headers={"User-Agent": "EntomologicalCollection/1.0"},
+                                    )
+                                    r.raise_for_status()
+                                    seen: set[str] = set()
+                                    results: list[dict] = []
+                                    for el in r.json().get("elements", []):
+                                        tags = el.get("tags", {})
+                                        n = tags.get("name", "")
+                                        if not n or n in seen:
+                                            continue
+                                        seen.add(n)
+                                        place_val = tags.get("place", "")
+                                        kind = "island" if place_val in ("island", "islet") else "locality"
+                                        results.append({"name": n, "kind": kind})
+                                    return results
+                            except Exception:
+                                return []
+
+                        try:
+                            all_props, overpass_names = await asyncio.gather(
+                                _photon(), _overpass()
+                            )
                         except Exception as ex:
                             ui.notify(f"Reverse geocoding failed: {ex}", type="negative")
                             return None
 
+                        if not all_props:
+                            ui.notify("Reverse geocoding returned no results.", type="warning")
+                            return None
+
+                        p = all_props[0]
                         state["populating"] = True
                         country_in.value  = p.get("country", "")
                         code_in.value     = p.get("countrycode", "").upper()
                         state_in.value    = p.get("state", "")
                         county_in.value   = p.get("county", "")
                         muni_in.value     = p.get("city") or p.get("locality") or ""
-                        locality_in.value = (
-                            p["name"]
-                            if p.get("osm_key") in _LOCALITY_KEYS and p.get("name")
-                            else ""
-                        )
+                        photon_locality   = _pick_locality(all_props)
+                        overpass_islands  = [r["name"] for r in overpass_names if r["kind"] == "island"]
+                        overpass_locs     = [r["name"] for r in overpass_names if r["kind"] == "locality"]
+                        # Prefer closest named natural feature (Photon); fall back to first
+                        # enclosing area from Overpass if Photon finds nothing.
+                        locality_in.value = photon_locality or (overpass_locs[0] if overpass_locs else "")
+                        island_in.value   = overpass_islands[0] if overpass_islands else ""
                         state["populating"] = False
                         _on_event_field_edit()
+
+                        # Collect all locality alternatives (Photon + Overpass, deduped, primary excluded).
+                        _alt_names: list[str] = []
+                        _seen_locs: set[str] = {locality_in.value}
+                        for pr in all_props:
+                            name = pr.get("name", "")
+                            kv = (pr.get("osm_key", ""), pr.get("osm_value", ""))
+                            if kv in _LOCALITY_KV and name and name not in _seen_locs:
+                                _seen_locs.add(name)
+                                _alt_names.append(name)
+                        for name in overpass_locs:
+                            if name not in _seen_locs:
+                                _seen_locs.add(name)
+                                _alt_names.append(name)
+                        if _alt_names:
+                            _locality_items.clear()
+                            with _locality_items:
+                                for _n in _alt_names:
+                                    async def _pick_alt(nm=_n):
+                                        locality_in.value = nm
+                                        _on_event_field_edit()
+                                        _locality_warn.classes(add="hidden")
+                                    ui.menu_item(_n, on_click=_pick_alt)
+                            _locality_tip.text = "Also nearby: " + ", ".join(_alt_names)
+                            _locality_tip.update()
+                            _locality_warn.classes(remove="hidden")
+
                         return p
 
                     async def _check_boundary_crossing(
@@ -668,17 +831,19 @@ def index():
                         per-IP concurrency limit; 8 simultaneous causes 503 errors for the
                         last requests, silently dropping some countries from the result.
                         """
-                        def _props_to_snap(p: dict) -> dict:
+                        def _props_to_snap(props_list: list[dict]) -> dict:
+                            p = props_list[0] if props_list else {}
                             return {
                                 "country":  p.get("country", ""),
                                 "code":     (p.get("countrycode", "") or "").upper(),
                                 "state":    p.get("state", ""),
                                 "county":   p.get("county", ""),
                                 "muni":     p.get("city") or p.get("locality") or "",
-                                "locality": p.get("name", "") if p.get("osm_key") in _LOCALITY_KEYS else "",
+                                "locality": _pick_locality(props_list),
                             }
 
-                        centre = _props_to_snap(photon_props)
+                        centre = _props_to_snap([photon_props])
+                        centre["locality"] = locality_in.value  # already best-picked by _reverse_geocode
                         snapshots: list[dict] = [centre]
 
                         # 4 cardinal points: N (0°), E (90°), S (180°), W (270°).
@@ -690,21 +855,21 @@ def index():
 
                         async def _photon_at(
                             cl: httpx.AsyncClient, la: float, lo: float
-                        ) -> dict | None:
+                        ) -> list[dict] | None:
                             for attempt in range(3):
                                 try:
                                     if attempt:
                                         await asyncio.sleep(0.5 * attempt)
                                     rp = await cl.get(
                                         "https://photon.komoot.io/reverse",
-                                        params={"lat": la, "lon": lo, "lang": "en"},
+                                        params={"lat": la, "lon": lo, "lang": "en", "limit": 15},
                                         headers={"User-Agent": "EntomologicalCollection/1.0"},
                                     )
                                     if rp.status_code in (429, 503) and attempt < 2:
                                         continue
                                     rp.raise_for_status()
                                     feats = rp.json().get("features", [])
-                                    return feats[0]["properties"] if feats else None
+                                    return [f["properties"] for f in feats] or None
                                 except Exception:
                                     return None
                             return None
@@ -805,7 +970,8 @@ def index():
                         # Geocoding is triggered manually via the Lookup button, not here.
                         # Firing on every pin placement/drag caused Nominatim 429 errors.
 
-                    _map = build_map_picker(_on_map_change)
+                    _map = build_map_picker(_on_map_change,
+                                           default_layer=get_config().map_default_layer)
 
                     with ui.row().classes("items-center gap-2 mt-2"):
                         def _open_map():
@@ -895,9 +1061,10 @@ def index():
                             "municipality", on_change=_on_muni_change)
                     _geocode_ok_icons = [_cntry_ok, _code_ok, _state_ok, _county_ok, _muni_ok]
 
-                    with ui.grid(columns=2).classes("w-full gap-3 mt-3"):
+                    with ui.grid(columns=3).classes("w-full gap-3 mt-3"):
                         locality_in, _locality_warn, _locality_tip, _locality_items, _locality_ok = _geocode_input(
                             "locality", on_change=_on_event_field_edit)
+                        island_in    = ui.input("island", on_change=_on_event_field_edit).classes("col-span-1")
                         verblocal_in = ui.input("verbatimLocality", on_change=_on_event_field_edit).classes("col-span-1")
                     _geocode_ok_icons.append(_locality_ok)
 
@@ -935,6 +1102,7 @@ def index():
                         state_in.value     = ev.state_province     or ""
                         county_in.value    = ev.county             or ""
                         muni_in.value      = ev.municipality       or ""
+                        island_in.value    = ev.island             or ""
                         locality_in.value  = ev.locality           or ""
                         verblocal_in.value = ev.verbatim_locality   or ""
                         edate_in.value     = ev.event_date         or ""
@@ -1080,6 +1248,7 @@ def index():
                         "state_province":                   state_in.value,
                         "county":                           county_in.value,
                         "municipality":                     muni_in.value,
+                        "island":                           island_in.value,
                         "locality":                         locality_in.value,
                         "verbatim_locality":                verblocal_in.value,
                         "event_date":                       edate_in.value,
@@ -1167,7 +1336,7 @@ def index():
                         event_status.set_text("· new event")
                         event_status.classes(remove="event-linked", add="event-new")
                         for w in (country_in, code_in, state_in, county_in, muni_in,
-                                  locality_in, verblocal_in, edate_in, verbdate_in,
+                                  island_in, locality_in, verblocal_in, edate_in, verbdate_in,
                                   recby_in, lat_in, lon_in, uncert_in, elev_min_in,
                                   elev_max_in, habitat_in, fieldnum_in, verblabel_in):
                             w.value = ""
@@ -1260,7 +1429,32 @@ def index():
                     _tax_stat_labels["Specimens"].set_text(str(s.total_specimens))
                 _refreshers["taxonomy_stats"] = _refresh_taxonomy_stats
 
-                # ── checklist tree ───────────────────────────────────────
+                # ── nomenclatural code tabs + manage buttons ──────────────
+                # Current code filter: None = all, "ICZN", "ICN", etc.
+                _nomen_filter: dict = {"code": None}
+
+                with ui.card().classes("w-full shadow-sm"):
+                    with ui.row().classes("items-center gap-0 w-full"):
+                        # Nomenclatural code sub-tabs
+                        _nomen_tabs = (
+                            ui.tabs(value="ICZN")
+                            .props("dense indicator-color=secondary align=left no-caps")
+                            .style("flex:1; border-bottom:none;")
+                        )
+                        with _nomen_tabs:
+                            ui.tab("ICZN", label="ICZN").classes("iczn-tab")
+                            ui.tab("ICN",  label="🌿 ICN")
+                            ui.tab("ALL",  label="All codes")
+
+                        ui.space()
+
+                        def _on_saved_taxon():
+                            _refresh_taxonomy_stats()
+                            _refresh_tree()
+
+                        build_taxon_editor(_sf, _on_saved_taxon)
+
+                # ── checklist card ───────────────────────────────────────
                 with ui.card().classes("w-full shadow-sm"):
                     with ui.row().classes("items-center gap-2 mb-3"):
                         ui.label("Checklist").classes("section-label")
@@ -1278,7 +1472,9 @@ def index():
                         .tooltip("Type a name at any rank to filter the checklist")
                     )
 
-                    tree_data = _with_session(tax_svc.build_taxonomy_tree)
+                    tree_data = _with_session(
+                        lambda s: tax_svc.build_taxonomy_tree(s, nomenclatural_code="ICZN")
+                    )
 
                     _NODE_SLOT = r"""
                         <div style="display:flex; align-items:baseline; gap:7px; padding:2px 0 1px;">
@@ -1321,19 +1517,25 @@ def index():
 
                     async def _on_filter_change(e):
                         key = e.value or ""
+                        code = _nomen_filter["code"]
                         if not key:
-                            new_nodes = _with_session(tax_svc.build_taxonomy_tree)
+                            new_nodes = _with_session(
+                                lambda s: tax_svc.build_taxonomy_tree(s, nomenclatural_code=code)
+                            )
                         else:
                             part = key.split(":", 1)
                             rank, val = part[0], part[1] if len(part) > 1 else ""
                             if rank in ("species", "taxon"):
                                 new_nodes = _with_session(
-                                    lambda s: tax_svc.build_taxonomy_tree(s, filter_id=int(val))
+                                    lambda s, v=val: tax_svc.build_taxonomy_tree(
+                                        s, filter_id=int(v), nomenclatural_code=code
+                                    )
                                 )
                             else:
                                 new_nodes = _with_session(
                                     lambda s, r=rank, v=val: tax_svc.build_taxonomy_tree(
-                                        s, filter_rank=r, filter_value=v
+                                        s, filter_rank=r, filter_value=v,
+                                        nomenclatural_code=code
                                     )
                                 )
                         tax_tree._props['nodes'] = new_nodes
@@ -1342,10 +1544,27 @@ def index():
 
                     filter_sel.on_value_change(_on_filter_change)
 
+                    async def _on_nomen_tab_change(e):
+                        tab = e.value
+                        _nomen_filter["code"] = None if tab == "ALL" else tab
+                        filter_sel.value = None
+                        code = _nomen_filter["code"]
+                        new_nodes = _with_session(
+                            lambda s: tax_svc.build_taxonomy_tree(s, nomenclatural_code=code)
+                        )
+                        tax_tree._props['nodes'] = new_nodes
+                        tax_tree.update()
+                        await _expand()
+
+                    _nomen_tabs.on_value_change(_on_nomen_tab_change)
+
                     def _refresh_tree():
                         filter_sel.options = _with_session(tax_svc.checklist_options)
                         filter_sel.update()
-                        tax_tree._props['nodes'] = _with_session(tax_svc.build_taxonomy_tree)
+                        code = _nomen_filter["code"]
+                        tax_tree._props['nodes'] = _with_session(
+                            lambda s: tax_svc.build_taxonomy_tree(s, nomenclatural_code=code)
+                        )
                         tax_tree.update()
 
                     _refreshers["taxonomy_tree"] = _refresh_tree
@@ -1696,7 +1915,7 @@ def index():
 
     # ── Settings dialog content ───────────────────────────────────────────
     # Filled here so bio_codes (defined earlier in index()) is in scope.
-    _known_codes = ["ICN", "ICZN", "ICNP", "ICVCN"]
+    _known_code_labels = {"ICN": "🌿 ICN", "ICZN": "ICZN", "ICNP": "ICNP", "ICVCN": "ICVCN"}
     _code_cbs: dict[str, object] = {}
 
     with settings_dialog:
@@ -1726,6 +1945,21 @@ def index():
 
             ui.separator().classes("my-3")
 
+            # ── Map default layer ────────────────────────────────────────
+            ui.label("Map default layer").classes("text-sm font-medium mb-1")
+            _map_layer_opts = {
+                "street":           "Street map",
+                "satellite":        "Satellite",
+                "satellite_labels": "Satellite + labels",
+            }
+            map_layer_sel = ui.select(
+                _map_layer_opts,
+                value=get_config().map_default_layer,
+                label="Default tile layer",
+            ).classes("w-full mt-1")
+
+            ui.separator().classes("my-3")
+
             # ── Bio-association default codes ────────────────────────────
             ui.label("Biological association default nomenclatural codes") \
                 .classes("text-sm font-medium mb-1")
@@ -1735,9 +1969,9 @@ def index():
             ).classes("text-xs mb-2").style("color:var(--tp-base-soft)")
 
             cfg_now2 = get_config()
-            for code in _known_codes:
+            for code, lbl in _known_code_labels.items():
                 _code_cbs[code] = ui.checkbox(
-                    code, value=code in cfg_now2.bio_assoc_default_codes
+                    lbl, value=code in cfg_now2.bio_assoc_default_codes
                 )
 
             def _save_settings():
@@ -1746,9 +1980,10 @@ def index():
                     ui.notify("Select at least one nomenclatural code.", type="warning")
                     return
                 cfg = get_config()
-                cfg.tw_base        = tw_base_in.value.strip() or cfg.tw_base
-                cfg.tw_token       = tw_token_in.value.strip()
-                cfg.taxonpages_base = tp_base_in.value.strip() or cfg.taxonpages_base
+                cfg.tw_base             = tw_base_in.value.strip() or cfg.tw_base
+                cfg.tw_token            = tw_token_in.value.strip()
+                cfg.taxonpages_base     = tp_base_in.value.strip() or cfg.taxonpages_base
+                cfg.map_default_layer   = map_layer_sel.value or "street"
                 cfg.bio_assoc_default_codes = selected
                 save_config(cfg)
                 # Propagate to active bio_codes filter in place

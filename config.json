@@ -4,5 +4,6 @@
   "taxonpages_base": "https://catalog.curculionoidea.org",
   "bio_assoc_default_codes": [
     "ICN"
-  ]
+  ],
+  "map_default_layer": "satellite_labels"
 }

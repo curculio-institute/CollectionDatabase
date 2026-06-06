@@ -58,18 +58,20 @@ async def fetch_taxon_name(tw_id: int) -> dict | None:
 # Ranks we want to collect while walking up the parent chain.
 # Maps TW rank string → local Taxon attribute name.
 _ANCESTOR_RANKS: dict[str, str] = {
-    "order":      "taxon_order",
-    "suborder":   "taxon_order",
-    "family":     "family",
-    "subfamily":  "subfamily",
-    "tribe":      "tribe",
-    "subtribe":   "subtribe",
-    "genus":      "genus",
-    "subgenus":   "subgenus",
-    "species":    "specific_epithet",  # needed for subspecies/variety/form name building
+    "order":       "taxon_order",    # "taxon_" prefix avoids confusion with SQL ORDER keyword
+    "suborder":    "suborder",       # was wrongly aliased to "taxon_order" — now separate
+    "superfamily": "superfamily",
+    "family":      "family",
+    "subfamily":   "subfamily",
+    "tribe":       "tribe",
+    "subtribe":    "subtribe",
+    "genus":       "genus",
+    "subgenus":    "subgenus",
+    "species":     "specific_epithet",  # needed for subspecies/variety/form name building
 }
-# Stop climbing once we hit one of these — nothing above is useful.
-_STOP_RANKS = {"order", "class", "phylum", "kingdom", "subphylum", "superorder"}
+# Stop climbing once we hit one of these — nothing above is useful for local rows.
+# "division" is the ICN equivalent of "phylum" (plants/algae/fungi in TaxonWorks).
+_STOP_RANKS = {"order", "class", "phylum", "division", "kingdom", "subphylum", "superorder"}
 
 
 async def fetch_full_classification(tw_id: int, _depth: int = 0) -> dict | None:

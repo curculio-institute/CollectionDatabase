@@ -22,6 +22,7 @@ class CollectingEvent(Base, TimestampMixin):
     state_province: Mapped[Optional[str]] = mapped_column("dwc:stateProvince", String, nullable=True)
     county: Mapped[Optional[str]] = mapped_column("dwc:county", String, nullable=True)
     municipality: Mapped[Optional[str]] = mapped_column("dwc:municipality", String, nullable=True)
+    island: Mapped[Optional[str]] = mapped_column("dwc:island", String, nullable=True)
     locality: Mapped[Optional[str]] = mapped_column("dwc:locality", String, nullable=True)
     verbatim_locality: Mapped[Optional[str]] = mapped_column("dwc:verbatimLocality", String, nullable=True)
     location_remarks: Mapped[Optional[str]] = mapped_column("dwc:locationRemarks", String, nullable=True)
