@@ -20,7 +20,7 @@ from app.services.taxa import format_scientific_name
 class RecentRow:
     collection_object_id: int
     catalog_number: str
-    catalog_namespace: str
+    collection_code: str
     scientific_name: str
     sex: str | None
     individual_count: int | None
@@ -36,13 +36,13 @@ def create_collection_object(
     *,
     collecting_event_id: int | None,
     catalog_number: str,
-    catalog_namespace: str,
+    collection_code: str,
     **fields,
 ) -> CollectionObject:
     co = CollectionObject(
         collecting_event_id=collecting_event_id,
         catalog_number=catalog_number,
-        catalog_namespace=catalog_namespace,
+        collection_code=collection_code,
         created_at=_utcnow(),
         updated_at=_utcnow(),
     )
@@ -113,6 +113,108 @@ def save_specimen_entry(
     return co
 
 
+def update_collection_object(session: Session, co_id: int, **fields) -> CollectionObject:
+    """Update mutable fields on a CollectionObject. catalog_number is immutable."""
+    co = session.get(CollectionObject, co_id)
+    if co is None:
+        raise ValueError(f"CollectionObject {co_id} not found")
+    for attr, val in fields.items():
+        if attr in ("catalog_number", "collection_code"):
+            continue
+        if val == "":
+            val = None
+        if attr == "individual_count" and val is not None:
+            try:
+                val = int(val)
+            except (TypeError, ValueError):
+                continue
+        setattr(co, attr, val)
+    co.updated_at = _utcnow()
+    session.flush()
+    return co
+
+
+def delete_determination(session: Session, det_id: int) -> None:
+    """Delete a determination by id. No-op if not found."""
+    d = session.get(TaxonDetermination, det_id)
+    if d:
+        session.delete(d)
+        session.flush()
+
+
+def update_determination_metadata(
+    session: Session,
+    det_id: int,
+    *,
+    identified_by: str | None,
+    date_identified: str | None,
+    identification_qualifier: str | None,
+    identification_remarks: str | None,
+) -> TaxonDetermination:
+    """Update non-taxon metadata on an existing determination."""
+    d = session.get(TaxonDetermination, det_id)
+    if d is None:
+        raise ValueError(f"TaxonDetermination {det_id} not found")
+    d.identified_by            = identified_by
+    d.date_identified          = date_identified
+    d.identification_qualifier = identification_qualifier
+    d.identification_remarks   = identification_remarks
+    d.updated_at               = _utcnow()
+    session.flush()
+    return d
+
+
+def set_determination_as_current(
+    session: Session,
+    co_id: int,
+    det_id: int,
+) -> None:
+    """Make det_id the sole current determination, retiring all others for this specimen."""
+    now = _utcnow()
+    (
+        session.query(TaxonDetermination)
+        .filter(TaxonDetermination.collection_object_id == co_id)
+        .update({"is_current": 0, "updated_at": now})
+    )
+    (
+        session.query(TaxonDetermination)
+        .filter(TaxonDetermination.id == det_id)
+        .update({"is_current": 1, "updated_at": now})
+    )
+    session.flush()
+
+
+def retire_and_add_determination(
+    session: Session,
+    co_id: int,
+    taxon_id: int,
+    **fields,
+) -> TaxonDetermination:
+    """Retire all current determinations (is_current → 0), create a new current one."""
+    now = _utcnow()
+    (
+        session.query(TaxonDetermination)
+        .filter(
+            TaxonDetermination.collection_object_id == co_id,
+            TaxonDetermination.is_current == 1,
+        )
+        .update({"is_current": 0, "updated_at": now})
+    )
+    return create_determination(
+        session, collection_object_id=co_id, taxon_id=taxon_id, is_current=1, **fields
+    )
+
+
+def get_determination_history(session: Session, co_id: int) -> list[TaxonDetermination]:
+    """Return all determinations for a specimen, newest first."""
+    return (
+        session.query(TaxonDetermination)
+        .filter(TaxonDetermination.collection_object_id == co_id)
+        .order_by(TaxonDetermination.created_at.desc())
+        .all()
+    )
+
+
 def recent_specimens(session: Session, limit: int = 200) -> list[RecentRow]:
     """Latest `limit` specimens with their current determination and event."""
     rows = (
@@ -134,7 +236,7 @@ def recent_specimens(session: Session, limit: int = 200) -> list[RecentRow]:
         RecentRow(
             collection_object_id=co.id,
             catalog_number=co.catalog_number,
-            catalog_namespace=co.catalog_namespace,
+            collection_code=co.collection_code,
             scientific_name=format_scientific_name(t) if t else "",
             sex=co.sex,
             individual_count=co.individual_count,

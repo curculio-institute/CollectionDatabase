@@ -8,9 +8,11 @@ from .base import Base, TimestampMixin
 class CollectionObject(Base, TimestampMixin):
     """One physical specimen or lot. DwC columns carry dwc: prefix.
 
-    dwc:catalogNumber is NOT NULL — every specimen must have one before entry.
-    It is the specimen's real-world identity (pin label, DwC sync key).
-    catalogNamespace (no prefix) is a local TW concept for the namespace.
+    dwc:catalogNumber is NOT NULL — the stable sync join key with TaxonWorks.
+    dwc:collectionCode is NOT NULL — the TW catalog-number namespace (e.g. "Jilg").
+      Together with dwc:institutionCode (from config, injected at export time) it
+      identifies the TW namespace: TW looks up (institutionCode, collectionCode) →
+      Namespace → stores identifier as "[namespace.short_name] [catalogNumber]".
     """
 
     __tablename__ = "collection_object"
@@ -20,7 +22,7 @@ class CollectionObject(Base, TimestampMixin):
         Integer, ForeignKey("collecting_event.id", ondelete="RESTRICT"), nullable=True)
 
     catalog_number: Mapped[str] = mapped_column("dwc:catalogNumber", String, nullable=False)
-    catalog_namespace: Mapped[str] = mapped_column("catalogNamespace", String, nullable=False)
+    collection_code: Mapped[str] = mapped_column("dwc:collectionCode", String, nullable=False)
 
     basis_of_record: Mapped[str] = mapped_column("dwc:basisOfRecord", String, nullable=False, default="PreservedSpecimen")
     individual_count: Mapped[int] = mapped_column("dwc:individualCount", Integer, nullable=False, default=1)
@@ -28,8 +30,6 @@ class CollectionObject(Base, TimestampMixin):
     sex: Mapped[Optional[str]] = mapped_column("dwc:sex", String, nullable=True)
     # "in collection" | "on loan" | "donated" | "exchanged" | "missing" | "destroyed"
     disposition: Mapped[Optional[str]] = mapped_column("dwc:disposition", String, nullable=True)
-    # Legal owner; differs from your code only when specimens are loaned or donated out
-    owner_institution_code: Mapped[Optional[str]] = mapped_column("dwc:ownerInstitutionCode", String, nullable=True)
     preparations: Mapped[Optional[str]] = mapped_column("dwc:preparations", String, nullable=True)
     type_status: Mapped[Optional[str]] = mapped_column("dwc:typeStatus", String, nullable=True)
     occurrence_remarks: Mapped[Optional[str]] = mapped_column("dwc:occurrenceRemarks", String, nullable=True)

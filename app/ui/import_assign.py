@@ -219,6 +219,7 @@ def build_import_assign_tab(session_factory, refreshers: dict) -> None:
                 count_in  = ui.number("n", value=1, min=0, precision=0).classes("w-20")
                 preps_in  = ui.input("preparations",
                                      placeholder="pinned, in ethanol…").classes("flex-1 min-w-40")
+            ui.timer(2.0, lambda: cat_num.__setattr__("options", {c: c for c in _reserved_opts()}))
 
             with ui.row().classes("w-full flex-wrap gap-3 items-end mt-3"):
                 stage_sel = ui.select(LIFE_STAGE_OPTIONS, label="lifeStage").classes("w-32")
@@ -374,7 +375,7 @@ def build_import_assign_tab(session_factory, refreshers: dict) -> None:
                     item.on("click", lambda _, r=r: asyncio.ensure_future(_import_tw(r)))
 
         async def _import_tw(r: dict):
-            tw_id = r.get("valid_taxon_name_id") or r.get("id")
+            tw_id = r["id"]  # import the actual name clicked; get_or_create handles valid-name backfill for synonyms
             try:
                 tw_data, otu_id = await asyncio.gather(
                     tw_svc.fetch_full_classification(tw_id),
@@ -525,7 +526,7 @@ def build_import_assign_tab(session_factory, refreshers: dict) -> None:
                             event_fields=dwc_svc.row_to_event_fields(row),
                             specimen_fields={
                                 "catalog_number":    code,
-                                "catalog_namespace": DEFAULT_NAMESPACE,
+                                "collection_code": DEFAULT_NAMESPACE,
                                 "sex":               sex_sel.value,
                                 "individual_count":  int(count_in.value or 1),
                                 "preparations":      preps_in.value,

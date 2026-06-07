@@ -139,3 +139,11 @@ def save_biological_association(
     session.add(assoc)
     session.flush()
     return assoc
+
+
+def remove_biological_association(session: Session, ba_id: int) -> None:
+    """Delete a BiologicalAssociation by id. No-op if not found."""
+    ba = session.get(BiologicalAssociation, ba_id)
+    if ba:
+        session.delete(ba)
+        session.flush()

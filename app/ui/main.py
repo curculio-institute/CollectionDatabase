@@ -27,10 +27,13 @@ import app.services.print_queue as pq_svc
 from app.config import get_config, save_config
 from app.models import CollectionObject, CollectingEvent, TaxonDetermination, LabelCode
 from app.ui.taxon_search import build_taxon_search
+from app.ui.identification_list import build_identification_list
 from app.ui.import_assign import build_import_assign_tab
+from app.ui.controlled_vocab_tab import build_controlled_vocab_tab
 from app.ui.map_picker import add_map_assets, build_map_picker
 from app.ui.bio_object_search import build_bio_object_search
 from app.ui.taxon_editor import build_taxon_editor
+from app.ui.records_tab import build_records_tab
 from app.services.biological import (
     sync_biological_relationships,
     get_relationship_options,
@@ -389,7 +392,7 @@ def index():
       .header-beetle {
         display: inline-block;
         width: 2.2rem; height: 2.2rem;
-        background-image: url('/static/beetle_white.svg');
+        background-image: url('/static/beetle_white.png');
         background-size: contain;
         background-repeat: no-repeat;
         background-position: center;
@@ -456,9 +459,11 @@ def index():
             )
             with main_tabs:
                 ui.tab("digitize", label="Specimen Digitization", icon="biotech")
+                ui.tab("records",  label="Records",               icon="edit_note")
                 ui.tab("import",   label="Import & Assign",       icon="upload_file")
                 ui.tab("taxonomy", label="Taxonomy",              icon="account_tree")
                 ui.tab("labels",   label="Labels",                icon="label")
+                ui.tab("vocab",    label="Controlled Vocabularies", icon="manage_accounts")
 
     # Cross-tab refresh registry — populated as tabs build, called by earlier tabs.
     _refreshers: dict[str, callable] = {}
@@ -487,7 +492,7 @@ def index():
                 return [
                     {
                         "id":      str(r.collection_object_id),
-                        "catalog": f"{r.catalog_namespace} {r.catalog_number}",
+                        "catalog": f"{r.collection_code} {r.catalog_number}",
                         "species": r.scientific_name,
                         "sex":     r.sex or "",
                         "n":       str(r.individual_count if r.individual_count is not None else ""),
@@ -520,6 +525,7 @@ def index():
                         sex_sel  = ui.select(SEX_OPTIONS, label="sex").classes("w-28")
                         count_in = ui.number("n", value=1, min=0, precision=0).classes("w-20")
                         preps_in = ui.input("preparations", placeholder="pinned, in ethanol…").classes("flex-1 min-w-40")
+                    ui.timer(2.0, lambda: cat_num.__setattr__("options", {c: c for c in _reserved_opts()}))
                     with ui.expansion("More fields").classes("w-full mt-2"):
                         with ui.grid(columns=4).classes("w-full gap-3"):
                             stage_sel = ui.select(LIFE_STAGE_OPTIONS, label="lifeStage").classes("col-span-1")
@@ -532,14 +538,9 @@ def index():
 
                 # ── IDENTIFICATION ────────────────────────────────────────
                 with ui.card().classes("w-full shadow-sm"):
-                    ui.label("Identification").classes("section-label")
+                    ui.label("Identifications").classes("section-label")
                     ui.separator().classes("mb-3")
-                    taxon_state = build_taxon_search(_sf)
-                    with ui.row().classes("w-full flex-wrap gap-3 items-end mt-3"):
-                        id_by   = ui.input("identifiedBy", value=DEFAULT_IDENTIFIED_BY).classes("flex-1 min-w-40")
-                        dt_id   = ui.input("dateIdentified", placeholder="YYYY-MM-DD").classes("w-36")
-                        qual    = ui.input("qualifier", placeholder="cf. / aff.").classes("w-28")
-                        det_rem = ui.input("det. remarks").classes("flex-1 min-w-40")
+                    det_state = build_identification_list(_sf)
 
                 # ── COLLECTING EVENT ─────────────────────────────────────
                 with ui.card().classes("w-full shadow-sm"):
@@ -555,6 +556,7 @@ def index():
                         .classes("w-full mb-4")
                         .tooltip("Type any locality, date, or collector name")
                     )
+                    ui.timer(2.0, lambda: event_sel.__setattr__("options", _event_opts()))
 
                     def _on_event_field_edit(_=None):
                         if not state["populating"] and state["event_id"] is not None:
@@ -1041,7 +1043,7 @@ def index():
                                 ], once=True)
 
                         _lookup_btn = (
-                            ui.button("Lookup", icon="travel_explore",
+                            ui.button("Detect Locations from Coordinates", icon="auto_fix_high",
                                       on_click=_fill_from_coords)
                             .props("flat dense size=sm")
                             .tooltip("Fill country / state / county from coordinates via Photon")
@@ -1080,9 +1082,47 @@ def index():
                         protocol_sel = ui.select(SAMPLING_PROTOCOLS, label="samplingProtocol").classes("col-span-1")
 
                     ui.label("Recorded by").classes("text-xs font-semibold uppercase tracking-wider text-grey-6 mt-4")
+                    def _person_opts_now() -> dict:
+                        import app.services.persons as _psvc
+                        with _sf() as _s:
+                            return _psvc.person_options(_s)
+
                     with ui.grid(columns=2).classes("w-full gap-3 mt-1"):
-                        recby_in    = ui.input("recordedBy",  on_change=_on_event_field_edit).classes("col-span-1")
+                        with ui.row().classes("col-span-1 items-center gap-1"):
+                            recby_in = (
+                                ui.select(
+                                    options=_person_opts_now(),
+                                    label="recordedBy",
+                                    with_input=True,
+                                    clearable=True,
+                                )
+                                .classes("flex-1")
+                                .props("use-input input-debounce=0 new-value-mode=add-unique")
+                            )
+                            (
+                                ui.button("", icon="push_pin")
+                                .props("flat dense round size=xs")
+                                .tooltip("Insert default name")
+                                .on_click(lambda: recby_in.set_value(get_config().default_recorded_by))
+                                .bind_visibility_from(recby_in, "value", lambda v: not v)
+                            )
+                        recby_in.on_value_change(lambda _: _on_event_field_edit())
                         fieldnum_in = ui.input("fieldNumber", on_change=_on_event_field_edit).classes("col-span-1")
+
+                    import app.services.persons as _psvc
+
+                    def _refresh_digitize_person_opts():
+                        with _sf() as _s:
+                            new_opts = _psvc.person_options(_s)
+                        cur = recby_in.value
+                        r_opts = dict(new_opts)
+                        if cur and cur not in r_opts:
+                            r_opts = {cur: cur, **r_opts}
+                        recby_in.options = r_opts
+                        det_state["refresh_person_opts"]()
+
+                    _refreshers["person_opts"] = _refresh_digitize_person_opts
+                    ui.timer(2.0, _refresh_digitize_person_opts)
 
                     verblabel_in = ui.input("verbatimLabel", on_change=_on_event_field_edit).classes("w-full mt-4")
 
@@ -1140,6 +1180,7 @@ def index():
                         .classes("w-full mb-3")
                         .tooltip("Select the type of biological association")
                     )
+                    ui.timer(2.0, lambda: rel_sel.__setattr__("options", {r.id: r.name for r in _with_session(get_relationship_options)}))
 
                     # Object taxon search — bio_codes list is read on each keystroke
                     bio_obj_state = build_bio_object_search(_sf, bio_codes)
@@ -1268,7 +1309,7 @@ def index():
                 def _collect_specimen_fields() -> dict:
                     return {
                         "catalog_number":    cat_num.value or "",
-                        "catalog_namespace": DEFAULT_NAMESPACE,
+                        "collection_code": DEFAULT_NAMESPACE,
                         "sex":               sex_sel.value,
                         "individual_count":  int(count_in.value or 1),
                         "preparations":      preps_in.value,
@@ -1279,17 +1320,9 @@ def index():
                         "occurrence_remarks":rem_in.value,
                     }
 
-                def _collect_determination_fields() -> dict:
-                    return {
-                        "identified_by":            id_by.value,
-                        "date_identified":          dt_id.value,
-                        "identification_qualifier": qual.value,
-                        "identification_remarks":   det_rem.value,
-                    }
-
                 def _validate() -> str | None:
-                    if taxon_state["taxon_id"] is None:
-                        return "Select a taxon first."
+                    if not det_state["get_dets"]():
+                        return "Add at least one identification."
                     if not cat_num.value:
                         return "Select an identifier code first."
                     cc = code_in.value.strip()
@@ -1318,7 +1351,6 @@ def index():
                     cat_num.value   = None
                     rem_in.value    = ""
                     type_in.value   = ""
-                    qual.value      = ""
                     sex_sel.value   = ""
                     count_in.value  = 1
                     preps_in.value  = ""
@@ -1342,8 +1374,7 @@ def index():
                             w.value = ""
                         protocol_sel.value = ""
                     if not keep_det.value:
-                        id_by.value = DEFAULT_IDENTIFIED_BY
-                        dt_id.value = ""
+                        det_state["clear"]()
 
                 def _on_save():
                     err = _validate()
@@ -1351,22 +1382,40 @@ def index():
                         ui.notify(err, type="negative")
                         return
                     try:
+                        dets = det_state["get_dets"]()
+                        cur_det  = next((d for d in dets if d["is_current"]), dets[0])
+                        rest_det = [d for d in dets if d is not cur_det]
                         code = cat_num.value
                         with _sf() as session:
                             with session.begin():
                                 co = svc.save_specimen_entry(
                                     session,
-                                    taxon_id=taxon_state["taxon_id"],
+                                    taxon_id=cur_det["taxon_id"],
                                     event_id=state["event_id"],
                                     event_fields=_collect_event_fields(),
                                     specimen_fields=_collect_specimen_fields(),
-                                    determination_fields=_collect_determination_fields(),
+                                    determination_fields={
+                                        "identified_by":            cur_det["identified_by"],
+                                        "date_identified":          cur_det["date_identified"],
+                                        "identification_qualifier": cur_det["identification_qualifier"],
+                                        "identification_remarks":   cur_det["identification_remarks"],
+                                    },
                                 )
+                                for d in rest_det:
+                                    svc.create_determination(
+                                        session,
+                                        collection_object_id=co.id,
+                                        taxon_id=d["taxon_id"],
+                                        identified_by=d["identified_by"],
+                                        date_identified=d["date_identified"],
+                                        identification_qualifier=d["identification_qualifier"],
+                                        identification_remarks=d["identification_remarks"],
+                                        is_current=0,
+                                    )
                                 id_svc.assign_code(session, code, co.id)
                                 saved_id = co.id
                                 pq_svc.enqueue_data(session, co.id)
-                                if taxon_state["taxon_id"]:
-                                    pq_svc.enqueue_determination(session, co.id)
+                                pq_svc.enqueue_determination(session, co.id)
                                 # Save biological associations atomically with the specimen
                                 for assoc in bio_state["associations"]:
                                     save_biological_association(
@@ -1394,6 +1443,16 @@ def index():
                     table.rows = _table_rows()
                     table.update()
 
+
+        # ================================================================
+        # TAB: RECORDS
+        # ================================================================
+        with ui.tab_panel("records"):
+            with ui.column().classes("w-full max-w-5xl mx-auto px-4 pt-6 pb-16 gap-4"):
+                build_records_tab(
+                    _sf,
+                    on_saved=lambda: [fn() for fn in _refreshers.values()],
+                )
 
         # ================================================================
         # TAB: IMPORT & ASSIGN
@@ -1568,6 +1627,16 @@ def index():
                         tax_tree.update()
 
                     _refreshers["taxonomy_tree"] = _refresh_tree
+
+        # ================================================================
+        # TAB: CONTROLLED VOCABULARIES
+        # ================================================================
+        with ui.tab_panel("vocab"):
+            with ui.column().classes("w-full max-w-5xl mx-auto px-4 pt-6 pb-16 gap-4"):
+                build_controlled_vocab_tab(
+                    _sf,
+                    on_person_changed=lambda: _refreshers.get("person_opts") and _refreshers["person_opts"](),
+                )
 
         # ================================================================
         # TAB: LABELS
@@ -1871,6 +1940,7 @@ def index():
                         .classes("w-full")
                         .props("use-chips")
                     )
+                    ui.timer(2.0, lambda: occ_sel.__setattr__("options", _specimen_options()))
                     occ_status = ui.label("").classes("text-sm mt-2").style("color:var(--tp-base-soft)")
 
                     def _generate_occ_labels():
@@ -1883,6 +1953,13 @@ def index():
                                 rows: list[lbl_svc.OccurrenceLabel] = []
                                 for co_id in ids:
                                     co = session.get(CollectionObject, co_id)
+                                    if co is None:
+                                        ui.notify(
+                                            f"Specimen #{co_id} no longer exists in the database. "
+                                            "Clear your selection and re-select.",
+                                            type="negative",
+                                        )
+                                        return
                                     ev = co.collecting_event
                                     # Reserve + assign a fresh code
                                     _batch_id, codes = id_svc.reserve_codes(session, 1)
@@ -1943,6 +2020,8 @@ def index():
             _refresh_tree()
             await asyncio.sleep(0.15)
             await tax_tree.run_method("expandAll")
+        elif e.value == "digitize":
+            _refreshers["person_opts"]()
 
     main_tabs.on_value_change(_on_tab_change)
 
@@ -1993,6 +2072,37 @@ def index():
 
             ui.separator().classes("my-3")
 
+            # ── Default names ─────────────────────────────────────────────
+            ui.label("Default names").classes("text-sm font-medium mb-1")
+            ui.label(
+                "Inserted with one click in identifiedBy / recordedBy fields."
+            ).classes("text-xs mb-2").style("color:var(--tp-base-soft)")
+
+            import app.services.persons as _psvc_cfg
+            with _sf() as _scfg:
+                _cfg_person_opts = _psvc_cfg.person_options(_scfg)
+
+            def _make_cfg_person_sel(label, current_val):
+                opts = dict(_cfg_person_opts)
+                if current_val and current_val not in opts:
+                    opts = {current_val: current_val, **opts}
+                return (
+                    ui.select(opts, label=label, value=current_val or None,
+                              with_input=True, clearable=True)
+                    .classes("w-full mt-1")
+                    .props("use-input input-debounce=0 new-value-mode=add-unique")
+                )
+
+            cfg_now_names = get_config()
+            idby_default_in = _make_cfg_person_sel(
+                "Default identifiedBy", cfg_now_names.default_identified_by
+            )
+            recby_default_in = _make_cfg_person_sel(
+                "Default recordedBy", cfg_now_names.default_recorded_by
+            )
+
+            ui.separator().classes("my-3")
+
             # ── Bio-association default codes ────────────────────────────
             ui.label("Biological association default nomenclatural codes") \
                 .classes("text-sm font-medium mb-1")
@@ -2013,10 +2123,12 @@ def index():
                     ui.notify("Select at least one nomenclatural code.", type="warning")
                     return
                 cfg = get_config()
-                cfg.tw_base             = tw_base_in.value.strip() or cfg.tw_base
-                cfg.tw_token            = tw_token_in.value.strip()
-                cfg.taxonpages_base     = tp_base_in.value.strip() or cfg.taxonpages_base
-                cfg.map_default_layer   = map_layer_sel.value or "street"
+                cfg.tw_base               = tw_base_in.value.strip() or cfg.tw_base
+                cfg.tw_token              = tw_token_in.value.strip()
+                cfg.taxonpages_base       = tp_base_in.value.strip() or cfg.taxonpages_base
+                cfg.map_default_layer     = map_layer_sel.value or "street"
+                cfg.default_identified_by = idby_default_in.value or ""
+                cfg.default_recorded_by   = recby_default_in.value or ""
                 cfg.bio_assoc_default_codes = selected
                 save_config(cfg)
                 # Propagate to active bio_codes filter in place

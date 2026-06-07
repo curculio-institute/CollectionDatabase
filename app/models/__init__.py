@@ -7,6 +7,7 @@ from .biological import BiologicalRelationship, BiologicalAssociation
 from .label_batch import LabelBatch
 from .label_code import LabelCode
 from .print_queue import PrintQueue
+from .person import Person
 
 __all__ = [
     "Base",
@@ -20,4 +21,5 @@ __all__ = [
     "LabelBatch",
     "LabelCode",
     "PrintQueue",
+    "Person",
 ]

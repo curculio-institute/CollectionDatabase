@@ -2,6 +2,10 @@
   "tw_base": "https://sfg.taxonworks.org/api/v1",
   "tw_token": "Ots0-yen4dVefn0Etyxvgw",
   "taxonpages_base": "https://catalog.curculionoidea.org",
+  "institution_code": "Jilg",
+  "collection_code": "Jilg",
+  "default_identified_by": "Jakob Jilg",
+  "default_recorded_by": "Jakob Jilg",
   "bio_assoc_default_codes": [
     "ICN"
   ],

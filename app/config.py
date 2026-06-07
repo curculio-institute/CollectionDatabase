@@ -17,6 +17,20 @@ class AppConfig:
     tw_base: str = "https://sfg.taxonworks.org/api/v1"
     tw_token: str = ""
     taxonpages_base: str = "https://catalog.curculionoidea.org"
+
+    # Collection identity — injected as background defaults into every DwC export row.
+    # institution_code: maps to dwc:institutionCode (TW Repository lookup key).
+    # collection_code:  maps to dwc:collectionCode (TW catalog-number namespace lookup key).
+    # TW uses (institutionCode, collectionCode) together to find the namespace that
+    # prefixes the catalogNumber in TW's internal identifier, e.g. "Jilg ab12".
+    institution_code: str = "Jilg"
+    collection_code: str = "Jilg"
+
+    # One-click defaults — shown as icon buttons in forms, never auto-filled.
+    # Set via Settings dialog. Stores the full name (dwc_name = full_name).
+    default_identified_by: str = ""
+    default_recorded_by: str = ""
+
     # Nomenclatural codes shown in the biological-association object search by default.
     # DwC values: "ICN" (plants/fungi), "ICZN" (animals).
     bio_assoc_default_codes: list[str] = field(default_factory=lambda: ["ICN"])

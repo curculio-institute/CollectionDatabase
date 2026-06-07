@@ -229,10 +229,13 @@ def build_taxon_search(session_factory, on_select=None) -> dict:
                     is_synonym=res.is_synonym,
                     accepted=res.accepted_label,
                 ))
-            item.on("click", lambda _, r=res: _select_local(r.id, r.label))
+            item.on("click", lambda _, r=res: _select_local(r))
 
-    def _select_local(taxon_id: int, label: str):
-        _set_selected(taxon_id, f'<i>{_html_mod.escape(label)}</i>')
+    def _select_local(res) -> None:
+        _set_selected(
+            res.id,
+            _local_item_html(res.label, is_synonym=res.is_synonym, accepted=res.accepted_label),
+        )
 
     # ── TaxonWorks search (appended below local) ─────────────────────
 
@@ -338,10 +341,23 @@ def build_taxon_search(session_factory, on_select=None) -> dict:
                         session, tw_data, otu_id=otu_id
                     )
                     tid = taxon.id
+                    # Build chip HTML from the local DB record while the session is open,
+                    # so it matches the dropdown style (no rank/genus/original-combo badges).
+                    is_syn = taxon.taxonomic_status == "synonym"
+                    acc_label = None
+                    if is_syn and taxon.accepted_name_usage_id:
+                        acc = session.get(svc_taxa.Taxon, taxon.accepted_name_usage_id)
+                        if acc:
+                            acc_label = svc_taxa.format_scientific_name(acc)
+                    chip_html = _local_item_html(
+                        svc_taxa.format_scientific_name(taxon),
+                        is_synonym=is_syn,
+                        accepted=acc_label,
+                    )
         except Exception as exc:
             ui.notify(f"Local DB error: {exc}", type="negative")
             return
-        _set_selected(tid, r.get("label_html") or r.get("label", ""))
+        _set_selected(tid, chip_html)
 
     # ── debounced search on input ────────────────────────────────────
 
@@ -380,4 +396,5 @@ def build_taxon_search(session_factory, on_select=None) -> dict:
 
     search_inp.on("blur", _on_blur)
 
+    state["clear"] = _clear
     return state

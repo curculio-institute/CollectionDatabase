@@ -12,6 +12,29 @@ Project context and working agreement for Claude Code. Read this before writing 
   - data analysis tools, map of the collection
   - data security: what happens if program crashes unexpectedly? warning when closing page?
 
+## Known bugs (audit 2026-06-07) — fix one by one
+
+### Critical
+- [x] **C-1** `records_tab.py:295` — Fixed: snapshot all det history as plain dicts inside session in `_load_specimen`; removed detached ORM access.
+- [x] **C-2** `import_assign.py:~377` — Fixed: use `r["id"]` (matching `taxon_search.py`); `get_or_create_from_tw_data` handles valid-name backfill. Bug only affected determinations in Import & Assign, not the taxonomy table.
+- [x] **C-3** `main.py:~1897` — Fixed: added `if co is None` guard with error notification and early return (not silent skip); added `ui.timer(2.0, ...)` to keep `occ_sel` options live.
+
+### Major
+- [ ] **M-1** `biological.py:78` — `BiologicalRelationship.name.contains("[legacy]")` in `order_by()` works in SQLite but fails in PostgreSQL (cross-platform requirement). Fix: use `case()` or `func.instr()`.
+- [ ] **M-2** `models/print_queue.py` — No `CHECK` on `label_type` (accepts any string); no exclusive-arc constraint enforcing `collection_object_id`/`label_code_id` consistency with `label_type`.
+- [ ] **M-3** `models/label_code.py:13` — `status` column has no `CHECK` constraint. Fix: `CHECK(status IN ('reserved','assigned'))`.
+- [ ] **M-4** `taxa.py:449` + `taxon_editor.py:24` — Virus code seeded/saved as `"ICVCV"` but settings filter uses `"ICVCN"` (correct). Virus taxa never appear in their own filter.
+
+### Minor
+- [ ] **m-1** `taxon_editor.py:219` — Delete-eligibility check ignores `TaxonDetermination` rows; delete button enables incorrectly then `delete_taxon()` raises a confusing error on click.
+- [ ] **m-2** `bio_object_search.py:310` — `not r.get("synonym", None) is not None` is needlessly confusing; simplify to `r.get("synonym") is None`.
+- [ ] **m-3** `import_assign.py` — `island` field missing from DwC CSV row mapping; cannot be populated via Import & Assign.
+- [ ] **m-4** `labels.py:401` — `occurrence_sheet()` docstring says "interleaved per specimen" but output is all data labels then all id labels in batches.
+- [ ] **m-5** `main.py` + `records_tab.py` + `import_assign.py` — `SEX_OPTIONS`, `SAMPLING_PROTOCOLS`, `DEFAULT_IDENTIFIED_BY`, `DEFAULT_NAMESPACE`, etc. duplicated in three files; centralise.
+- [ ] **m-6** `main.py:464` — `_refreshers` populated in tab-rendering order; missing keys would cause `KeyError` if tab order changes. Use `.get()` calls or pre-initialise with `None`.
+- [ ] **m-7** `labels.py` vs `label_text.py` — `_data_line1()` duplicates locality-formatting logic already in `format_locality_label()`.
+- [ ] **m-8** `services/taxa.py:62` — `create_taxon_manual()` has no `nomenclatural_code` parameter; manually created taxa always get `NULL` code.
+
 ## 1. What this project is
 
 A **local-first, single-user desktop application** for maintaining an entomological
@@ -240,6 +263,147 @@ Biological association UI: CRUD in DB, UI not yet built.
   up-to-date after every save without a page reload.
 - **NiceGUI tree updates**: use `tree._props['nodes'] = new_nodes; tree.update()` — do NOT
   assign to `tree.nodes` directly (NiceGUI 2.x).
+
+#### DB-backed selects must stay live — use `ui.timer`
+
+NiceGUI renders each page **once per browser page load**. Any `ui.select` whose options come
+from the database is populated at that moment and then frozen for the session. If the user
+modifies the underlying table (e.g. adds a person in the Controlled Vocabularies tab) and
+then switches back to Digitize, they will see the stale list — silently wrong data.
+
+**NiceGUI does not reliably forward Quasar component events (like `popup-show`) to Python.**
+Do not use `sel.on("popup-show", ...)` or similar event hooks for this — they appear wired
+but the Python callback is not reliably called.
+
+**The correct pattern is `ui.timer` (NiceGUI's own recommended approach for backend sync).**
+
+For every `ui.select` whose options come from the DB:
+
+1. Write a refresh function that re-queries the DB and sets `sel.options = new_opts`.
+   Preserve any free-typed current value that isn't in the new options.
+2. Create a `ui.timer(2.0, refresh_fn)` — this fires every 2 seconds and keeps the
+   select live without any event wiring.
+3. Also call `refresh_fn()` immediately from any write path that changes that table
+   (belt-and-suspenders: the timer handles the background case, the direct call handles
+   the in-session write case without a 2-second wait).
+
+```python
+# After creating the select:
+def _refresh_person_opts():
+    with session_factory() as s:
+        new_opts = persons_svc.person_options(s)
+    cur = sel.value
+    if cur and cur not in new_opts:
+        new_opts = {cur: cur, **new_opts}
+    sel.options = new_opts
+
+ui.timer(2.0, _refresh_person_opts)   # keeps it live
+
+# In the write path (e.g. controlled_vocab_tab.py after saving a person):
+if on_person_changed:
+    on_person_changed()               # calls _refresh_person_opts() immediately
+```
+
+`ui.timer` created inside a `@ui.page` handler is per-client and stops automatically
+when the client disconnects. The overhead on localhost (one DB read every 2 s) is
+negligible.
+
+For tabs that rebuild their entire form on each interaction (e.g. Records tab rebuilds
+on each specimen selection via `_load_specimen`), no timer is needed — the rebuild
+already fetches fresh options from DB at that point.
+
+This does NOT apply to static/hardcoded option lists (sex, basisOfRecord, samplingProtocol,
+etc.) defined in Python constants — those never change at runtime.
+
+### Field-filling policy (three tiers)
+
+Every form field falls into exactly one of three categories. This distinction must be
+consistent across all tabs (Digitize, Records, Import & Assign) and documented in any
+future UI help text.
+
+#### Tier 1 — Auto-filled and editable
+Pre-populated with a sensible constant when a new record is created. The user sees the
+value and can change it before saving. These are "almost always correct" defaults.
+
+| DwC field | Pre-filled value | Notes |
+|-----------|-----------------|-------|
+| `basisOfRecord` | `"PreservedSpecimen"` | hardcoded; other values are rare exceptions |
+| `disposition` | `"in collection"` | hardcoded; changes only for loans/donations |
+
+#### Tier 2 — One-click configurable default
+Field starts **empty**. A small icon button adjacent to the field inserts the configured
+default. The user must actively click it — nothing is ever silently applied. This prevents
+stale values slipping through on rapid digitizing.
+
+| DwC field | Config key | Icon | Inserted value |
+|-----------|-----------|------|----------------|
+| `identifiedBy` | `default_identified_by` | `push_pin` | user's full name |
+| `recordedBy` | `default_recorded_by` | `push_pin` | user's full name |
+| `dateIdentified` | *(derived)* | `push_pin` | current 4-digit year (`"2026"`) |
+
+**Icon:** always `push_pin` for every Tier 2 default button, regardless of field type.
+
+**Placement:** the button must be placed **adjacent** to the field (sibling in a flex row),
+**not** inside the field's `add_slot("append")`. Quasar QSelect intercepts all events
+inside its append slot and opens the dropdown; `on_click` never fires independently.
+For `ui.input` (QInput) the append slot works, but `push_pin` is still placed adjacent
+for visual consistency across all Tier 2 fields.
+
+Implementation pattern for a `ui.select` (person) field:
+```python
+with ui.row().classes("flex-1 min-w-40 items-center gap-1"):
+    sel = ui.select(opts, label="identifiedBy", with_input=True, clearable=True).classes("flex-1")
+    (
+        ui.button("", icon="push_pin")
+        .props("flat dense round size=xs")
+        .tooltip("Insert default name")
+        .on_click(lambda: sel.set_value(get_config().default_identified_by) if get_config().default_identified_by else None)
+        .bind_visibility_from(sel, "value", lambda v: not v)
+    )
+```
+
+For `dateIdentified` insert only the year; the user completes month/day as needed.
+Always call `get_config()` inside the lambda at click time — never capture the value at
+render time, or the button will be frozen to whatever was configured when the page loaded.
+
+#### Tier 3 — Background invisible default
+Written silently into every saved record and every DwC export row. Never shown in any form
+field. The user configures these once in the Config tab and then forgets them.
+
+| DwC field | Config key | Notes |
+|-----------|-----------|-------|
+| `institutionCode` | `institution_code` | injected at export time; not stored per-row in the DB |
+| `collectionCode` | *(= `dwc:collectionCode` column)* | stored per-row; value comes from `DEFAULT_NAMESPACE` constant at digitize time |
+
+### TaxonWorks namespace: institutionCode + collectionCode (verified)
+
+Verified against `occurrence.rb` in `~/Downloads/neu/software/taxonworks/`
+(commit `897f385`, 2026-06-03):
+
+- **`ownerInstitutionCode` is `[Not mapped]`** (occurrence.rb:728) — TW silently ignores it.
+  The column was removed from the DB in migration 0015; do not re-introduce it.
+- **`institutionCode`** (occurrence.rb:657–702): TW looks up a `Repository` object by URL,
+  acronym, or name. It is also used together with `collectionCode` as a compound key to
+  resolve the catalog-number namespace (occurrence.rb:497–509).
+- **`collectionCode`** (occurrence.rb:708–718): resolves to the `Namespace` that prefixes
+  the `catalogNumber` in TW's internal identifier store.
+
+**How the namespace works in practice:**
+TW does NOT prepend `institutionCode`+`collectionCode` directly onto the catalog number.
+Instead, the DwC import dataset must be pre-configured with a mapping
+`(institutionCode, collectionCode) → TW Namespace`. TW then stores the specimen's
+catalog-number identifier as `"[namespace.short_name] [catalogNumber]"`, e.g. `"Jilg ab12"`.
+The four-character code is the `catalogNumber` as-is; the namespace label comes from TW.
+
+**DB mapping:**
+- `dwc:catalogNumber` (Python: `catalog_number`) — the 4-char code; immutable once assigned.
+- `dwc:collectionCode` (Python: `collection_code`) — the namespace short name (e.g. `"Jilg"`);
+  immutable once assigned; stored per-row so it could differ per specimen if ever needed.
+- `dwc:institutionCode` — **not stored in DB**; injected from `config.institution_code` at
+  DwC export time.
+
+For this single-collection setup `institution_code` and `collection_code` are both `"Jilg"`.
+Configure the TW import dataset to map `("Jilg", "Jilg") → "Jilg"` namespace before import.
 
 ---
 
