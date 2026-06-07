@@ -45,7 +45,6 @@ from app.services.biological import (
 # ---------------------------------------------------------------------------
 
 DEFAULT_IDENTIFIED_BY = "J. Jilg"
-DEFAULT_NAMESPACE     = "Jilg"
 
 SAMPLING_PROTOCOLS = [
     "hand collecting", "sweep net", "beating", "pitfall trap",
@@ -418,7 +417,7 @@ def index():
         )
         ui.space()
         (
-            ui.button(icon="settings", on_click=settings_dialog.open)
+            ui.button(icon="settings", on_click=lambda: _open_settings())
             .props("flat round dense")
             .style("color:rgb(156,163,175)")
             .tooltip("Settings")
@@ -534,7 +533,25 @@ def index():
                                                    value="in collection").classes("col-span-1")
                             basis_sel = ui.select(BASIS_OPTIONS, label="basisOfRecord",
                                                    value="PreservedSpecimen").classes("col-span-1")
+                            _cfg_disp = get_config()
+                            inst_code_disp = (
+                                ui.input("institutionCode", value=_cfg_disp.institution_code)
+                                .props("readonly outlined dense")
+                                .classes("col-span-1")
+                                .tooltip("Set in Settings — applies to every new record")
+                            )
+                            coll_code_disp = (
+                                ui.input("collectionCode", value=_cfg_disp.collection_code)
+                                .props("readonly outlined dense")
+                                .classes("col-span-1")
+                                .tooltip("Set in Settings — applies to every new record")
+                            )
                         rem_in = ui.input("occurrenceRemarks").classes("w-full mt-3")
+                    def _refresh_identity_display():
+                        cfg = get_config()
+                        inst_code_disp.value = cfg.institution_code
+                        coll_code_disp.value = cfg.collection_code
+                    ui.timer(2.0, _refresh_identity_display)
 
                 # ── IDENTIFICATION ────────────────────────────────────────
                 with ui.card().classes("w-full shadow-sm"):
@@ -1307,9 +1324,11 @@ def index():
                     }
 
                 def _collect_specimen_fields() -> dict:
+                    cfg = get_config()
                     return {
                         "catalog_number":    cat_num.value or "",
-                        "collection_code": DEFAULT_NAMESPACE,
+                        "collection_code":   cfg.collection_code,
+                        "institution_code":  cfg.institution_code,
                         "sex":               sex_sel.value,
                         "individual_count":  int(count_in.value or 1),
                         "preparations":      preps_in.value,
@@ -1321,6 +1340,11 @@ def index():
                     }
 
                 def _validate() -> str | None:
+                    cfg = get_config()
+                    if not cfg.institution_code:
+                        return "institutionCode is not configured. Open Settings to set it."
+                    if not cfg.collection_code:
+                        return "collectionCode is not configured. Open Settings to set it."
                     if not det_state["get_dets"]():
                         return "Add at least one identification."
                     if not cat_num.value:
@@ -2057,6 +2081,25 @@ def index():
 
             ui.separator().classes("my-3")
 
+            # ── Collection identity ──────────────────────────────────────
+            ui.label("Collection identity").classes("text-sm font-medium mb-1")
+            ui.label(
+                "Written into every new record. Required before saving a specimen."
+            ).classes("text-xs mb-2").style("color:var(--tp-base-soft)")
+            cfg_now_id = get_config()
+            institution_code_in = ui.input(
+                "institutionCode",
+                value=cfg_now_id.institution_code,
+                placeholder="e.g. Jilg",
+            ).classes("w-full mt-1")
+            collection_code_in = ui.input(
+                "collectionCode",
+                value=cfg_now_id.collection_code,
+                placeholder="e.g. Jilg",
+            ).classes("w-full mt-2")
+
+            ui.separator().classes("my-3")
+
             # ── Map default layer ────────────────────────────────────────
             ui.label("Map default layer").classes("text-sm font-medium mb-1")
             _map_layer_opts = {
@@ -2126,6 +2169,8 @@ def index():
                 cfg.tw_base               = tw_base_in.value.strip() or cfg.tw_base
                 cfg.tw_token              = tw_token_in.value.strip()
                 cfg.taxonpages_base       = tp_base_in.value.strip() or cfg.taxonpages_base
+                cfg.institution_code      = institution_code_in.value.strip()
+                cfg.collection_code       = collection_code_in.value.strip()
                 cfg.map_default_layer     = map_layer_sel.value or "street"
                 cfg.default_identified_by = idby_default_in.value or ""
                 cfg.default_recorded_by   = recby_default_in.value or ""
@@ -2140,3 +2185,17 @@ def index():
             with ui.row().classes("mt-4 gap-2 justify-end w-full"):
                 ui.button("Cancel", on_click=settings_dialog.close).props("flat")
                 ui.button("Save", on_click=_save_settings).props("color=secondary")
+
+    def _open_settings():
+        cfg = get_config()
+        tw_base_in.value        = cfg.tw_base
+        tw_token_in.value       = cfg.tw_token
+        tp_base_in.value        = cfg.taxonpages_base
+        institution_code_in.value = cfg.institution_code
+        collection_code_in.value  = cfg.collection_code
+        map_layer_sel.value     = cfg.map_default_layer or "street"
+        idby_default_in.value   = cfg.default_identified_by or None
+        recby_default_in.value  = cfg.default_recorded_by or None
+        for code, cb in _code_cbs.items():
+            cb.value = code in cfg.bio_assoc_default_codes
+        settings_dialog.open()

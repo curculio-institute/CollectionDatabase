@@ -9,6 +9,14 @@ from app.models import Taxon
 from app.models.base import _utcnow
 
 
+TAXON_RANKS: list[str] = [
+    "kingdom", "phylum", "subphylum", "class", "subclass",
+    "superorder", "order", "suborder", "superfamily",
+    "family", "subfamily", "supertribe", "tribe", "subtribe",
+    "genus", "subgenus", "species", "subspecies", "variety", "form",
+]
+
+
 @dataclass(frozen=True)
 class TaxonOption:
     id: int
@@ -293,17 +301,28 @@ _RANK_CHAIN: list[tuple[str, str, str]] = [
 
 
 def _ensure_parent_rows(
-    session: Session, fields: dict, nomenclatural_code: str | None = None
+    session: Session,
+    fields: dict,
+    nomenclatural_code: str | None = None,
+    corrections: list[str] | None = None,
 ) -> int | None:
     """Create all missing ancestor rows and return the immediate parent taxon ID.
 
     Walks _RANK_CHAIN from highest to lowest rank, stopping when it reaches
-    the target rank so the caller can create that row itself.  Each row is
-    created only once (matched by scientific_name + taxon_rank); existing rows
-    get their parent_name_usage_id and nomenclatural_code filled in if not set.
+    the target rank so the caller can create that row itself.
+
+    Lookup priority to avoid creating duplicates when TW's rank for an ancestor
+    differs from what is already in the DB:
+      1. OTU ID (authoritative, rank-independent)
+      2. (scientific_name, taxon_rank) exact match
+      3. scientific_name alone — only for order/suborder/superfamily, where
+         homonyms across ranks are essentially impossible.  This catches rows
+         that were stored with a wrong rank on a previous import (e.g. Polyphaga
+         stored as "order" when the correct rank is "suborder").
+    When found by path 1 or 3, taxon_rank is corrected in-place if stale.
+    If corrections is passed, a message is appended for each such correction.
     """
     target_rank = fields.get("taxon_rank", "")
-    # Prefer explicit field value; fall back to the passed-in code.
     nomen_code = fields.get("nomenclatural_code") or nomenclatural_code
     parent_id: int | None = None
 
@@ -318,11 +337,18 @@ def _ensure_parent_rows(
         auth = fields.get(auth_key)
         otu_id = fields.get(f"{field_key}_otu_id")
 
-        existing = (
-            session.query(Taxon)
-            .filter(Taxon.scientific_name == name, Taxon.taxon_rank == rank_name)
-            .first()
-        )
+        existing = None
+        if otu_id:
+            existing = session.query(Taxon).filter(Taxon.taxonworks_otu_id == otu_id).first()
+        if existing is None:
+            existing = (
+                session.query(Taxon)
+                .filter(Taxon.scientific_name == name, Taxon.taxon_rank == rank_name)
+                .first()
+            )
+        if existing is None and rank_name in ("order", "suborder", "superfamily"):
+            existing = session.query(Taxon).filter(Taxon.scientific_name == name).first()
+
         if not existing:
             existing = Taxon(
                 scientific_name=name,
@@ -339,7 +365,18 @@ def _ensure_parent_rows(
             session.flush()
         else:
             dirty = False
-            if parent_id and not existing.parent_name_usage_id:
+            if existing.taxon_rank != rank_name:
+                if corrections is not None:
+                    corrections.append(
+                        f"{name}: rank corrected {existing.taxon_rank!r} → {rank_name!r}"
+                    )
+                existing.taxon_rank = rank_name
+                dirty = True
+            if parent_id is not None and existing.parent_name_usage_id != parent_id:
+                if corrections is not None:
+                    corrections.append(
+                        f"{name}: parent corrected ({existing.parent_name_usage_id!r} → {parent_id!r})"
+                    )
                 existing.parent_name_usage_id = parent_id
                 dirty = True
             if otu_id and not existing.taxonworks_otu_id:
@@ -446,7 +483,7 @@ def seed_root_taxa(session: Session) -> None:
         ("Plantae",  "kingdom", "ICN"),
         ("Fungi",    "kingdom", "ICN"),
         ("Bacteria", "kingdom", "ICNP"),
-        ("Viruses",  "kingdom", "ICVCV"),
+        ("Viruses",  "kingdom", "ICVCN"),
     ]
     for sci_name, rank, code in _ROOTS:
         exists = (
@@ -477,24 +514,30 @@ def ensure_higher_taxa(session: Session) -> int:
 
 
 def get_or_create_from_tw_data(
-    session: Session, tw: dict, otu_id: int | None = None
+    session: Session,
+    tw: dict,
+    otu_id: int | None = None,
+    corrections: list[str] | None = None,
 ) -> Taxon:
     """Find the matching local Taxon or create it from an augmented TW record.
 
-    Matching key: (scientific_name, taxon_rank).
+    Lookup priority: OTU ID first, then (scientific_name, taxon_rank).
     All ancestor rows are created first via _ensure_parent_rows.
 
     Synonym handling: if fetch_full_classification detected the name is invalid
     (cached_is_valid=False), tw contains '_valid_tw_data' and '_valid_otu_id'.
     The valid taxon is imported first; the synonym row gets accepted_name_usage_id
     set to point at it.
+
+    corrections: optional list; rank corrections made to existing rows are
+    appended as human-readable strings so the caller can notify the user.
     """
     # If this is a synonym, ensure the valid (accepted) taxon exists first.
     accepted_id: int | None = None
     valid_tw = tw.get("_valid_tw_data")
     if valid_tw:
         valid_taxon = get_or_create_from_tw_data(
-            session, valid_tw, otu_id=tw.get("_valid_otu_id")
+            session, valid_tw, otu_id=tw.get("_valid_otu_id"), corrections=corrections
         )
         accepted_id = valid_taxon.id
 
@@ -504,15 +547,28 @@ def get_or_create_from_tw_data(
     nomen_code = fields.get("nomenclatural_code")
 
     # Ensure all ancestor rows exist; get the immediate parent ID.
-    parent_id = _ensure_parent_rows(session, fields, nomenclatural_code=nomen_code)
-
-    existing = (
-        session.query(Taxon)
-        .filter(Taxon.scientific_name == sci_name, Taxon.taxon_rank == rank)
-        .first()
+    parent_id = _ensure_parent_rows(
+        session, fields, nomenclatural_code=nomen_code, corrections=corrections
     )
+
+    existing = None
+    if otu_id:
+        existing = session.query(Taxon).filter(Taxon.taxonworks_otu_id == otu_id).first()
+    if existing is None:
+        existing = (
+            session.query(Taxon)
+            .filter(Taxon.scientific_name == sci_name, Taxon.taxon_rank == rank)
+            .first()
+        )
     if existing:
         dirty = False
+        if existing.taxon_rank != rank:
+            if corrections is not None:
+                corrections.append(
+                    f"{sci_name}: rank corrected {existing.taxon_rank!r} → {rank!r}"
+                )
+            existing.taxon_rank = rank
+            dirty = True
         if otu_id and not existing.taxonworks_otu_id:
             existing.taxonworks_otu_id = otu_id
             dirty = True
@@ -520,7 +576,11 @@ def get_or_create_from_tw_data(
             existing.accepted_name_usage_id = accepted_id
             existing.taxonomic_status = "synonym"
             dirty = True
-        if parent_id and not existing.parent_name_usage_id:
+        if parent_id is not None and existing.parent_name_usage_id != parent_id:
+            if corrections is not None:
+                corrections.append(
+                    f"{sci_name}: parent corrected ({existing.parent_name_usage_id!r} → {parent_id!r})"
+                )
             existing.parent_name_usage_id = parent_id
             dirty = True
         if nomen_code and not existing.nomenclatural_code:

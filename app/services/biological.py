@@ -74,10 +74,8 @@ def get_relationship_options(session: Session) -> list[RelationshipOption]:
     """Return all local biological relationships ordered: active first, legacy last."""
     rows = (
         session.query(BiologicalRelationship)
-        .order_by(
-            BiologicalRelationship.name.contains("[legacy]"),
-            BiologicalRelationship.name,
-        )
+        .filter(~BiologicalRelationship.name.contains("[legacy]"))
+        .order_by(BiologicalRelationship.name)
         .all()
     )
     return [RelationshipOption(r.id, r.name, r.taxonworks_id) for r in rows]

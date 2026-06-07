@@ -1,6 +1,6 @@
 from __future__ import annotations
 from typing import Optional
-from sqlalchemy import Integer, String, ForeignKey
+from sqlalchemy import CheckConstraint, Integer, String, ForeignKey
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from .base import Base, TimestampMixin
 
@@ -20,3 +20,20 @@ class PrintQueue(Base, TimestampMixin):
 
     collection_object = relationship("CollectionObject")
     label_code        = relationship("LabelCode")
+
+    __table_args__ = (
+        CheckConstraint(
+            "label_type IN ('data', 'determination', 'identifier')",
+            name="ck_print_queue_label_type",
+        ),
+        CheckConstraint(
+            "(label_type IN ('data', 'determination')"
+            "  AND collection_object_id IS NOT NULL"
+            "  AND label_code_id IS NULL)"
+            " OR "
+            "(label_type = 'identifier'"
+            "  AND label_code_id IS NOT NULL"
+            "  AND collection_object_id IS NULL)",
+            name="ck_print_queue_exclusive_arc",
+        ),
+    )

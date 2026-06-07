@@ -1,4 +1,4 @@
-"""Application configuration — persisted to config.json at the project root.
+"""Application configuration — persisted to data/config.json.
 
 Load once at startup via get_config().  Mutate and persist via save_config().
 """
@@ -8,7 +8,9 @@ import json
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
-_CONFIG_PATH = Path(__file__).parent.parent / "config.json"
+_DATA_DIR = Path(__file__).parent.parent / "data"
+_DATA_DIR.mkdir(exist_ok=True)
+_CONFIG_PATH = _DATA_DIR / "config.json"
 
 
 @dataclass

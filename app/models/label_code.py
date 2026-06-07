@@ -1,6 +1,6 @@
 from __future__ import annotations
 from typing import Optional
-from sqlalchemy import Integer, String, ForeignKey
+from sqlalchemy import CheckConstraint, Integer, String, ForeignKey
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from .base import Base, TimestampMixin
 
@@ -20,3 +20,7 @@ class LabelCode(Base, TimestampMixin):
 
     collection_object = relationship("CollectionObject", back_populates="label_codes")
     batch = relationship("LabelBatch", back_populates="codes")
+
+    __table_args__ = (
+        CheckConstraint("status IN ('reserved', 'assigned')", name="ck_label_code_status"),
+    )

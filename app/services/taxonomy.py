@@ -36,7 +36,8 @@ class TaxonomyStats:
 
 def get_stats(session: Session) -> TaxonomyStats:
     accepted_base = session.query(func.count(Taxon.id)).filter(
-        Taxon.accepted_name_usage_id.is_(None)
+        Taxon.accepted_name_usage_id.is_(None),
+        Taxon.parent_name_usage_id.is_not(None),
     )
     return TaxonomyStats(
         total_accepted=accepted_base.scalar() or 0,

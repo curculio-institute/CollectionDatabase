@@ -1,4 +1,5 @@
-# Database files — never commit the live collection
+# Data directory — DB and config are never committed
+data/
 *.db
 *.db-shm
 *.db-wal

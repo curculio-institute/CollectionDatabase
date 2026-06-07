@@ -37,12 +37,14 @@ def create_collection_object(
     collecting_event_id: int | None,
     catalog_number: str,
     collection_code: str,
+    institution_code: str,
     **fields,
 ) -> CollectionObject:
     co = CollectionObject(
         collecting_event_id=collecting_event_id,
         catalog_number=catalog_number,
         collection_code=collection_code,
+        institution_code=institution_code,
         created_at=_utcnow(),
         updated_at=_utcnow(),
     )
@@ -119,7 +121,7 @@ def update_collection_object(session: Session, co_id: int, **fields) -> Collecti
     if co is None:
         raise ValueError(f"CollectionObject {co_id} not found")
     for attr, val in fields.items():
-        if attr in ("catalog_number", "collection_code"):
+        if attr in ("catalog_number", "collection_code", "institution_code"):
             continue
         if val == "":
             val = None

@@ -20,10 +20,10 @@ import app.services.taxa as taxa_svc
 import app.services.identifiers as id_svc
 import app.services.print_queue as pq_svc
 import app.services as svc
+from app.config import get_config
 from app.ui.taxon_search import build_taxon_search
 
 DEFAULT_IDENTIFIED_BY = "J. Jilg"
-DEFAULT_NAMESPACE     = "Jilg"
 
 # ---------------------------------------------------------------------------
 # Example CSV — downloadable from the upload card
@@ -387,17 +387,20 @@ def build_import_assign_tab(session_factory, refreshers: dict) -> None:
             if tw_data is None:
                 ui.notify("Taxon not found in TaxonWorks.", type="warning")
                 return
+            corrections: list[str] = []
             try:
                 with session_factory() as session:
                     with session.begin():
                         taxon = taxa_svc.get_or_create_from_tw_data(
-                            session, tw_data, otu_id=otu_id
+                            session, tw_data, otu_id=otu_id, corrections=corrections
                         )
                         tid = taxon.id
             except Exception as exc:
                 ui.notify(f"DB error: {exc}", type="negative")
                 return
             _set_taxon(tid)
+            for msg in corrections:
+                ui.notify(f"Taxonomy corrected during import: {msg}", type="warning", timeout=8000)
             taxon_section.clear()
             with taxon_section:
                 with ui.row().classes("items-center gap-2"):
@@ -526,7 +529,8 @@ def build_import_assign_tab(session_factory, refreshers: dict) -> None:
                             event_fields=dwc_svc.row_to_event_fields(row),
                             specimen_fields={
                                 "catalog_number":    code,
-                                "collection_code": DEFAULT_NAMESPACE,
+                                "collection_code":   get_config().collection_code,
+                                "institution_code":  get_config().institution_code,
                                 "sex":               sex_sel.value,
                                 "individual_count":  int(count_in.value or 1),
                                 "preparations":      preps_in.value,

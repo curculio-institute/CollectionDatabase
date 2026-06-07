@@ -10,9 +10,10 @@ class CollectionObject(Base, TimestampMixin):
 
     dwc:catalogNumber is NOT NULL — the stable sync join key with TaxonWorks.
     dwc:collectionCode is NOT NULL — the TW catalog-number namespace (e.g. "Jilg").
-      Together with dwc:institutionCode (from config, injected at export time) it
-      identifies the TW namespace: TW looks up (institutionCode, collectionCode) →
-      Namespace → stores identifier as "[namespace.short_name] [catalogNumber]".
+    dwc:institutionCode is NOT NULL — stored per row; configured in Settings.
+      Together institutionCode + collectionCode identify the TW namespace: TW looks up
+      (institutionCode, collectionCode) → Namespace → stores identifier as
+      "[namespace.short_name] [catalogNumber]" (e.g. "Jilg ab12").
     """
 
     __tablename__ = "collection_object"
@@ -23,6 +24,7 @@ class CollectionObject(Base, TimestampMixin):
 
     catalog_number: Mapped[str] = mapped_column("dwc:catalogNumber", String, nullable=False)
     collection_code: Mapped[str] = mapped_column("dwc:collectionCode", String, nullable=False)
+    institution_code: Mapped[str] = mapped_column("dwc:institutionCode", String, nullable=False, server_default="")
 
     basis_of_record: Mapped[str] = mapped_column("dwc:basisOfRecord", String, nullable=False, default="PreservedSpecimen")
     individual_count: Mapped[int] = mapped_column("dwc:individualCount", Integer, nullable=False, default=1)
@@ -36,6 +38,15 @@ class CollectionObject(Base, TimestampMixin):
 
     __table_args__ = (
         CheckConstraint('"dwc:individualCount" >= 0', name="ck_co_individual_count_non_negative"),
+        CheckConstraint(
+            "\"dwc:basisOfRecord\" IN ('PreservedSpecimen', 'FossilSpecimen', 'HumanObservation')",
+            name="ck_co_basis_of_record",
+        ),
+        CheckConstraint(
+            "\"dwc:disposition\" IS NULL OR \"dwc:disposition\" IN "
+            "('in collection', 'on loan', 'donated', 'exchanged', 'missing', 'destroyed')",
+            name="ck_co_disposition",
+        ),
     )
 
     collecting_event: Mapped[Optional["CollectingEvent"]] = relationship("CollectingEvent", back_populates="collection_objects")

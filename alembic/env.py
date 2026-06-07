@@ -1,15 +1,22 @@
 import sys
 import os
+from pathlib import Path
 from logging.config import fileConfig
 from sqlalchemy import engine_from_config, pool, event
 from alembic import context
 
 # Ensure project root is on sys.path so `app` is importable
-sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
+_project_root = Path(__file__).parent.parent
+sys.path.insert(0, str(_project_root))
 
 config = context.config
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
+
+# Override DB URL with the absolute data-dir path so alembic always targets
+# the right file regardless of the working directory or the ini value.
+_db_path = _project_root / "data" / "collection.db"
+config.set_main_option("sqlalchemy.url", f"sqlite:///{_db_path}")
 
 # Import models so metadata is populated for autogenerate
 from app.models import Base  # noqa: E402

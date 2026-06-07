@@ -4,24 +4,18 @@ from __future__ import annotations
 from nicegui import ui
 
 from app.services.taxa import (
+    TAXON_RANKS,
     create_taxon_direct,
     delete_taxon,
     search_taxa,
     update_taxon,
 )
 from app.models import Taxon
-
-TAXON_RANKS = [
-    "kingdom", "phylum", "subphylum", "class", "subclass",
-    "superorder", "order", "suborder", "superfamily",
-    "family", "subfamily", "tribe", "subtribe",
-    "genus", "subgenus", "species", "subspecies", "variety", "form",
-]
 NOMEN_CODES = {
     "ICZN":  "ICZN",
     "ICN":   "🌿 ICN",
     "ICNP":  "ICNP",
-    "ICVCV": "ICVCV",
+    "ICVCN": "ICVCN",
 }
 
 
@@ -39,6 +33,26 @@ def _build_taxon_form(container, session_factory, *, taxon: Taxon | None = None)
     taxon set with parent_name_usage_id set   → editing non-root → parent required.
     """
     editing_root = taxon is not None and taxon.parent_name_usage_id is None
+
+    with session_factory() as s:
+        all_taxa_raw = search_taxa(s, "", limit=500)
+        _all_taxa = [
+            (t.id, t.label, t.taxon_rank, t.nomenclatural_code)
+            for t in all_taxa_raw
+        ]
+
+    def _make_parent_opts(rank: str | None, code: str | None) -> dict:
+        opts = {}
+        for tid, label, t_rank, t_code in _all_taxa:
+            if rank and rank in TAXON_RANKS and t_rank in TAXON_RANKS:
+                if TAXON_RANKS.index(t_rank) >= TAXON_RANKS.index(rank):
+                    continue
+            if code and t_code and t_code != code:
+                continue
+            opts[tid] = label
+        return opts
+
+    all_taxon_opts = {tid: label for tid, label, _, _ in _all_taxa}
 
     with container:
         name_in = ui.input(
@@ -69,26 +83,26 @@ def _build_taxon_form(container, session_factory, *, taxon: Taxon | None = None)
             value=taxon.nomenclatural_code if taxon else None,
         ).classes("w-full")
 
-        # Parent taxon — with_input provides client-side search over pre-loaded opts.
-        # Root taxa (no parent) are only produced by seeding, not via this form.
-        all_taxon_opts = _taxon_opts(session_factory)
+        # Parent taxon: filtered to valid parents (rank above child, matching code).
+        init_parent_opts = _make_parent_opts(
+            taxon.taxon_rank if taxon else None,
+            taxon.nomenclatural_code if taxon else None,
+        )
         if editing_root:
-            # Allow keeping no parent for an existing root row.
-            parent_opts = {None: "(root — no parent)", **all_taxon_opts}
+            init_parent_opts = {None: "(root — no parent)", **init_parent_opts}
             parent_val = None
         else:
-            parent_opts = all_taxon_opts
             parent_val = taxon.parent_name_usage_id if taxon else None
 
         parent_sel = ui.select(
-            options=parent_opts,
+            options=init_parent_opts,
             with_input=True,
             clearable=not editing_root,
             label="Parent taxon *" if not editing_root else "Parent taxon",
             value=parent_val,
         ).classes("w-full")
 
-        # Accepted name link (synonym → accepted name)
+        # Accepted name link (synonym → accepted name) — all taxa, no rank filter.
         accepted_sel = ui.select(
             options={None: "(none)", **all_taxon_opts},
             with_input=True,
@@ -102,6 +116,20 @@ def _build_taxon_form(container, session_factory, *, taxon: Taxon | None = None)
             value=str(taxon.taxonworks_otu_id) if taxon and taxon.taxonworks_otu_id else "",
             placeholder="paste OTU id…",
         ).classes("w-full")
+
+    def _refresh_parent_opts():
+        new_opts = _make_parent_opts(rank_sel.value, nomen_sel.value)
+        if editing_root:
+            new_opts = {None: "(root — no parent)", **new_opts}
+        cur = parent_sel.value
+        if cur and cur not in new_opts:
+            parent_sel.value = None
+            ui.notify("Parent cleared: no longer valid for the selected rank/code.", type="warning")
+        parent_sel.options = new_opts
+        parent_sel.update()
+
+    rank_sel.on_value_change(lambda _: _refresh_parent_opts())
+    nomen_sel.on_value_change(lambda _: _refresh_parent_opts())
 
     def get_fields() -> dict:
         try:
@@ -131,6 +159,26 @@ def _build_taxon_form(container, session_factory, *, taxon: Taxon | None = None)
             return "Parent taxon is required (select a root taxon if top-level)."
         if fields["taxonomic_status"] == "synonym" and not fields["accepted_name_usage_id"]:
             return "Synonyms must link to an accepted name."
+
+        parent_id  = fields.get("parent_name_usage_id")
+        child_rank = fields.get("taxon_rank", "")
+        child_code = fields.get("nomenclatural_code")
+        if parent_id and child_rank:
+            with session_factory() as s:
+                parent = s.get(Taxon, parent_id)
+            if parent:
+                if child_rank in TAXON_RANKS and parent.taxon_rank in TAXON_RANKS:
+                    if TAXON_RANKS.index(parent.taxon_rank) >= TAXON_RANKS.index(child_rank):
+                        return (
+                            f"Rank conflict: '{parent.scientific_name}' is "
+                            f"{parent.taxon_rank!r}, which is not above {child_rank!r}."
+                        )
+                if child_code and parent.nomenclatural_code:
+                    if parent.nomenclatural_code != child_code:
+                        return (
+                            f"Nomenclatural code mismatch: '{parent.scientific_name}' is "
+                            f"{parent.nomenclatural_code} but this taxon is {child_code}."
+                        )
         return None
 
     return {"get_fields": get_fields, "validate": validate}

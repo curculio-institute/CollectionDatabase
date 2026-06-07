@@ -1,20 +1,11 @@
 """Taxon-search widget.
 
-Search order:
-  1. Local database — results appear immediately as you type (debounce 150 ms).
-  2. TaxonWorks     — triggered by clicking "Search TaxonWorks for '…'" at the
-                      bottom of the dropdown, or automatically when the local DB
-                      returns no matches.
+States: Empty → Searching → Selected (see docs/design.md §3).
 
-On TW selection the taxon is imported (get_or_create_from_tw_data) into the
-local DB before the state is updated, so subsequent lookups always hit locally.
-
-Usage (inside a @ui.page function):
-    taxon_state = build_taxon_search(session_factory)
-    # taxon_state['taxon_id'] is None until the user selects something.
-
-Optional callback:
-    taxon_state = build_taxon_search(session_factory, on_select=lambda tid: ...)
+Local results appear immediately (150 ms debounce).
+TaxonWorks results are appended after a network fetch.
+On TW selection the dropdown-item HTML is shown immediately; the async import
+runs in the background and on_select is called when the DB record is confirmed.
 """
 from __future__ import annotations
 
@@ -22,24 +13,15 @@ import asyncio
 import html as _html_mod
 import re
 
-from nicegui import ui
+from nicegui import context as _nicegui_context, ui
 
 import app.services.taxonworks as tw_svc
 import app.services.taxa as svc_taxa
 
 
+# ── TW label helpers ─────────────────────────────────────────────────────────
+
 def _strip_tw_info_badges(html: str) -> str:
-    """Remove informational feedback-thin badges from TW label_html.
-
-    Strips spans that carry BOTH feedback-thin AND any of:
-      feedback-info     → rank label ("species")
-      feedback-secondary → genus/subgenus context chip
-      feedback-notice   → original combination ("Curculio sulcatus")
-
-    Uses lookaheads so class-attribute order doesn't matter.
-    Deliberately leaves &#10003; ✓ and &#10060; ✗ entities untouched —
-    those are plain HTML entities, not spans.
-    """
     for cls in ("feedback-info", "feedback-secondary", "feedback-notice"):
         html = re.sub(
             rf'<span(?=[^>]*\b{cls}\b)(?=[^>]*\bfeedback-thin\b)[^>]*>.*?</span>',
@@ -49,24 +31,16 @@ def _strip_tw_info_badges(html: str) -> str:
 
 
 def _render_tw_label(r: dict, valid_name: str = "") -> str:
-    """Clean a TW autocomplete label_html for display.
-
-    Strips rank / context / original-combination badges; keeps the ✓/✗ entity.
-    When valid_name is supplied (for synonym entries) appends '= <i>Name</i>'.
-    """
     raw = r.get("label_html") or _html_mod.escape(r.get("label") or "")
     cleaned = _strip_tw_info_badges(raw)
-    # Collapse &nbsp; separators left by removed badges
     cleaned = re.sub(r"(&nbsp;\s*)+", " ", cleaned)
     cleaned = re.sub(r"\s+", " ", cleaned).strip()
     if valid_name:
-        # ✗ is already at the end; append the valid name with ✓
         cleaned = f"{cleaned} = <i>{_html_mod.escape(valid_name)}</i> &#10003;"
     return cleaned
 
 
 def _local_item_html(name: str, *, is_synonym: bool, accepted: str | None) -> str:
-    """Build local-taxon HTML matching TW's ✗ / = Valid Name ✓ style."""
     n = f"<i>{_html_mod.escape(name)}</i>"
     if not is_synonym:
         return n
@@ -75,9 +49,11 @@ def _local_item_html(name: str, *, is_synonym: bool, accepted: str | None) -> st
     return f"{n} &#10060;"
 
 
+# ── CSS ───────────────────────────────────────────────────────────────────────
+
 _TW_CSS = """
 <style>
-/* ── TaxonWorks result-item rendering ─────────────────────────────── */
+/* ── result text ───────────────────────────────────────────────────── */
 .tw-result               { font-size:.9rem; line-height:1.5; }
 .tw-result i             { font-style:italic; }
 .tw-result mark          { background:#fde68a; border-radius:2px; padding:0 1px; }
@@ -95,16 +71,31 @@ _TW_CSS = """
 .dark .feedback-secondary{ background:#303030; color:#9ca3af; }
 .dark .feedback-notice   { background:#14432a; color:#86efac; }
 
-/* ── selected-taxon chip ───────────────────────────────────────────── */
-.taxon-chip              { display:inline-flex; align-items:center; gap:6px;
-                           background:rgb(240,249,255); border:1px solid rgb(186,230,253);
-                           border-radius:6px; padding:4px 10px; }
-.taxon-chip i            { font-style:italic; color:rgb(3,105,161); }
-.taxon-chip .chip-clear  { cursor:pointer; color:rgb(156,163,175); font-size:.8rem; margin-left:2px; }
-.taxon-chip .chip-clear:hover { color:rgb(220,38,38); }
-.dark .taxon-chip        { background:rgba(14,165,233,.1); border-color:rgba(14,165,233,.3); }
-.dark .taxon-chip i      { color:rgb(14,165,233); }
-.dark .taxon-chip .chip-clear { color:rgb(200,200,200); }
+/* ── selected display (replaces the input in Selected state) ───────── */
+.tw-selected-display {
+  display: none;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid rgba(0,0,0,0.24);
+  border-radius: 4px;
+  min-height: 40px;
+  padding: 4px 8px 4px 12px;
+  background: white;
+  box-sizing: border-box;
+  width: 100%;
+  cursor: default;
+}
+.dark .tw-selected-display {
+  background: rgb(35,35,35);
+  border-color: rgba(255,255,255,0.24);
+}
+.tw-selected-display:hover { border-color: rgba(0,0,0,0.38); }
+.dark .tw-selected-display:hover { border-color: rgba(255,255,255,0.38); }
+.tw-selected-content     { flex: 1; min-width: 0; }
+.tw-clear-btn            { cursor:pointer; color:rgb(156,163,175); font-size:.85rem;
+                           padding:2px 4px; border-radius:2px; flex-shrink:0;
+                           line-height:1; }
+.tw-clear-btn:hover      { color:rgb(220,38,38); }
 
 /* ── dropdown ──────────────────────────────────────────────────────── */
 .tw-dropdown             { position:absolute; left:0; right:0; top:calc(100% + 2px); z-index:9999;
@@ -131,7 +122,7 @@ _TW_CSS = """
 .tw-action-row:hover     { background:rgb(240,249,255); }
 .dark .tw-action-row:hover { background:rgba(14,165,233,.08); }
 
-/* TaxonWorks import items — tinted to signal "will be imported" */
+/* TaxonWorks import items */
 .tw-dropdown-item--import            { background:rgba(3,105,161,.04); }
 .dark .tw-dropdown-item--import      { background:rgba(14,165,233,.06); }
 .tw-dropdown-item--import:hover      { background:rgba(3,105,161,.10) !important; }
@@ -143,7 +134,7 @@ _TW_CSS = """
                    letter-spacing:.02em; }
 .dark .tw-import-badge { background:rgba(14,165,233,.15); color:rgb(14,165,233); }
 
-/* ── focus ring ────────────────────────────────────────────────────── */
+/* ── focus ring on input ───────────────────────────────────────────── */
 .tw-search-wrap .q-field--focused .q-field__control {
   border-color:var(--tp-secondary, rgb(3,105,161)) !important;
   box-shadow:0 0 0 2px rgba(3,105,161,.15) !important;
@@ -155,14 +146,19 @@ _TW_CSS = """
 """
 
 
+# ── widget ────────────────────────────────────────────────────────────────────
+
 def build_taxon_search(session_factory, on_select=None) -> dict:
     """Build the taxon-search widget in the current NiceGUI context.
 
-    Returns a mutable state dict:  {'taxon_id': int | None}
+    Returns a state dict: {'taxon_id': int | None, 'clear': callable}
 
-    on_select(taxon_id: int) is called after a taxon is selected.
+    on_select(taxon_id: int) is called after the local DB record is confirmed.
     """
     ui.add_head_html(_TW_CSS)
+    # Client captured here (synchronous page-handler context, slot stack live).
+    # Background tasks created with ensure_future have an empty slot stack.
+    client = _nicegui_context.client
 
     def _with_session(fn):
         with session_factory() as s:
@@ -170,82 +166,81 @@ def build_taxon_search(session_factory, on_select=None) -> dict:
 
     state: dict = {"taxon_id": None, "_task": None}
 
-    # ── search input + floating dropdown ────────────────────────────
+    # ── layout ───────────────────────────────────────────────────────────────
     with ui.element("div").classes("tw-search-wrap").style("position:relative; width:100%"):
+
+        # Empty / Searching state: plain text input
         search_inp = (
-            ui.input(placeholder="Type genus or species name…")
-            .props("clearable outlined dense")
+            ui.input(placeholder="Enter genus or species name…")
+            .props("outlined dense")
             .classes("w-full")
-            .style("font-style:italic")
         )
+
+        # Selected state: styled display that shows the dropdown item HTML as-is
+        selected_display = (
+            ui.element("div")
+            .classes("tw-selected-display")
+        )
+        with selected_display:
+            selected_html = ui.html("").classes("tw-selected-content tw-result")
+            clear_span = ui.html('<span class="tw-clear-btn" title="Clear">✕</span>')
+
         dropdown = ui.element("div").classes("tw-dropdown")
 
-    # ── selected-taxon chip (shown after pick) ───────────────────────
-    selected_row = ui.element("div").style("display:none; margin-top:6px;")
-    with selected_row:
-        selected_html = ui.html("").classes("taxon-chip tw-result")
+    # ── state transitions ─────────────────────────────────────────────────────
 
-    # ── helpers ──────────────────────────────────────────────────────
-
-    def _hide():
+    def _hide_dropdown():
         dropdown.style("display:none")
 
-    def _show():
+    def _show_dropdown():
         dropdown.style("display:block")
 
-    def _set_selected(taxon_id: int, display_html: str):
-        state["taxon_id"] = taxon_id
-        selected_html.set_content(
-            f'{display_html}'
-            f'<span class="chip-clear" '
-            f'onclick="this.dispatchEvent(new CustomEvent(\'clear\',{{bubbles:true}}))" '
-            f'title="Clear">✕</span>'
-        )
-        selected_row.style(add="display:block;", remove="display:none;")
-        search_inp.value = ""
-        _hide()
-        if on_select:
-            on_select(taxon_id)
+    def _enter_selected(html_content: str):
+        """Switch to Selected state: show the item HTML, hide the input."""
+        selected_html.set_content(html_content)
+        selected_display.style(add="display:flex;", remove="display:none;")
+        search_inp.style(add="display:none;")
+        _hide_dropdown()
 
     def _clear():
+        """Return to Empty state."""
         state["taxon_id"] = None
         selected_html.set_content("")
-        selected_row.style(add="display:none;", remove="display:block;")
+        selected_display.style(add="display:none;", remove="display:flex;")
+        search_inp.style(remove="display:none;")
+        search_inp.value = ""
+        search_inp.run_method("focus")
 
-    selected_html.on("clear", lambda _: _clear())
+    clear_span.on("click", lambda _: _clear())
 
-    # ── build dropdown sections ──────────────────────────────────────
+    # ── local pick ────────────────────────────────────────────────────────────
 
     def _build_local_section(local: list) -> None:
-        """Render the 'In database' section into the already-cleared dropdown."""
         if not local:
             return
         ui.label("In database").classes("tw-section-label")
         for res in local:
-            item = ui.element("div").classes("tw-dropdown-item")
+            item_html = _local_item_html(
+                res.label, is_synonym=res.is_synonym, accepted=res.accepted_label
+            )
+            item = ui.element("div").classes("tw-result tw-dropdown-item")
             with item:
-                ui.html(_local_item_html(
-                    res.label,
-                    is_synonym=res.is_synonym,
-                    accepted=res.accepted_label,
-                ))
-            item.on("click", lambda _, r=res: _select_local(r))
+                ui.html(item_html)
+            item.on("click", lambda _, res=res, h=item_html: _select_local(res, h))
 
-    def _select_local(res) -> None:
-        _set_selected(
-            res.id,
-            _local_item_html(res.label, is_synonym=res.is_synonym, accepted=res.accepted_label),
-        )
+    def _select_local(res, item_html: str) -> None:
+        _enter_selected(item_html)
+        state["taxon_id"] = res.id
+        if on_select:
+            on_select(res.id)
 
-    # ── TaxonWorks search (appended below local) ─────────────────────
+    # ── TaxonWorks section ────────────────────────────────────────────────────
 
     async def _append_tw_section(term: str) -> None:
-        """Fetch TW results and append them below the local section."""
-        # Placeholder while loading
         with dropdown:
             tw_sec = ui.element("div")
         with tw_sec:
-            ui.label(f"Searching TaxonWorks…").classes("tw-dropdown-empty")
+            ui.label("Searching TaxonWorks…").classes("tw-dropdown-empty")
 
         try:
             results = await tw_svc.search_taxon_names(term)
@@ -257,12 +252,7 @@ def build_taxon_search(session_factory, on_select=None) -> dict:
         if not results:
             return
 
-        # Filter out TW results already in the local DB.
-        # TW autocomplete gives only the bare epithet in `name` (e.g. "lineatus"
-        # for a species, "Sitona" for a genus).  We match both ways:
-        #   exact  — name == scientific_name (uninomials: genus, family, …)
-        #   suffix — scientific_name ends with " " + name  (species, subspecies)
-        # Any name matched either way is already covered by the IN DATABASE section.
+        # Filter out names already in local DB
         tw_bare_names = [r.get("name", "") for r in results if r.get("name")]
         if tw_bare_names:
             from app.models import Taxon as _Taxon
@@ -310,78 +300,87 @@ def build_taxon_search(session_factory, on_select=None) -> dict:
                     valid_name_cache.get(vid, "")
                     if vid and vid != r.get("id") else ""
                 )
+                item_html = (
+                    '<span class="tw-import-badge">✚ add</span>'
+                    + _render_tw_label(r, valid_name)
+                )
                 item = ui.element("div").classes(
                     "tw-result tw-dropdown-item tw-dropdown-item--import"
                 )
                 with item:
-                    ui.html(
-                        '<span class="tw-import-badge">✚ add</span>'
-                        + _render_tw_label(r, valid_name)
-                    )
-                item.on("click", lambda _, r=r: asyncio.ensure_future(_on_tw_pick(r)))
-        _show()
+                    ui.html(item_html)
+                item.on("click", lambda _, r=r, h=item_html: asyncio.ensure_future(_on_tw_pick(r, h)))
+        _show_dropdown()
 
-    async def _on_tw_pick(r: dict):
-        tw_id = r["id"]  # import the actual name clicked; get_or_create handles valid-name backfill for synonyms
+    async def _on_tw_pick(r: dict, item_html: str) -> None:
+        # Enter Selected state immediately with the already-rendered dropdown HTML.
+        # The async import runs behind this visual; on_select fires when confirmed.
+        _enter_selected(item_html)
+
+        tw_id = r["id"]
         try:
             tw_data, otu_id = await asyncio.gather(
                 tw_svc.fetch_full_classification(tw_id),
                 tw_svc.fetch_otu_id_for_taxon_name(tw_id),
             )
         except Exception as exc:
-            ui.notify(f"TaxonWorks fetch failed: {exc}", type="negative")
+            with client:
+                ui.notify(f"TaxonWorks fetch failed: {exc}", type="negative")
+            _clear()
             return
         if tw_data is None:
-            ui.notify("Taxon not found in TaxonWorks.", type="warning")
+            with client:
+                ui.notify("Taxon not found in TaxonWorks.", type="warning")
+            _clear()
             return
         try:
+            corrections: list[str] = []
             with session_factory() as session:
                 with session.begin():
                     taxon = svc_taxa.get_or_create_from_tw_data(
-                        session, tw_data, otu_id=otu_id
+                        session, tw_data, otu_id=otu_id, corrections=corrections
                     )
                     tid = taxon.id
-                    # Build chip HTML from the local DB record while the session is open,
-                    # so it matches the dropdown style (no rank/genus/original-combo badges).
-                    is_syn = taxon.taxonomic_status == "synonym"
-                    acc_label = None
-                    if is_syn and taxon.accepted_name_usage_id:
-                        acc = session.get(svc_taxa.Taxon, taxon.accepted_name_usage_id)
-                        if acc:
-                            acc_label = svc_taxa.format_scientific_name(acc)
-                    chip_html = _local_item_html(
-                        svc_taxa.format_scientific_name(taxon),
-                        is_synonym=is_syn,
-                        accepted=acc_label,
-                    )
         except Exception as exc:
-            ui.notify(f"Local DB error: {exc}", type="negative")
+            with client:
+                ui.notify(f"Local DB error: {exc}", type="negative")
+            _clear()
             return
-        _set_selected(tid, chip_html)
 
-    # ── debounced search on input ────────────────────────────────────
+        state["taxon_id"] = tid
+        with client:
+            for msg in corrections:
+                ui.notify(f"Taxonomy corrected during import: {msg}", type="warning", timeout=8000)
+        if on_select:
+            on_select(tid)
+
+    # ── search input handlers ─────────────────────────────────────────────────
 
     async def _on_search(e):
+        if state["taxon_id"] is not None:
+            # User started typing while something is selected — shouldn't happen
+            # because input is hidden in Selected state, but guard anyway.
+            return
+
         prev = state["_task"]
         if prev and not prev.done():
             prev.cancel()
 
         term = (e.value or "").strip()
         if len(term) < 2:
-            _hide()
+            _hide_dropdown()
             return
 
         async def _do():
             try:
-                await asyncio.sleep(0.15)   # debounce
+                await asyncio.sleep(0.15)
                 local = _with_session(
                     lambda s: svc_taxa.search_taxa_for_display(s, term, limit=10)
                 )
                 dropdown.clear()
                 with dropdown:
                     _build_local_section(local)
-                _show()
-                # Always search TW — higher taxa (genus, tribe…) may only live there
+                _show_dropdown()
                 await _append_tw_section(term)
             except asyncio.CancelledError:
                 pass
@@ -392,7 +391,7 @@ def build_taxon_search(session_factory, on_select=None) -> dict:
 
     async def _on_blur(_):
         await asyncio.sleep(0.2)
-        _hide()
+        _hide_dropdown()
 
     search_inp.on("blur", _on_blur)
 

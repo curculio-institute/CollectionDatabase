@@ -5,12 +5,74 @@ Project context and working agreement for Claude Code. Read this before writing 
 ---
 
 ## To do:
+- selecting a default name from config does not work anymore after the database was wiped, the only
+  option that is presented by the dropdown is the last default person, others including those
+  currently in the database do not show up.
 - Workflows: getting printing of locality labels in order, get print queue in order
 - Workflows
-  - staging while mounting specimens: Adding occurrence, add number of specimen and assign identifiers, prepare to print, records will later be updated when identifications are added
   - import whole dataset: will need some work on things like having taxon names that are not linked to parentNameUsageID
   - data analysis tools, map of the collection
   - data security: what happens if program crashes unexpectedly? warning when closing page?
+
+---
+
+## Specimen workflows
+
+**Invariant across all workflows:** every specimen in the database must have an identifier
+(`catalog_number`). Specimens without identifiers must never be committed. Identifiers are
+always physical labels pinned with the specimen.
+
+### Workflow 1 — Retroactive digitisation (Import & Assign)
+
+Use case: specimens already in the collection have data/identification labels but no
+identifier label. A reference table with the relevant data exists, but it may contain
+records for specimens no longer in the collection, so it cannot be imported wholesale.
+
+Process:
+1. Pre-print a batch of identifier labels (Labels tab → reserve codes → print).
+2. Go through the physical collection specimen by specimen.
+3. In the Import & Assign tab, search for the specimen's data (by date, locality, taxon,
+   etc.) and select the matching row from the reference table.
+4. Take one pre-printed identifier label, pin it with the specimen.
+5. Select that code from the "generated but unused" identifier dropdown.
+6. Save → the complete record (data + identifier) is committed to the DB.
+
+Only specimens physically found in the collection ever get a database record. Records in
+the reference table that have no matching physical specimen are simply never selected.
+
+### Workflow 2 — New incoming specimen (Digitize tab)
+
+Use case: a fresh specimen arrives and needs to be recorded immediately.
+
+Process:
+1. Pre-print identifier labels (can be done in bulk ahead of time).
+2. Open the Digitize tab, fill in all fields (collecting event, taxon, sex, count, etc.).
+3. Select an unused identifier code from the dropdown.
+4. Pin the corresponding label with the specimen and save.
+
+### Workflow 3 — Mounting session (not yet built)
+
+Use case: mounting a batch of specimens that have no labels at all. Need to produce labels
+during or immediately after mounting; identifiers may or may not be assigned at this stage.
+
+Key design decisions:
+- **Identifier timing:** assign identifiers during mounting (immediate). Identifiers are
+  pre-printed in a batch before the mounting session; the user selects one per specimen.
+- **Label layout — adjacent sheet layout (decided):** data label and its matching identifier
+  label are printed on the same sheet, adjacent in paired rows (data row / identifier row /
+  small gap / next pair). Physical proximity on the sheet prevents mix-ups without embedding
+  the code in the data label itself.
+
+**Print queue model implication (decided):** the adjacent layout is implemented as a **pair
+of separate print queue rows** — one `"data"` row (`collection_object_id`) + one
+`"identifier"` row (`label_code_id`) — rather than a combined row type linking both FKs.
+The print service interleaves them into the paired sheet layout. This keeps the exclusive-arc
+constraint on `print_queue` valid and avoids a special-case label type.
+
+This workflow requires a new UI task (staging tab or modal): the user stages N specimens
+that share the same collecting event, sets the specimen count, queues them for printing,
+and the print sheet is generated in one go. Identifications are added later via the Records
+tab.
 
 ## Known bugs (audit 2026-06-07) — fix one by one
 
@@ -20,10 +82,10 @@ Project context and working agreement for Claude Code. Read this before writing 
 - [x] **C-3** `main.py:~1897` — Fixed: added `if co is None` guard with error notification and early return (not silent skip); added `ui.timer(2.0, ...)` to keep `occ_sel` options live.
 
 ### Major
-- [ ] **M-1** `biological.py:78` — `BiologicalRelationship.name.contains("[legacy]")` in `order_by()` works in SQLite but fails in PostgreSQL (cross-platform requirement). Fix: use `case()` or `func.instr()`.
-- [ ] **M-2** `models/print_queue.py` — No `CHECK` on `label_type` (accepts any string); no exclusive-arc constraint enforcing `collection_object_id`/`label_code_id` consistency with `label_type`.
-- [ ] **M-3** `models/label_code.py:13` — `status` column has no `CHECK` constraint. Fix: `CHECK(status IN ('reserved','assigned'))`.
-- [ ] **M-4** `taxa.py:449` + `taxon_editor.py:24` — Virus code seeded/saved as `"ICVCV"` but settings filter uses `"ICVCN"` (correct). Virus taxa never appear in their own filter.
+- [x] **M-1** `biological.py:78` — Fixed: filter out `[legacy]` relationships entirely from `get_relationship_options()` rather than sorting them last. Legacy rows remain in the DB (existing associations unaffected) but never appear in any dropdown.
+- [x] **M-2** `models/print_queue.py` — Fixed: migration 0017 adds `ck_print_queue_label_type` (`IN ('data','determination','identifier')`) and `ck_print_queue_exclusive_arc` (data/determination→co_id only; identifier→label_code_id only).
+- [x] **M-3** `models/label_code.py:13` — Fixed: migration 0018 adds `ck_label_code_status` (`IN ('reserved','assigned')`). Also migration 0019 adds `ck_co_basis_of_record` (`IN ('PreservedSpecimen','FossilSpecimen','HumanObservation')`) and `ck_co_disposition` (NULL or 6-value set) to `collection_object`. Note: `recreate="always"` on `collection_object` requires `PRAGMA foreign_keys = OFF` around the batch operation due to child-table FKs.
+- [x] **M-4** `taxa.py:449` + `taxon_editor.py:24` — Fixed: both typos corrected to `"ICVCN"`. Existing Viruses root row patched directly in DB (one-off data fix; seed is idempotent so no migration needed).
 
 ### Minor
 - [ ] **m-1** `taxon_editor.py:219` — Delete-eligibility check ignores `TaxonDetermination` rows; delete button enables incorrectly then `delete_taxon()` raises a confusing error on click.
@@ -174,6 +236,56 @@ Re-verify if targeting a different TW release.
   badges before display; keep `feedback-warning` (✗/✓ synonym indicators).
 - **Beyond standard DwC terms**, TW accepts `TW:`-namespaced columns on the occurrence core
   (`TW:DataAttribute:…`, `TW:Namespace:…`, `TW:TaxonDetermination:otu_id`, etc.).
+
+---
+
+## 5b. TaxonWorks known shortcomings and gaps
+
+Verified against `occurrence.rb` @ commit `897f385` (2026-06-03). Re-verify against a
+newer release before relying on any of these being fixed or still present.
+
+### DwC importer field gaps
+
+Fields that exist in DwC and are relevant to this project but are **silently ignored** by
+TW's DwC importer (marked `[Not mapped]` in `occurrence.rb`):
+
+| DwC field | occurrence.rb line | Impact |
+|---|---|---|
+| `taxonomicStatus` | ~1513 | Synonym/accepted status not imported; managed locally only |
+| `disposition` | ~834 | Specimen disposition not imported; managed locally only |
+| `ownerInstitutionCode` | ~728 | Silently ignored; removed from local DB in migration 0015 |
+| `associatedTaxa` | ~948 | Biological associations cannot be imported via DwC at all |
+
+### basisOfRecord — only PreservedSpecimen or FossilSpecimen
+
+TW's DwC importer raises a validation error for any `basisOfRecord` value other than
+`PreservedSpecimen` or `FossilSpecimen` (`occurrence.rb:743`). Other standard DwC values
+(`HumanObservation`, `MachineObservation`, `MaterialSample`, etc.) are rejected.
+
+Note: TaxonWorks **does** have a `FieldOccurrence` model (distinct from `CollectionObject`)
+and **exports** field occurrences as `HumanObservation` in DwC. However, there is no DwC
+**import** path for `HumanObservation` → `FieldOccurrence`. Field occurrences can only be
+created via TW's internal UI or API. This is a TW limitation, not a DwC standard gap.
+
+### FieldOccurrence has no DwC import path
+
+If field sightings (specimens not collected) become relevant, they cannot be pushed to TW
+via the DwC sync path. A separate integration using TW's internal CRUD API would be needed.
+This is currently out of scope for this project (all records are preserved specimens).
+
+### sex — no fixed controlled vocabulary at import
+
+TW's importer accepts any single-word string for `sex` and dynamically creates biocuration
+classes (`occurrence.rb:786`). There is no fixed vocabulary enforced at import; the
+constraint is only that the value contains no whitespace. This means our local `sex` values
+will always be accepted, but TW may create duplicate biocuration classes if capitalisation
+varies (e.g. "Male" vs "male").
+
+### No update or delete via DwC or v1 API
+
+The DwC importer is CREATE-ONLY (`occurrence.rb:310`). The v1 REST API has no `PATCH` or
+`DELETE` for collection objects. Any correction to an already-imported record must be done
+manually in the TW UI. This constrains the sync direction to insert-only forever.
 
 ---
 
