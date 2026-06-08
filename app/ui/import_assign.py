@@ -22,8 +22,8 @@ import app.services.print_queue as pq_svc
 import app.services as svc
 from app.config import get_config
 from app.ui.taxon_search import build_taxon_search
+from app.ui.date_input import attach_date_validation
 
-DEFAULT_IDENTIFIED_BY = "J. Jilg"
 
 # ---------------------------------------------------------------------------
 # Example CSV — downloadable from the upload card
@@ -230,10 +230,18 @@ def build_import_assign_tab(session_factory, refreshers: dict) -> None:
             ui.separator().classes("my-2")
             ui.label("Determination").classes("section-label mb-2")
             with ui.row().classes("w-full flex-wrap gap-3 items-end"):
-                id_by  = ui.input("identifiedBy",
-                                  value=DEFAULT_IDENTIFIED_BY).classes("flex-1 min-w-40")
+                with ui.row().classes("flex-1 min-w-40 items-center gap-1"):
+                    id_by = ui.input("identifiedBy").classes("flex-1")
+                    (
+                        ui.button("", icon="push_pin")
+                        .props("flat dense round size=xs")
+                        .tooltip("Insert default name")
+                        .on_click(lambda: id_by.set_value(get_config().default_identified_by) if get_config().default_identified_by else None)
+                        .bind_visibility_from(id_by, "value", lambda v: not v)
+                    )
                 dt_id  = ui.input("dateIdentified",
                                   placeholder="YYYY-MM-DD").classes("w-36")
+                attach_date_validation(dt_id, no_future=True)
                 qual   = ui.input("qualifier",
                                   placeholder="cf. / aff.").classes("w-28")
 
@@ -284,7 +292,7 @@ def build_import_assign_tab(session_factory, refreshers: dict) -> None:
 
             # Pre-fill determination meta
             det = dwc_svc.row_to_determination_fields(row)
-            id_by.value = det["identified_by"] or DEFAULT_IDENTIFIED_BY
+            id_by.value = det["identified_by"] or ""
             dt_id.value = det["date_identified"]
 
             # Refresh identifier dropdown

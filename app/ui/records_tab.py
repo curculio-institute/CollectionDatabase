@@ -13,6 +13,7 @@ from app.services.taxa import format_scientific_name
 from app.ui.taxon_search import build_taxon_search, _local_item_html
 from app.ui.identification_list import build_identification_list
 from app.ui.bio_object_search import build_bio_object_search
+from app.ui.date_input import attach_date_validation
 
 _FLOAT_ATTRS = frozenset({
     "decimal_latitude", "decimal_longitude",
@@ -361,6 +362,7 @@ def build_records_tab(session_factory, *, on_saved: callable | None = None) -> N
                 ev_verblocal_in = ui.input("verbatimLocality", value=ev_snap["verbatim_locality"] or "").classes("w-full mt-2")
                 with ui.grid(columns=3).classes("w-full gap-3 mt-2"):
                     ev_edate_in    = ui.input("eventDate",     value=ev_snap["event_date"] or "").classes("col-span-1")
+                    attach_date_validation(ev_edate_in, allow_interval=True)
                     ev_verbdate_in = ui.input("verbatimDate",  value=ev_snap["verbatim_event_date"] or "").classes("col-span-1")
                     with session_factory() as _s:
                         _recby_opts = persons_svc.person_options(_s)
@@ -575,6 +577,7 @@ def build_records_tab(session_factory, *, on_saved: callable | None = None) -> N
             ev_verblocal_in = ui.input("verbatimLocality", value=ev_snap["verbatim_locality"] or "").classes("w-full mt-2")
             with ui.grid(columns=3).classes("w-full gap-3 mt-2"):
                 ev_edate_in    = ui.input("eventDate",    value=ev_snap["event_date"] or "").classes("col-span-1")
+                attach_date_validation(ev_edate_in, allow_interval=True)
                 ev_verbdate_in = ui.input("verbatimDate", value=ev_snap["verbatim_event_date"] or "").classes("col-span-1")
                 with session_factory() as _s:
                     _recby_opts = persons_svc.person_options(_s)

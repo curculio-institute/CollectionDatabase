@@ -5,6 +5,12 @@ Two modes controlled by co_id:
              state["get_dets"]()  → list of det dicts for the save handler.
              state["clear"]()     → resets the list (called after save).
   Live       (co_id is int):   for Records — each action hits the DB immediately.
+
+Auto-current logic:
+  After every Add, the det with the most recent dateIdentified is automatically
+  made current. If no dates are present, the most-recently-added det wins.
+  The auto-selected row shows a pulsing check_circle icon. The pulse clears
+  as soon as the user manually picks a different current.
 """
 from __future__ import annotations
 
@@ -16,16 +22,13 @@ from app.config import get_config
 from app.models import Taxon
 from app.services.taxa import format_scientific_name
 from app.ui.taxon_search import build_taxon_search, _local_item_html
+from app.ui.date_input import AUTO_CHANGED_CSS, attach_date_validation
 import app.services.specimens as sp_svc
 import app.services.persons as persons_svc
 
 
 def _person_select(label: str, value: str | None, session_factory, *, classes: str = "") -> ui.select:
-    """A ui.select backed by the person table, with free-text fallback.
-
-    Options are refreshed each time the dropdown is opened, so newly added
-    people appear without a page reload.
-    """
+    """A ui.select backed by the person table, with free-text fallback."""
     with session_factory() as s:
         opts = persons_svc.person_options(s)
     if value and value not in opts:
@@ -38,7 +41,7 @@ def _person_select(label: str, value: str | None, session_factory, *, classes: s
 
 
 def _append_year_btn(inp, *, visible_when_empty: bool = True) -> None:
-    """Add a 'today' icon button to inp's append slot that fills the current year."""
+    """Add a push_pin icon button to inp's append slot that fills the current year."""
     with inp.add_slot("append"):
         btn = (
             ui.button("", icon="push_pin")
@@ -64,7 +67,13 @@ def build_identification_list(
                   state["clear"]()    resets the list.
     co_id=int   → live-DB mode (Records): each action persists immediately.
     """
+    ui.add_head_html(AUTO_CHANGED_CSS)
+
     _dets: list[dict] = list(initial_dets or [])
+
+    # taxon_id of the most recently auto-set current determination.
+    # None = no auto-selection active (user is in manual control).
+    _auto_tid: list[int | None] = [None]
 
     def _reload_from_db() -> list[dict]:
         result: list[dict] = []
@@ -93,6 +102,54 @@ def build_identification_list(
                     "is_current":               bool(d.is_current),
                 })
         return result
+
+    # ── Auto-current helpers ──────────────────────────────────────────────────
+
+    def _pick_current_idx() -> int:
+        """Return the index of the det that should be current.
+
+        Most recent dateIdentified wins. Ties and no-date cases resolved by
+        list position: index 0 (live mode, newest-first) or index -1
+        (in-memory mode, most-recently-appended).
+        """
+        dated = [
+            (i, d["date_identified"])
+            for i, d in enumerate(_dets)
+            if d.get("date_identified")
+        ]
+        if dated:
+            return max(dated, key=lambda x: x[1])[0]
+        return 0 if co_id is not None else len(_dets) - 1
+
+    def _auto_assign_and_mark() -> None:
+        """Make the most-recent det current and light up its icon.
+
+        In live mode, persists to DB and reloads. In memory mode, updates
+        the _dets list in place.
+        """
+        if not _dets:
+            _auto_tid[0] = None
+            return
+
+        target_idx = _pick_current_idx()
+        target = _dets[target_idx]
+
+        if not target["is_current"]:
+            if co_id is not None:
+                with session_factory() as s:
+                    with s.begin():
+                        sp_svc.set_determination_as_current(s, co_id, target["id"])
+                _dets[:] = _reload_from_db()
+            else:
+                for d in _dets:
+                    d["is_current"] = False
+                _dets[target_idx]["is_current"] = True
+
+        # After any reload the target index may have shifted; find current by flag.
+        current = next((d for d in _dets if d["is_current"]), None)
+        _auto_tid[0] = current["taxon_id"] if current else None
+
+    # ── Render ────────────────────────────────────────────────────────────────
 
     list_col = ui.column().classes("w-full gap-0")
 
@@ -131,9 +188,25 @@ def build_identification_list(
             # ── info row ──────────────────────────────────────────────────
             with ui.row().classes("items-center gap-2 w-full py-2 flex-wrap"):
                 if d["is_current"]:
-                    ui.icon("check_circle", size="sm") \
-                        .style("color:var(--tp-secondary)") \
+                    is_auto = (
+                        _auto_tid[0] is not None
+                        and d["taxon_id"] == _auto_tid[0]
+                    )
+                    (
+                        ui.icon("check_circle", size="sm")
+                        .style("color:var(--tp-secondary)")
                         .tooltip("Current determination")
+                    )
+                    if is_auto:
+                        (
+                            ui.icon("auto_fix_high", size="sm")
+                            .style("color:var(--tp-secondary)")
+                            .classes("auto-changed")
+                            .tooltip(
+                                "Automatically selected — most recent dateIdentified. "
+                                "Click 'Set current' on another row to override."
+                            )
+                        )
                 else:
                     ui.icon("history", size="sm") \
                         .style("color:var(--tp-base-soft)") \
@@ -148,6 +221,7 @@ def build_identification_list(
 
                 if not d["is_current"]:
                     def _do_set_current(_=None, det=d, ix=idx):
+                        _auto_tid[0] = None  # user takes manual control
                         if co_id is not None:
                             try:
                                 with session_factory() as s:
@@ -208,6 +282,7 @@ def build_identification_list(
                         placeholder="YYYY-MM-DD",
                     ).classes("col-span-1")
                     _append_year_btn(e_dtid, visible_when_empty=False)
+                    attach_date_validation(e_dtid, no_future=True)
                     e_qual = ui.input(
                         "qualifier",
                         value=d["identification_qualifier"] or "",
@@ -257,6 +332,8 @@ def build_identification_list(
                             return
                     else:
                         _dets.pop(ix)
+                        if _auto_tid[0] == det.get("taxon_id"):
+                            _auto_tid[0] = None
                     _refresh()
 
                 with ui.row().classes("items-center w-full"):
@@ -266,7 +343,7 @@ def build_identification_list(
                     ui.button("Save", icon="check", on_click=_do_save_edit) \
                         .props("flat no-caps dense size=sm color=secondary")
 
-    # ── Add new identification ────────────────────────────────────────────
+    # ── Add new identification ────────────────────────────────────────────────
     ui.separator().classes("my-3")
     ui.label("Add identification") \
         .classes("text-xs font-semibold uppercase tracking-wider text-grey-6 mb-1")
@@ -285,6 +362,7 @@ def build_identification_list(
             )
         add_dtid = ui.input("dateIdentified", placeholder="YYYY-MM-DD").classes("w-36")
         _append_year_btn(add_dtid)
+        attach_date_validation(add_dtid, no_future=True)
         add_qual = ui.input("qualifier", placeholder="cf. / aff.").classes("w-28")
         add_rem  = ui.input("remarks").classes("flex-1 min-w-40")
 
@@ -297,10 +375,8 @@ def build_identification_list(
             ui.notify("Taxon is still importing — wait a moment.", type="warning")
             return
 
-        already_has_current = any(d["is_current"] for d in _dets)
-        is_new_current = not already_has_current
-
         if co_id is not None:
+            # Live-DB mode: always create not-current, then auto-assign.
             try:
                 with session_factory() as s:
                     with s.begin():
@@ -312,14 +388,17 @@ def build_identification_list(
                             date_identified=add_dtid.value or None,
                             identification_qualifier=add_qual.value or None,
                             identification_remarks=add_rem.value or None,
-                            is_current=1 if is_new_current else 0,
+                            is_current=0,
                         )
+                _dets[:] = _reload_from_db()
+                _auto_assign_and_mark()
                 if on_changed:
                     on_changed()
             except Exception as exc:
                 ui.notify(f"Failed: {exc}", type="negative")
                 return
         else:
+            # In-memory mode: append, then auto-assign.
             with session_factory() as s:
                 t = s.get(Taxon, new_tid)
                 if t:
@@ -342,8 +421,9 @@ def build_identification_list(
                 "date_identified":          add_dtid.value or None,
                 "identification_qualifier": add_qual.value or None,
                 "identification_remarks":   add_rem.value or None,
-                "is_current":               is_new_current,
+                "is_current":               False,
             })
+            _auto_assign_and_mark()
 
         add_taxon_state["clear"]()
         add_idby.value = None
@@ -368,6 +448,7 @@ def build_identification_list(
     def _state_clear() -> None:
         nonlocal _dets
         _dets = []
+        _auto_tid[0] = None
         add_taxon_state["clear"]()
         add_idby.value = None
         add_dtid.value = ""

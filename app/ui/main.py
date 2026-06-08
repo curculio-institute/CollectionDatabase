@@ -33,6 +33,7 @@ from app.ui.controlled_vocab_tab import build_controlled_vocab_tab
 from app.ui.map_picker import add_map_assets, build_map_picker
 from app.ui.bio_object_search import build_bio_object_search
 from app.ui.taxon_editor import build_taxon_editor
+from app.ui.date_input import attach_date_validation
 from app.ui.records_tab import build_records_tab
 from app.services.biological import (
     sync_biological_relationships,
@@ -1091,6 +1092,7 @@ def index():
                     with ui.grid(columns=3).classes("w-full gap-3 mt-1"):
                         edate_in    = ui.input("eventDate", placeholder="YYYY-MM-DD or YYYY-MM-DD/YYYY-MM-DD",
                                                 on_change=_on_event_field_edit).classes("col-span-2")
+                        attach_date_validation(edate_in, allow_interval=True)
                         verbdate_in = ui.input("verbatimEventDate", on_change=_on_event_field_edit).classes("col-span-1")
 
                     ui.label("Ecology").classes("text-xs font-semibold uppercase tracking-wider text-grey-6 mt-4")

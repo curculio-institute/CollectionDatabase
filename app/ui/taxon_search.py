@@ -131,7 +131,7 @@ _TW_CSS = """
                    background:rgba(3,105,161,.12); color:rgb(3,105,161);
                    border-radius:4px; padding:1px 6px; font-size:.72rem;
                    font-weight:600; margin-right:7px; vertical-align:middle;
-                   letter-spacing:.02em; }
+                   letter-spacing:.02em; cursor:help; }
 .dark .tw-import-badge { background:rgba(14,165,233,.15); color:rgb(14,165,233); }
 
 /* ── focus ring on input ───────────────────────────────────────────── */
@@ -301,7 +301,9 @@ def build_taxon_search(session_factory, on_select=None) -> dict:
                     if vid and vid != r.get("id") else ""
                 )
                 item_html = (
-                    '<span class="tw-import-badge">✚ add</span>'
+                    '<span class="tw-import-badge"'
+                    ' title="This taxon and its parent taxa were imported from TaxonWorks">'
+                    '✚ add</span>'
                     + _render_tw_label(r, valid_name)
                 )
                 item = ui.element("div").classes(

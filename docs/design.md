@@ -84,7 +84,7 @@ the app. `data/config.json` is preserved across DB resets.
 
 ---
 
-## 3. Layer architecture
+## 3a. Layer architecture
 
 The application is structured in three layers:
 
@@ -103,7 +103,7 @@ or widget that needs it.
 
 - *Tabs* or *Tasks* — the actual tab screens. They assemble widgets, wire up callbacks, and call
   services on save. Tab code should be thin: layout and coordination only, no business
-  logic.
+  logic. VERY IMPORTANT: The tab needs to make sure that all widgets and fields live-read existing values from the place where they also store entries. Stale values are a menace.
 - *Forms* - Sections, don't have their own code, design only — e.g. "Identification", "Collecting Event", "Specimen"
 - *Widgets* — self-contained, reusable UI components (taxon search, collecting event
   picker, map picker, etc.). A widget knows how to display itself and fire a callback
@@ -115,6 +115,79 @@ or widget that needs it.
 ---
 
 ## 3. UI conventions
+
+### Automatic change indicator
+
+Any time the application changes a value without the user explicitly typing the result —
+whether correcting a format, auto-selecting a default, or normalising input — it must
+signal this consistently.
+
+**Symbol:** `auto_fix_high` (Material icon, the magic wand). Used everywhere, without
+exception. Never a different icon for "auto-corrected" or "auto-selected".
+
+**Two forms depending on whether the change is persistent or one-shot:**
+
+#### One-shot correction (value was changed and the change is done)
+
+The field value updates in place. A `ui.notify` appears immediately:
+
+```
+icon: auto_fix_high   type: info   timeout: 4 s
+message: "Normalised: <old value> → <new value>"
+```
+
+Example: user types `15.06.2026`, tabs away → field becomes `2026-06-15`,
+notification reads *"Normalised: 15.06.2026 → 2026-06-15"*.
+
+If the input cannot be parsed at all, the field is **wiped** (`inp.value = ""`) and a
+warning appears explaining what formats are accepted:
+
+```
+icon: auto_fix_high   type: warning   timeout: 8 s
+message: "Invalid date removed — <error>.  Expected: <format hint>"
+```
+
+Format hints by field type:
+- Single-date field: `"Expected: YYYY, YYYY-MM, YYYY-MM-DD, or European DD.MM.YYYY / MM.YYYY."`
+- eventDate field (allow_interval=True): `"Expected: YYYY-MM-DD, YYYY-MM-DD/YYYY-MM-DD, or European equivalents."`
+
+The field is wiped so no invalid value can slip through to the save path. The user
+sees a blank field and can re-enter correctly.
+
+#### Overridable auto-selection (system made a choice the user may want to change)
+
+A pulsing `auto_fix_high` icon appears next to the auto-selected item alongside the
+normal state icon. The animation uses the `.auto-changed` CSS class (defined in
+`app/ui/date_input.py` as `AUTO_CHANGED_CSS`; inject with `ui.add_head_html`).
+
+Tooltip on the pulsing icon:
+```
+"Automatically selected — <reason>. Click '<action>' to override."
+```
+
+Example: *"Automatically selected — most recent dateIdentified.
+Click 'Set current' on another row to override."*
+
+The pulse stops as soon as the user makes a manual choice (the `.auto-changed` class
+is removed on the next render after the manual action clears the auto-state flag).
+
+#### Implementation pattern
+
+```python
+# One-shot correction (date fields, format normalisation, etc.)
+from app.ui.date_input import attach_date_validation
+attach_date_validation(inp)                        # single date
+attach_date_validation(inp, allow_interval=True)   # eventDate (range allowed)
+
+# Overridable auto-selection (identification list, future pickers)
+# 1. Track which item was auto-selected in a list[int | None] state variable.
+# 2. Inject AUTO_CHANGED_CSS once via ui.add_head_html(AUTO_CHANGED_CSS).
+# 3. In _render_row: if is_auto, add a pulsing auto_fix_high icon alongside the
+#    normal state icon.
+# 4. Clear the auto state when the user makes a manual choice.
+```
+
+---
 
 ### Auto-fill tiers
 
@@ -195,7 +268,47 @@ where the two values may differ from the home collection defaults.
 
 ---
 
-## 4. Taxon search widget (taxon_search.py)
+## 4. Date input widget (date_input.py)
+
+`attach_date_validation(inp, *, allow_interval=False, no_future=False)` — call once on any
+`ui.input` that holds a DwC date field. The widget adds a single `blur` listener; it has no
+other state and does not touch layout.
+
+**Behaviour on blur:**
+
+| Input | Result |
+|---|---|
+| Empty | No action |
+| Valid ISO 8601 (YYYY, YYYY-MM, YYYY-MM-DD) | Silent, no change |
+| Parseable non-ISO (European DD.MM.YYYY, MM.YYYY, missing zero-padding) | Normalised in place; "Normalised: old → new" info notification |
+| Invalid (unrecognised pattern, bad calendar date) | Field wiped; warning notification with format hint |
+| Future date when `no_future=True` | Treated as invalid: field wiped, warning notification |
+| Interval when `allow_interval=False` | Treated as invalid |
+
+**Parameters:**
+- `allow_interval=True` — for `eventDate` only (accepts `YYYY-MM-DD/YYYY-MM-DD`)
+- `no_future=True` — for `dateIdentified` fields (rejects dates after today)
+
+**CSS:** `AUTO_CHANGED_CSS` (also in this module) defines the `.auto-changed` keyframe
+animation used by the overridable-auto-selection pattern. Import and inject it with
+`ui.add_head_html(AUTO_CHANGED_CSS)` in any widget that uses pulsing indicators.
+
+**Where it is used:**
+
+| Tab / widget | Field | Flags |
+|---|---|---|
+| Digitize (`main.py`) | `eventDate` | `allow_interval=True` |
+| Records (`records_tab.py`) | `eventDate` (×2, edit and create) | `allow_interval=True` |
+| Import & Assign (`import_assign.py`) | `dateIdentified` | `no_future=True` |
+| Identification list (`identification_list.py`) | `dateIdentified` (×2, add and edit) | `no_future=True` |
+
+**Tab responsibility:** the widget only validates on blur. Loading an existing record's date
+value into the field, and keeping it live if the source can change, are the tab's
+responsibility — not the widget's.
+
+---
+
+## 5. Taxon search widget (taxon_search.py)
 
 A reusable widget used in the Digitize tab and the Records tab (and any future tab that
 requires an identification). It renders a search field, handles the search interaction,
@@ -217,6 +330,9 @@ responsibility. The widget has no knowledge of which tab it lives in.
 - Local and TaxonWorks results are shown in separate labelled sections in the dropdown.
 - Synonymy is indicated visually in both sections.
 - TaxonWorks results carry an import badge (✚ add) to distinguish them from local records.
+  Hovering the badge shows the tooltip *"This taxon and its parent taxa were imported from
+  TaxonWorks"*. The badge (and its tooltip) persist into the Selected state because the
+  selected display reuses the exact dropdown item HTML.
 - The user may only select from the dropdown. Free text without a matching selection is
   not accepted; clicking away without selecting returns the field to its previous state.
 
