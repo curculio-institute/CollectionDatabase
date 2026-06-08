@@ -1479,7 +1479,6 @@ def index():
                     for label, value in [
                         ("Accepted taxa", stats.total_accepted),
                         ("Species",       stats.total_species),
-                        ("Specimens",     stats.total_specimens),
                     ]:
                         with ui.card().classes("shadow-sm px-5 py-3 flex-1 text-center"):
                             _tax_stat_labels[label] = ui.label(str(value)).style(
@@ -1491,7 +1490,6 @@ def index():
                     s = _with_session(tax_svc.get_stats)
                     _tax_stat_labels["Accepted taxa"].set_text(str(s.total_accepted))
                     _tax_stat_labels["Species"].set_text(str(s.total_species))
-                    _tax_stat_labels["Specimens"].set_text(str(s.total_specimens))
                 _refreshers["taxonomy_stats"] = _refresh_taxonomy_stats
 
                 # ── nomenclatural code tabs + manage buttons ──────────────
