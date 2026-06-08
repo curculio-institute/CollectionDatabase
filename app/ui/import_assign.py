@@ -395,20 +395,20 @@ def build_import_assign_tab(session_factory, refreshers: dict) -> None:
             if tw_data is None:
                 ui.notify("Taxon not found in TaxonWorks.", type="warning")
                 return
-            corrections: list[str] = []
+            mismatches: list[str] = []
             try:
                 with session_factory() as session:
                     with session.begin():
                         taxon = taxa_svc.get_or_create_from_tw_data(
-                            session, tw_data, otu_id=otu_id, corrections=corrections
+                            session, tw_data, otu_id=otu_id, mismatches=mismatches
                         )
                         tid = taxon.id
             except Exception as exc:
                 ui.notify(f"DB error: {exc}", type="negative")
                 return
             _set_taxon(tid)
-            for msg in corrections:
-                ui.notify(f"Taxonomy corrected during import: {msg}", type="warning", timeout=8000)
+            for msg in mismatches:
+                ui.notify(f"Taxonomy mismatch: {msg}", type="warning", timeout=8000)
             taxon_section.clear()
             with taxon_section:
                 with ui.row().classes("items-center gap-2"):

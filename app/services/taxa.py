@@ -316,7 +316,7 @@ def _ensure_parent_rows(
     session: Session,
     fields: dict,
     nomenclatural_code: str | None = None,
-    corrections: list[str] | None = None,
+    mismatches: list[str] | None = None,
 ) -> int | None:
     """Create all missing ancestor rows and return the immediate parent taxon ID.
 
@@ -328,11 +328,11 @@ def _ensure_parent_rows(
       1. OTU ID (authoritative, rank-independent)
       2. (scientific_name, taxon_rank) exact match
       3. scientific_name alone — only for order/suborder/superfamily, where
-         homonyms across ranks are essentially impossible.  This catches rows
-         that were stored with a wrong rank on a previous import (e.g. Polyphaga
-         stored as "order" when the correct rank is "suborder").
-    When found by path 1 or 3, taxon_rank is corrected in-place if stale.
-    If corrections is passed, a message is appended for each such correction.
+         homonyms across ranks are essentially impossible.
+
+    Import policy: only fills NULL fields on existing rows.  If a non-NULL
+    field differs from the import value, a message is appended to mismatches
+    (if provided) but the local value is left unchanged.
     """
     target_rank = fields.get("taxon_rank", "")
     nomen_code = fields.get("nomenclatural_code") or nomenclatural_code
@@ -377,29 +377,50 @@ def _ensure_parent_rows(
             session.flush()
         else:
             dirty = False
-            if existing.taxon_rank != rank_name:
-                if corrections is not None:
-                    corrections.append(
-                        f"{name}: rank corrected {existing.taxon_rank!r} → {rank_name!r}"
+            if existing.taxon_rank != rank_name and mismatches is not None:
+                mismatches.append(
+                    f"{name}: rank is {existing.taxon_rank!r} locally, "
+                    f"import says {rank_name!r}"
+                )
+            if parent_id is not None:
+                if existing.parent_name_usage_id is None:
+                    existing.parent_name_usage_id = parent_id
+                    dirty = True
+                elif existing.parent_name_usage_id != parent_id and mismatches is not None:
+                    local_p = session.get(Taxon, existing.parent_name_usage_id)
+                    import_p = session.get(Taxon, parent_id)
+                    lname = local_p.scientific_name if local_p else f"id:{existing.parent_name_usage_id}"
+                    iname = import_p.scientific_name if import_p else f"id:{parent_id}"
+                    mismatches.append(
+                        f"{name}: parent is {lname!r} locally, import says {iname!r}"
                     )
-                existing.taxon_rank = rank_name
-                dirty = True
-            if parent_id is not None and existing.parent_name_usage_id != parent_id:
-                if corrections is not None:
-                    corrections.append(
-                        f"{name}: parent corrected ({existing.parent_name_usage_id!r} → {parent_id!r})"
+            if auth:
+                if not existing.scientific_name_authorship:
+                    existing.scientific_name_authorship = auth
+                    dirty = True
+                elif existing.scientific_name_authorship != auth and mismatches is not None:
+                    mismatches.append(
+                        f"{name}: authorship is {existing.scientific_name_authorship!r} locally, "
+                        f"import says {auth!r}"
                     )
-                existing.parent_name_usage_id = parent_id
-                dirty = True
-            if auth and not existing.scientific_name_authorship:
-                existing.scientific_name_authorship = auth
-                dirty = True
-            if otu_id and not existing.taxonworks_otu_id:
-                existing.taxonworks_otu_id = otu_id
-                dirty = True
-            if nomen_code and not existing.nomenclatural_code:
-                existing.nomenclatural_code = nomen_code
-                dirty = True
+            if otu_id:
+                if not existing.taxonworks_otu_id:
+                    existing.taxonworks_otu_id = otu_id
+                    dirty = True
+                elif existing.taxonworks_otu_id != otu_id and mismatches is not None:
+                    mismatches.append(
+                        f"{name}: TaxonWorks OTU ID is {existing.taxonworks_otu_id!r} locally, "
+                        f"import says {otu_id!r}"
+                    )
+            if nomen_code:
+                if not existing.nomenclatural_code:
+                    existing.nomenclatural_code = nomen_code
+                    dirty = True
+                elif existing.nomenclatural_code != nomen_code and mismatches is not None:
+                    mismatches.append(
+                        f"{name}: nomenclatural code is {existing.nomenclatural_code!r} locally, "
+                        f"import says {nomen_code!r}"
+                    )
             if dirty:
                 existing.updated_at = _utcnow()
                 session.flush()
@@ -532,7 +553,7 @@ def get_or_create_from_tw_data(
     session: Session,
     tw: dict,
     otu_id: int | None = None,
-    corrections: list[str] | None = None,
+    mismatches: list[str] | None = None,
 ) -> Taxon:
     """Find the matching local Taxon or create it from an augmented TW record.
 
@@ -544,15 +565,15 @@ def get_or_create_from_tw_data(
     The valid taxon is imported first; the synonym row gets accepted_name_usage_id
     set to point at it.
 
-    corrections: optional list; rank corrections made to existing rows are
-    appended as human-readable strings so the caller can notify the user.
+    Import policy: only fills NULL fields on existing rows.  Conflicts with
+    non-NULL local values are appended to mismatches (if provided).
     """
     # If this is a synonym, ensure the valid (accepted) taxon exists first.
     accepted_id: int | None = None
     valid_tw = tw.get("_valid_tw_data")
     if valid_tw:
         valid_taxon = get_or_create_from_tw_data(
-            session, valid_tw, otu_id=tw.get("_valid_otu_id"), corrections=corrections
+            session, valid_tw, otu_id=tw.get("_valid_otu_id"), mismatches=mismatches
         )
         accepted_id = valid_taxon.id
 
@@ -563,7 +584,7 @@ def get_or_create_from_tw_data(
 
     # Ensure all ancestor rows exist; get the immediate parent ID.
     parent_id = _ensure_parent_rows(
-        session, fields, nomenclatural_code=nomen_code, corrections=corrections
+        session, fields, nomenclatural_code=nomen_code, mismatches=mismatches
     )
 
     existing = None
@@ -577,27 +598,39 @@ def get_or_create_from_tw_data(
         )
     if existing:
         dirty = False
-        if existing.taxon_rank != rank:
-            if corrections is not None:
-                corrections.append(
-                    f"{sci_name}: rank corrected {existing.taxon_rank!r} → {rank!r}"
-                )
-            existing.taxon_rank = rank
-            dirty = True
+        if existing.taxon_rank != rank and mismatches is not None:
+            mismatches.append(
+                f"{sci_name}: rank is {existing.taxon_rank!r} locally, "
+                f"import says {rank!r}"
+            )
         if otu_id and not existing.taxonworks_otu_id:
             existing.taxonworks_otu_id = otu_id
             dirty = True
-        if accepted_id and not existing.accepted_name_usage_id:
-            existing.accepted_name_usage_id = accepted_id
-            existing.taxonomic_status = "synonym"
-            dirty = True
-        if parent_id is not None and existing.parent_name_usage_id != parent_id:
-            if corrections is not None:
-                corrections.append(
-                    f"{sci_name}: parent corrected ({existing.parent_name_usage_id!r} → {parent_id!r})"
+        if accepted_id:
+            if not existing.accepted_name_usage_id:
+                existing.accepted_name_usage_id = accepted_id
+                existing.taxonomic_status = "synonym"
+                dirty = True
+            elif existing.accepted_name_usage_id != accepted_id and mismatches is not None:
+                local_acc = session.get(Taxon, existing.accepted_name_usage_id)
+                import_acc = session.get(Taxon, accepted_id)
+                lname = local_acc.scientific_name if local_acc else f"id:{existing.accepted_name_usage_id}"
+                iname = import_acc.scientific_name if import_acc else f"id:{accepted_id}"
+                mismatches.append(
+                    f"{sci_name}: accepted name is {lname!r} locally, import says {iname!r}"
                 )
-            existing.parent_name_usage_id = parent_id
-            dirty = True
+        if parent_id is not None:
+            if existing.parent_name_usage_id is None:
+                existing.parent_name_usage_id = parent_id
+                dirty = True
+            elif existing.parent_name_usage_id != parent_id and mismatches is not None:
+                local_p = session.get(Taxon, existing.parent_name_usage_id)
+                import_p = session.get(Taxon, parent_id)
+                lname = local_p.scientific_name if local_p else f"id:{existing.parent_name_usage_id}"
+                iname = import_p.scientific_name if import_p else f"id:{parent_id}"
+                mismatches.append(
+                    f"{sci_name}: parent is {lname!r} locally, import says {iname!r}"
+                )
         if nomen_code and not existing.nomenclatural_code:
             existing.nomenclatural_code = nomen_code
             dirty = True
@@ -632,6 +665,7 @@ def get_or_create_from_powo_data(
     powo_fields: dict,
     *,
     accepted_fields: dict | None = None,
+    mismatches: list[str] | None = None,
 ) -> Taxon:
     """Find or create a local Taxon from a POWO-derived field dict.
 
@@ -644,6 +678,9 @@ def get_or_create_from_powo_data(
     linked to it via accepted_name_usage_id.
 
     Matching key: (scientific_name, taxon_rank) — same as TW imports.
+
+    Import policy: only fills NULL fields on existing rows.  Conflicts with
+    non-NULL local values are appended to mismatches (if provided).
     """
     sci_name   = powo_fields["scientific_name"]
     rank       = (powo_fields.get("taxon_rank") or "species").lower()
@@ -656,7 +693,9 @@ def get_or_create_from_powo_data(
     # Create the accepted name first so the synonym can link to it.
     accepted_taxon: Taxon | None = None
     if is_synonym and accepted_fields:
-        accepted_taxon = get_or_create_from_powo_data(session, accepted_fields)
+        accepted_taxon = get_or_create_from_powo_data(
+            session, accepted_fields, mismatches=mismatches
+        )
 
     # POWO gives family → genus → species (no subfamily/tribe available).
     ancestor_fields: dict = {"taxon_rank": rank, "nomenclatural_code": nomen_code}
@@ -682,7 +721,9 @@ def get_or_create_from_powo_data(
         if m:
             ancestor_fields["species_name"] = f"{genus} {m.group(1)}"
 
-    parent_id = _ensure_parent_rows(session, ancestor_fields, nomenclatural_code=nomen_code)
+    parent_id = _ensure_parent_rows(
+        session, ancestor_fields, nomenclatural_code=nomen_code, mismatches=mismatches
+    )
 
     existing = (
         session.query(Taxon)
@@ -691,19 +732,42 @@ def get_or_create_from_powo_data(
     )
     if existing:
         dirty = False
-        if auth and not existing.scientific_name_authorship:
-            existing.scientific_name_authorship = auth
-            dirty = True
-        if parent_id is not None and existing.parent_name_usage_id != parent_id:
-            existing.parent_name_usage_id = parent_id
-            dirty = True
+        if auth:
+            if not existing.scientific_name_authorship:
+                existing.scientific_name_authorship = auth
+                dirty = True
+            elif existing.scientific_name_authorship != auth and mismatches is not None:
+                mismatches.append(
+                    f"{sci_name}: authorship is {existing.scientific_name_authorship!r} locally, "
+                    f"import says {auth!r}"
+                )
+        if parent_id is not None:
+            if existing.parent_name_usage_id is None:
+                existing.parent_name_usage_id = parent_id
+                dirty = True
+            elif existing.parent_name_usage_id != parent_id and mismatches is not None:
+                local_p = session.get(Taxon, existing.parent_name_usage_id)
+                import_p = session.get(Taxon, parent_id)
+                lname = local_p.scientific_name if local_p else f"id:{existing.parent_name_usage_id}"
+                iname = import_p.scientific_name if import_p else f"id:{parent_id}"
+                mismatches.append(
+                    f"{sci_name}: parent is {lname!r} locally, import says {iname!r}"
+                )
         if nomen_code and not existing.nomenclatural_code:
             existing.nomenclatural_code = nomen_code
             dirty = True
-        if accepted_taxon and not existing.accepted_name_usage_id:
-            existing.accepted_name_usage_id = accepted_taxon.id
-            existing.taxonomic_status = "synonym"
-            dirty = True
+        if accepted_taxon:
+            if not existing.accepted_name_usage_id:
+                existing.accepted_name_usage_id = accepted_taxon.id
+                existing.taxonomic_status = "synonym"
+                dirty = True
+            elif existing.accepted_name_usage_id != accepted_taxon.id and mismatches is not None:
+                local_acc = session.get(Taxon, existing.accepted_name_usage_id)
+                lname = local_acc.scientific_name if local_acc else f"id:{existing.accepted_name_usage_id}"
+                mismatches.append(
+                    f"{sci_name}: accepted name is {lname!r} locally, "
+                    f"import says {accepted_taxon.scientific_name!r}"
+                )
         if dirty:
             existing.updated_at = _utcnow()
             session.flush()

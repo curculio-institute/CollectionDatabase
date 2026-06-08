@@ -540,13 +540,20 @@ def build_taxon_search(
             _clear()
             return
 
-        def _run(session):
+        mismatch_msgs: list[str] = []
+
+        def _run_preview(session):
+            return svc_taxa.get_or_create_from_tw_data(
+                session, tw_data, otu_id=otu_id, mismatches=mismatch_msgs
+            )
+
+        def _run_apply(session):
             return svc_taxa.get_or_create_from_tw_data(session, tw_data, otu_id=otu_id)
 
         try:
             with session_factory() as session:
                 changes = import_preview_svc.collect_import_preview(
-                    session, lambda: _run(session)
+                    session, lambda: _run_preview(session)
                 )
         except Exception as exc:
             with client:
@@ -562,7 +569,7 @@ def build_taxon_search(
         try:
             with session_factory() as session:
                 with session.begin():
-                    tid = _run(session).id
+                    tid = _run_apply(session).id
         except Exception as exc:
             with client:
                 ui.notify(f"Local DB error: {exc}", type="negative")
@@ -570,6 +577,9 @@ def build_taxon_search(
             return
 
         state["taxon_id"] = tid
+        with client:
+            for msg in mismatch_msgs:
+                ui.notify(f"Taxonomy mismatch: {msg}", type="warning", timeout=8000)
         if on_select:
             on_select(tid)
 
@@ -636,7 +646,15 @@ def build_taxon_search(
             except Exception:
                 pass
 
-        def _run(session):
+        mismatch_msgs: list[str] = []
+
+        def _run_preview(session):
+            return svc_taxa.get_or_create_from_powo_data(
+                session, powo_fields, accepted_fields=accepted_fields,
+                mismatches=mismatch_msgs,
+            )
+
+        def _run_apply(session):
             return svc_taxa.get_or_create_from_powo_data(
                 session, powo_fields, accepted_fields=accepted_fields
             )
@@ -644,7 +662,7 @@ def build_taxon_search(
         try:
             with session_factory() as session:
                 changes = import_preview_svc.collect_import_preview(
-                    session, lambda: _run(session)
+                    session, lambda: _run_preview(session)
                 )
         except Exception as exc:
             with client:
@@ -662,7 +680,7 @@ def build_taxon_search(
         try:
             with session_factory() as session:
                 with session.begin():
-                    tid = _run(session).id
+                    tid = _run_apply(session).id
         except Exception as exc:
             with client:
                 ui.notify(f"Local DB error: {exc}", type="negative")
@@ -670,6 +688,9 @@ def build_taxon_search(
             return
 
         state["taxon_id"] = tid
+        with client:
+            for msg in mismatch_msgs:
+                ui.notify(f"Taxonomy mismatch: {msg}", type="warning", timeout=8000)
         if on_select:
             on_select(tid)
 

@@ -285,15 +285,12 @@ def test_tw_import_preserves_tribe_parent_chain(plant_tree, session):
     assert plant_tree["genus"].parent_name_usage_id == tribe_id_before
 
 
-def test_tw_corrections_list_reports_rank_fix(session):
-    """If an existing row has the wrong rank and is matched by OTU ID, TW corrects it.
+def test_tw_mismatch_reports_rank_conflict(session):
+    """If an existing row has the wrong rank, a mismatch is reported but the rank is not changed.
 
-    Rank correction via name-only lookup only applies to order/suborder/superfamily
-    (where homonyms across ranks are essentially impossible).  For genus, an OTU ID
-    match is required; without it a wrong-rank row is simply not found and a new
-    correct-rank row is created instead.
+    The row is still found via OTU ID and used as the genus parent for the new
+    species — we don't silently correct local data, but we do flag the conflict.
     """
-    # Create Achillea with wrong rank but a known OTU ID so TW can find it.
     wrong = create_taxon_direct(
         session, scientific_name="Achillea", taxon_rank="subgenus",
         taxonworks_otu_id=5001,
@@ -301,14 +298,14 @@ def test_tw_corrections_list_reports_rank_fix(session):
 
     tw_dict, otu_id = _tw_species(
         epithet="ptarmica", genus="Achillea", family="Asteraceae", otu_id=1004,
-        genus_otu_id=5001,  # links TW's genus ancestor to the wrong-rank local row
+        genus_otu_id=5001,
     )
-    corrections: list[str] = []
-    get_or_create_from_tw_data(session, tw_dict, otu_id=otu_id, corrections=corrections)
+    mismatches: list[str] = []
+    get_or_create_from_tw_data(session, tw_dict, otu_id=otu_id, mismatches=mismatches)
     session.refresh(wrong)
 
-    assert wrong.taxon_rank == "genus"
-    assert any("Achillea" in c and "genus" in c for c in corrections)
+    assert wrong.taxon_rank == "subgenus"  # NOT changed
+    assert any("Achillea" in m and "genus" in m for m in mismatches)
 
 
 # ---------------------------------------------------------------------------
@@ -327,20 +324,20 @@ def test_powo_import_second_species_reuses_genus(plant_tree, session):
     assert session.query(Taxon).filter(Taxon.scientific_name == "Achillea").count() == 1
 
 
-def test_powo_import_reparents_genus_to_family(plant_tree, session):
-    """POWO has no tribe knowledge; importing any species in the genus redirects
-    the genus's parent from Anthemideae (tribe) to Asteraceae (family).
-
-    This is a known side-effect: the tribe row survives but is no longer a parent
-    of any taxon.  The tribe's own parent (Asteraceae) is unchanged.
+def test_powo_import_does_not_reparent_genus(plant_tree, session):
+    """POWO has no tribe knowledge, so it would want to set the genus parent to the
+    family directly.  Under the fill-NULL-only policy the existing tribe parent is
+    preserved and a mismatch is reported instead.
     """
     assert plant_tree["genus"].parent_name_usage_id == plant_tree["tribe"].id
 
     powo = _powo_species("Achillea ptarmica", genus="Achillea", family="Asteraceae")
-    get_or_create_from_powo_data(session, powo)
+    mismatches: list[str] = []
+    get_or_create_from_powo_data(session, powo, mismatches=mismatches)
     session.refresh(plant_tree["genus"])
 
-    assert plant_tree["genus"].parent_name_usage_id == plant_tree["family"].id
+    assert plant_tree["genus"].parent_name_usage_id == plant_tree["tribe"].id  # unchanged
+    assert any("Achillea" in m and "parent" in m for m in mismatches)
 
 
 def test_powo_import_existing_species_no_duplicate(plant_tree, session):
