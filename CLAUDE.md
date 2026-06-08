@@ -2,6 +2,9 @@
 
 Project context and working agreement for Claude Code. Read this before writing code.
 
+**Also read `docs/design.md`** — the working design document covering UI conventions,
+widget specs, and layer architecture. It overrides CLAUDE.md where they conflict.
+
 ---
 
 ## To do:

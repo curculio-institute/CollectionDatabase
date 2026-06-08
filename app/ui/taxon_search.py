@@ -102,7 +102,7 @@ _TW_BADGE = (
 _POWO_BADGE = (
     '<span class="powo-import-badge"'
     ' title="This taxon was imported from Plants of the World Online (POWO)">'
-    '🌿 add</span>'
+    '✚ add</span>'
 )
 
 
