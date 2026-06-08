@@ -33,6 +33,7 @@ from app.ui.controlled_vocab_tab import build_controlled_vocab_tab
 from app.ui.map_picker import add_map_assets, build_map_picker
 from app.ui.taxon_editor import build_taxon_editor
 from app.ui.date_input import attach_date_validation
+from app.ui.person_field import build_person_field
 from app.ui.records_tab import build_records_tab
 from app.services.biological import (
     sync_biological_relationships,
@@ -1100,47 +1101,20 @@ def index():
                         protocol_sel = ui.select(SAMPLING_PROTOCOLS, label="samplingProtocol").classes("col-span-1")
 
                     ui.label("Recorded by").classes("text-xs font-semibold uppercase tracking-wider text-grey-6 mt-4")
-                    def _person_opts_now() -> dict:
-                        import app.services.persons as _psvc
-                        with _sf() as _s:
-                            return _psvc.person_options(_s)
-
                     with ui.grid(columns=2).classes("w-full gap-3 mt-1"):
                         with ui.row().classes("col-span-1 items-center gap-1"):
-                            recby_in = (
-                                ui.select(
-                                    options=_person_opts_now(),
-                                    label="recordedBy",
-                                    with_input=True,
-                                    clearable=True,
-                                )
-                                .classes("flex-1")
-                                .props("use-input input-debounce=0 new-value-mode=add-unique")
+                            recby_state = build_person_field(
+                                _sf, "recordedBy",
+                                default_fn=lambda: get_config().default_recorded_by or None,
+                                on_change=_on_event_field_edit,
                             )
-                            (
-                                ui.button("", icon="push_pin")
-                                .props("flat dense round size=xs")
-                                .tooltip("Insert default name")
-                                .on_click(lambda: recby_in.set_value(get_config().default_recorded_by))
-                                .bind_visibility_from(recby_in, "value", lambda v: not v)
-                            )
-                        recby_in.on_value_change(lambda _: _on_event_field_edit())
                         fieldnum_in = ui.input("fieldNumber", on_change=_on_event_field_edit).classes("col-span-1")
 
-                    import app.services.persons as _psvc
-
-                    def _refresh_digitize_person_opts():
-                        with _sf() as _s:
-                            new_opts = _psvc.person_options(_s)
-                        cur = recby_in.value
-                        r_opts = dict(new_opts)
-                        if cur and cur not in r_opts:
-                            r_opts = {cur: cur, **r_opts}
-                        recby_in.options = r_opts
+                    def _refresh_person_opts():
+                        recby_state["refresh"]()
                         det_state["refresh_person_opts"]()
 
-                    _refreshers["person_opts"] = _refresh_digitize_person_opts
-                    ui.timer(2.0, _refresh_digitize_person_opts)
+                    _refreshers["person_opts"] = _refresh_person_opts
 
                     verblabel_in = ui.input("verbatimLabel", on_change=_on_event_field_edit).classes("w-full mt-4")
 
@@ -1165,7 +1139,7 @@ def index():
                         verblocal_in.value = ev.verbatim_locality   or ""
                         edate_in.value     = ev.event_date         or ""
                         verbdate_in.value  = ev.verbatim_event_date or ""
-                        recby_in.value     = ev.recorded_by        or ""
+                        recby_state["set_value"](ev.recorded_by or None)
                         lat_in.value       = str(ev.decimal_latitude)  if ev.decimal_latitude  is not None else ""
                         lon_in.value       = str(ev.decimal_longitude) if ev.decimal_longitude is not None else ""
                         uncert_in.value    = str(ev.coordinate_uncertainty_in_meters) if ev.coordinate_uncertainty_in_meters is not None else ""
@@ -1317,7 +1291,7 @@ def index():
                         "verbatim_locality":                verblocal_in.value,
                         "event_date":                       edate_in.value,
                         "verbatim_event_date":              verbdate_in.value,
-                        "recorded_by":                      recby_in.value,
+                        "recorded_by":                      recby_state["get_value"](),
                         "decimal_latitude":                 lat_in.value,
                         "decimal_longitude":                lon_in.value,
                         "coordinate_uncertainty_in_meters": uncert_in.value,
@@ -1397,9 +1371,10 @@ def index():
                         state["event_id"] = None
                         event_status.set_text("· new event")
                         event_status.classes(remove="event-linked", add="event-new")
+                        recby_state["set_value"](None)
                         for w in (country_in, code_in, state_in, county_in, muni_in,
                                   island_in, locality_in, verblocal_in, edate_in, verbdate_in,
-                                  recby_in, lat_in, lon_in, uncert_in, elev_min_in,
+                                  lat_in, lon_in, uncert_in, elev_min_in,
                                   elev_max_in, habitat_in, fieldnum_in, verblabel_in):
                             w.value = ""
                         protocol_sel.value = ""
@@ -1418,6 +1393,7 @@ def index():
                         code = cat_num.value
                         with _sf() as session:
                             with session.begin():
+                                recby_state["commit"](session)
                                 co = svc.save_specimen_entry(
                                     session,
                                     taxon_id=cur_det["taxon_id"],
@@ -2127,27 +2103,16 @@ def index():
                 "Inserted with one click in identifiedBy / recordedBy fields."
             ).classes("text-xs mb-2").style("color:var(--tp-base-soft)")
 
-            import app.services.persons as _psvc_cfg
-            with _sf() as _scfg:
-                _cfg_person_opts = _psvc_cfg.person_options(_scfg)
-
-            def _make_cfg_person_sel(label, current_val):
-                opts = dict(_cfg_person_opts)
-                if current_val and current_val not in opts:
-                    opts = {current_val: current_val, **opts}
-                return (
-                    ui.select(opts, label=label, value=current_val or None,
-                              with_input=True, clearable=True)
-                    .classes("w-full mt-1")
-                    .props("use-input input-debounce=0 new-value-mode=add-unique")
-                )
-
             cfg_now_names = get_config()
-            idby_default_in = _make_cfg_person_sel(
-                "Default identifiedBy", cfg_now_names.default_identified_by
+            idby_state = build_person_field(
+                _sf, "Default identifiedBy",
+                initial_value=cfg_now_names.default_identified_by or None,
+                classes="w-full mt-1",
             )
-            recby_default_in = _make_cfg_person_sel(
-                "Default recordedBy", cfg_now_names.default_recorded_by
+            recby_state_cfg = build_person_field(
+                _sf, "Default recordedBy",
+                initial_value=cfg_now_names.default_recorded_by or None,
+                classes="w-full mt-1",
             )
 
             ui.separator().classes("my-3")
@@ -2178,8 +2143,12 @@ def index():
                 cfg.institution_code      = institution_code_in.value.strip()
                 cfg.collection_code       = collection_code_in.value.strip()
                 cfg.map_default_layer     = map_layer_sel.value or "street"
-                cfg.default_identified_by = idby_default_in.value or ""
-                cfg.default_recorded_by   = recby_default_in.value or ""
+                cfg.default_identified_by = idby_state["get_value"]() or ""
+                cfg.default_recorded_by   = recby_state_cfg["get_value"]() or ""
+                with _sf() as _s:
+                    with _s.begin():
+                        idby_state["commit"](_s)
+                        recby_state_cfg["commit"](_s)
                 cfg.bio_assoc_default_codes = selected
                 save_config(cfg)
                 # Propagate to active bio_codes filter in place
@@ -2200,8 +2169,8 @@ def index():
         institution_code_in.value = cfg.institution_code
         collection_code_in.value  = cfg.collection_code
         map_layer_sel.value     = cfg.map_default_layer or "street"
-        idby_default_in.value   = cfg.default_identified_by or None
-        recby_default_in.value  = cfg.default_recorded_by or None
+        idby_state["set_value"](cfg.default_identified_by or None)
+        recby_state_cfg["set_value"](cfg.default_recorded_by or None)
         for code, cb in _code_cbs.items():
             cb.value = code in cfg.bio_assoc_default_codes
         settings_dialog.open()

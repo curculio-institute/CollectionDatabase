@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 from app.models import CollectingEvent
 from app.models.base import _utcnow
 from app.services.label_text import format_locality_label
+import app.services.persons as _persons_svc
 
 _FLOAT_ATTRS = frozenset({
     "decimal_latitude",
@@ -64,6 +65,8 @@ def update_collecting_event(session: Session, event_id: int, **fields) -> Collec
     ev = session.get(CollectingEvent, event_id)
     if ev is None:
         raise ValueError(f"CollectingEvent {event_id} not found")
+    if (rb := (fields.get("recorded_by") or "").strip()):
+        _persons_svc.get_or_create_person(session, full_name=rb)
     for attr, val in fields.items():
         if val == "":
             val = None
@@ -114,6 +117,8 @@ def copy_and_relink_event(session: Session, co_id: int) -> int:
 def create_collecting_event(session: Session, **fields) -> CollectingEvent:
     """Insert a new collecting_event. Coerces '' -> None and str -> float for
     numeric columns. ISO-8601 date strings are stored as-is."""
+    if (rb := (fields.get("recorded_by") or "").strip()):
+        _persons_svc.get_or_create_person(session, full_name=rb)
     ce = CollectingEvent(created_at=_utcnow(), updated_at=_utcnow())
     for attr, val in fields.items():
         if val is None or val == "":

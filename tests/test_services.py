@@ -1,6 +1,7 @@
 """Service-layer tests. All DB state rolls back after each test (conftest fixture)."""
 import pytest
 from app.models import Taxon, CollectingEvent, CollectionObject, TaxonDetermination
+from app.models.person import Person
 from app.models.base import _utcnow
 from app.services.taxa import format_scientific_name, search_taxa, TaxonOption
 from app.services.events import format_event_summary, search_collecting_events, create_collecting_event
@@ -10,6 +11,16 @@ from app.services.specimens import save_specimen_entry, recent_specimens
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+def _person(session, full_name: str) -> Person:
+    existing = session.query(Person).filter_by(full_name=full_name).first()
+    if existing:
+        return existing
+    p = Person(full_name=full_name, created_at=_utcnow(), updated_at=_utcnow())
+    session.add(p)
+    session.flush()
+    return p
+
 
 def _taxon(session, genus="Carabus", species="coriaceus", authorship="Linnaeus, 1758"):
     sci_name = f"{genus} {species}" if species else genus
@@ -28,6 +39,8 @@ def _taxon(session, genus="Carabus", species="coriaceus", authorship="Linnaeus, 
 
 def _event(session, country="Germany", state="Bavaria", locality="Berchtesgaden",
            event_date="2024-06-15", recorded_by="J. Jilg"):
+    if recorded_by:
+        _person(session, recorded_by)
     ce = CollectingEvent(
         country=country, state_province=state, locality=locality,
         event_date=event_date, recorded_by=recorded_by,
@@ -267,6 +280,7 @@ def test_recent_specimens_returns_only_current_determination(session):
     session.add(co)
     session.flush()
 
+    _person(session, "J. Jilg")
     # old determination (not current)
     old = TaxonDetermination(
         collection_object_id=co.id, taxon_id=t1.id, is_current=0,

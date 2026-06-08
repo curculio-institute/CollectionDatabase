@@ -19,6 +19,24 @@ def person_options(session: Session) -> dict[str, str]:
     return {p.dwc_name: p.display_label for p in list_persons(session)}
 
 
+def get_or_create_person(
+    session: Session,
+    *,
+    full_name: str,
+) -> Person:
+    """Return the existing Person with this name, or create a new one.
+
+    Safe to call multiple times within the same transaction — session.flush()
+    inside create_person makes the new row visible to subsequent queries in the
+    same session, so a second call with the same name finds the already-flushed
+    row instead of hitting the unique constraint.
+    """
+    existing = session.query(Person).filter_by(full_name=full_name.strip()).first()
+    if existing:
+        return existing
+    return create_person(session, full_name=full_name)
+
+
 def create_person(
     session: Session,
     *,

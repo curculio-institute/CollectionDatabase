@@ -19,7 +19,7 @@ class TaxonDetermination(Base, TimestampMixin):
     taxon_id: Mapped[int] = mapped_column(Integer, ForeignKey("taxon.id", ondelete="RESTRICT"), nullable=False)
 
     verbatim_identification: Mapped[Optional[str]] = mapped_column("dwc:verbatimIdentification", String, nullable=True)
-    identified_by: Mapped[Optional[str]] = mapped_column("dwc:identifiedBy", String, nullable=True)
+    identified_by: Mapped[Optional[str]] = mapped_column("dwc:identifiedBy", String, ForeignKey("person.full_name", ondelete="RESTRICT"), nullable=True)
     date_identified: Mapped[Optional[str]] = mapped_column("dwc:dateIdentified", String, nullable=True)
     identification_qualifier: Mapped[Optional[str]] = mapped_column("dwc:identificationQualifier", String, nullable=True)
     identification_remarks: Mapped[Optional[str]] = mapped_column("dwc:identificationRemarks", String, nullable=True)

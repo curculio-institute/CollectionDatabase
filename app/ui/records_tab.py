@@ -8,11 +8,11 @@ from app.models import CollectionObject, CollectingEvent, TaxonDetermination, Ta
 import app.services.specimens as sp_svc
 import app.services.events as ev_svc
 import app.services.biological as bio_svc
-import app.services.persons as persons_svc
 from app.services.taxa import format_scientific_name
 from app.ui.taxon_search import build_taxon_search, _local_item_html
 from app.ui.identification_list import build_identification_list
 from app.ui.date_input import attach_date_validation
+from app.ui.person_field import build_person_field
 
 _FLOAT_ATTRS = frozenset({
     "decimal_latitude", "decimal_longitude",
@@ -346,7 +346,7 @@ def build_records_tab(session_factory, *, on_saved: callable | None = None) -> N
                 # Stub locals so the save handler doesn't reference undefined names
                 ev_country_in = ev_code_in = ev_state_in = ev_county_in = None
                 ev_muni_in = ev_island_in = ev_locality_in = ev_verblocal_in = None
-                ev_edate_in = ev_verbdate_in = ev_recby_in = ev_lat_in = ev_lon_in = None
+                ev_edate_in = ev_verbdate_in = ev_lat_in = ev_lon_in = None
                 ev_uncert_in = ev_elevmin_in = ev_elevmax_in = ev_habitat_in = None
                 ev_protocol_sel = ev_fieldnum_in = ev_verblabel_in = None
             else:
@@ -363,29 +363,11 @@ def build_records_tab(session_factory, *, on_saved: callable | None = None) -> N
                     ev_edate_in    = ui.input("eventDate",     value=ev_snap["event_date"] or "").classes("col-span-1")
                     attach_date_validation(ev_edate_in, allow_interval=True)
                     ev_verbdate_in = ui.input("verbatimDate",  value=ev_snap["verbatim_event_date"] or "").classes("col-span-1")
-                    with session_factory() as _s:
-                        _recby_opts = persons_svc.person_options(_s)
-                    _recby_val = ev_snap["recorded_by"] or None
-                    if _recby_val and _recby_val not in _recby_opts:
-                        _recby_opts = {_recby_val: _recby_val, **_recby_opts}
                     with ui.element("div").classes("col-span-1 flex items-center gap-1"):
-                        ev_recby_in = (
-                            ui.select(
-                                options=_recby_opts,
-                                label="recordedBy",
-                                value=_recby_val,
-                                with_input=True,
-                                clearable=True,
-                            )
-                            .classes("flex-1")
-                            .props("use-input input-debounce=0 new-value-mode=add-unique")
-                        )
-                        (
-                            ui.button("", icon="push_pin")
-                            .props("flat dense round size=xs")
-                            .tooltip("Insert default name")
-                            .on_click(lambda: ev_recby_in.set_value(get_config().default_recorded_by))
-                            .bind_visibility_from(ev_recby_in, "value", lambda v: not v)
+                        ev_recby_state = build_person_field(
+                            session_factory, "recordedBy",
+                            default_fn=lambda: get_config().default_recorded_by or None,
+                            initial_value=ev_snap["recorded_by"] or None,
                         )
                 with ui.grid(columns=4).classes("w-full gap-3 mt-2"):
                     ev_lat_in    = ui.input("latitude",    value=_s(ev_snap["decimal_latitude"])).classes("col-span-1")
@@ -520,7 +502,7 @@ def build_records_tab(session_factory, *, on_saved: callable | None = None) -> N
                 "verbatim_locality":                ev_verblocal_in.value,
                 "event_date":                       ev_edate_in.value,
                 "verbatim_event_date":              ev_verbdate_in.value,
-                "recorded_by":                      ev_recby_in.value,
+                "recorded_by":                      ev_recby_state["get_value"](),
                 "decimal_latitude":                 ev_lat_in.value,
                 "decimal_longitude":                ev_lon_in.value,
                 "coordinate_uncertainty_in_meters": ev_uncert_in.value,
@@ -539,6 +521,7 @@ def build_records_tab(session_factory, *, on_saved: callable | None = None) -> N
                         sp_svc.update_collection_object(s, co_id, **_collect_co_fields())
                         ev_fields = _collect_ev_fields()
                         if ev_fields and ev_id:
+                            ev_recby_state["commit"](s)
                             ev_svc.update_collecting_event(s, ev_id, **ev_fields)
                 ui.notify("Changes saved.", type="positive")
                 if on_saved:
@@ -583,29 +566,11 @@ def build_records_tab(session_factory, *, on_saved: callable | None = None) -> N
                 ev_edate_in    = ui.input("eventDate",    value=ev_snap["event_date"] or "").classes("col-span-1")
                 attach_date_validation(ev_edate_in, allow_interval=True)
                 ev_verbdate_in = ui.input("verbatimDate", value=ev_snap["verbatim_event_date"] or "").classes("col-span-1")
-                with session_factory() as _s:
-                    _recby_opts = persons_svc.person_options(_s)
-                _recby_val = ev_snap["recorded_by"] or None
-                if _recby_val and _recby_val not in _recby_opts:
-                    _recby_opts = {_recby_val: _recby_val, **_recby_opts}
                 with ui.element("div").classes("col-span-1 flex items-center gap-1"):
-                    ev_recby_in = (
-                        ui.select(
-                            options=_recby_opts,
-                            label="recordedBy",
-                            value=_recby_val,
-                            with_input=True,
-                            clearable=True,
-                        )
-                        .classes("flex-1")
-                        .props("use-input input-debounce=0 new-value-mode=add-unique")
-                    )
-                    (
-                        ui.button("", icon="push_pin")
-                        .props("flat dense round size=xs")
-                        .tooltip("Insert default name")
-                        .on_click(lambda: ev_recby_in.set_value(get_config().default_recorded_by))
-                        .bind_visibility_from(ev_recby_in, "value", lambda v: not v)
+                    ev_recby_state = build_person_field(
+                        session_factory, "recordedBy",
+                        default_fn=lambda: get_config().default_recorded_by or None,
+                        initial_value=ev_snap["recorded_by"] or None,
                     )
             with ui.grid(columns=4).classes("w-full gap-3 mt-2"):
                 ev_lat_in    = ui.input("latitude",     value=_s(ev_snap["decimal_latitude"])).classes("col-span-1")
@@ -633,7 +598,7 @@ def build_records_tab(session_factory, *, on_saved: callable | None = None) -> N
                 "verbatim_locality":                ev_verblocal_in.value,
                 "event_date":                       ev_edate_in.value,
                 "verbatim_event_date":              ev_verbdate_in.value,
-                "recorded_by":                      ev_recby_in.value,
+                "recorded_by":                      ev_recby_state["get_value"](),
                 "decimal_latitude":                 ev_lat_in.value,
                 "decimal_longitude":                ev_lon_in.value,
                 "coordinate_uncertainty_in_meters": ev_uncert_in.value,
@@ -647,6 +612,7 @@ def build_records_tab(session_factory, *, on_saved: callable | None = None) -> N
             try:
                 with session_factory() as s:
                     with s.begin():
+                        ev_recby_state["commit"](s)
                         ev_svc.update_collecting_event(s, ev_id, **fields)
                 ui.notify(f"Event #{ev_id} saved.", type="positive")
                 if on_saved:

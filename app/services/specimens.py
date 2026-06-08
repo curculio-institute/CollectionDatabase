@@ -14,6 +14,7 @@ from app.models import (
 from app.models.base import _utcnow
 from app.services.events import create_collecting_event
 from app.services.taxa import format_scientific_name
+import app.services.persons as _persons_svc
 
 
 @dataclass(frozen=True)
@@ -74,6 +75,8 @@ def create_determination(
     verbatim_identification: str | None = None,
     is_current: int = 1,
 ) -> TaxonDetermination:
+    if (ib := (identified_by or "").strip()):
+        _persons_svc.get_or_create_person(session, full_name=ib)
     td = TaxonDetermination(
         collection_object_id=collection_object_id,
         taxon_id=taxon_id,
@@ -157,6 +160,8 @@ def update_determination_metadata(
     d = session.get(TaxonDetermination, det_id)
     if d is None:
         raise ValueError(f"TaxonDetermination {det_id} not found")
+    if (ib := (identified_by or "").strip()):
+        _persons_svc.get_or_create_person(session, full_name=ib)
     d.identified_by            = identified_by
     d.date_identified          = date_identified
     d.identification_qualifier = identification_qualifier

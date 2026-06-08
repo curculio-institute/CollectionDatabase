@@ -157,7 +157,7 @@ Primary dev OS: Arch Linux; all code must remain cross-platform (Windows/macOS).
 
 ## 4. Data model (implemented)
 
-18 migrations applied. Schema is in production use.
+21 migrations applied. Schema is in production use.
 
 ### DwC column naming convention
 
@@ -170,9 +170,9 @@ attributes. Mermaid diagrams use plain camelCase. Do not deviate from this patte
 | Table | Purpose |
 |-------|---------|
 | `collection_object` | One physical specimen or lot. `catalog_number` (NOT NULL) is the stable sync join key. `dwc:basisOfRecord`, `dwc:sex`, `dwc:preparations`, `dwc:typeStatus`, etc. |
-| `collecting_event` | Where/when collected; shared by many specimens. Full DwC locality + coordinate block. `dwc:eventDate` supports ISO 8601 intervals (`2024-06-15/2024-06-20`). |
+| `collecting_event` | Where/when collected; shared by many specimens. Full DwC locality + coordinate block. `dwc:eventDate` supports ISO 8601 intervals (`2024-06-15/2024-06-20`). `dwc:recordedBy` FK → `person(full_name)`. |
 | `taxon` | Local OTU analogue. DwC parent-link model (GBIF best practices). Columns: `dwc:scientificName` (bare name without authorship), `dwc:taxonRank`, `dwc:taxonomicStatus` ("accepted"/"synonym"), `dwc:scientificNameAuthorship`, `dwc:parentNameUsageID` (self-FK, encodes hierarchy), `dwc:acceptedNameUsageID` (self-FK, marks synonyms), `taxonworksOtuID`. No denormalised rank columns. |
-| `taxon_determination` | `collection_object` → `taxon` link. `is_current` flag. `taxon_id` may reference a synonym row (deliberate design). |
+| `taxon_determination` | `collection_object` → `taxon` link. `is_current` flag. `taxon_id` may reference a synonym row (deliberate design). `dwc:identifiedBy` FK → `person(full_name)`. |
 | `biological_relationship` | Kind of association (`collected_on`, `feeds_on`, …). |
 | `biological_association` | Exclusive-arc pattern: (`subject_collection_object_id` XOR `subject_taxon_id`) and (`object_collection_object_id` XOR `object_taxon_id`). CHECK enforces exactly-one-non-null per role. |
 | `label_code` | 4-char alphanumeric specimen identifiers (`[0-9a-z]{4}`, ~1.7 M possibilities). Tied to a `label_batch`. Once used on a specimen they are immutable. |

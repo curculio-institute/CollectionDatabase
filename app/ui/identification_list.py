@@ -23,21 +23,8 @@ from app.models import Taxon
 from app.services.taxa import format_scientific_name
 from app.ui.taxon_search import build_taxon_search, _local_item_html
 from app.ui.date_input import AUTO_CHANGED_CSS, attach_date_validation
+from app.ui.person_field import build_person_field
 import app.services.specimens as sp_svc
-import app.services.persons as persons_svc
-
-
-def _person_select(label: str, value: str | None, session_factory, *, classes: str = "") -> ui.select:
-    """A ui.select backed by the person table, with free-text fallback."""
-    with session_factory() as s:
-        opts = persons_svc.person_options(s)
-    if value and value not in opts:
-        opts = {value: value, **opts}
-    return (
-        ui.select(opts, label=label, value=value, with_input=True, clearable=True)
-        .classes(classes)
-        .props("use-input input-debounce=0 new-value-mode=add-unique")
-    )
 
 
 def _append_year_btn(inp, *, visible_when_empty: bool = True) -> None:
@@ -265,16 +252,10 @@ def build_identification_list(
             with edit_panel:
                 with ui.grid(columns=4).classes("w-full gap-2 mb-2"):
                     with ui.element("div").classes("col-span-1 flex items-center gap-1"):
-                        e_idby = _person_select(
-                            "identifiedBy", d["identified_by"], session_factory,
-                            classes="flex-1",
-                        )
-                        (
-                            ui.button("", icon="push_pin")
-                            .props("flat dense round size=xs")
-                            .tooltip("Insert default name")
-                            .on_click(lambda ib=e_idby: ib.set_value(get_config().default_identified_by) if get_config().default_identified_by else None)
-                            .bind_visibility_from(e_idby, "value", lambda v: not v)
+                        e_idby_state = build_person_field(
+                            session_factory, "identifiedBy",
+                            default_fn=lambda: get_config().default_identified_by or None,
+                            initial_value=d["identified_by"],
                         )
                     e_dtid = ui.input(
                         "dateIdentified",
@@ -295,10 +276,10 @@ def build_identification_list(
 
                 def _do_save_edit(
                     _=None, det=d, ix=idx,
-                    ib=e_idby, dt=e_dtid, ql=e_qual, rm=e_rem,
+                    idby=e_idby_state, dt=e_dtid, ql=e_qual, rm=e_rem,
                 ):
                     fields = {
-                        "identified_by":            ib.value or None,
+                        "identified_by":            idby["get_value"](),
                         "date_identified":          dt.value or None,
                         "identification_qualifier": ql.value or None,
                         "identification_remarks":   rm.value or None,
@@ -307,6 +288,7 @@ def build_identification_list(
                         try:
                             with session_factory() as s:
                                 with s.begin():
+                                    idby["commit"](s)
                                     sp_svc.update_determination_metadata(
                                         s, det["id"], **fields
                                     )
@@ -352,13 +334,9 @@ def build_identification_list(
 
     with ui.row().classes("w-full flex-wrap gap-3 items-end mt-2"):
         with ui.row().classes("flex-1 min-w-40 items-center gap-1"):
-            add_idby = _person_select("identifiedBy", None, session_factory, classes="flex-1")
-            (
-                ui.button("", icon="push_pin")
-                .props("flat dense round size=xs")
-                .tooltip("Insert default name")
-                .on_click(lambda: add_idby.set_value(get_config().default_identified_by) if get_config().default_identified_by else None)
-                .bind_visibility_from(add_idby, "value", lambda v: not v)
+            add_idby_state = build_person_field(
+                session_factory, "identifiedBy",
+                default_fn=lambda: get_config().default_identified_by or None,
             )
         add_dtid = ui.input("dateIdentified", placeholder="YYYY-MM-DD").classes("w-36")
         _append_year_btn(add_dtid)
@@ -380,11 +358,12 @@ def build_identification_list(
             try:
                 with session_factory() as s:
                     with s.begin():
+                        add_idby_state["commit"](s)
                         sp_svc.create_determination(
                             s,
                             collection_object_id=co_id,
                             taxon_id=new_tid,
-                            identified_by=add_idby.value or None,
+                            identified_by=add_idby_state["get_value"](),
                             date_identified=add_dtid.value or None,
                             identification_qualifier=add_qual.value or None,
                             identification_remarks=add_rem.value or None,
@@ -411,13 +390,17 @@ def build_identification_list(
                 else:
                     is_syn, acc_label, t_label = False, None, f"taxon #{new_tid}"
 
+            with session_factory() as s:
+                with s.begin():
+                    add_idby_state["commit"](s)
+
             _dets.append({
                 "id":                       None,
                 "taxon_id":                 new_tid,
                 "taxon_label":              t_label,
                 "is_synonym":               is_syn,
                 "accepted_label":           acc_label,
-                "identified_by":            add_idby.value or None,
+                "identified_by":            add_idby_state["get_value"](),
                 "date_identified":          add_dtid.value or None,
                 "identification_qualifier": add_qual.value or None,
                 "identification_remarks":   add_rem.value or None,
@@ -426,7 +409,7 @@ def build_identification_list(
             _auto_assign_and_mark()
 
         add_taxon_state["clear"]()
-        add_idby.value = None
+        add_idby_state["set_value"](None)
         add_dtid.value = ""
         add_qual.value = ""
         add_rem.value  = ""
@@ -450,19 +433,14 @@ def build_identification_list(
         _dets = []
         _auto_tid[0] = None
         add_taxon_state["clear"]()
-        add_idby.value = None
+        add_idby_state["set_value"](None)
         add_dtid.value = ""
         add_qual.value = ""
         add_rem.value  = ""
         _refresh()
 
     def _state_refresh_person_opts() -> None:
-        with session_factory() as s:
-            new_opts = persons_svc.person_options(s)
-        cur = add_idby.value
-        if cur and cur not in new_opts:
-            new_opts = {cur: cur, **new_opts}
-        add_idby.options = new_opts
+        add_idby_state["refresh"]()
 
     return {
         "get_dets": _state_get_dets,

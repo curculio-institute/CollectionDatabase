@@ -23,6 +23,7 @@ import app.services as svc
 from app.config import get_config
 from app.ui.taxon_search import build_taxon_search
 from app.ui.date_input import attach_date_validation
+from app.ui.person_field import build_person_field
 
 
 # ---------------------------------------------------------------------------
@@ -231,13 +232,9 @@ def build_import_assign_tab(session_factory, refreshers: dict) -> None:
             ui.label("Determination").classes("section-label mb-2")
             with ui.row().classes("w-full flex-wrap gap-3 items-end"):
                 with ui.row().classes("flex-1 min-w-40 items-center gap-1"):
-                    id_by = ui.input("identifiedBy").classes("flex-1")
-                    (
-                        ui.button("", icon="push_pin")
-                        .props("flat dense round size=xs")
-                        .tooltip("Insert default name")
-                        .on_click(lambda: id_by.set_value(get_config().default_identified_by) if get_config().default_identified_by else None)
-                        .bind_visibility_from(id_by, "value", lambda v: not v)
+                    id_by_state = build_person_field(
+                        session_factory, "identifiedBy",
+                        default_fn=lambda: get_config().default_identified_by or None,
                     )
                 dt_id  = ui.input("dateIdentified",
                                   placeholder="YYYY-MM-DD").classes("w-36")
@@ -292,7 +289,7 @@ def build_import_assign_tab(session_factory, refreshers: dict) -> None:
 
             # Pre-fill determination meta
             det = dwc_svc.row_to_determination_fields(row)
-            id_by.value = det["identified_by"] or ""
+            id_by_state["set_value"](det["identified_by"] or None)
             dt_id.value = det["date_identified"]
 
             # Refresh identifier dropdown
@@ -530,6 +527,7 @@ def build_import_assign_tab(session_factory, refreshers: dict) -> None:
             try:
                 with session_factory() as session:
                     with session.begin():
+                        id_by_state["commit"](session)
                         co = svc.save_specimen_entry(
                             session,
                             taxon_id=state["taxon_id"],
@@ -548,7 +546,7 @@ def build_import_assign_tab(session_factory, refreshers: dict) -> None:
                                 "occurrence_remarks":rem_in.value,
                             },
                             determination_fields={
-                                "identified_by":            id_by.value,
+                                "identified_by":            id_by_state["get_value"](),
                                 "date_identified":          dt_id.value,
                                 "identification_qualifier": qual.value,
                                 "verbatim_identification":  dwc_svc.row_scientific_name(row),

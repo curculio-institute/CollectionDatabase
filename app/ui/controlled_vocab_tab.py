@@ -61,6 +61,8 @@ def build_controlled_vocab_tab(session_factory, *, on_person_changed=None) -> No
             people_table.rows = _load_rows()
             people_table.update()
 
+        ui.timer(2.0, _refresh_table)
+
         # ── Edit dialog ───────────────────────────────────────────────────
         edit_state: dict = {"id": None}
 
