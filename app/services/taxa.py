@@ -694,7 +694,7 @@ def get_or_create_from_powo_data(
         if auth and not existing.scientific_name_authorship:
             existing.scientific_name_authorship = auth
             dirty = True
-        if parent_id and not existing.parent_name_usage_id:
+        if parent_id is not None and existing.parent_name_usage_id != parent_id:
             existing.parent_name_usage_id = parent_id
             dirty = True
         if nomen_code and not existing.nomenclatural_code:

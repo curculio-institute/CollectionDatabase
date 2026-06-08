@@ -286,14 +286,22 @@ def test_tw_import_preserves_tribe_parent_chain(plant_tree, session):
 
 
 def test_tw_corrections_list_reports_rank_fix(session):
-    """If an existing row has the wrong rank, TW import corrects it and logs it."""
-    # Create Achillea with rank "genus" mistakenly stored as "subgenus".
+    """If an existing row has the wrong rank and is matched by OTU ID, TW corrects it.
+
+    Rank correction via name-only lookup only applies to order/suborder/superfamily
+    (where homonyms across ranks are essentially impossible).  For genus, an OTU ID
+    match is required; without it a wrong-rank row is simply not found and a new
+    correct-rank row is created instead.
+    """
+    # Create Achillea with wrong rank but a known OTU ID so TW can find it.
     wrong = create_taxon_direct(
         session, scientific_name="Achillea", taxon_rank="subgenus",
+        taxonworks_otu_id=5001,
     )
 
     tw_dict, otu_id = _tw_species(
         epithet="ptarmica", genus="Achillea", family="Asteraceae", otu_id=1004,
+        genus_otu_id=5001,  # links TW's genus ancestor to the wrong-rank local row
     )
     corrections: list[str] = []
     get_or_create_from_tw_data(session, tw_dict, otu_id=otu_id, corrections=corrections)
@@ -349,12 +357,22 @@ def test_powo_import_existing_species_no_duplicate(plant_tree, session):
 
 
 def test_powo_import_backfills_authorship(plant_tree, session):
-    """POWO fills in authorship on existing rows that have none."""
+    """POWO fills in authorship on existing rows that have none.
+
+    The POWO API includes the target taxon itself as the last entry in the
+    classification array with its author string.  fields_from_powo() puts
+    this in ancestor_authorships["species"], which the import loop picks up
+    as the final value of the loop variable and uses for the authorship
+    backfill.  We replicate that API behaviour here via ancestor_authorships.
+    """
     assert plant_tree["species"].scientific_name_authorship is None
 
     powo = _powo_species(
         "Achillea millefolium", genus="Achillea", family="Asteraceae", authorship="L.",
     )
+    # POWO classification includes the species itself as the last entry with author.
+    powo["ancestor_authorships"] = {"species": "L."}
+
     get_or_create_from_powo_data(session, powo)
     session.refresh(plant_tree["species"])
 

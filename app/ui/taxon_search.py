@@ -24,6 +24,8 @@ from nicegui import context as _nicegui_context, ui
 import app.services.powo as powo_svc
 import app.services.taxonworks as tw_svc
 import app.services.taxa as svc_taxa
+import app.services.import_preview as import_preview_svc
+from app.services.import_preview import PREVIEW_FIELDS, TaxonChangeRecord
 
 
 # ── label helpers ─────────────────────────────────────────────────────────────
@@ -215,8 +217,122 @@ _TW_CSS = """
 .dark .tw-search-wrap .q-field--focused .q-field__control {
   box-shadow:0 0 0 2px rgba(14,165,233,.2) !important;
 }
+
+/* ── import preview dialog ─────────────────────────────────────────── */
+.imp-change-block   { margin-bottom:16px; }
+.imp-change-header  { display:flex;align-items:center;gap:8px;margin-bottom:6px; }
+.imp-name           { font-size:.88rem;font-weight:600;font-style:italic;
+                      color:var(--tp-base-content); }
+.imp-rank           { font-size:.75rem;color:var(--tp-base-soft); }
+.imp-table          { width:100%;border-collapse:collapse;font-size:.8rem;margin-left:8px; }
+.imp-table th       { text-align:left;padding:2px 8px;color:var(--tp-base-soft);
+                      font-weight:600;font-size:.75rem;
+                      border-bottom:1px solid var(--tp-base-border); }
+.imp-table td       { padding:3px 8px;border-bottom:1px solid var(--tp-base-muted);
+                      color:var(--tp-base-content);white-space:nowrap; }
+.imp-field          { color:var(--tp-base-soft);font-size:.75rem;font-family:monospace; }
+.imp-null           { color:var(--tp-base-soft); }
+.imp-cell-new       { background:rgba(16,185,129,.10); }
+.dark .imp-cell-new { background:rgba(52,211,153,.12); }
+.imp-cell-upd       { background:rgba(251,191,36,.15); }
+.dark .imp-cell-upd { background:rgba(251,191,36,.10); }
 </style>
 """
+
+
+# ── import preview dialog ─────────────────────────────────────────────────────
+
+def _build_change_html(rec: TaxonChangeRecord) -> str:
+    """Render one changed-row section as an HTML string for the preview dialog."""
+    is_new = rec.is_new
+    badge_cls = "feedback feedback-notice" if is_new else "feedback feedback-warning"
+    badge_text = "NEW" if is_new else "UPDATED"
+
+    rows_html = ""
+    for field_key, field_label in PREVIEW_FIELDS:
+        before_val = rec.before.get(field_key) if rec.before else None
+        after_val  = rec.after.get(field_key)
+        if not before_val and not after_val:
+            continue
+        if not is_new and before_val == after_val:
+            continue
+
+        def _cell(val: object, extra_cls: str = "") -> str:
+            cls_attr = f' class="{extra_cls}"' if extra_cls else ""
+            if val is None:
+                return f'<td{cls_attr}><span class="imp-null">—</span></td>'
+            return f'<td{cls_attr}>{_html_mod.escape(str(val))}</td>'
+
+        before_td = _cell(before_val) if not is_new else ""
+        after_td  = _cell(after_val, "imp-cell-new" if is_new else "imp-cell-upd")
+        rows_html += (
+            f'<tr>'
+            f'<td class="imp-field">{_html_mod.escape(field_label)}</td>'
+            f'{before_td}{after_td}'
+            f'</tr>'
+        )
+
+    if not rows_html:
+        return ""
+
+    before_th = "<th>Before</th>" if not is_new else ""
+    after_label = "Value" if is_new else "After"
+
+    return (
+        f'<div class="imp-change-block">'
+        f'<div class="imp-change-header">'
+        f'<span class="{badge_cls}">{badge_text}</span>'
+        f'<span class="imp-name">{_html_mod.escape(rec.scientific_name)}</span>'
+        f'<span class="imp-rank">[{_html_mod.escape(rec.taxon_rank)}]</span>'
+        f'</div>'
+        f'<table class="imp-table">'
+        f'<tr><th></th>{before_th}<th>{after_label}</th></tr>'
+        f'{rows_html}'
+        f'</table>'
+        f'</div>'
+    )
+
+
+async def _show_import_preview_dialog(
+    changes: list[TaxonChangeRecord],
+    source_name: str,
+    client,
+) -> bool:
+    """Show a modal diff table and return True (Apply) or False (Cancel).
+
+    Shows one section per new/modified Taxon row.  If changes is empty the
+    dialog is skipped and True is returned immediately.
+    """
+    if not changes:
+        return True
+
+    with client:
+        with ui.dialog().props("persistent") as dlg, ui.card().classes("q-pa-lg").style(
+            "min-width:520px;max-width:740px;width:90vw"
+        ):
+            ui.label(f"Import from {source_name}").classes("text-base font-semibold")
+            (
+                ui.label("Review changes before applying:")
+                .classes("text-xs block q-mt-xs q-mb-md")
+                .style("color:var(--tp-base-soft)")
+            )
+
+            with ui.scroll_area().style("max-height:55vh"):
+                for rec in changes:
+                    html_block = _build_change_html(rec)
+                    if html_block:
+                        ui.html(html_block)
+
+            with ui.row().classes("justify-end gap-2 q-mt-md"):
+                ui.button("Cancel", on_click=lambda: dlg.submit(False)).props("flat no-caps")
+                ui.button(
+                    "Apply import",
+                    on_click=lambda: dlg.submit(True),
+                ).props("color=secondary no-caps")
+
+        dlg.open()
+
+    return await dlg
 
 
 # ── widget ────────────────────────────────────────────────────────────────────
@@ -423,14 +539,30 @@ def build_taxon_search(
                 ui.notify("Taxon not found in TaxonWorks.", type="warning")
             _clear()
             return
+
+        def _run(session):
+            return svc_taxa.get_or_create_from_tw_data(session, tw_data, otu_id=otu_id)
+
         try:
-            corrections: list[str] = []
+            with session_factory() as session:
+                changes = import_preview_svc.collect_import_preview(
+                    session, lambda: _run(session)
+                )
+        except Exception as exc:
+            with client:
+                ui.notify(f"Preview failed: {exc}", type="negative")
+            _clear()
+            return
+
+        confirmed = await _show_import_preview_dialog(changes, "TaxonWorks", client)
+        if not confirmed:
+            _clear()
+            return
+
+        try:
             with session_factory() as session:
                 with session.begin():
-                    taxon = svc_taxa.get_or_create_from_tw_data(
-                        session, tw_data, otu_id=otu_id, corrections=corrections
-                    )
-                    tid = taxon.id
+                    tid = _run(session).id
         except Exception as exc:
             with client:
                 ui.notify(f"Local DB error: {exc}", type="negative")
@@ -438,12 +570,6 @@ def build_taxon_search(
             return
 
         state["taxon_id"] = tid
-        with client:
-            for msg in corrections:
-                ui.notify(
-                    f"Taxonomy corrected during import: {msg}",
-                    type="warning", timeout=8000,
-                )
         if on_select:
             on_select(tid)
 
@@ -510,13 +636,33 @@ def build_taxon_search(
             except Exception:
                 pass
 
+        def _run(session):
+            return svc_taxa.get_or_create_from_powo_data(
+                session, powo_fields, accepted_fields=accepted_fields
+            )
+
+        try:
+            with session_factory() as session:
+                changes = import_preview_svc.collect_import_preview(
+                    session, lambda: _run(session)
+                )
+        except Exception as exc:
+            with client:
+                ui.notify(f"Preview failed: {exc}", type="negative")
+            _clear()
+            return
+
+        confirmed = await _show_import_preview_dialog(
+            changes, "Plants of the World Online (POWO)", client
+        )
+        if not confirmed:
+            _clear()
+            return
+
         try:
             with session_factory() as session:
                 with session.begin():
-                    taxon = svc_taxa.get_or_create_from_powo_data(
-                        session, powo_fields, accepted_fields=accepted_fields
-                    )
-                    tid = taxon.id
+                    tid = _run(session).id
         except Exception as exc:
             with client:
                 ui.notify(f"Local DB error: {exc}", type="negative")

@@ -295,6 +295,7 @@ def build_taxon_editor(session_factory, on_saved: callable) -> None:
         edit_sel.update()
         delete_btn.disable()
         edit_dialog.open()
+        ui.timer(0.05, lambda: edit_sel.run_method("focus"), once=True)
 
     def _save_edit():
         tid = _edit_state.get("taxon_id")
