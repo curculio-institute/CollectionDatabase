@@ -304,7 +304,7 @@ def build_taxon_search(
                 res.label,
                 is_synonym=res.is_synonym,
                 accepted=res.accepted_label,
-                nomenclatural_code=getattr(res, "nomenclatural_code", None),
+                nomenclatural_code=res.nomenclatural_code,
             )
             item = ui.element("div").classes("tw-result tw-dropdown-item")
             with item:
@@ -362,31 +362,35 @@ def build_taxon_search(
         if not results:
             return
 
-        # Batch-fetch valid names for synonym entries.
-        valid_name_cache: dict[int, str] = {}
-        syn_ids = list({
-            r["valid_taxon_name_id"] for r in results
-            if r.get("valid_taxon_name_id") and r["valid_taxon_name_id"] != r.get("id")
+        # Batch-fetch full taxon-name records for all results so we can get both
+        # the valid-name label (for synonyms) and the nomenclatural code (for 🌿).
+        all_ids = list({
+            tid
+            for r in results
+            for tid in (r["id"], r.get("valid_taxon_name_id"))
+            if tid
         })
-        if syn_ids:
-            async def _get_valid(vid: int) -> tuple[int, str]:
+        detail_cache: dict[int, dict] = {}
+        if all_ids:
+            async def _fetch_detail(tw_id: int) -> tuple[int, dict]:
                 try:
-                    d = await tw_svc.fetch_taxon_name(vid)
-                    return vid, (d or {}).get("cached") or ""
+                    d = await tw_svc.fetch_taxon_name(tw_id)
+                    return tw_id, d or {}
                 except Exception:
-                    return vid, ""
-            pairs = await asyncio.gather(*[_get_valid(vid) for vid in syn_ids])
-            valid_name_cache = dict(pairs)
+                    return tw_id, {}
+            detail_cache = dict(await asyncio.gather(*[_fetch_detail(i) for i in all_ids]))
 
         with tw_sec:
             ui.label("TaxonWorks").classes("tw-section-label")
             for r in results:
                 vid = r.get("valid_taxon_name_id")
                 valid_name = (
-                    valid_name_cache.get(vid, "")
+                    detail_cache.get(vid, {}).get("cached", "")
                     if vid and vid != r.get("id") else ""
                 )
-                item_html = _TW_BADGE + _render_tw_label(r, valid_name)
+                nomen = (detail_cache.get(r["id"], {}).get("nomenclatural_code") or "").lower()
+                prefix = "🌿 " if nomen == "icn" else ""
+                item_html = prefix + _TW_BADGE + _render_tw_label(r, valid_name)
                 item = ui.element("div").classes(
                     "tw-result tw-dropdown-item tw-dropdown-item--import"
                 )

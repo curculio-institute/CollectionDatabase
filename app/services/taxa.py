@@ -21,6 +21,8 @@ TAXON_RANKS: list[str] = [
 class TaxonOption:
     id: int
     label: str
+    taxon_rank: str = ""
+    nomenclatural_code: str | None = None
 
 
 def format_scientific_name(taxon: Taxon) -> str:
@@ -131,6 +133,7 @@ class TaxonSearchResult:
     scientific_name: str = ""
     authorship: str | None = None
     family: str | None = None
+    nomenclatural_code: str | None = None
 
 
 def _get_family(taxon: Taxon) -> str | None:
@@ -186,6 +189,7 @@ def search_taxa_for_display(
             scientific_name=t.scientific_name or "",
             authorship=t.scientific_name_authorship or None,
             family=_get_family(t),
+            nomenclatural_code=t.nomenclatural_code,
         ))
     return out
 
@@ -197,7 +201,15 @@ def search_taxa(session: Session, query: str, limit: int = 1000) -> list[TaxonOp
     for token in query.split():
         q = q.filter(Taxon.scientific_name.ilike(f"%{token}%"))
     q = q.order_by(Taxon.scientific_name).limit(limit)
-    return [TaxonOption(id=t.id, label=format_scientific_name(t)) for t in q]
+    return [
+        TaxonOption(
+            id=t.id,
+            label=format_scientific_name(t),
+            taxon_rank=t.taxon_rank or "",
+            nomenclatural_code=t.nomenclatural_code,
+        )
+        for t in q
+    ]
 
 
 # ---------------------------------------------------------------------------
