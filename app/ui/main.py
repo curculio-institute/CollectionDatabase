@@ -31,7 +31,6 @@ from app.ui.identification_list import build_identification_list
 from app.ui.import_assign import build_import_assign_tab
 from app.ui.controlled_vocab_tab import build_controlled_vocab_tab
 from app.ui.map_picker import add_map_assets, build_map_picker
-from app.ui.bio_object_search import build_bio_object_search
 from app.ui.taxon_editor import build_taxon_editor
 from app.ui.date_input import attach_date_validation
 from app.ui.records_tab import build_records_tab
@@ -1202,7 +1201,12 @@ def index():
                     ui.timer(2.0, lambda: rel_sel.__setattr__("options", {r.id: r.name for r in _with_session(get_relationship_options)}))
 
                     # Object taxon search — bio_codes list is read on each keystroke
-                    bio_obj_state = build_bio_object_search(_sf, bio_codes)
+                    bio_obj_state = build_taxon_search(
+                        _sf,
+                        nomenclatural_codes=bio_codes,
+                        sources=("local", "taxonworks", "powo"),
+                        placeholder="Type plant or fungus name…",
+                    )
 
                     with ui.row().classes("items-center gap-3 mt-3"):
                         show_animals_cb = ui.checkbox(

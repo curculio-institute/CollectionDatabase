@@ -130,6 +130,15 @@ def fields_from_powo(powo: dict) -> dict:
     family = powo.get("family") or None
     genus  = powo.get("genus")  or None
 
+    # Build rank → author map from the classification array so callers can
+    # populate authorship for family, genus, order etc. without extra API calls.
+    ancestor_authorships: dict[str, str] = {}
+    for entry in (powo.get("classification") or []):
+        entry_rank = (entry.get("rank") or "").lower()
+        entry_author = entry.get("author") or None
+        if entry_rank and entry_author:
+            ancestor_authorships[entry_rank] = entry_author
+
     is_synonym = bool(powo.get("synonym", False))
 
     accepted_raw  = powo.get("accepted") or {}
@@ -144,6 +153,7 @@ def fields_from_powo(powo: dict) -> dict:
         "nomenclatural_code":          code,
         "family":                      family,
         "genus":                       genus,
+        "ancestor_authorships":        ancestor_authorships,
         "is_synonym":                  is_synonym,
         "accepted_fqid":               accepted_fqid,
         "accepted_name":               accepted_name,

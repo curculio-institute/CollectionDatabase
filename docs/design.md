@@ -310,50 +310,95 @@ responsibility — not the widget's.
 
 ## 5. Taxon search widget (taxon_search.py)
 
-A reusable widget used in the Digitize tab and the Records tab (and any future tab that
-requires an identification). It renders a search field, handles the search interaction,
-and calls a callback with the selected taxon ID when the user makes a pick. What the tab
-does with that ID — create a new determination, update an existing one — is the tab's
-responsibility. The widget has no knowledge of which tab it lives in.
+A single reusable widget used wherever a taxon needs to be searched and selected:
+specimen identification (Digitize, Records, Import & Assign), biological associations,
+and any future tab. The caller controls which data sources are queried and whether results
+are filtered by nomenclatural code. The widget has no knowledge of which tab it lives in.
+
+### Signature
+
+```python
+build_taxon_search(
+    session_factory,
+    on_select=None,
+    *,
+    nomenclatural_codes: list[str] | None = None,
+    sources: tuple | list = ("local", "taxonworks"),
+    placeholder: str = "Enter genus or species name…",
+) -> dict
+```
+
+**`sources`** — which APIs to query, in order. Each listed source always runs; there is no
+conditional fallback. Valid values: `"local"`, `"taxonworks"`, `"powo"`.
+
+**`nomenclatural_codes`** — if set, filters the local DB section to only those codes
+(e.g. `["ICN"]` for plants/fungi). Does not filter TW or POWO — those are authoritative
+for their own nomenclatural domain.
+
+**`on_select(taxon_id: int)`** — optional callback, called once after the local DB record
+is confirmed. Tabs that need to react immediately (Digitize, Records) use this. Tabs that
+read the selection later (bio associations) poll the state dict instead.
+
+### State dict
+
+```python
+{"taxon_id": int | None, "label": str, "clear": callable}
+```
+
+| `taxon_id` | Meaning |
+|---|---|
+| `None` | Nothing selected |
+| `-1` | TW or POWO import is in progress — do not read yet |
+| `N > 0` | Confirmed local DB id |
+
+`label` — plain-text name of the selected taxon (e.g. `"Achillea millefolium"`). Always
+present; callers that don't need it ignore it.
 
 ### States
 
-- **Empty** — no value entered; field shows placeholder text: "Enter genus or species name...".
-- **Searching** — user is typing; dropdown is open showing results.
-- **Selected** — a taxon has been picked; dropdown is closed; selection is displayed in
-  the field.
+- **Empty** — no value entered; field shows placeholder text.
+- **Searching** — user is typing; dropdown is open showing results from each source in order.
+- **Selected** — a taxon has been picked; the input is hidden and replaced by a styled
+  display showing the exact dropdown item HTML (including any import badge). An ✕ button
+  clears the selection and returns to Empty.
 
-### Searching
+### Dropdown sections
 
-(works very well as is)
-- Results come from the local database first, TaxonWorks second.
-- Local and TaxonWorks results are shown in separate labelled sections in the dropdown.
-- Synonymy is indicated visually in both sections.
-- TaxonWorks results carry an import badge (✚ add) to distinguish them from local records.
-  Hovering the badge shows the tooltip *"This taxon and its parent taxa were imported from
-  TaxonWorks"*. The badge (and its tooltip) persist into the Selected state because the
-  selected display reuses the exact dropdown item HTML.
-- The user may only select from the dropdown. Free text without a matching selection is
-  not accepted; clicking away without selecting returns the field to its previous state.
+Sections appear in `sources` order. Each always runs if listed.
 
-### Selected state
+**Local ("In database")** — searched first; 150 ms debounce; filtered by
+`nomenclatural_codes` if set. ICN taxa are prefixed with 🌿 in both the dropdown and the
+selected display. Synonyms shown as: *name* ✗ = *Accepted name* ✓.
 
-(currently broken)
-- The exact visual appearance of the chosen dropdown entry in searching state — including synonymy styling,
-  import badge, and accepted name — is placed directly into the search field as-is without delay.
-- An × button appears alongside it to clear the selection and return to Empty.
-- **No delay:** the dropdown entry is already rendered client-side at the moment the user
-  clicks it, so it is placed in the field immediately — before any TaxonWorks import
-  completes. The async import runs in the background; nothing visible changes when it
-  finishes because the visual is already correct.
-- The widget calls its callback with the taxon ID once the import is complete and the
-  record exists in the local database.
+**TaxonWorks** — names already in the local DB are filtered out (deduplication). Remaining
+results carry the **✚ add** badge (blue). Hovering the badge shows: *"This taxon and its
+parent taxa were imported from TaxonWorks"*. Clicking imports the taxon (and all parent
+ranks) into the local DB in the background; `taxon_id` is set to `-1` until import
+completes, then to the confirmed DB id.
 
-### Callback
+**POWO (Plants of the World Online)** — only included when `"powo"` is in `sources`.
+Results carry the **🌿 add** badge (green). Hovering shows: *"This taxon was imported from
+Plants of the World Online (POWO)"*. Clicking imports via the IPNI/POWO API chain.
+POWO always runs alongside TW — it is not a fallback.
 
-```python
-on_select(taxon_id: int)
-```
+### Import badge behaviour
 
-Called once, after the local DB record is confirmed to exist. The tab receives the ID and
-decides what to do with it.
+The badge rendered in the dropdown item is reused verbatim in the Selected state (the
+selected display shows the exact same HTML). This means the badge and its tooltip are
+always visible when a TW or POWO taxon is selected, reminding the user that the taxon was
+externally sourced.
+
+### Where it is used
+
+| Tab / widget | `sources` | `nomenclatural_codes` | Notes |
+|---|---|---|---|
+| Digitize (`main.py`) | `("local", "taxonworks")` | None | via `on_select` callback |
+| Records (`records_tab.py`) | `("local", "taxonworks")` | None | via `on_select` callback |
+| Import & Assign (`import_assign.py`) | `("local", "taxonworks")` | None | state dict polled |
+| Identification list (`identification_list.py`) | `("local", "taxonworks")` | None | state dict polled |
+| Bio associations — Digitize (`main.py`) | `("local", "taxonworks", "powo")` | `bio_codes` (mutable list) | state dict polled; `label` used |
+| Bio associations — Records (`records_tab.py`) | `("local", "taxonworks", "powo")` | `bio_codes_local` | state dict polled |
+
+`bio_codes` is a mutable list mutated in-place by the "Show animals too" toggle and the
+Settings dialog. The widget reads it on every keystroke, so toggling takes effect
+immediately without rebuilding the widget.

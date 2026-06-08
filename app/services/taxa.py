@@ -379,6 +379,9 @@ def _ensure_parent_rows(
                     )
                 existing.parent_name_usage_id = parent_id
                 dirty = True
+            if auth and not existing.scientific_name_authorship:
+                existing.scientific_name_authorship = auth
+                dirty = True
             if otu_id and not existing.taxonworks_otu_id:
                 existing.taxonworks_otu_id = otu_id
                 dirty = True
@@ -649,6 +652,14 @@ def get_or_create_from_powo_data(
         ancestor_fields["family"] = family
     if genus and rank != "genus":
         ancestor_fields["genus"] = genus
+
+    # Populate authorship for each ancestor rank using the classification-derived
+    # rank → author map from the POWO record.
+    ancestor_authorships: dict[str, str] = powo_fields.get("ancestor_authorships") or {}
+    for rank_name, _field_key, auth_key in _RANK_CHAIN:
+        auth = ancestor_authorships.get(rank_name)
+        if auth:
+            ancestor_fields[auth_key] = auth
     # For infraspecific taxa, extract the parent species name so _ensure_parent_rows
     # creates the species row as the immediate parent instead of stopping at genus.
     if rank in ("subspecies", "variety", "subvariety", "form", "subform") and genus:
@@ -668,6 +679,9 @@ def get_or_create_from_powo_data(
     )
     if existing:
         dirty = False
+        if auth and not existing.scientific_name_authorship:
+            existing.scientific_name_authorship = auth
+            dirty = True
         if parent_id and not existing.parent_name_usage_id:
             existing.parent_name_usage_id = parent_id
             dirty = True

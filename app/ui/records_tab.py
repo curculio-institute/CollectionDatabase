@@ -12,7 +12,6 @@ import app.services.persons as persons_svc
 from app.services.taxa import format_scientific_name
 from app.ui.taxon_search import build_taxon_search, _local_item_html
 from app.ui.identification_list import build_identification_list
-from app.ui.bio_object_search import build_bio_object_search
 from app.ui.date_input import attach_date_validation
 
 _FLOAT_ATTRS = frozenset({
@@ -454,7 +453,12 @@ def build_records_tab(session_factory, *, on_saved: callable | None = None) -> N
             ).classes("w-full mb-2")
 
             bio_codes_local: list[str] = list(get_config().bio_assoc_default_codes)
-            bio_state = build_bio_object_search(session_factory, bio_codes_local)
+            bio_state = build_taxon_search(
+                session_factory,
+                nomenclatural_codes=bio_codes_local,
+                sources=("local", "taxonworks", "powo"),
+                placeholder="Type plant or fungus name…",
+            )
 
             def _add_assoc():
                 rel_id   = assoc_rel_sel.value
