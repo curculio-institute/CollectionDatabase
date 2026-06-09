@@ -1,5 +1,8 @@
 # Purpose
-Local database system to capture and edit specimen data for a personal entomological collection. Based on python, user interface in internet browser.  
+Local database system to capture and edit specimen data for a personal entomological collection.  
+Main goal is close integration with the weevil project on TaxonWorks, with the aim to export specimen data to TaxonWorks and to track subsequent diversions in the datasets via regular API comparison. This will highlight e.g. cases when I reidentified a specimen in my database to remind me to update on TaxonWorks as well.
+
+Based on python, user interface in an internet browser.
 ## Key features
 - data structure designed around Darwin Core and the Darwin Core Batch Importer on TaxonWorks
 #### Taxonomy Import
