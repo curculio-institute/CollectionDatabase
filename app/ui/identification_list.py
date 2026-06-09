@@ -18,8 +18,8 @@ from datetime import date
 
 from nicegui import ui
 
-from app.config import get_config
 from app.models import Taxon
+import app.services.person_defaults as pd_svc
 from app.services.taxa import format_scientific_name
 from app.ui.taxon_search import build_taxon_search, _local_item_html
 from app.ui.date_input import AUTO_CHANGED_CSS, attach_date_validation
@@ -55,6 +55,10 @@ def build_identification_list(
     co_id=int   → live-DB mode (Records): each action persists immediately.
     """
     ui.add_head_html(AUTO_CHANGED_CSS)
+
+    def _default_idby() -> str | None:
+        with session_factory() as s:
+            return pd_svc.get_defaults(s)[0]
 
     _dets: list[dict] = list(initial_dets or [])
 
@@ -254,7 +258,7 @@ def build_identification_list(
                     with ui.element("div").classes("col-span-1 flex items-center gap-1"):
                         e_idby_state = build_person_field(
                             session_factory, "identifiedBy",
-                            default_fn=lambda: get_config().default_identified_by or None,
+                            default_fn=_default_idby,
                             initial_value=d["identified_by"],
                         )
                     e_dtid = ui.input(
@@ -336,7 +340,7 @@ def build_identification_list(
         with ui.row().classes("flex-1 min-w-40 items-center gap-1"):
             add_idby_state = build_person_field(
                 session_factory, "identifiedBy",
-                default_fn=lambda: get_config().default_identified_by or None,
+                default_fn=_default_idby,
             )
         add_dtid = ui.input("dateIdentified", placeholder="YYYY-MM-DD").classes("w-36")
         _append_year_btn(add_dtid)

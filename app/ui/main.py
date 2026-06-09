@@ -25,6 +25,7 @@ import app.services.identifiers as id_svc
 import app.services.labels as lbl_svc
 import app.services.print_queue as pq_svc
 from app.config import get_config, save_config
+import app.services.person_defaults as pd_svc
 from app.models import CollectionObject, CollectingEvent, TaxonDetermination, LabelCode
 from app.ui.taxon_search import build_taxon_search
 from app.ui.identification_list import build_identification_list
@@ -143,6 +144,11 @@ def _split_coord_paste(text: str) -> tuple[str, str] | None:
 
 _engine = get_engine()
 _sf     = get_session_factory(_engine)
+
+
+def _default_recby() -> str | None:
+    with _sf() as s:
+        return pd_svc.get_defaults(s)[1]
 
 # Backfill parent-rank rows (family/subfamily/tribe/subtribe/genus/subgenus)
 # for any species imported before this logic existed.  Idempotent.
@@ -1105,7 +1111,7 @@ def index():
                         with ui.row().classes("col-span-1 items-center gap-1"):
                             recby_state = build_person_field(
                                 _sf, "recordedBy",
-                                default_fn=lambda: get_config().default_recorded_by or None,
+                                default_fn=_default_recby,
                                 on_change=_on_event_field_edit,
                             )
                         fieldnum_in = ui.input("fieldNumber", on_change=_on_event_field_edit).classes("col-span-1")
@@ -2101,15 +2107,16 @@ def index():
                 "Inserted with one click in identifiedBy / recordedBy fields."
             ).classes("text-xs mb-2").style("color:var(--tp-base-soft)")
 
-            cfg_now_names = get_config()
+            with _sf() as _s_init:
+                _idby_init, _recby_init = pd_svc.get_defaults(_s_init)
             idby_state = build_person_field(
                 _sf, "Default identifiedBy",
-                initial_value=cfg_now_names.default_identified_by or None,
+                initial_value=_idby_init,
                 classes="w-full mt-1",
             )
             recby_state_cfg = build_person_field(
                 _sf, "Default recordedBy",
-                initial_value=cfg_now_names.default_recorded_by or None,
+                initial_value=_recby_init,
                 classes="w-full mt-1",
             )
 
@@ -2141,12 +2148,15 @@ def index():
                 cfg.institution_code      = institution_code_in.value.strip()
                 cfg.collection_code       = collection_code_in.value.strip()
                 cfg.map_default_layer     = map_layer_sel.value or "street"
-                cfg.default_identified_by = idby_state["get_value"]() or ""
-                cfg.default_recorded_by   = recby_state_cfg["get_value"]() or ""
                 with _sf() as _s:
                     with _s.begin():
                         idby_state["commit"](_s)
                         recby_state_cfg["commit"](_s)
+                        pd_svc.set_defaults(
+                            _s,
+                            identified_by=idby_state["get_value"]() or None,
+                            recorded_by=recby_state_cfg["get_value"]() or None,
+                        )
                 cfg.bio_assoc_default_codes = selected
                 save_config(cfg)
                 # Propagate to active bio_codes filter in place
@@ -2167,8 +2177,10 @@ def index():
         institution_code_in.value = cfg.institution_code
         collection_code_in.value  = cfg.collection_code
         map_layer_sel.value     = cfg.map_default_layer or "street"
-        idby_state["set_value"](cfg.default_identified_by or None)
-        recby_state_cfg["set_value"](cfg.default_recorded_by or None)
+        with _sf() as _s:
+            _idby, _recby = pd_svc.get_defaults(_s)
+        idby_state["set_value"](_idby)
+        recby_state_cfg["set_value"](_recby)
         for code, cb in _code_cbs.items():
             cb.value = code in cfg.bio_assoc_default_codes
         settings_dialog.open()

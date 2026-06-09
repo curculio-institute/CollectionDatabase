@@ -4,6 +4,7 @@ from __future__ import annotations
 from nicegui import ui
 
 from app.config import get_config
+import app.services.person_defaults as pd_svc
 from app.models import CollectionObject, CollectingEvent, TaxonDetermination, Taxon
 import app.services.specimens as sp_svc
 import app.services.events as ev_svc
@@ -42,6 +43,10 @@ def build_records_tab(session_factory, *, on_saved: callable | None = None) -> N
     def _with_session(fn):
         with session_factory() as s:
             return fn(s)
+
+    def _default_recby() -> str | None:
+        with session_factory() as s:
+            return pd_svc.get_defaults(s)[1]
 
     # ── Search card ─────────────────────────────────────────────────────────
     with ui.card().classes("w-full shadow-sm"):
@@ -366,7 +371,7 @@ def build_records_tab(session_factory, *, on_saved: callable | None = None) -> N
                     with ui.element("div").classes("col-span-1 flex items-center gap-1"):
                         ev_recby_state = build_person_field(
                             session_factory, "recordedBy",
-                            default_fn=lambda: get_config().default_recorded_by or None,
+                            default_fn=_default_recby,
                             initial_value=ev_snap["recorded_by"] or None,
                         )
                 with ui.grid(columns=4).classes("w-full gap-3 mt-2"):
@@ -569,7 +574,7 @@ def build_records_tab(session_factory, *, on_saved: callable | None = None) -> N
                 with ui.element("div").classes("col-span-1 flex items-center gap-1"):
                     ev_recby_state = build_person_field(
                         session_factory, "recordedBy",
-                        default_fn=lambda: get_config().default_recorded_by or None,
+                        default_fn=_default_recby,
                         initial_value=ev_snap["recorded_by"] or None,
                     )
             with ui.grid(columns=4).classes("w-full gap-3 mt-2"):

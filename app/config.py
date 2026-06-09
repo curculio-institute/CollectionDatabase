@@ -28,11 +28,6 @@ class AppConfig:
     institution_code: str = "Jilg"
     collection_code: str = "Jilg"
 
-    # One-click defaults — shown as icon buttons in forms, never auto-filled.
-    # Set via Settings dialog. Stores the full name (dwc_name = full_name).
-    default_identified_by: str = ""
-    default_recorded_by: str = ""
-
     # Nomenclatural codes shown in the biological-association object search by default.
     # DwC values: "ICN" (plants/fungi), "ICZN" (animals).
     bio_assoc_default_codes: list[str] = field(default_factory=lambda: ["ICN"])

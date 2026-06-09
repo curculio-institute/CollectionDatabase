@@ -8,9 +8,6 @@ widget specs, and layer architecture. It overrides CLAUDE.md where they conflict
 ---
 
 ## To do:
-- selecting a default name from config does not work anymore after the database was wiped, the only
-  option that is presented by the dropdown is the last default person, others including those
-  currently in the database do not show up.
 - Workflows: getting printing of locality labels in order, get print queue in order
 - Workflows
   - import whole dataset: will need some work on things like having taxon names that are not linked to parentNameUsageID
@@ -157,7 +154,7 @@ Primary dev OS: Arch Linux; all code must remain cross-platform (Windows/macOS).
 
 ## 4. Data model (implemented)
 
-21 migrations applied. Schema is in production use.
+22 migrations applied. Schema is in production use.
 
 ### DwC column naming convention
 
@@ -178,6 +175,34 @@ attributes. Mermaid diagrams use plain camelCase. Do not deviate from this patte
 | `label_code` | 4-char alphanumeric specimen identifiers (`[0-9a-z]{4}`, ~1.7 M possibilities). Tied to a `label_batch`. Once used on a specimen they are immutable. |
 | `label_batch` | Groups of `label_code` rows with a `created_at` timestamp. Batches can be reprinted only if no code in the batch has been used yet. |
 | `print_queue` | Staged label jobs (identifier, locality, identification types) pending a single print run. Items removed after printing. |
+| `person_defaults` | Single-row table holding the two push-pin defaults: `default_identified_by` and `default_recorded_by`. Both columns are `TEXT REFERENCES person(full_name) ON DELETE RESTRICT`. See rationale below. |
+
+### Why person defaults live in the DB, not config.json
+
+`config.json` stores environment settings (TW credentials, institution code, UI prefs) that
+should survive a database wipe. Person defaults are different: they are **FK references into
+the `person` table**, so storing them outside the DB breaks referential integrity in two ways:
+
+1. **Delete**: a plain JSON string has no FK constraint. Deleting a person who is the
+   configured default silently succeeded, and `get_or_create_person` in the save path would
+   silently recreate them on the next digitizing save — making the delete a no-op.
+2. **Merge**: `merge_persons` re-points all DB FK columns from absorbed → kept via
+   `_fk_references_to_person` (dynamic `PRAGMA foreign_key_list` discovery). A JSON value is
+   invisible to that mechanism, so the absorbed name would persist as the configured default
+   after a merge, recreating the deleted row on next save.
+
+With `person_defaults` in the DB:
+- `ON DELETE RESTRICT` blocks delete at the SQLite level — no application check needed.
+- `_fk_references_to_person` discovers `person_defaults` automatically, so `merge_persons`
+  updates the default alongside all specimen records with no extra code.
+
+**Rule:** never store person name references in `config.json`. Any configurable default that
+references a DB entity belongs in the DB, not in a flat file.
+
+**Service:** `app/services/person_defaults.py` — `get_defaults(session)` returns
+`(identified_by, recorded_by)`; `set_defaults(session, *, identified_by, recorded_by)`
+updates the row. Push-pin `default_fn` closures in UI files open their own session and call
+`pd_svc.get_defaults(s)[0/1]`.
 
 ### Removed from original design
 

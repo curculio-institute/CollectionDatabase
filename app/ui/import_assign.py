@@ -21,6 +21,7 @@ import app.services.identifiers as id_svc
 import app.services.print_queue as pq_svc
 import app.services as svc
 from app.config import get_config
+import app.services.person_defaults as pd_svc
 from app.ui.taxon_search import build_taxon_search
 from app.ui.date_input import attach_date_validation
 from app.ui.person_field import build_person_field
@@ -80,6 +81,10 @@ def build_import_assign_tab(session_factory, refreshers: dict) -> None:
     def _with_session(fn):
         with session_factory() as s:
             return fn(s)
+
+    def _default_idby() -> str | None:
+        with session_factory() as s:
+            return pd_svc.get_defaults(s)[0]
 
     # ── per-connection state ────────────────────────────────────────────
     state: dict = {
@@ -234,7 +239,7 @@ def build_import_assign_tab(session_factory, refreshers: dict) -> None:
                 with ui.row().classes("flex-1 min-w-40 items-center gap-1"):
                     id_by_state = build_person_field(
                         session_factory, "identifiedBy",
-                        default_fn=lambda: get_config().default_identified_by or None,
+                        default_fn=_default_idby,
                     )
                 dt_id  = ui.input("dateIdentified",
                                   placeholder="YYYY-MM-DD").classes("w-36")
