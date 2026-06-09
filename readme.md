@@ -8,7 +8,7 @@ Data structure designed around Darwin Core and the [Darwin Core Batch Importer o
 #### Taxonomy Import
 Search taxon names, import them with synonymy status, authorship and their parent taxa if not already present in the local database.
 - For weevils from [weevil project on TaxonWorks](https://catalog.curculionoidea.org)
-- For plants also from [weevil project on TaxonWorks](https://catalog.curculionoidea.org) (for compatibility, more taxonomic ranks if present on TaxonWorks) or [Plants of the World Online](https://powo.science.kew.org/)
+- For plants also from [weevil project on TaxonWorks](https://catalog.curculionoidea.org) (compatibility, more taxonomic ranks possible) or [Plants of the World Online](https://powo.science.kew.org/)
 #### Unique Identifiers (in progress)
 - unique identifiers for collection objects
     - streamlined workflow to print and assign unique identifiers
