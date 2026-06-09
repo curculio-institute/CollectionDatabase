@@ -1,10 +1,12 @@
 """Identifier (label code) management.
 
-Codes are 4-character strings from [A-Z0-9] (36^4 = 1,296,000 possibilities).
-Generated with secrets.choice to avoid predictable sequences.
+Two code formats are supported and coexist in the same table:
+  - Legacy random 4-char codes, e.g. "AB3C"  (reserve_codes)
+  - Sequential codes,           e.g. "JJPC-03963"  (reserve_sequential_codes)
 
 Workflow:
-  reserve_codes(session, n)         → create a batch, generate n unique codes
+  reserve_codes(session, n)                       → create a batch, generate n unique random codes
+  reserve_sequential_codes(session, coll_code, n) → create a batch of n sequential codes
   batches_with_reserved(session)    → list of (batch_id, created_at, n_reserved) for UI
   codes_for_batch(session, batch_id)→ reserved codes in a specific batch
   assign_code(session, code, co_id) → link a reserved code to a CollectionObject
@@ -159,6 +161,45 @@ def assign_code(session: Session, code: str, collection_object_id: int) -> Label
 
     session.flush()
     return lc
+
+
+def _next_sequential_number(session: Session, collection_code: str) -> int:
+    """Return the next 1-based sequence number for the given collection_code prefix."""
+    prefix = f"{collection_code}-"
+    prefix_len = len(prefix)
+    rows = session.query(LabelCode.code).filter(LabelCode.code.like(f"{prefix}%")).all()
+    max_num = 0
+    for (code,) in rows:
+        suffix = code[prefix_len:]
+        if len(suffix) == 5 and suffix.isdigit():
+            max_num = max(max_num, int(suffix))
+    return max_num + 1
+
+
+def reserve_sequential_codes(
+    session: Session, collection_code: str, count: int
+) -> tuple[int, list[str]]:
+    """Generate `count` sequential codes like 'JJPC-03963' and reserve them in a new batch.
+
+    Same return signature as reserve_codes: (batch_id, codes).
+    Codes are reserved; call assign_code() per specimen after creating CollectionObjects.
+    """
+    start = _next_sequential_number(session, collection_code)
+    codes = [f"{collection_code}-{start + i:05d}" for i in range(count)]
+
+    now = _utcnow()
+    batch = LabelBatch(created_at=now, updated_at=now)
+    session.add(batch)
+    session.flush()
+
+    for code in codes:
+        session.add(LabelCode(
+            code=code, status="reserved",
+            batch_id=batch.id,
+            created_at=now, updated_at=now,
+        ))
+    session.flush()
+    return batch.id, codes
 
 
 def reserved_codes(session: Session) -> list[str]:

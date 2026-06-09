@@ -271,7 +271,47 @@ def _qr_data_url(data: str) -> str:
     return "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode()
 
 
-_ID_CSS = _BASE_CSS + """
+def _split_identifier_code(code: str) -> tuple[str, str]:
+    """Split 'JJPC-03963' into ('JJPC-', '03963').
+    Returns ('', code) for codes without a hyphen (legacy format)."""
+    idx = code.rfind("-")
+    if idx < 0:
+        return "", code
+    return code[:idx + 1], code[idx + 1:]
+
+
+def _id_label_inner(code: str) -> str:
+    """Inner HTML for one identifier label: QR image + two-line code text."""
+    prefix, number = _split_identifier_code(code)
+    qr = _qr_data_url(code)
+    prefix_html = f'<div class="id-prefix">{_e(prefix)}</div>' if prefix else ""
+    return (
+        f'<img src="{qr}">'
+        f'<div class="id-text">'
+        f'{prefix_html}'
+        f'<div class="id-number">{_e(number)}</div>'
+        f'</div>'
+    )
+
+
+# Shared CSS for the two-line code column — included in every identifier-label CSS block.
+_ID_TEXT_CSS = """
+.id-text {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    font-family: 'Fira Code', 'DejaVu Sans Mono', monospace;
+    font-weight: bold;
+    text-align: center;
+    line-height: 1.3;
+}
+.id-prefix { font-size: 4pt;  letter-spacing: 0.3pt; }
+.id-number  { font-size: 8pt;  letter-spacing: 0.5pt; }
+"""
+
+_ID_CSS = _BASE_CSS + _ID_TEXT_CSS + """
 .label {
     height: 5.5mm;
     display: flex;
@@ -279,25 +319,14 @@ _ID_CSS = _BASE_CSS + """
     gap: 0.8mm;
     padding: 0.3mm 0.5mm;
 }
-.label img  { width: 4.5mm; height: 4.5mm; flex-shrink: 0; image-rendering: pixelated; }
-.label .code {
-    flex: 1;
-    font-family: 'Fira Code', 'DejaVu Sans Mono', monospace;
-    font-size: 6.5pt;
-    font-weight: bold;
-    letter-spacing: 0.5pt;
-    text-align: center;
-}
+.label img { width: 4.5mm; height: 4.5mm; flex-shrink: 0; image-rendering: pixelated; }
 """
 
 
 def identifier_sheet(codes: list[str]) -> bytes:
     """PDF sheet of identifier-only labels (18 × 5.5 mm)."""
     items = [
-        f'<div class="label">'
-        f'<img src="{_qr_data_url(c)}">'
-        f'<div class="code">{c}</div>'
-        f'</div>'
+        f'<div class="label">{_id_label_inner(c)}</div>'
         for c in codes
     ]
     html = (f"<html><head><style>{_ID_CSS}</style></head>"
@@ -309,7 +338,7 @@ def identifier_sheet(codes: list[str]) -> bytes:
 # Combined sheet — print queue output
 # ---------------------------------------------------------------------------
 
-_COMBINED_CSS = _BASE_CSS + """
+_COMBINED_CSS = _BASE_CSS + _ID_TEXT_CSS + """
 /* data labels */
 .lbl-data {
     width: 18mm; min-height: 2.5mm;
@@ -332,11 +361,6 @@ _COMBINED_CSS = _BASE_CSS + """
     display: flex; align-items: center; gap: 0.8mm;
 }
 .lbl-id img { width: 4.5mm; height: 4.5mm; flex-shrink: 0; image-rendering: pixelated; }
-.lbl-id .code {
-    flex: 1;
-    font-family: 'Fira Code', 'DejaVu Sans Mono', monospace;
-    font-size: 6.5pt; font-weight: bold; letter-spacing: 0.5pt; text-align: center;
-}
 /* section break: forces subsequent labels to a new flex row */
 .section-break { flex: 0 0 100%; height: 2mm; }
 """
@@ -367,12 +391,7 @@ def combined_sheet(
         items.append('<div class="section-break"></div>')
 
     for code in id_codes:
-        items.append(
-            f'<div class="lbl-id">'
-            f'<img src="{_qr_data_url(code)}">'
-            f'<div class="code">{code}</div>'
-            f'</div>'
-        )
+        items.append(f'<div class="lbl-id">{_id_label_inner(code)}</div>')
 
     html = (f"<html><head><style>{_COMBINED_CSS}</style></head>"
             f'<body><div class="sheet">{"".join(items)}</div></body></html>')
@@ -429,14 +448,11 @@ def occurrence_sheet(rows: list[OccurrenceLabel]) -> bytes:
         data_items.append(f'<div class="data-label">{lines}</div>')
 
     id_items = [
-        f'<div class="id-label">'
-        f'<img src="{_qr_data_url(r.code)}">'
-        f'<div class="code">{r.code}</div>'
-        f'</div>'
+        f'<div class="id-label">{_id_label_inner(r.code)}</div>'
         for r in rows
     ]
 
-    css = _BASE_CSS + """
+    css = _BASE_CSS + _ID_TEXT_CSS + """
 .sheet { display: flex; flex-wrap: wrap; gap: 0.3mm; align-content: flex-start; }
 .data-label {
     width: 18mm; min-height: 2.5mm;
@@ -450,12 +466,7 @@ def occurrence_sheet(rows: list[OccurrenceLabel]) -> bytes:
     padding: 0.3mm 0.5mm;
     display: flex; align-items: center; gap: 0.8mm;
 }
-.id-label img  { width: 4.5mm; height: 4.5mm; flex-shrink: 0; image-rendering: pixelated; }
-.id-label .code {
-    flex: 1;
-    font-family: 'Fira Code', 'DejaVu Sans Mono', monospace;
-    font-size: 6.5pt; font-weight: bold; letter-spacing: 0.5pt; text-align: center;
-}
+.id-label img { width: 4.5mm; height: 4.5mm; flex-shrink: 0; image-rendering: pixelated; }
 """
     # Print: all data labels first, then all identifier labels
     html = (f"<html><head><style>{css}</style></head>"

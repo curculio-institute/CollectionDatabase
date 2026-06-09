@@ -36,6 +36,7 @@ from app.ui.taxon_editor import build_taxon_editor
 from app.ui.date_input import attach_date_validation
 from app.ui.person_field import build_person_field
 from app.ui.records_tab import build_records_tab
+from app.ui.mounting_session import build_mounting_session_section
 from app.services.biological import (
     sync_biological_relationships,
     get_relationship_options,
@@ -513,8 +514,19 @@ def index():
 
             with ui.column().classes("w-full max-w-5xl mx-auto px-4 pt-6 pb-16 gap-4"):
 
+                # ── MODE TOGGLE ──────────────────────────────────────────
+                _ms_active = [False]
+                with ui.row().classes("w-full items-center pb-1"):
+                    mode_toggle = (
+                        ui.toggle(
+                            {"standard": "Standard", "mounting": "Mounting Session"},
+                            value="standard",
+                        )
+                        .props("outline no-caps")
+                    )
+
                 # ── SPECIMEN ─────────────────────────────────────────────
-                with ui.card().classes("w-full shadow-sm"):
+                with ui.card().classes("w-full shadow-sm") as specimen_card:
                     ui.label("Specimen").classes("section-label")
                     ui.separator().classes("mb-3")
 
@@ -559,7 +571,7 @@ def index():
                     ui.timer(2.0, _refresh_identity_display)
 
                 # ── IDENTIFICATION ────────────────────────────────────────
-                with ui.card().classes("w-full shadow-sm"):
+                with ui.card().classes("w-full shadow-sm") as identification_card:
                     ui.label("Identifications").classes("section-label")
                     ui.separator().classes("mb-3")
                     det_state = build_identification_list(_sf)
@@ -1259,8 +1271,22 @@ def index():
 
                     _refresh_assoc_list()
 
+                # ── MOUNTING SESSION SECTION ─────────────────────────────
+                # Built here so it appears below Collecting Event + Bio
+                # Associations (the sections shared by both modes).
+                # Hidden by default; mode toggle controls visibility.
+                with ui.column().classes("w-full gap-4") as ms_section:
+                    ms_state = build_mounting_session_section(
+                        _sf,
+                        collect_event_fields=lambda: _collect_event_fields(),
+                        commit_recby=lambda s: recby_state["commit"](s),
+                        bio_state=bio_state,
+                        on_saved=lambda: _ms_on_saved(),
+                    )
+                ms_section.set_visibility(False)
+
                 # ── SAVE BAR ─────────────────────────────────────────────
-                with ui.row().classes("w-full items-center gap-4 px-1"):
+                with ui.row().classes("w-full items-center gap-4 px-1") as std_save_row:
                     keep_event = ui.checkbox("Keep event")
                     keep_det   = ui.checkbox("Keep determination")
                     ui.space()
@@ -1436,9 +1462,8 @@ def index():
                                         biological_relationship_id=assoc["rel_id"],
                                         object_taxon_id=assoc["taxon_id"],
                                     )
-                        event_sel.options = _event_opts()
-                        cat_num.options = {c: c for c in _reserved_opts()}
-                        cat_num.update()
+                        event_sel.set_options(_event_opts())
+                        cat_num.set_options({c: c for c in _reserved_opts()})
                         ui.notify(f"Saved — specimen #{saved_id}  [{code}]", type="positive")
                         status_lbl.set_text(f"Last saved: #{saved_id}")
                     except Exception as exc:
@@ -1454,6 +1479,47 @@ def index():
                 def _refresh_table():
                     table.rows = _table_rows()
                     table.update()
+
+                def _ms_on_saved():
+                    event_sel.set_options(_event_opts())
+                    _refresh_table()
+                    for fn in _refreshers.values():
+                        fn()
+
+                def _on_mode_toggle(e):
+                    is_ms = e.value == "mounting"
+                    _ms_active[0] = is_ms
+                    specimen_card.set_visibility(not is_ms)
+                    identification_card.set_visibility(not is_ms)
+                    ms_section.set_visibility(is_ms)
+                    std_save_row.set_visibility(not is_ms)
+                    # Full wipe on every toggle to avoid unsaved state leaking
+                    cat_num.value   = None
+                    count_in.value  = 1
+                    preps_in.value  = ""
+                    stage_sel.value = "adult"
+                    disp_sel.value  = "in collection"
+                    basis_sel.value = "PreservedSpecimen"
+                    rem_in.value    = ""
+                    det_state["clear"]()
+                    bio_state["associations"].clear()
+                    bio_obj_state["clear"]()
+                    rel_sel.value = None
+                    _refresh_assoc_list()
+                    event_sel.value = None
+                    state["event_id"] = None
+                    event_status.set_text("· new event")
+                    event_status.classes(remove="event-linked", add="event-new")
+                    recby_state["set_value"](None)
+                    for w in (country_in, code_in, state_in, county_in, muni_in,
+                              island_in, locality_in, verblocal_in, edate_in, verbdate_in,
+                              lat_in, lon_in, uncert_in, elev_min_in,
+                              elev_max_in, habitat_in, fieldnum_in, verblabel_in):
+                        w.value = ""
+                    protocol_sel.value = ""
+                    ms_state["wipe"]()
+
+                mode_toggle.on_value_change(_on_mode_toggle)
 
 
         # ================================================================
