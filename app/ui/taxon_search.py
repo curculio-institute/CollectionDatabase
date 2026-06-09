@@ -26,6 +26,7 @@ import app.services.taxonworks as tw_svc
 import app.services.taxa as svc_taxa
 import app.services.import_preview as import_preview_svc
 from app.services.import_preview import PREVIEW_FIELDS, TaxonChangeRecord
+from app.ui.person_field import _NAV_SCRIPT
 
 
 # ── label helpers ─────────────────────────────────────────────────────────────
@@ -236,6 +237,8 @@ _TW_CSS = """
 .dark .imp-cell-new { background:rgba(52,211,153,.12); }
 .imp-cell-upd       { background:rgba(251,191,36,.15); }
 .dark .imp-cell-upd { background:rgba(251,191,36,.10); }
+.tw-dropdown-item.dropdown-item--active { background: rgb(219,234,254) !important; }
+.dark .tw-dropdown-item.dropdown-item--active { background: rgb(30,41,59) !important; }
 </style>
 """
 
@@ -359,6 +362,7 @@ def build_taxon_search(
     nomenclatural domain.
     """
     ui.add_head_html(_TW_CSS)
+    ui.add_head_html(_NAV_SCRIPT)
     client = _nicegui_context.client
 
     def _with_session(fn):

@@ -652,27 +652,156 @@ _dets.append({..., "identified_by": add_idby_state["get_value"](), ...})
 Person creation is independent of the specimen record — creating the person row early is
 always safe and means the name is available in autocomplete from that point forward.
 
+## 6b. Custom dropdown widget pattern
+
+Use this pattern for any field that needs a styled dropdown with keyboard navigation but
+is not backed by the `person` table. `type_status_field.py` is the canonical example.
+Do **not** use `ui.select` with `new_value_mode` for this purpose — Quasar's QSelect
+requires Enter to commit a typed value and does not let you navigate with arrow keys.
+
+### Anatomy
+
+Every custom dropdown widget is built from five elements inside a positionally-anchored
+wrapper div:
+
+```
+wrap (position:relative, class="custom-dropdown-field ...")
+├── inp          ui.input — the text field the user types into
+├── sel_display  div.pf-selected-display — shown instead of inp once a value is picked
+│   ├── sel_content  ui.html — the selected value (may contain badge HTML)
+│   └── ✕ span  — clears the selection and returns to the search state
+└── dropdown     div.pf-dropdown — absolutely positioned below inp; hidden by default
+    └── (rebuilt on every keystroke as .pf-item divs)
+```
+
+The `pf-*` CSS classes are defined in `person_field.py` and shared by all widgets that
+follow this pattern. Inject them via `ui.add_head_html(_CSS)` (import from
+`person_field.py` or copy verbatim).
+
+### Keyboard navigation
+
+All custom dropdowns get arrow-key and Enter navigation automatically via a single
+client-side JS event-delegation handler defined in `person_field._NAV_SCRIPT`.
+
+**Rules to follow so a new widget participates:**
+
+1. The outer wrapper div **must** carry the class `custom-dropdown-field`:
+
+   ```python
+   wrap = ui.element("div").style("position:relative").classes(f"custom-dropdown-field {classes}")
+   ```
+
+2. The dropdown container **must** use the class `pf-dropdown` (or `tw-dropdown` for
+   taxon-search family widgets). Items inside it **must** use `pf-item` (or
+   `tw-dropdown-item`).
+
+3. Inject the script **once per page** — it is idempotent via a `window` guard:
+
+   ```python
+   from app.ui.person_field import _NAV_SCRIPT
+   ui.add_head_html(_NAV_SCRIPT)
+   ```
+
+4. Add the active-highlight CSS to your widget's `_CSS` block:
+
+   ```css
+   .pf-item.dropdown-item--active { background: rgb(219,234,254) !important; }
+   .dark .pf-item.dropdown-item--active { background: rgb(30,41,59) !important; }
+   ```
+
+The JS handler listens on the document in capture phase. On ArrowDown/ArrowUp it moves
+the `dropdown-item--active` class through the visible `.pf-item` children (wrapping at
+both ends). On Enter it clicks the active item; if no item is active but exactly one item
+is visible, it clicks that item automatically (useful when the user has typed enough to
+narrow to a single match).
+
+### Focus → show behaviour
+
+To make the dropdown open as soon as the user tabs into the field (so arrow keys work
+immediately without typing first), add a focus handler:
+
+```python
+inp.on("focus", lambda _: _update_dropdown(inp.value or ""))
+```
+
+This is present in `person_field.py` and `type_status_field.py`. Omit it for async
+widgets (e.g. taxon search) where showing results on every focus would trigger unwanted
+API calls.
+
+### Blur guard — orphaned input text
+
+After the dropdown closes, the user may have typed text that was never selected. Always
+pair the 0.2 s blur delay with an orphaned-text guard (see §6 for the full explanation):
+
+```python
+async def _on_blur(_) -> None:
+    await asyncio.sleep(0.2)          # let dropdown click register first
+    dropdown.style("display:none")
+    if _value[0] is None and inp.value:
+        inp.value = ""                # wipe text that was never committed
+```
+
+### Free-text vs. selection-only
+
+| Mode | Behaviour |
+|---|---|
+| **Selection-only** (person field) | User must pick from dropdown; blur with no pick wipes text |
+| **Free-text allowed** (type-status field) | Custom entry appears as a `✎`-badged item at the top of the dropdown; picking it commits the typed text |
+
+For free-text widgets, the custom item is built in `_update_dropdown` whenever the typed
+text is not in the predefined list:
+
+```python
+if term.strip() and term.strip() not in PREDEFINED:
+    custom_html = f'<span class="ts-custom-badge">✎</span>{escape(term.strip())}'
+    item = ui.element("div").classes("pf-item pf-item--new")
+    with item:
+        ui.html(custom_html)
+    item.on("click", lambda _, t=term.strip(), h=custom_html: _enter_selected(h, t))
+```
+
+The `✎` badge (amber, `.ts-custom-badge`) is defined in `type_status_field.py` and
+signals "custom / non-standard value". Do not reuse the blue `✚ add` badge for this
+purpose — that badge is reserved for "will create a new DB row" (§3).
+
+### State dict
+
+Every custom dropdown widget must return at minimum:
+
+```python
+{"get_value": callable, "set_value": callable}
+```
+
+`get_value()` returns the clean string value (no badge prefix) or `None`.
+`set_value(val)` sets the field programmatically — used when loading an existing record.
+Add `"commit": callable` only if the widget creates DB rows on save (person field pattern).
+
+### Checklist for a new custom dropdown widget
+
+- [ ] Outer wrapper has `custom-dropdown-field` class
+- [ ] Dropdown container uses `pf-dropdown` class; items use `pf-item`
+- [ ] `ui.add_head_html(_CSS)` and `ui.add_head_html(_NAV_SCRIPT)` called in the builder
+- [ ] Active-highlight CSS in `_CSS` block
+- [ ] Blur handler has 0.2 s delay + orphaned-text guard
+- [ ] Focus handler added if the field should open on tab-focus (static options only)
+- [ ] Returns `{"get_value", "set_value"}` state dict
+
+---
+
 ## CatalogNumber and printing workflow
-For now, CatalogNumber should be generated as "collectionCode" + "-" + "5 digit ascending number", starting at 00000. it would climb like 00001 JJPC-03963. The Code would have one QR-Code and the CatalogNumber with the collectionCode- (like JJPC-) in one line and the numerical in the next line. the numerical should have a larger size. 
-CatalogNumber Life cycle:
+For now, CatalogNumber should be generated as "collectionCode" + "-" + "5 digit ascending number", starting at 00000. it would climb like 00001 JJPC-03963. The Code label would have one QR-Code and the CatalogNumber with the collectionCode- (like JJPC-) in one line and the numerical in the next line. the numerical should have a larger size.
+
+### CatalogNumber Life cycle:
 CatalogNumber can be created in several fashions: Plain generation, or alongside a workflow named "Mounting Session". I will now elaborate on that:
-Mounting Session would be a special "mode" for Specimen Digitization, as this allows us to use the same UI elements, bug fixes and added features don't need to be duplicated. Think through if this is the right way to go.
-Mounting Session mode would be like a normal Specimen Digitization, but it will save not one specimen into the database, but several with an identical collectingEvent and identical biological associations. Imagine me taking several specimen out of the same collecting vial, mounting them, and needing to add labels to them and add them to the database. 
+Mounting Session would be a special "mode" for Specimen Digitization, as this allows us to use the same UI elements: bug fixes and added features don't need to be duplicated. Think through if this is the right way to go.
 
-Normally, Specimen Digitization would not send anything to the printing queue. To use Mounting Session Mode, there needs to be a toggle right at the top. We will later add additional modes. The toggle would also look like tabs. Toggling it would wipe all fields to flush existing unsaved entries. 
+Mounting Session mode would be like a normal Specimen Digitization, but it will save not just one specimen into the database, but several with an identical collectingEvent and identical biological associations. Imagine me taking several specimen out of the same collecting vial, mounting them, and then needing to add labels to them and add them to the database. 
+
+Normally, Specimen Digitization would not send anything to the printing queue (it should not).
+
+### UI
+To use Mounting Session Mode, there needs to be a toggle right at the top. We will later add additional modes. The toggle would also look like tabs. Toggling it would wipe all fields to flush existing unsaved entries (is this necessary? probably more stable that way).
 Toggling to Mounting Session mode will replace the specimen form with another form ("Specimen to be labeled") with similar function, and "Save Specimen" becomes "Save Specimens and Print labels".
-In the "Specimen to be labeled" form, the user can specify the number of entries (Specimen) to make. Each Specimen is represented as a Row, each with a newly generated identifier, sex
+In the "Specimen to be labeled" form, the user can specify the number of entries (Specimen) to make. Each Specimen is represented as a Row, each with a newly generated identifier (this will be important later) and several tier 1 autofilled fields: n is 1, preparation is pinned, lifeStage is adult, disposition is in collection, basisOfRecord is PreservedSpecimen, institutionCode and collectionCode are the defaults from config and a tier 3 as in the specimen form. Each row can also get an identification, which is created via a modal that shows the "Identifications" form that is used in normal Specimen Digitization. To make things quicker, each row can be assigned the identification from the previous row (or do you have a better idea?).
 
-
-  would send labels to the print queue and generate new identifiers. You'd make an entry and provide the number of specimens/entries to be made. This is distinct from the number of specimen in the darwin core
-  entry (that is for several specimen on the same pin).  The printing sheet should always have separated rows for certain elements. Coming from Mounting Session Mode, there would be a row of the locality
-  labels, directly below the identifier label, and below the identification label if present. One row would only have duplicates from one entry 
-
-
-
-
-For now, CatalogNumber should be generated as "collectionCode" + "-" + "5 digit ascending number", starting at 00000. it would climb like 00001 JJPC-03963. The Code would have one QR-Code and the CatalogNumber with the collectionCode- (like JJPC-) in one line and the numerical in the next line. the numerical should have a larger size. 
-CatalogNumber Life cycle:
-CatalogNumber can be created in several fashions: Plain generation, or alongside a workflow named "Mounting Session" 
-
-generated: The CatalogNumber is generated
+Clicking "Save Specimens and Print labels" would send labels to the print queue and generate new identifiers. You'd make an entry and provide the number of specimens/entries to be made. This is distinct from the number of specimen in the darwin core entry (that is for several specimen on the same pin).  The printing sheet should always have separated rows for certain elements. Coming from Mounting Session Mode, there would be a row of the locality labels, directly below the identifier label, and below the identification label if present. One row would only have duplicates from one entry.

@@ -288,7 +288,7 @@ def build_records_tab(session_factory, *, on_saved: callable | None = None) -> N
                         _BASIS_OPTIONS, label="basisOfRecord", value=co_snap["basis_of_record"]
                     ).classes("col-span-1")
                 rem_in = ui.input(
-                    "occurrenceRemarks", value=co_snap["occurrence_remarks"] or ""
+                    "materialEntityRemarks", value=co_snap["occurrence_remarks"] or ""
                 ).classes("w-full mt-3")
 
         # ── Identifications card ──────────────────────────────────────────

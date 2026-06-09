@@ -27,6 +27,50 @@ from nicegui import ui
 
 import app.services.persons as persons_svc
 
+_NAV_SCRIPT = """<script>
+(function () {
+  if (window._customDropdownNavInit) return;
+  window._customDropdownNavInit = true;
+  var ACTIVE = 'dropdown-item--active';
+  function ctx(el) {
+    var field = el && el.closest('.custom-dropdown-field, .tw-search-wrap');
+    if (!field) return null;
+    var pf = field.querySelector('.pf-dropdown');
+    var tw = field.querySelector('.tw-dropdown');
+    var drop, sel;
+    if (pf && pf.style.display !== 'none') { drop = pf; sel = '.pf-item'; }
+    else if (tw && tw.style.display !== 'none') { drop = tw; sel = '.tw-dropdown-item'; }
+    else return null;
+    var items = Array.from(drop.querySelectorAll(sel));
+    return items.length ? { items: items } : null;
+  }
+  document.addEventListener('keydown', function (e) {
+    if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp' && e.key !== 'Enter') return;
+    var c = ctx(document.activeElement);
+    if (!c) return;
+    var items = c.items;
+    var ai = items.findIndex(function (i) { return i.classList.contains(ACTIVE); });
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      var nx = ai < items.length - 1 ? ai + 1 : 0;
+      items.forEach(function (i) { i.classList.remove(ACTIVE); });
+      items[nx].classList.add(ACTIVE);
+      items[nx].scrollIntoView({ block: 'nearest' });
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      var pv = ai > 0 ? ai - 1 : items.length - 1;
+      items.forEach(function (i) { i.classList.remove(ACTIVE); });
+      items[pv].classList.add(ACTIVE);
+      items[pv].scrollIntoView({ block: 'nearest' });
+    } else if (e.key === 'Enter') {
+      var active = items.find(function (i) { return i.classList.contains(ACTIVE); });
+      if (active) { e.preventDefault(); e.stopImmediatePropagation(); active.click(); }
+      else if (items.length === 1) { e.preventDefault(); e.stopImmediatePropagation(); items[0].click(); }
+    }
+  }, true);
+})();
+</script>"""
+
 _CSS = """<style>
 /* ── person field ── */
 .pf-dropdown {
@@ -47,6 +91,8 @@ _CSS = """<style>
 .pf-item:last-child { border-bottom: none; }
 .pf-item:hover { background: rgb(245,247,251); }
 .dark .pf-item:hover { background: rgb(48,48,48); }
+.pf-item.dropdown-item--active { background: rgb(219,234,254) !important; }
+.dark .pf-item.dropdown-item--active { background: rgb(30,41,59) !important; }
 .pf-item--new { background: rgba(3,105,161,.04); }
 .dark .pf-item--new { background: rgba(14,165,233,.06); }
 .pf-item--new:hover { background: rgba(3,105,161,.10) !important; }
@@ -101,6 +147,7 @@ def build_person_field(
         CSS classes applied to the outer wrapper div.  Default "flex-1".
     """
     ui.add_head_html(_CSS)
+    ui.add_head_html(_NAV_SCRIPT)
 
     with session_factory() as s:
         initial_opts = persons_svc.person_options(s)
@@ -108,7 +155,7 @@ def build_person_field(
     _value: list[str | None] = [None]
 
     # ── layout ────────────────────────────────────────────────────────────────
-    wrap = ui.element("div").style("position:relative").classes(classes)
+    wrap = ui.element("div").style("position:relative").classes(f"custom-dropdown-field {classes}")
 
     with wrap:
         inp = (
@@ -218,6 +265,7 @@ def build_person_field(
         _update_dropdown(term)
 
     inp.on_value_change(_on_input_change)
+    inp.on("focus", lambda _: _update_dropdown(inp.value or ""))
 
     async def _on_blur(_) -> None:
         await asyncio.sleep(0.2)   # let dropdown item click register first

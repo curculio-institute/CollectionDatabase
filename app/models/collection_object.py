@@ -32,7 +32,7 @@ class CollectionObject(Base, TimestampMixin):
     # "in collection" | "on loan" | "donated" | "exchanged" | "missing" | "destroyed"
     disposition: Mapped[Optional[str]] = mapped_column("dwc:disposition", String, nullable=True)
     preparations: Mapped[Optional[str]] = mapped_column("dwc:preparations", String, nullable=True)
-    occurrence_remarks: Mapped[Optional[str]] = mapped_column("dwc:occurrenceRemarks", String, nullable=True)
+    occurrence_remarks: Mapped[Optional[str]] = mapped_column("dwc:materialEntityRemarks", String, nullable=True)
 
     __table_args__ = (
         CheckConstraint('"dwc:individualCount" >= 0', name="ck_co_individual_count_non_negative"),

@@ -25,9 +25,7 @@ import app.services.person_defaults as pd_svc
 from app.ui.taxon_search import build_taxon_search
 from app.ui.date_input import attach_date_validation
 from app.ui.person_field import build_person_field
-
-
-_TYPE_STATUS_OPTIONS = ["Holotype", "Paratype", "Lectotype", "Paralectotype", "Neotype", "Syntype"]
+from app.ui.type_status_field import build_type_status_field
 
 # ---------------------------------------------------------------------------
 # Example CSV — downloadable from the upload card
@@ -38,7 +36,7 @@ _EXAMPLE_CSV = (
     "eventDate,recordedBy,country,countryCode,stateProvince,county,locality,"
     "decimalLatitude,decimalLongitude,coordinateUncertaintyInMeters,"
     "minimumElevationInMeters,maximumElevationInMeters,habitat,samplingProtocol,"
-    "sex,individualCount,preparations,identifiedBy,dateIdentified,occurrenceRemarks\n"
+    "sex,individualCount,preparations,identifiedBy,dateIdentified,materialEntityRemarks\n"
     "Otiorhynchus sulcatus,Otiorhynchus,sulcatus,\"(Fabricius, 1775)\",Curculionidae,"
     "2024-06-15,J. Jilg,Germany,DE,Bavaria,Berchtesgadener Land,"
     "\"Berchtesgaden, Königssee trail\","
@@ -231,7 +229,7 @@ def build_import_assign_tab(session_factory, refreshers: dict) -> None:
 
             with ui.row().classes("w-full flex-wrap gap-3 items-end mt-3"):
                 stage_sel = ui.select(LIFE_STAGE_OPTIONS, label="lifeStage", value="adult").classes("w-32")
-                rem_in    = ui.input("occurrenceRemarks").classes("flex-1 min-w-40")
+                rem_in    = ui.input("materialEntityRemarks").classes("flex-1 min-w-40")
 
             # ── Determination meta ──────────────────────────────────────
             ui.separator().classes("my-2")
@@ -245,11 +243,7 @@ def build_import_assign_tab(session_factory, refreshers: dict) -> None:
                 dt_id  = ui.input("dateIdentified",
                                   placeholder="YYYY-MM-DD").classes("w-36")
                 attach_date_validation(dt_id, no_future=True)
-                type_sel = ui.select(
-                    _TYPE_STATUS_OPTIONS[:], label="typeStatus",
-                    with_input=True, clearable=True,
-                    new_value_mode="add-unique",
-                ).classes("w-36")
+                type_sel = build_type_status_field(classes="w-36")
                 qual   = ui.input("qualifier",
                                   placeholder="cf. / aff.").classes("w-28")
 
@@ -299,10 +293,7 @@ def build_import_assign_tab(session_factory, refreshers: dict) -> None:
             # Pre-fill determination meta
             det = dwc_svc.row_to_determination_fields(row)
             sex_sel.value = det["sex"]
-            ts = det.get("type_status") or ""
-            if ts and ts not in type_sel.options:
-                type_sel.set_options(type_sel.options + [ts])
-            type_sel.value = ts or None
+            type_sel["set_value"](det.get("type_status") or None)
             id_by_state["set_value"](det["identified_by"] or None)
             dt_id.value = det["date_identified"]
 
@@ -559,7 +550,7 @@ def build_import_assign_tab(session_factory, refreshers: dict) -> None:
                             },
                             determination_fields={
                                 "sex":                      sex_sel.value or None,
-                                "type_status":              type_sel.value or None,
+                                "type_status":              type_sel["get_value"]() or None,
                                 "identified_by_id":         idby_id,
                                 "date_identified":          dt_id.value,
                                 "identification_qualifier": qual.value,

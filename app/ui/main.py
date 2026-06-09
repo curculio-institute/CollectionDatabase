@@ -551,7 +551,7 @@ def index():
                                 .classes("col-span-1")
                                 .tooltip("Set in Settings — applies to every new record")
                             )
-                        rem_in = ui.input("occurrenceRemarks").classes("w-full mt-3")
+                        rem_in = ui.input("materialEntityRemarks").classes("w-full mt-3")
                     def _refresh_identity_display():
                         cfg = get_config()
                         inst_code_disp.value = cfg.institution_code

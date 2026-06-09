@@ -96,9 +96,11 @@ _ALIASES: dict[str, str] = {
     "life_stage":                       "lifeStage",
     "typestatus":                       "typeStatus",
     "type_status":                      "typeStatus",
-    "occurrenceremarks":                "occurrenceRemarks",
-    "occurrence_remarks":               "occurrenceRemarks",
-    "remarks":                          "occurrenceRemarks",
+    "materialentityremarks":            "materialEntityRemarks",
+    "material_entity_remarks":          "materialEntityRemarks",
+    "occurrenceremarks":                "materialEntityRemarks",
+    "occurrence_remarks":               "materialEntityRemarks",
+    "remarks":                          "materialEntityRemarks",
     # Higher taxonomy
     "family":                           "family",
     "subfamily":                        "subfamily",
@@ -235,5 +237,5 @@ def row_to_specimen_prefill(row: dict) -> dict:
         "individual_count":  row.get("individualCount") or "1",
         "preparations":      row.get("preparations") or "",
         "life_stage":        row.get("lifeStage") or "",
-        "occurrence_remarks":row.get("occurrenceRemarks") or "",
+        "occurrence_remarks":row.get("materialEntityRemarks") or row.get("occurrenceRemarks") or "",
     }

@@ -18,6 +18,8 @@ from datetime import date
 
 from nicegui import ui
 
+from app.ui.type_status_field import build_type_status_field
+
 from app.models import Taxon
 import app.services.person_defaults as pd_svc
 
@@ -286,16 +288,10 @@ def build_identification_list(
                         value=d.get("sex") or "",
                     ).classes("col-span-1 w-28")
                 with ui.grid(columns=3).classes("w-full gap-2 mb-2"):
-                    _ts_opts = list(_TYPE_STATUS_OPTIONS)
-                    _ts_val  = d.get("type_status") or ""
-                    if _ts_val and _ts_val not in _ts_opts:
-                        _ts_opts = [_ts_val] + _ts_opts
-                    e_type = ui.select(
-                        _ts_opts, label="typeStatus",
-                        value=_ts_val or None,
-                        with_input=True, clearable=True,
-                        new_value_mode="add-unique",
-                    ).classes("col-span-1")
+                    e_type = build_type_status_field(
+                        initial_value=d.get("type_status") or None,
+                        classes="col-span-1",
+                    )
                     e_qual = ui.input(
                         "qualifier",
                         value=d["identification_qualifier"] or "",
@@ -318,7 +314,7 @@ def build_identification_list(
                                     sp_svc.update_determination_metadata(
                                         s, det["id"],
                                         sex=sx.value or None,
-                                        type_status=ts.value or None,
+                                        type_status=ts["get_value"]() or None,
                                         identified_by_id=idby_id,
                                         date_identified=dt.value or None,
                                         identification_qualifier=ql.value or None,
@@ -335,7 +331,7 @@ def build_identification_list(
                                 idby_id = idby["commit"](s)
                         _dets[ix].update({
                             "sex":              sx.value or None,
-                            "type_status":      ts.value or None,
+                            "type_status":      ts["get_value"]() or None,
                             "identified_by":    idby["get_value"](),
                             "identified_by_id": idby_id,
                             "date_identified":          dt.value or None,
@@ -385,10 +381,7 @@ def build_identification_list(
         _append_year_btn(add_dtid)
         attach_date_validation(add_dtid, no_future=True)
         add_sex  = ui.select(_SEX_OPTIONS, label="sex").classes("w-28")
-        add_type = ui.select(
-            list(_TYPE_STATUS_OPTIONS), label="typeStatus",
-            with_input=True, clearable=True, new_value_mode="add-unique",
-        ).classes("w-36")
+        add_type = build_type_status_field(classes="w-36")
         add_qual = ui.input("qualifier", placeholder="cf. / aff.").classes("w-28")
         add_rem  = ui.input("remarks").classes("flex-1 min-w-40")
 
@@ -412,7 +405,7 @@ def build_identification_list(
                             collection_object_id=co_id,
                             taxon_id=new_tid,
                             sex=add_sex.value or None,
-                            type_status=add_type.value or None,
+                            type_status=add_type["get_value"]() or None,
                             identified_by_id=idby_id,
                             date_identified=add_dtid.value or None,
                             identification_qualifier=add_qual.value or None,
@@ -451,7 +444,7 @@ def build_identification_list(
                 "is_synonym":               is_syn,
                 "accepted_label":           acc_label,
                 "sex":                      add_sex.value or None,
-                "type_status":              add_type.value or None,
+                "type_status":              add_type["get_value"]() or None,
                 "identified_by":            add_idby_state["get_value"](),
                 "identified_by_id":         idby_id,
                 "date_identified":          add_dtid.value or None,
@@ -465,7 +458,7 @@ def build_identification_list(
         add_idby_state["set_value"](None)
         add_dtid.value = ""
         add_sex.value  = ""
-        add_type.value = None
+        add_type["set_value"](None)
         add_qual.value = ""
         add_rem.value  = ""
         _refresh()
@@ -491,7 +484,7 @@ def build_identification_list(
         add_idby_state["set_value"](None)
         add_dtid.value = ""
         add_sex.value  = ""
-        add_type.value = None
+        add_type["set_value"](None)
         add_qual.value = ""
         add_rem.value  = ""
         _refresh()
