@@ -1,20 +1,22 @@
 # Purpose
 Local database system to capture and edit specimen data for a personal entomological collection.  
-Main goal is close integration with the weevil project on TaxonWorks, with the aim to export specimen data to TaxonWorks and to track subsequent diversions in the datasets via regular API comparison. This will highlight e.g. cases when I reidentified a specimen in my database to remind me to update on TaxonWorks as well.
+Main goal is close integration with the [weevil project on TaxonWorks](https://catalog.curculionoidea.org), with the aim to export specimen data to TaxonWorks and to track subsequent diversions in the datasets via regular API comparison. This will highlight e.g. cases when I reidentified a specimen in my database to remind me to update on TaxonWorks as well.
 
 Based on python, user interface in an internet browser.
 ## Key features
-- data structure designed around Darwin Core and the Darwin Core Batch Importer on TaxonWorks
+Data structure designed around Darwin Core and the [Darwin Core Batch Importer on TaxonWorks](https://docs.taxonworks.org/guide/import.html)
 #### Taxonomy Import
 Search taxon names, import them with synonymy status, authorship and their parent taxa if not already present in the local database.
-- For weevils from TaxonWorks
-- For plants from TaxonWorks (for compatibility, more taxonomic ranks if present on TaxonWorks) or POWO
+- For weevils from [weevil project on TaxonWorks](https://catalog.curculionoidea.org)
+- For plants also from [weevil project on TaxonWorks](https://catalog.curculionoidea.org) (for compatibility, more taxonomic ranks if present on TaxonWorks) or [Plants of the World Online](https://powo.science.kew.org/)
 #### Unique Identifiers (in progress)
 - unique identifiers for collection objects
     - streamlined workflow to print and assign unique identifiers
 #### Georeferencing
 - georeference using the point-radius method, by drawing a circle on a map.
 - Based on the coordinates: Automatic retrival of country, province, county, municipality, locality via the [Photon Geocoding API](https://photon.komoot.io/)
+#### Biological Associations
+- Using the definitions for Biological Relationships (e.g. "collected from" or "feeding observed in the wild on") that we defined for TaxonWorks. The definitions get updated live from TaxonWorks via the API.
 #### Data Integrity
 - Controlled vocabularies (currently only for Persons): Helping to keep data consistent. If you made a mistake (like adding both P Müller and Peter Müller), you can merge them and all data is re-linked to the remaining name.
 #### Workflows
