@@ -6,6 +6,7 @@ Based on python, user interface in an internet browser.
 ## Key features
 - data structure designed around Darwin Core and the Darwin Core Batch Importer on TaxonWorks
 #### Taxonomy Import
+Search taxon names, import them with synonymy status, authorship and their parent taxa if not already present in the local database.
 - For weevils from TaxonWorks
 - For plants from TaxonWorks (for compatibility, more taxonomic ranks if present on TaxonWorks) or POWO
 #### Unique Identifiers (in progress)
