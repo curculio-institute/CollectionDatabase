@@ -27,6 +27,8 @@ from app.ui.date_input import attach_date_validation
 from app.ui.person_field import build_person_field
 
 
+_TYPE_STATUS_OPTIONS = ["Holotype", "Paratype", "Lectotype", "Paralectotype", "Neotype", "Syntype"]
+
 # ---------------------------------------------------------------------------
 # Example CSV — downloadable from the upload card
 # ---------------------------------------------------------------------------
@@ -225,11 +227,10 @@ def build_import_assign_tab(session_factory, refreshers: dict) -> None:
                 count_in  = ui.number("n", value=1, min=0, precision=0).classes("w-20")
                 preps_in  = ui.input("preparations",
                                      placeholder="pinned, in ethanol…").classes("flex-1 min-w-40")
-            ui.timer(2.0, lambda: cat_num.__setattr__("options", {c: c for c in _reserved_opts()}))
+            ui.timer(2.0, lambda: cat_num.set_options({c: c for c in _reserved_opts()}))
 
             with ui.row().classes("w-full flex-wrap gap-3 items-end mt-3"):
-                stage_sel = ui.select(LIFE_STAGE_OPTIONS, label="lifeStage").classes("w-32")
-                type_in   = ui.input("typeStatus").classes("w-32")
+                stage_sel = ui.select(LIFE_STAGE_OPTIONS, label="lifeStage", value="adult").classes("w-32")
                 rem_in    = ui.input("occurrenceRemarks").classes("flex-1 min-w-40")
 
             # ── Determination meta ──────────────────────────────────────
@@ -244,6 +245,11 @@ def build_import_assign_tab(session_factory, refreshers: dict) -> None:
                 dt_id  = ui.input("dateIdentified",
                                   placeholder="YYYY-MM-DD").classes("w-36")
                 attach_date_validation(dt_id, no_future=True)
+                type_sel = ui.select(
+                    _TYPE_STATUS_OPTIONS[:], label="typeStatus",
+                    with_input=True, clearable=True,
+                    new_value_mode="add-unique",
+                ).classes("w-36")
                 qual   = ui.input("qualifier",
                                   placeholder="cf. / aff.").classes("w-28")
 
@@ -285,15 +291,18 @@ def build_import_assign_tab(session_factory, refreshers: dict) -> None:
 
             # Pre-fill per-specimen fields from spreadsheet
             sp = dwc_svc.row_to_specimen_prefill(row)
-            sex_sel.value   = sp["sex"]
             count_in.value  = int(sp["individual_count"] or 1)
             preps_in.value  = sp["preparations"]
-            stage_sel.value = sp["life_stage"]
-            type_in.value   = sp["type_status"]
+            stage_sel.value = sp["life_stage"] or "adult"
             rem_in.value    = sp["occurrence_remarks"]
 
             # Pre-fill determination meta
             det = dwc_svc.row_to_determination_fields(row)
+            sex_sel.value = det["sex"]
+            ts = det.get("type_status") or ""
+            if ts and ts not in type_sel.options:
+                type_sel.set_options(type_sel.options + [ts])
+            type_sel.value = ts or None
             id_by_state["set_value"](det["identified_by"] or None)
             dt_id.value = det["date_identified"]
 
@@ -542,15 +551,15 @@ def build_import_assign_tab(session_factory, refreshers: dict) -> None:
                                 "catalog_number":    code,
                                 "collection_code":   get_config().collection_code,
                                 "institution_code":  get_config().institution_code,
-                                "sex":               sex_sel.value,
                                 "individual_count":  int(count_in.value or 1),
                                 "preparations":      preps_in.value,
                                 "life_stage":        stage_sel.value,
-                                "type_status":       type_in.value,
                                 "basis_of_record":   "PreservedSpecimen",
                                 "occurrence_remarks":rem_in.value,
                             },
                             determination_fields={
+                                "sex":                      sex_sel.value or None,
+                                "type_status":              type_sel.value or None,
                                 "identified_by_id":         idby_id,
                                 "date_identified":          dt_id.value,
                                 "identification_qualifier": qual.value,

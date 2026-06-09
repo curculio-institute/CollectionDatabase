@@ -22,6 +22,8 @@ class TaxonDetermination(Base, TimestampMixin):
     taxon_id: Mapped[int] = mapped_column(Integer, ForeignKey("taxon.id", ondelete="RESTRICT"), nullable=False)
 
     verbatim_identification: Mapped[Optional[str]] = mapped_column("dwc:verbatimIdentification", String, nullable=True)
+    sex: Mapped[Optional[str]] = mapped_column("dwc:sex", String, nullable=True)
+    type_status: Mapped[Optional[str]] = mapped_column("dwc:typeStatus", String, nullable=True)
     identified_by_id: Mapped[Optional[int]] = mapped_column(Integer, ForeignKey("person.id", ondelete="RESTRICT"), nullable=True)
     identified_by_person: Mapped[Optional["Person"]] = relationship("Person", lazy="select", foreign_keys="[TaxonDetermination.identified_by_id]")
     date_identified: Mapped[Optional[str]] = mapped_column("dwc:dateIdentified", String, nullable=True)

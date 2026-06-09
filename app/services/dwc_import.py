@@ -221,6 +221,8 @@ def row_to_event_fields(row: dict) -> dict:
 
 def row_to_determination_fields(row: dict) -> dict:
     return {
+        "sex":             row.get("sex") or "",
+        "type_status":     row.get("typeStatus") or "",
         "identified_by":   row.get("identifiedBy") or "",
         "date_identified": row.get("dateIdentified") or "",
         "verbatim_identification": row_scientific_name(row),
@@ -230,10 +232,8 @@ def row_to_determination_fields(row: dict) -> dict:
 def row_to_specimen_prefill(row: dict) -> dict:
     """Fields from the spreadsheet that can pre-fill the per-specimen inputs."""
     return {
-        "sex":               row.get("sex") or "",
         "individual_count":  row.get("individualCount") or "1",
         "preparations":      row.get("preparations") or "",
         "life_stage":        row.get("lifeStage") or "",
-        "type_status":       row.get("typeStatus") or "",
         "occurrence_remarks":row.get("occurrenceRemarks") or "",
     }

@@ -182,6 +182,9 @@ def data_sheet(rows: list[DataLabel]) -> bytes:
 #   Line 2:  species authorship  [italic]
 #   Line 3:  det. Determiner  Year
 
+_SEX_SYMBOL: dict[str, str] = {"male": "♂", "female": "♀"}
+
+
 @dataclass
 class DeterminationLabel:
     genus: Optional[str]                  = None
@@ -193,6 +196,7 @@ class DeterminationLabel:
     qualifier: Optional[str]              = None   # e.g. "cf.", "aff.", "?"
     determiner: Optional[str]             = None
     year: Optional[str]                   = None
+    sex: Optional[str]                    = None
 
 
 def _bi(text: str) -> str:
@@ -220,6 +224,10 @@ def _det_line2(lbl: DeterminationLabel) -> str:
         parts.append(_bi(epithet))
     if lbl.authorship:
         parts.append(_e(lbl.authorship))
+    if lbl.sex:
+        sym = _SEX_SYMBOL.get(lbl.sex.lower())
+        if sym:
+            parts.append(sym)
     return " ".join(parts)
 
 

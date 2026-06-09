@@ -29,11 +29,9 @@ class CollectionObject(Base, TimestampMixin):
     basis_of_record: Mapped[str] = mapped_column("dwc:basisOfRecord", String, nullable=False, default="PreservedSpecimen")
     individual_count: Mapped[int] = mapped_column("dwc:individualCount", Integer, nullable=False, default=1)
     life_stage: Mapped[Optional[str]] = mapped_column("dwc:lifeStage", String, nullable=True)
-    sex: Mapped[Optional[str]] = mapped_column("dwc:sex", String, nullable=True)
     # "in collection" | "on loan" | "donated" | "exchanged" | "missing" | "destroyed"
     disposition: Mapped[Optional[str]] = mapped_column("dwc:disposition", String, nullable=True)
     preparations: Mapped[Optional[str]] = mapped_column("dwc:preparations", String, nullable=True)
-    type_status: Mapped[Optional[str]] = mapped_column("dwc:typeStatus", String, nullable=True)
     occurrence_remarks: Mapped[Optional[str]] = mapped_column("dwc:occurrenceRemarks", String, nullable=True)
 
     __table_args__ = (

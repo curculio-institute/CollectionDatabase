@@ -82,7 +82,7 @@ def build_records_tab(session_factory, *, on_saved: callable | None = None) -> N
             )
             .classes("w-full")
         )
-        ui.timer(2.0, lambda: spec_select.__setattr__("options", _specimen_opts()))
+        ui.timer(2.0, lambda: spec_select.set_options(_specimen_opts()))
         ev_select = (
             ui.select(
                 options=_event_opts(),
@@ -93,7 +93,7 @@ def build_records_tab(session_factory, *, on_saved: callable | None = None) -> N
             .classes("w-full")
             .style("display:none")
         )
-        ui.timer(2.0, lambda: ev_select.__setattr__("options", _event_opts()))
+        ui.timer(2.0, lambda: ev_select.set_options(_event_opts()))
 
     # ── Detail area ─────────────────────────────────────────────────────────
     detail = ui.column().classes("w-full gap-4")
@@ -138,11 +138,9 @@ def build_records_tab(session_factory, *, on_saved: callable | None = None) -> N
             co_snap = {
                 "catalog_number":    co.catalog_number,
                 "collection_code": co.collection_code,
-                "sex":               co.sex,
                 "individual_count":  co.individual_count,
                 "preparations":      co.preparations,
                 "life_stage":        co.life_stage,
-                "type_status":       co.type_status,
                 "disposition":       co.disposition,
                 "basis_of_record":   co.basis_of_record,
                 "occurrence_remarks":co.occurrence_remarks,
@@ -166,6 +164,8 @@ def build_records_tab(session_factory, *, on_saved: callable | None = None) -> N
                     "taxon_label":              t_label,
                     "is_synonym":               is_syn,
                     "accepted_label":           acc_label,
+                    "sex":                      d.sex,
+                    "type_status":              d.type_status,
                     "identified_by":            d.identified_by_person.full_name if d.identified_by_person else None,
                     "identified_by_id":         d.identified_by_id,
                     "date_identified":          d.date_identified,
@@ -269,9 +269,6 @@ def build_records_tab(session_factory, *, on_saved: callable | None = None) -> N
             ui.separator().classes("mb-3")
 
             with ui.row().classes("w-full flex-wrap gap-3 items-end"):
-                sex_sel  = ui.select(
-                    _SEX_OPTIONS, label="sex", value=co_snap["sex"]
-                ).classes("w-28")
                 count_in = ui.number(
                     "n", value=co_snap["individual_count"] or 1, min=0, precision=0
                 ).classes("w-20")
@@ -283,9 +280,6 @@ def build_records_tab(session_factory, *, on_saved: callable | None = None) -> N
                 with ui.grid(columns=4).classes("w-full gap-3"):
                     stage_sel = ui.select(
                         _LIFE_STAGE_OPTIONS, label="lifeStage", value=co_snap["life_stage"]
-                    ).classes("col-span-1")
-                    type_in   = ui.input(
-                        "typeStatus", value=co_snap["type_status"] or ""
                     ).classes("col-span-1")
                     disp_sel  = ui.select(
                         _DISPOSITION_OPTIONS, label="disposition", value=co_snap["disposition"]
@@ -484,11 +478,9 @@ def build_records_tab(session_factory, *, on_saved: callable | None = None) -> N
         # ── Save bar ─────────────────────────────────────────────────────────
         def _collect_co_fields() -> dict:
             return {
-                "sex":               sex_sel.value,
                 "individual_count":  int(count_in.value or 1),
                 "preparations":      preps_in.value,
                 "life_stage":        stage_sel.value,
-                "type_status":       type_in.value,
                 "disposition":       disp_sel.value,
                 "basis_of_record":   basis_sel.value,
                 "occurrence_remarks":rem_in.value,

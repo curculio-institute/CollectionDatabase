@@ -528,14 +528,12 @@ def index():
                             clearable=True,
                             label="identifier *",
                         ).classes("w-32")
-                        sex_sel  = ui.select(SEX_OPTIONS, label="sex").classes("w-28")
                         count_in = ui.number("n", value=1, min=0, precision=0).classes("w-20")
                         preps_in = ui.input("preparations", placeholder="pinned, in ethanol…").classes("flex-1 min-w-40")
-                    ui.timer(2.0, lambda: cat_num.__setattr__("options", {c: c for c in _reserved_opts()}))
+                    ui.timer(2.0, lambda: cat_num.set_options({c: c for c in _reserved_opts()}))
                     with ui.expansion("More fields").classes("w-full mt-2"):
                         with ui.grid(columns=4).classes("w-full gap-3"):
-                            stage_sel = ui.select(LIFE_STAGE_OPTIONS, label="lifeStage").classes("col-span-1")
-                            type_in   = ui.input("typeStatus").classes("col-span-1")
+                            stage_sel = ui.select(LIFE_STAGE_OPTIONS, label="lifeStage", value="adult").classes("col-span-1")
                             disp_sel  = ui.select(DISPOSITION_OPTIONS, label="disposition",
                                                    value="in collection").classes("col-span-1")
                             basis_sel = ui.select(BASIS_OPTIONS, label="basisOfRecord",
@@ -580,7 +578,7 @@ def index():
                         .classes("w-full mb-4")
                         .tooltip("Type any locality, date, or collector name")
                     )
-                    ui.timer(2.0, lambda: event_sel.__setattr__("options", _event_opts()))
+                    ui.timer(2.0, lambda: event_sel.set_options(_event_opts()))
 
                     def _on_event_field_edit(_=None):
                         if not state["populating"] and state["event_id"] is not None:
@@ -1178,7 +1176,7 @@ def index():
                         .classes("w-full mb-3")
                         .tooltip("Select the type of biological association")
                     )
-                    ui.timer(2.0, lambda: rel_sel.__setattr__("options", {r.id: r.name for r in _with_session(get_relationship_options)}))
+                    ui.timer(2.0, lambda: rel_sel.set_options({r.id: r.name for r in _with_session(get_relationship_options)}))
 
                     # Object taxon search — bio_codes list is read on each keystroke
                     bio_obj_state = build_taxon_search(
@@ -1314,11 +1312,9 @@ def index():
                         "catalog_number":    cat_num.value or "",
                         "collection_code":   cfg.collection_code,
                         "institution_code":  cfg.institution_code,
-                        "sex":               sex_sel.value,
                         "individual_count":  int(count_in.value or 1),
                         "preparations":      preps_in.value,
                         "life_stage":        stage_sel.value,
-                        "type_status":       type_in.value,
                         "disposition":       disp_sel.value,
                         "basis_of_record":   basis_sel.value,
                         "occurrence_remarks":rem_in.value,
@@ -1359,11 +1355,9 @@ def index():
                 def _clear_after_save():
                     cat_num.value   = None
                     rem_in.value    = ""
-                    type_in.value   = ""
-                    sex_sel.value   = ""
                     count_in.value  = 1
                     preps_in.value  = ""
-                    stage_sel.value = ""
+                    stage_sel.value = "adult"
                     disp_sel.value  = "in collection"
                     basis_sel.value = "PreservedSpecimen"
                     # Clear bio associations
@@ -1409,6 +1403,8 @@ def index():
                                     },
                                     specimen_fields=_collect_specimen_fields(),
                                     determination_fields={
+                                        "sex":                      cur_det.get("sex"),
+                                        "type_status":              cur_det.get("type_status"),
                                         "identified_by_id":         cur_det.get("identified_by_id"),
                                         "date_identified":          cur_det["date_identified"],
                                         "identification_qualifier": cur_det["identification_qualifier"],
@@ -1420,6 +1416,8 @@ def index():
                                         session,
                                         collection_object_id=co.id,
                                         taxon_id=d["taxon_id"],
+                                        sex=d.get("sex"),
+                                        type_status=d.get("type_status"),
                                         identified_by_id=d.get("identified_by_id"),
                                         date_identified=d["date_identified"],
                                         identification_qualifier=d["identification_qualifier"],
@@ -1952,7 +1950,7 @@ def index():
                         .classes("w-full")
                         .props("use-chips")
                     )
-                    ui.timer(2.0, lambda: occ_sel.__setattr__("options", _specimen_options()))
+                    ui.timer(2.0, lambda: occ_sel.set_options(_specimen_options()))
                     occ_status = ui.label("").classes("text-sm mt-2").style("color:var(--tp-base-soft)")
 
                     def _generate_occ_labels():

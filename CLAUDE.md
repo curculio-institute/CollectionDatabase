@@ -432,10 +432,7 @@ For every `ui.select` whose options come from the DB:
 def _refresh_person_opts():
     with session_factory() as s:
         new_opts = persons_svc.person_options(s)
-    cur = sel.value
-    if cur and cur not in new_opts:
-        new_opts = {cur: cur, **new_opts}
-    sel.options = new_opts
+    sel.set_options(new_opts)  # use set_options() — plain `sel.options = x` does NOT push to the frontend
 
 ui.timer(2.0, _refresh_person_opts)   # keeps it live
 

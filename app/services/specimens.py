@@ -67,6 +67,8 @@ def create_determination(
     *,
     collection_object_id: int,
     taxon_id: int,
+    sex: str | None = None,
+    type_status: str | None = None,
     identified_by_id: int | None = None,
     date_identified: str | None = None,
     identification_qualifier: str | None = None,
@@ -77,6 +79,8 @@ def create_determination(
     td = TaxonDetermination(
         collection_object_id=collection_object_id,
         taxon_id=taxon_id,
+        sex=sex or None,
+        type_status=type_status or None,
         identified_by_id=identified_by_id,
         date_identified=date_identified or None,
         identification_qualifier=identification_qualifier or None,
@@ -148,6 +152,8 @@ def update_determination_metadata(
     session: Session,
     det_id: int,
     *,
+    sex: str | None,
+    type_status: str | None,
     identified_by_id: int | None,
     date_identified: str | None,
     identification_qualifier: str | None,
@@ -157,6 +163,8 @@ def update_determination_metadata(
     d = session.get(TaxonDetermination, det_id)
     if d is None:
         raise ValueError(f"TaxonDetermination {det_id} not found")
+    d.sex                      = sex or None
+    d.type_status              = type_status or None
     d.identified_by_id         = identified_by_id
     d.date_identified          = date_identified
     d.identification_qualifier = identification_qualifier
@@ -240,7 +248,7 @@ def recent_specimens(session: Session, limit: int = 200) -> list[RecentRow]:
             catalog_number=co.catalog_number,
             collection_code=co.collection_code,
             scientific_name=format_scientific_name(t) if t else "",
-            sex=co.sex,
+            sex=td.sex if td else None,
             individual_count=co.individual_count,
             country=ce.country if ce else None,
             locality=(ce.locality or ce.verbatim_locality) if ce else None,

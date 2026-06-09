@@ -651,3 +651,28 @@ _dets.append({..., "identified_by": add_idby_state["get_value"](), ...})
 
 Person creation is independent of the specimen record — creating the person row early is
 always safe and means the name is available in autocomplete from that point forward.
+
+## CatalogNumber and printing workflow
+For now, CatalogNumber should be generated as "collectionCode" + "-" + "5 digit ascending number", starting at 00000. it would climb like 00001 JJPC-03963. The Code would have one QR-Code and the CatalogNumber with the collectionCode- (like JJPC-) in one line and the numerical in the next line. the numerical should have a larger size. 
+CatalogNumber Life cycle:
+CatalogNumber can be created in several fashions: Plain generation, or alongside a workflow named "Mounting Session". I will now elaborate on that:
+Mounting Session would be a special "mode" for Specimen Digitization, as this allows us to use the same UI elements, bug fixes and added features don't need to be duplicated. Think through if this is the right way to go.
+Mounting Session mode would be like a normal Specimen Digitization, but it will save not one specimen into the database, but several with an identical collectingEvent and identical biological associations. Imagine me taking several specimen out of the same collecting vial, mounting them, and needing to add labels to them and add them to the database. 
+
+Normally, Specimen Digitization would not send anything to the printing queue. To use Mounting Session Mode, there needs to be a toggle right at the top. We will later add additional modes. The toggle would also look like tabs. Toggling it would wipe all fields to flush existing unsaved entries. 
+Toggling to Mounting Session mode will replace the specimen form with another form ("Specimen to be labeled") with similar function, and "Save Specimen" becomes "Save Specimens and Print labels".
+In the "Specimen to be labeled" form, the user can specify the number of entries (Specimen) to make. Each Specimen is represented as a Row, each with a newly generated identifier, sex
+
+
+  would send labels to the print queue and generate new identifiers. You'd make an entry and provide the number of specimens/entries to be made. This is distinct from the number of specimen in the darwin core
+  entry (that is for several specimen on the same pin).  The printing sheet should always have separated rows for certain elements. Coming from Mounting Session Mode, there would be a row of the locality
+  labels, directly below the identifier label, and below the identification label if present. One row would only have duplicates from one entry 
+
+
+
+
+For now, CatalogNumber should be generated as "collectionCode" + "-" + "5 digit ascending number", starting at 00000. it would climb like 00001 JJPC-03963. The Code would have one QR-Code and the CatalogNumber with the collectionCode- (like JJPC-) in one line and the numerical in the next line. the numerical should have a larger size. 
+CatalogNumber Life cycle:
+CatalogNumber can be created in several fashions: Plain generation, or alongside a workflow named "Mounting Session" 
+
+generated: The CatalogNumber is generated

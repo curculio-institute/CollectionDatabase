@@ -20,6 +20,13 @@ from nicegui import ui
 
 from app.models import Taxon
 import app.services.person_defaults as pd_svc
+
+_SEX_OPTIONS = ["male", "female", "undetermined", ""]
+_SEX_SYMBOL  = {"male": "♂", "female": "♀"}
+
+_TYPE_STATUS_OPTIONS = [
+    "Holotype", "Paratype", "Lectotype", "Paralectotype", "Neotype", "Syntype",
+]
 from app.services.taxa import format_scientific_name
 from app.ui.taxon_search import build_taxon_search, _local_item_html
 from app.ui.date_input import AUTO_CHANGED_CSS, attach_date_validation
@@ -86,6 +93,8 @@ def build_identification_list(
                     "taxon_label":              t_label,
                     "is_synonym":               is_syn,
                     "accepted_label":           acc_label,
+                    "sex":                      d.sex,
+                    "type_status":              d.type_status,
                     "identified_by":            d.identified_by_person.full_name if d.identified_by_person else None,
                     "identified_by_id":         d.identified_by_id,
                     "date_identified":          d.date_identified,
@@ -163,8 +172,11 @@ def build_identification_list(
         chip_html = _local_item_html(
             d["taxon_label"], is_synonym=d["is_synonym"], accepted=d["accepted_label"],
         )
+        sex_sym = _SEX_SYMBOL.get((d.get("sex") or "").lower())
         meta_parts = [
             p for p in [
+                d.get("type_status"),
+                sex_sym,
                 d["identified_by"],
                 d["date_identified"],
                 d["identification_qualifier"],
@@ -255,7 +267,7 @@ def build_identification_list(
             _edit_ref.append(edit_panel)
 
             with edit_panel:
-                with ui.grid(columns=4).classes("w-full gap-2 mb-2"):
+                with ui.grid(columns=3).classes("w-full gap-2 mb-2"):
                     with ui.element("div").classes("col-span-1 flex items-center gap-1"):
                         e_idby_state = build_person_field(
                             session_factory, "identifiedBy",
@@ -269,6 +281,21 @@ def build_identification_list(
                     ).classes("col-span-1")
                     _append_year_btn(e_dtid, visible_when_empty=False)
                     attach_date_validation(e_dtid, no_future=True)
+                    e_sex = ui.select(
+                        _SEX_OPTIONS, label="sex",
+                        value=d.get("sex") or "",
+                    ).classes("col-span-1 w-28")
+                with ui.grid(columns=3).classes("w-full gap-2 mb-2"):
+                    _ts_opts = list(_TYPE_STATUS_OPTIONS)
+                    _ts_val  = d.get("type_status") or ""
+                    if _ts_val and _ts_val not in _ts_opts:
+                        _ts_opts = [_ts_val] + _ts_opts
+                    e_type = ui.select(
+                        _ts_opts, label="typeStatus",
+                        value=_ts_val or None,
+                        with_input=True, clearable=True,
+                        new_value_mode="add-unique",
+                    ).classes("col-span-1")
                     e_qual = ui.input(
                         "qualifier",
                         value=d["identification_qualifier"] or "",
@@ -281,7 +308,7 @@ def build_identification_list(
 
                 def _do_save_edit(
                     _=None, det=d, ix=idx,
-                    idby=e_idby_state, dt=e_dtid, ql=e_qual, rm=e_rem,
+                    idby=e_idby_state, sx=e_sex, ts=e_type, dt=e_dtid, ql=e_qual, rm=e_rem,
                 ):
                     if co_id is not None:
                         try:
@@ -290,6 +317,8 @@ def build_identification_list(
                                     idby_id = idby["commit"](s)
                                     sp_svc.update_determination_metadata(
                                         s, det["id"],
+                                        sex=sx.value or None,
+                                        type_status=ts.value or None,
                                         identified_by_id=idby_id,
                                         date_identified=dt.value or None,
                                         identification_qualifier=ql.value or None,
@@ -305,6 +334,8 @@ def build_identification_list(
                             with s.begin():
                                 idby_id = idby["commit"](s)
                         _dets[ix].update({
+                            "sex":              sx.value or None,
+                            "type_status":      ts.value or None,
                             "identified_by":    idby["get_value"](),
                             "identified_by_id": idby_id,
                             "date_identified":          dt.value or None,
@@ -353,6 +384,11 @@ def build_identification_list(
         add_dtid = ui.input("dateIdentified", placeholder="YYYY-MM-DD").classes("w-36")
         _append_year_btn(add_dtid)
         attach_date_validation(add_dtid, no_future=True)
+        add_sex  = ui.select(_SEX_OPTIONS, label="sex").classes("w-28")
+        add_type = ui.select(
+            list(_TYPE_STATUS_OPTIONS), label="typeStatus",
+            with_input=True, clearable=True, new_value_mode="add-unique",
+        ).classes("w-36")
         add_qual = ui.input("qualifier", placeholder="cf. / aff.").classes("w-28")
         add_rem  = ui.input("remarks").classes("flex-1 min-w-40")
 
@@ -375,6 +411,8 @@ def build_identification_list(
                             s,
                             collection_object_id=co_id,
                             taxon_id=new_tid,
+                            sex=add_sex.value or None,
+                            type_status=add_type.value or None,
                             identified_by_id=idby_id,
                             date_identified=add_dtid.value or None,
                             identification_qualifier=add_qual.value or None,
@@ -412,6 +450,8 @@ def build_identification_list(
                 "taxon_label":              t_label,
                 "is_synonym":               is_syn,
                 "accepted_label":           acc_label,
+                "sex":                      add_sex.value or None,
+                "type_status":              add_type.value or None,
                 "identified_by":            add_idby_state["get_value"](),
                 "identified_by_id":         idby_id,
                 "date_identified":          add_dtid.value or None,
@@ -424,6 +464,8 @@ def build_identification_list(
         add_taxon_state["clear"]()
         add_idby_state["set_value"](None)
         add_dtid.value = ""
+        add_sex.value  = ""
+        add_type.value = None
         add_qual.value = ""
         add_rem.value  = ""
         _refresh()
@@ -448,6 +490,8 @@ def build_identification_list(
         add_taxon_state["clear"]()
         add_idby_state["set_value"](None)
         add_dtid.value = ""
+        add_sex.value  = ""
+        add_type.value = None
         add_qual.value = ""
         add_rem.value  = ""
         _refresh()

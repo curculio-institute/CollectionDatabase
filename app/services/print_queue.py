@@ -182,6 +182,7 @@ def _co_to_det_label(co: CollectionObject) -> lbl.DeterminationLabel | None:
         authorship            = t.scientific_name_authorship,
         determiner            = det.identified_by_person.full_name if det.identified_by_person else None,
         year                  = (det.date_identified or "")[:4] or None,
+        sex                   = det.sex,
     )
 
 
