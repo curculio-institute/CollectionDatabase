@@ -500,6 +500,15 @@ def build_taxon_search(
                     return tw_id, {}
             detail_cache = dict(await asyncio.gather(*[_fetch_detail(i) for i in all_ids]))
 
+        if nomenclatural_codes:
+            allowed = {c.lower() for c in nomenclatural_codes}
+            results = [
+                r for r in results
+                if (detail_cache.get(r["id"], {}).get("nomenclatural_code") or "").lower() in allowed
+            ]
+            if not results:
+                return
+
         with tw_sec:
             ui.label("TaxonWorks").classes("tw-section-label")
             for r in results:
