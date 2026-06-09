@@ -5,9 +5,9 @@ from dataclasses import dataclass
 from sqlalchemy.orm import Session
 
 from app.models import CollectingEvent
+from app.models.person import Person
 from app.models.base import _utcnow
 from app.services.label_text import format_locality_label
-import app.services.persons as _persons_svc
 
 _FLOAT_ATTRS = frozenset({
     "decimal_latitude",
@@ -39,18 +39,21 @@ def search_collecting_events(
     q = session.query(CollectingEvent)
     if query.strip():
         pat = f"%{query.strip()}%"
-        q = q.filter(
-            CollectingEvent.country.ilike(pat)
-            | CollectingEvent.state_province.ilike(pat)
-            | CollectingEvent.county.ilike(pat)
-            | CollectingEvent.municipality.ilike(pat)
-            | CollectingEvent.island.ilike(pat)
-            | CollectingEvent.locality.ilike(pat)
-            | CollectingEvent.verbatim_locality.ilike(pat)
-            | CollectingEvent.event_date.ilike(pat)
-            | CollectingEvent.verbatim_event_date.ilike(pat)
-            | CollectingEvent.recorded_by.ilike(pat)
-            | CollectingEvent.habitat.ilike(pat)
+        q = (
+            q.outerjoin(Person, Person.id == CollectingEvent.recorded_by_id)
+            .filter(
+                CollectingEvent.country.ilike(pat)
+                | CollectingEvent.state_province.ilike(pat)
+                | CollectingEvent.county.ilike(pat)
+                | CollectingEvent.municipality.ilike(pat)
+                | CollectingEvent.island.ilike(pat)
+                | CollectingEvent.locality.ilike(pat)
+                | CollectingEvent.verbatim_locality.ilike(pat)
+                | CollectingEvent.event_date.ilike(pat)
+                | CollectingEvent.verbatim_event_date.ilike(pat)
+                | Person.full_name.ilike(pat)
+                | CollectingEvent.habitat.ilike(pat)
+            )
         )
     q = q.order_by(CollectingEvent.id.desc()).limit(limit)
     return [EventOption(id=e.id, summary=format_event_summary(e)) for e in q]
@@ -65,8 +68,6 @@ def update_collecting_event(session: Session, event_id: int, **fields) -> Collec
     ev = session.get(CollectingEvent, event_id)
     if ev is None:
         raise ValueError(f"CollectingEvent {event_id} not found")
-    if (rb := (fields.get("recorded_by") or "").strip()):
-        _persons_svc.get_or_create_person(session, full_name=rb)
     for attr, val in fields.items():
         if val == "":
             val = None
@@ -117,8 +118,6 @@ def copy_and_relink_event(session: Session, co_id: int) -> int:
 def create_collecting_event(session: Session, **fields) -> CollectingEvent:
     """Insert a new collecting_event. Coerces '' -> None and str -> float for
     numeric columns. ISO-8601 date strings are stored as-is."""
-    if (rb := (fields.get("recorded_by") or "").strip()):
-        _persons_svc.get_or_create_person(session, full_name=rb)
     ce = CollectingEvent(created_at=_utcnow(), updated_at=_utcnow())
     for attr, val in fields.items():
         if val is None or val == "":

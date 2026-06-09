@@ -3,10 +3,19 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from sqlalchemy import text
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.models.person import Person
 from app.models.base import _utcnow
+
+# Human-readable label for each FK column that references person(id).
+_FK_LABELS: dict[tuple[str, str], str] = {
+    ("collecting_event",   "recorded_by_id"):          "recorded-by on collecting events",
+    ("taxon_determination","identified_by_id"):         "identified-by on determinations",
+    ("person_defaults",    "default_identified_by_id"): "set as default identified-by",
+    ("person_defaults",    "default_recorded_by_id"):   "set as default recorded-by",
+}
 
 
 def list_persons(session: Session) -> list[Person]:
@@ -80,9 +89,13 @@ def update_person(
 
 def delete_person(session: Session, person_id: int) -> None:
     p = session.get(Person, person_id)
-    if p:
-        session.delete(p)
-        session.flush()
+    if p is None:
+        return
+    blocking = _blocking_description(session, person_id)
+    if blocking:
+        raise ValueError(f"Cannot delete '{p.full_name}': still used as {blocking}.")
+    session.delete(p)
+    session.flush()
 
 
 @dataclass(frozen=True)
@@ -101,7 +114,7 @@ def merge_preview(session: Session, keep_id: int, absorb_id: int) -> MergePrevie
     if keep is None or absorb is None:
         raise ValueError("One or both persons not found")
 
-    count = _count_references(session, absorb.full_name)
+    count = _count_references(session, absorb_id)
     return MergePreview(
         keep_id=keep_id,
         keep_name=keep.full_name,
@@ -128,7 +141,7 @@ def merge_persons(session: Session, keep_id: int, absorb_id: int) -> None:
     for table, col in _fk_references_to_person(session):
         session.execute(
             text(f'UPDATE "{table}" SET "{col}" = :keep WHERE "{col}" = :absorb'),
-            {"keep": keep.full_name, "absorb": absorb.full_name},
+            {"keep": keep_id, "absorb": absorb_id},
         )
 
     session.delete(absorb)
@@ -145,7 +158,7 @@ def _all_user_tables(session: Session) -> list[str]:
 
 
 def _fk_references_to_person(session: Session) -> list[tuple[str, str]]:
-    """Return [(table, column), …] for every FK column that references person(full_name)."""
+    """Return [(table, column), …] for every FK column that references person(id)."""
     refs = []
     for table in _all_user_tables(session):
         fk_rows = session.execute(
@@ -156,17 +169,34 @@ def _fk_references_to_person(session: Session) -> list[tuple[str, str]]:
             ref_table = fk[2]
             from_col  = fk[3]
             to_col    = fk[4]
-            if ref_table == "person" and to_col == "full_name":
+            if ref_table == "person" and to_col == "id":
                 refs.append((table, from_col))
     return refs
 
 
-def _count_references(session: Session, full_name: str) -> int:
+def _blocking_description(session: Session, person_id: int) -> str:
+    """Return a human-readable string describing what still references this person.
+
+    Returns empty string when no references exist (delete is safe).
+    """
+    parts: list[str] = []
+    for table, col in _fk_references_to_person(session):
+        count = session.execute(
+            text(f'SELECT COUNT(*) FROM "{table}" WHERE "{col}" = :id'),
+            {"id": person_id},
+        ).scalar()
+        if count:
+            label = _FK_LABELS.get((table, col), f"{col} in {table}")
+            parts.append(f"{label} ({count})" if count > 1 else label)
+    return ", ".join(parts)
+
+
+def _count_references(session: Session, person_id: int) -> int:
     total = 0
     for table, col in _fk_references_to_person(session):
         row = session.execute(
-            text(f'SELECT COUNT(*) FROM "{table}" WHERE "{col}" = :name'),
-            {"name": full_name},
+            text(f'SELECT COUNT(*) FROM "{table}" WHERE "{col}" = :id'),
+            {"id": person_id},
         ).fetchone()
         total += row[0]
     return total

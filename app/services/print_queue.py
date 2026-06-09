@@ -136,7 +136,7 @@ def _co_to_data_label(
         elevation_min            = ev.minimum_elevation_in_meters     if ev else None,
         elevation_max            = ev.maximum_elevation_in_meters     if ev else None,
         event_date               = ev.event_date                      if ev else None,
-        recorded_by              = ev.recorded_by                     if ev else None,
+        recorded_by              = ev.recorded_by_person.full_name if (ev and ev.recorded_by_person) else None,
         habitat                  = ev.habitat                         if ev else None,
         associated_species       = assoc_names or None,
         text_override            = text_override,
@@ -180,7 +180,7 @@ def _co_to_det_label(co: CollectionObject) -> lbl.DeterminationLabel | None:
         specific_epithet      = specific,
         infraspecific_epithet = infra,
         authorship            = t.scientific_name_authorship,
-        determiner            = det.identified_by,
+        determiner            = det.identified_by_person.full_name if det.identified_by_person else None,
         year                  = (det.date_identified or "")[:4] or None,
     )
 

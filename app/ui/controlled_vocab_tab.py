@@ -116,8 +116,10 @@ def build_controlled_vocab_tab(session_factory, *, on_person_changed=None) -> No
                 if on_person_changed:
                     on_person_changed()
                 ui.notify("Person deleted.", type="positive")
+            except ValueError as exc:
+                ui.notify(str(exc), type="warning")
             except Exception as exc:
-                ui.notify(f"Failed: {exc}", type="negative")
+                ui.notify(f"Delete failed: {exc}", type="negative")
 
         # ── Merge dialog ──────────────────────────────────────────────────
         # Click merge on any row → dialog opens immediately.
@@ -274,6 +276,8 @@ def build_controlled_vocab_tab(session_factory, *, on_person_changed=None) -> No
                 if on_person_changed:
                     on_person_changed()
                 ui.notify("Persons merged.", type="positive")
+            except ValueError as exc:
+                ui.notify(str(exc), type="warning")
             except Exception as exc:
                 ui.notify(f"Merge failed: {exc}", type="negative")
 

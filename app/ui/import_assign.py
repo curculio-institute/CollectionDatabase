@@ -532,7 +532,7 @@ def build_import_assign_tab(session_factory, refreshers: dict) -> None:
             try:
                 with session_factory() as session:
                     with session.begin():
-                        id_by_state["commit"](session)
+                        idby_id = id_by_state["commit"](session)
                         co = svc.save_specimen_entry(
                             session,
                             taxon_id=state["taxon_id"],
@@ -551,7 +551,7 @@ def build_import_assign_tab(session_factory, refreshers: dict) -> None:
                                 "occurrence_remarks":rem_in.value,
                             },
                             determination_fields={
-                                "identified_by":            id_by_state["get_value"](),
+                                "identified_by_id":         idby_id,
                                 "date_identified":          dt_id.value,
                                 "identification_qualifier": qual.value,
                                 "verbatim_identification":  dwc_svc.row_scientific_name(row),

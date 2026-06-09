@@ -166,7 +166,8 @@ def build_records_tab(session_factory, *, on_saved: callable | None = None) -> N
                     "taxon_label":              t_label,
                     "is_synonym":               is_syn,
                     "accepted_label":           acc_label,
-                    "identified_by":            d.identified_by,
+                    "identified_by":            d.identified_by_person.full_name if d.identified_by_person else None,
+                    "identified_by_id":         d.identified_by_id,
                     "date_identified":          d.date_identified,
                     "identification_qualifier": d.identification_qualifier,
                     "identification_remarks":   d.identification_remarks,
@@ -185,7 +186,7 @@ def build_records_tab(session_factory, *, on_saved: callable | None = None) -> N
                 "verbatim_locality":                ev.verbatim_locality    if ev else None,
                 "event_date":                       ev.event_date           if ev else None,
                 "verbatim_event_date":              ev.verbatim_event_date  if ev else None,
-                "recorded_by":                      ev.recorded_by          if ev else None,
+                "recorded_by":                      ev.recorded_by_person.full_name if (ev and ev.recorded_by_person) else None,
                 "habitat":                          ev.habitat              if ev else None,
                 "decimal_latitude":                 ev.decimal_latitude     if ev else None,
                 "decimal_longitude":                ev.decimal_longitude    if ev else None,
@@ -230,7 +231,7 @@ def build_records_tab(session_factory, *, on_saved: callable | None = None) -> N
                 "verbatim_locality":                ev.verbatim_locality,
                 "event_date":                       ev.event_date,
                 "verbatim_event_date":              ev.verbatim_event_date,
-                "recorded_by":                      ev.recorded_by,
+                "recorded_by":                      ev.recorded_by_person.full_name if ev.recorded_by_person else None,
                 "habitat":                          ev.habitat,
                 "decimal_latitude":                 ev.decimal_latitude,
                 "decimal_longitude":                ev.decimal_longitude,
@@ -507,7 +508,6 @@ def build_records_tab(session_factory, *, on_saved: callable | None = None) -> N
                 "verbatim_locality":                ev_verblocal_in.value,
                 "event_date":                       ev_edate_in.value,
                 "verbatim_event_date":              ev_verbdate_in.value,
-                "recorded_by":                      ev_recby_state["get_value"](),
                 "decimal_latitude":                 ev_lat_in.value,
                 "decimal_longitude":                ev_lon_in.value,
                 "coordinate_uncertainty_in_meters": ev_uncert_in.value,
@@ -526,8 +526,12 @@ def build_records_tab(session_factory, *, on_saved: callable | None = None) -> N
                         sp_svc.update_collection_object(s, co_id, **_collect_co_fields())
                         ev_fields = _collect_ev_fields()
                         if ev_fields and ev_id:
-                            ev_recby_state["commit"](s)
-                            ev_svc.update_collecting_event(s, ev_id, **ev_fields)
+                            recby_id = ev_recby_state["commit"](s)
+                            ev_svc.update_collecting_event(
+                                s, ev_id,
+                                recorded_by_id=recby_id,
+                                **ev_fields,
+                            )
                 ui.notify("Changes saved.", type="positive")
                 if on_saved:
                     on_saved()
@@ -603,7 +607,6 @@ def build_records_tab(session_factory, *, on_saved: callable | None = None) -> N
                 "verbatim_locality":                ev_verblocal_in.value,
                 "event_date":                       ev_edate_in.value,
                 "verbatim_event_date":              ev_verbdate_in.value,
-                "recorded_by":                      ev_recby_state["get_value"](),
                 "decimal_latitude":                 ev_lat_in.value,
                 "decimal_longitude":                ev_lon_in.value,
                 "coordinate_uncertainty_in_meters": ev_uncert_in.value,
@@ -617,8 +620,12 @@ def build_records_tab(session_factory, *, on_saved: callable | None = None) -> N
             try:
                 with session_factory() as s:
                     with s.begin():
-                        ev_recby_state["commit"](s)
-                        ev_svc.update_collecting_event(s, ev_id, **fields)
+                        recby_id = ev_recby_state["commit"](s)
+                        ev_svc.update_collecting_event(
+                            s, ev_id,
+                            recorded_by_id=recby_id,
+                            **fields,
+                        )
                 ui.notify(f"Event #{ev_id} saved.", type="positive")
                 if on_saved:
                     on_saved()

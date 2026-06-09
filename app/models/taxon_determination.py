@@ -1,8 +1,11 @@
 from __future__ import annotations
-from typing import Optional
+from typing import Optional, TYPE_CHECKING
 from sqlalchemy import Integer, String, ForeignKey, CheckConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from .base import Base, TimestampMixin
+
+if TYPE_CHECKING:
+    from .person import Person
 
 
 class TaxonDetermination(Base, TimestampMixin):
@@ -19,7 +22,8 @@ class TaxonDetermination(Base, TimestampMixin):
     taxon_id: Mapped[int] = mapped_column(Integer, ForeignKey("taxon.id", ondelete="RESTRICT"), nullable=False)
 
     verbatim_identification: Mapped[Optional[str]] = mapped_column("dwc:verbatimIdentification", String, nullable=True)
-    identified_by: Mapped[Optional[str]] = mapped_column("dwc:identifiedBy", String, ForeignKey("person.full_name", ondelete="RESTRICT"), nullable=True)
+    identified_by_id: Mapped[Optional[int]] = mapped_column(Integer, ForeignKey("person.id", ondelete="RESTRICT"), nullable=True)
+    identified_by_person: Mapped[Optional["Person"]] = relationship("Person", lazy="select", foreign_keys="[TaxonDetermination.identified_by_id]")
     date_identified: Mapped[Optional[str]] = mapped_column("dwc:dateIdentified", String, nullable=True)
     identification_qualifier: Mapped[Optional[str]] = mapped_column("dwc:identificationQualifier", String, nullable=True)
     identification_remarks: Mapped[Optional[str]] = mapped_column("dwc:identificationRemarks", String, nullable=True)

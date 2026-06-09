@@ -84,6 +84,8 @@ def format_locality_label(
     for field in (ev.state_province, ev.municipality, ev.locality):
         if field:
             parts.append(_e(field))
+    if not ev.locality and not ev.municipality and not ev.state_province and ev.verbatim_locality:
+        parts.append(_e(ev.verbatim_locality))
 
     coords = format_coords(
         ev.decimal_latitude,
@@ -104,7 +106,7 @@ def format_locality_label(
             else:
                 parts.append(sp)
 
-    name = abbreviate_name(ev.recorded_by)
+    name = abbreviate_name(ev.recorded_by_person.full_name if ev.recorded_by_person else None)
     date = ev.event_date or ""
     leg_tokens = [p for p in [_e(name), _e(date)] if p]
     if leg_tokens:

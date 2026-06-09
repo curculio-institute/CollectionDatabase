@@ -1145,7 +1145,7 @@ def index():
                         verblocal_in.value = ev.verbatim_locality   or ""
                         edate_in.value     = ev.event_date         or ""
                         verbdate_in.value  = ev.verbatim_event_date or ""
-                        recby_state["set_value"](ev.recorded_by or None)
+                        recby_state["set_value"](ev.recorded_by_person.full_name if ev.recorded_by_person else None)
                         lat_in.value       = str(ev.decimal_latitude)  if ev.decimal_latitude  is not None else ""
                         lon_in.value       = str(ev.decimal_longitude) if ev.decimal_longitude is not None else ""
                         uncert_in.value    = str(ev.coordinate_uncertainty_in_meters) if ev.coordinate_uncertainty_in_meters is not None else ""
@@ -1297,7 +1297,6 @@ def index():
                         "verbatim_locality":                verblocal_in.value,
                         "event_date":                       edate_in.value,
                         "verbatim_event_date":              verbdate_in.value,
-                        "recorded_by":                      recby_state["get_value"](),
                         "decimal_latitude":                 lat_in.value,
                         "decimal_longitude":                lon_in.value,
                         "coordinate_uncertainty_in_meters": uncert_in.value,
@@ -1399,15 +1398,18 @@ def index():
                         code = cat_num.value
                         with _sf() as session:
                             with session.begin():
-                                recby_state["commit"](session)
+                                recby_id = recby_state["commit"](session)
                                 co = svc.save_specimen_entry(
                                     session,
                                     taxon_id=cur_det["taxon_id"],
                                     event_id=state["event_id"],
-                                    event_fields=_collect_event_fields(),
+                                    event_fields={
+                                        **_collect_event_fields(),
+                                        "recorded_by_id": recby_id,
+                                    },
                                     specimen_fields=_collect_specimen_fields(),
                                     determination_fields={
-                                        "identified_by":            cur_det["identified_by"],
+                                        "identified_by_id":         cur_det.get("identified_by_id"),
                                         "date_identified":          cur_det["date_identified"],
                                         "identification_qualifier": cur_det["identification_qualifier"],
                                         "identification_remarks":   cur_det["identification_remarks"],
@@ -1418,7 +1420,7 @@ def index():
                                         session,
                                         collection_object_id=co.id,
                                         taxon_id=d["taxon_id"],
-                                        identified_by=d["identified_by"],
+                                        identified_by_id=d.get("identified_by_id"),
                                         date_identified=d["date_identified"],
                                         identification_qualifier=d["identification_qualifier"],
                                         identification_remarks=d["identification_remarks"],
@@ -2005,7 +2007,7 @@ def index():
                                         elevation_min=ev.minimum_elevation_in_meters if ev else None,
                                         elevation_max=ev.maximum_elevation_in_meters if ev else None,
                                         event_date=ev.event_date if ev else None,
-                                        recorded_by=ev.recorded_by if ev else None,
+                                        recorded_by=ev.recorded_by_person.full_name if (ev and ev.recorded_by_person) else None,
                                         habitat=ev.habitat if ev else None,
                                         taxon=taxon_label,
                                         associated_species=assoc_names or None,
@@ -2150,12 +2152,12 @@ def index():
                 cfg.map_default_layer     = map_layer_sel.value or "street"
                 with _sf() as _s:
                     with _s.begin():
-                        idby_state["commit"](_s)
-                        recby_state_cfg["commit"](_s)
+                        idby_id = idby_state["commit"](_s)
+                        recby_id = recby_state_cfg["commit"](_s)
                         pd_svc.set_defaults(
                             _s,
-                            identified_by=idby_state["get_value"]() or None,
-                            recorded_by=recby_state_cfg["get_value"]() or None,
+                            identified_by_id=idby_id,
+                            recorded_by_id=recby_id,
                         )
                 cfg.bio_assoc_default_codes = selected
                 save_config(cfg)

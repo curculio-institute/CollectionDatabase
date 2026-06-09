@@ -269,19 +269,19 @@ def build_person_field(
         else:
             _clear(notify=False)
 
-    def commit(session) -> None:
-        """Ensure the current name exists in the person table.
+    def commit(session) -> int | None:
+        """Ensure the current name exists in the person table; return its id.
 
-        Uses get_or_create_person so it is safe to call from multiple widgets
-        in the same transaction with the same name — the second call finds the
-        row flushed by the first instead of hitting the unique constraint.
-        Call inside the tab's save transaction before writing the main record.
+        Reads p.id while the session is still open so callers that close
+        the session before using the value never see DetachedInstanceError.
+        Returns None if no name is selected.
         """
         val = _value[0]
-        if not val or val in _known:
-            return
-        persons_svc.get_or_create_person(session, full_name=val)
+        if not val:
+            return None
+        p = persons_svc.get_or_create_person(session, full_name=val)
         _known.add(val)
+        return p.id
 
     return {
         "get_value": get_value,

@@ -86,7 +86,8 @@ def build_identification_list(
                     "taxon_label":              t_label,
                     "is_synonym":               is_syn,
                     "accepted_label":           acc_label,
-                    "identified_by":            d.identified_by,
+                    "identified_by":            d.identified_by_person.full_name if d.identified_by_person else None,
+                    "identified_by_id":         d.identified_by_id,
                     "date_identified":          d.date_identified,
                     "identification_qualifier": d.identification_qualifier,
                     "identification_remarks":   d.identification_remarks,
@@ -282,19 +283,17 @@ def build_identification_list(
                     _=None, det=d, ix=idx,
                     idby=e_idby_state, dt=e_dtid, ql=e_qual, rm=e_rem,
                 ):
-                    fields = {
-                        "identified_by":            idby["get_value"](),
-                        "date_identified":          dt.value or None,
-                        "identification_qualifier": ql.value or None,
-                        "identification_remarks":   rm.value or None,
-                    }
                     if co_id is not None:
                         try:
                             with session_factory() as s:
                                 with s.begin():
-                                    idby["commit"](s)
+                                    idby_id = idby["commit"](s)
                                     sp_svc.update_determination_metadata(
-                                        s, det["id"], **fields
+                                        s, det["id"],
+                                        identified_by_id=idby_id,
+                                        date_identified=dt.value or None,
+                                        identification_qualifier=ql.value or None,
+                                        identification_remarks=rm.value or None,
                                     )
                             if on_changed:
                                 on_changed()
@@ -302,7 +301,16 @@ def build_identification_list(
                             ui.notify(f"Failed: {exc}", type="negative")
                             return
                     else:
-                        _dets[ix].update(fields)
+                        with session_factory() as s:
+                            with s.begin():
+                                idby_id = idby["commit"](s)
+                        _dets[ix].update({
+                            "identified_by":    idby["get_value"](),
+                            "identified_by_id": idby_id,
+                            "date_identified":          dt.value or None,
+                            "identification_qualifier": ql.value or None,
+                            "identification_remarks":   rm.value or None,
+                        })
                     _refresh()
 
                 def _do_delete(_=None, det=d, ix=idx):
@@ -362,12 +370,12 @@ def build_identification_list(
             try:
                 with session_factory() as s:
                     with s.begin():
-                        add_idby_state["commit"](s)
+                        idby_id = add_idby_state["commit"](s)
                         sp_svc.create_determination(
                             s,
                             collection_object_id=co_id,
                             taxon_id=new_tid,
-                            identified_by=add_idby_state["get_value"](),
+                            identified_by_id=idby_id,
                             date_identified=add_dtid.value or None,
                             identification_qualifier=add_qual.value or None,
                             identification_remarks=add_rem.value or None,
@@ -396,7 +404,7 @@ def build_identification_list(
 
             with session_factory() as s:
                 with s.begin():
-                    add_idby_state["commit"](s)
+                    idby_id = add_idby_state["commit"](s)
 
             _dets.append({
                 "id":                       None,
@@ -405,6 +413,7 @@ def build_identification_list(
                 "is_synonym":               is_syn,
                 "accepted_label":           acc_label,
                 "identified_by":            add_idby_state["get_value"](),
+                "identified_by_id":         idby_id,
                 "date_identified":          add_dtid.value or None,
                 "identification_qualifier": add_qual.value or None,
                 "identification_remarks":   add_rem.value or None,

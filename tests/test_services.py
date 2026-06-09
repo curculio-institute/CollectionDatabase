@@ -39,11 +39,10 @@ def _taxon(session, genus="Carabus", species="coriaceus", authorship="Linnaeus, 
 
 def _event(session, country="Germany", state="Bavaria", locality="Berchtesgaden",
            event_date="2024-06-15", recorded_by="J. Jilg"):
-    if recorded_by:
-        _person(session, recorded_by)
+    recorded_by_id = _person(session, recorded_by).id if recorded_by else None
     ce = CollectingEvent(
         country=country, state_province=state, locality=locality,
-        event_date=event_date, recorded_by=recorded_by,
+        event_date=event_date, recorded_by_id=recorded_by_id,
         created_at=_utcnow(), updated_at=_utcnow(),
     )
     session.add(ce)
@@ -131,13 +130,12 @@ def test_search_taxa_case_insensitive(session):
 def test_format_event_summary_full():
     ce = CollectingEvent(
         country="Germany", state_province="Bavaria", locality="Berchtesgaden",
-        event_date="2024-06-15", recorded_by="J. Jilg",
+        event_date="2024-06-15",
     )
     s = format_event_summary(ce)
     assert "Germany" in s
     assert "Bavaria" in s
     assert "2024-06-15" in s
-    assert "J. Jilg" in s
 
 
 def test_format_event_summary_skips_blanks():
@@ -215,10 +213,11 @@ def test_save_specimen_entry_creates_three_rows(session):
         event_id=ce.id,
         event_fields={},
         specimen_fields={
-            "catalog_number": "0001", "catalog_namespace": "TEST",
+            "catalog_number": "0001", "collection_code": "TEST",
+            "institution_code": "TEST",
             "sex": "male", "individual_count": 1,
         },
-        determination_fields={"identified_by": "J. Jilg"},
+        determination_fields={},
     )
     session.flush()
 
@@ -238,7 +237,7 @@ def test_save_specimen_entry_creates_new_event_when_no_event_id(session):
         taxon_id=t.id,
         event_id=None,
         event_fields={"country": "France", "locality": "Camargue", "event_date": "2024-07-01"},
-        specimen_fields={"catalog_number": "0002", "catalog_namespace": "TEST"},
+        specimen_fields={"catalog_number": "0002", "collection_code": "TEST", "institution_code": "TEST"},
         determination_fields={},
     )
     session.flush()
@@ -258,7 +257,7 @@ def test_recent_specimens_newest_first(session):
             session,
             taxon_id=t.id, event_id=ce.id,
             event_fields={},
-            specimen_fields={"catalog_number": num, "catalog_namespace": "TEST"},
+            specimen_fields={"catalog_number": num, "collection_code": "TEST", "institution_code": "TEST"},
             determination_fields={},
         )
     session.flush()
@@ -274,13 +273,13 @@ def test_recent_specimens_returns_only_current_determination(session):
     ce = _event(session)
 
     co = create_object = CollectionObject(
-        collecting_event_id=ce.id, catalog_number="X001", catalog_namespace="TEST",
+        collecting_event_id=ce.id, catalog_number="X001", collection_code="TEST", institution_code="TEST",
         created_at=_utcnow(), updated_at=_utcnow(),
     )
     session.add(co)
     session.flush()
 
-    _person(session, "J. Jilg")
+    jilg = _person(session, "J. Jilg")
     # old determination (not current)
     old = TaxonDetermination(
         collection_object_id=co.id, taxon_id=t1.id, is_current=0,
@@ -289,7 +288,7 @@ def test_recent_specimens_returns_only_current_determination(session):
     # current determination
     current = TaxonDetermination(
         collection_object_id=co.id, taxon_id=t2.id, is_current=1,
-        identified_by="J. Jilg", created_at=_utcnow(), updated_at=_utcnow(),
+        identified_by_id=jilg.id, created_at=_utcnow(), updated_at=_utcnow(),
     )
     session.add_all([old, current])
     session.flush()

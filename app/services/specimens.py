@@ -14,7 +14,6 @@ from app.models import (
 from app.models.base import _utcnow
 from app.services.events import create_collecting_event
 from app.services.taxa import format_scientific_name
-import app.services.persons as _persons_svc
 
 
 @dataclass(frozen=True)
@@ -68,19 +67,17 @@ def create_determination(
     *,
     collection_object_id: int,
     taxon_id: int,
-    identified_by: str | None = None,
+    identified_by_id: int | None = None,
     date_identified: str | None = None,
     identification_qualifier: str | None = None,
     identification_remarks: str | None = None,
     verbatim_identification: str | None = None,
     is_current: int = 1,
 ) -> TaxonDetermination:
-    if (ib := (identified_by or "").strip()):
-        _persons_svc.get_or_create_person(session, full_name=ib)
     td = TaxonDetermination(
         collection_object_id=collection_object_id,
         taxon_id=taxon_id,
-        identified_by=identified_by or None,
+        identified_by_id=identified_by_id,
         date_identified=date_identified or None,
         identification_qualifier=identification_qualifier or None,
         identification_remarks=identification_remarks or None,
@@ -151,7 +148,7 @@ def update_determination_metadata(
     session: Session,
     det_id: int,
     *,
-    identified_by: str | None,
+    identified_by_id: int | None,
     date_identified: str | None,
     identification_qualifier: str | None,
     identification_remarks: str | None,
@@ -160,9 +157,7 @@ def update_determination_metadata(
     d = session.get(TaxonDetermination, det_id)
     if d is None:
         raise ValueError(f"TaxonDetermination {det_id} not found")
-    if (ib := (identified_by or "").strip()):
-        _persons_svc.get_or_create_person(session, full_name=ib)
-    d.identified_by            = identified_by
+    d.identified_by_id         = identified_by_id
     d.date_identified          = date_identified
     d.identification_qualifier = identification_qualifier
     d.identification_remarks   = identification_remarks
@@ -250,8 +245,8 @@ def recent_specimens(session: Session, limit: int = 200) -> list[RecentRow]:
             country=ce.country if ce else None,
             locality=(ce.locality or ce.verbatim_locality) if ce else None,
             event_date=(ce.event_date or ce.verbatim_event_date) if ce else None,
-            recorded_by=ce.recorded_by if ce else None,
-            identified_by=td.identified_by if td else None,
+            recorded_by=ce.recorded_by_person.full_name if (ce and ce.recorded_by_person) else None,
+            identified_by=td.identified_by_person.full_name if (td and td.identified_by_person) else None,
         )
         for co, td, ce, t in rows
     ]

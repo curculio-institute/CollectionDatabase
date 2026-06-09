@@ -1,8 +1,11 @@
 from __future__ import annotations
-from typing import Optional, List
+from typing import Optional, List, TYPE_CHECKING
 from sqlalchemy import Integer, String, Float, ForeignKey, CheckConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from .base import Base, TimestampMixin
+
+if TYPE_CHECKING:
+    from .person import Person
 
 
 class CollectingEvent(Base, TimestampMixin):
@@ -55,7 +58,8 @@ class CollectingEvent(Base, TimestampMixin):
     field_number: Mapped[Optional[str]] = mapped_column("dwc:fieldNumber", String, nullable=True)
     habitat: Mapped[Optional[str]] = mapped_column("dwc:habitat", String, nullable=True)
     sampling_protocol: Mapped[Optional[str]] = mapped_column("dwc:samplingProtocol", String, nullable=True)
-    recorded_by: Mapped[Optional[str]] = mapped_column("dwc:recordedBy", String, ForeignKey("person.full_name", ondelete="RESTRICT"), nullable=True)
+    recorded_by_id: Mapped[Optional[int]] = mapped_column(Integer, ForeignKey("person.id", ondelete="RESTRICT"), nullable=True)
+    recorded_by_person: Mapped[Optional["Person"]] = relationship("Person", lazy="select", foreign_keys="[CollectingEvent.recorded_by_id]")
     event_remarks: Mapped[Optional[str]] = mapped_column("dwc:eventRemarks", String, nullable=True)
 
     # Non-DwC: Phase-3 GIS enrichment (populated by habitat enrichment script)
