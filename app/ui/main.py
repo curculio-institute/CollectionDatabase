@@ -37,6 +37,7 @@ from app.ui.date_input import attach_date_validation
 from app.ui.person_field import build_person_field
 from app.ui.records_tab import build_records_tab
 from app.ui.mounting_session import build_mounting_session_section
+from app.ui.specimen_form import build_specimen_form
 from app.services.biological import (
     sync_biological_relationships,
     get_relationship_options,
@@ -586,49 +587,20 @@ def index():
             with ui.column().classes("w-full max-w-5xl mx-auto px-4 pt-6 pb-16 gap-4"):
 
                 # ── SPECIMEN ─────────────────────────────────────────────
-                with ui.card().classes("w-full shadow-sm") as specimen_card:
-                    ui.label("Specimen").classes("section-label")
-                    ui.separator().classes("mb-3")
-
-                    def _reserved_opts() -> dict:
-                        return _with_session(id_svc.reserved_codes)
-
-                    with ui.row().classes("w-full flex-wrap gap-3 items-end"):
-                        cat_num = ui.select(
-                            options={c: c for c in _reserved_opts()},
-                            with_input=True,
-                            clearable=True,
-                            label="identifier *",
-                        ).classes("w-32")
-                        count_in = ui.number("n", value=1, min=0, precision=0).classes("w-20")
-                        preps_in = ui.input("preparations", placeholder="pinned, in ethanol…").classes("flex-1 min-w-40")
-                    ui.timer(2.0, lambda: cat_num.set_options({c: c for c in _reserved_opts()}))
-                    with ui.expansion("More fields").classes("w-full mt-2"):
-                        with ui.grid(columns=4).classes("w-full gap-3"):
-                            stage_sel = ui.select(LIFE_STAGE_OPTIONS, label="lifeStage", value="adult").classes("col-span-1")
-                            disp_sel  = ui.select(DISPOSITION_OPTIONS, label="disposition",
-                                                   value="in collection").classes("col-span-1")
-                            basis_sel = ui.select(BASIS_OPTIONS, label="basisOfRecord",
-                                                   value="PreservedSpecimen").classes("col-span-1")
-                            _cfg_disp = get_config()
-                            inst_code_disp = (
-                                ui.input("institutionCode", value=_cfg_disp.institution_code)
-                                .props("readonly outlined dense")
-                                .classes("col-span-1")
-                                .tooltip("Set in Settings — applies to every new record")
-                            )
-                            coll_code_disp = (
-                                ui.input("collectionCode", value=_cfg_disp.collection_code)
-                                .props("readonly outlined dense")
-                                .classes("col-span-1")
-                                .tooltip("Set in Settings — applies to every new record")
-                            )
-                        rem_in = ui.input("materialEntityRemarks").classes("w-full mt-3")
-                    def _refresh_identity_display():
-                        cfg = get_config()
-                        inst_code_disp.value = cfg.institution_code
-                        coll_code_disp.value = cfg.collection_code
-                    ui.timer(2.0, _refresh_identity_display)
+                # Shared specimen-field block (see app/ui/specimen_form.py).
+                # Widgets are unpacked into locals so the save/validate/wipe
+                # paths below reference them unchanged.
+                spec = build_specimen_form(_sf, identifier_policy="standard")
+                specimen_card  = spec["card"]
+                cat_num        = spec["cat_num"]
+                count_in       = spec["count_in"]
+                preps_in       = spec["preps_in"]
+                stage_sel      = spec["stage_sel"]
+                disp_sel       = spec["disp_sel"]
+                basis_sel      = spec["basis_sel"]
+                inst_code_disp = spec["inst_code_disp"]
+                coll_code_disp = spec["coll_code_disp"]
+                rem_in         = spec["rem_in"]
 
                 # ── IDENTIFICATION ────────────────────────────────────────
                 with ui.card().classes("w-full shadow-sm") as identification_card:
@@ -1523,7 +1495,7 @@ def index():
                                         object_taxon_id=assoc["taxon_id"],
                                     )
                         event_sel.set_options(_event_opts())
-                        cat_num.set_options({c: c for c in _reserved_opts()})
+                        spec["refresh_codes"]()
                         ui.notify(f"Saved — specimen #{saved_id}  [{code}]", type="positive")
                         status_lbl.set_text(f"Last saved: #{saved_id}")
                     except Exception as exc:
