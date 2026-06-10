@@ -23,6 +23,8 @@ Search taxon names, import them with synonymy status, authorship and their paren
 - **Specimen Digitization**: Digitize Specimens based on the Darwin Core Format
 - 
 - **Import & Assign**: Assign unique identifier labels to a collection that was digitized without unique identifiers for specimens
+#### Micro-Features
+- Notifications about errors, fading by themselves unless you hover with mouse cursor above them
 
 ## Planned features:
 - Digitize specimens from foreign collections (e.g. museum visit)

@@ -356,7 +356,10 @@ def index():
                           font-size:15px; }
       .app-header       { background:var(--tp-primary) !important;
                           color:var(--tp-primary-content) !important; }
-      .app-header-row   { padding:.75rem 1.5rem; }
+      .app-header-row   { padding:.35rem 1.5rem; }
+      .app-mode-row     { padding:.3rem 1.5rem;
+                          background:var(--tp-base-foreground);
+                          border-bottom:1px solid var(--tp-base-border); }
       .app-tabs         { background:var(--tp-base-foreground) !important;
                           border-bottom:1px solid var(--tp-base-border); }
       .app-tabs .q-tab  { color:var(--tp-base-soft) !important; font-size:.9rem; min-height:44px; }
@@ -515,6 +518,17 @@ def index():
                     ui.tab("taxonomy", label="Taxonomy",              icon="account_tree")
                     ui.tab("labels",   label="Labels",                icon="label")
                     ui.tab("vocab",    label="Controlled Vocabularies", icon="manage_accounts")
+        # Row 3: mode toggle — only visible on Digitize tab
+        _ms_active = [False]
+        with ui.row().classes("app-mode-row w-full max-w-5xl mx-auto") as _mode_row:
+            mode_toggle = (
+                ui.toggle(
+                    {"standard": "Standard", "mounting": "Mounting Session"},
+                    value="standard",
+                )
+                .props("outline no-caps dense")
+            )
+        _mode_row.bind_visibility_from(main_tabs, "value", lambda v: v == "digitize")
 
     ui.timer(0.1, _init_theme, once=True)
 
@@ -570,17 +584,6 @@ def index():
                 ]
 
             with ui.column().classes("w-full max-w-5xl mx-auto px-4 pt-6 pb-16 gap-4"):
-
-                # ── MODE TOGGLE ──────────────────────────────────────────
-                _ms_active = [False]
-                with ui.row().classes("w-full items-center pb-1"):
-                    mode_toggle = (
-                        ui.toggle(
-                            {"standard": "Standard", "mounting": "Mounting Session"},
-                            value="standard",
-                        )
-                        .props("outline no-caps")
-                    )
 
                 # ── SPECIMEN ─────────────────────────────────────────────
                 with ui.card().classes("w-full shadow-sm") as specimen_card:
