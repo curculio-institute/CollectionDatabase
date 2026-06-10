@@ -5,7 +5,9 @@ from app.models.person import Person
 from app.models.base import _utcnow
 from app.services.taxa import format_scientific_name, search_taxa, TaxonOption
 from app.services.events import format_event_summary, search_collecting_events, create_collecting_event
-from app.services.specimens import save_specimen_entry, recent_specimens
+from app.services.specimens import (
+    save_specimen_entry, recent_specimens, update_collection_object,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -246,6 +248,35 @@ def test_save_specimen_entry_creates_new_event_when_no_event_id(session):
     ce = session.get(CollectingEvent, co.collecting_event_id)
     assert ce.country == "France"
     assert ce.locality == "Camargue"
+
+
+def test_update_collection_object_gifting_collection_code(session):
+    """collection_code may change (gifting); catalog_number/institution_code stay
+    immutable; an empty collection_code is ignored (NOT NULL)."""
+    t = _taxon(session)
+    ce = _event(session)
+    co = save_specimen_entry(
+        session,
+        taxon_id=t.id, event_id=ce.id, event_fields={},
+        specimen_fields={"catalog_number": "G001", "collection_code": "TEST",
+                         "institution_code": "TEST"},
+        determination_fields={},
+    )
+    session.flush()
+
+    # collection_code changes (re-homed on gifting)
+    update_collection_object(session, co.id, collection_code="NHMW")
+    assert co.collection_code == "NHMW"
+
+    # catalog_number and institution_code are immutable — ignored
+    update_collection_object(session, co.id,
+                             catalog_number="ZZZZ", institution_code="OTHER")
+    assert co.catalog_number == "G001"
+    assert co.institution_code == "TEST"
+
+    # empty collection_code is ignored, not blanked (NOT NULL column)
+    update_collection_object(session, co.id, collection_code="")
+    assert co.collection_code == "NHMW"
 
 
 def test_recent_specimens_newest_first(session):

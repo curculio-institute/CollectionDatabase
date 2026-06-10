@@ -540,7 +540,10 @@ The four-character code is the `catalogNumber` as-is; the namespace label comes 
 **DB mapping:**
 - `dwc:catalogNumber` (Python: `catalog_number`) — the 4-char code; immutable once assigned.
 - `dwc:collectionCode` (Python: `collection_code`) — the namespace short name (e.g. `"Jilg"`);
-  immutable once assigned; stored per-row so it could differ per specimen if ever needed.
+  stored per-row. **Mutable**: a specimen may be re-homed to another collection when gifted,
+  so the Records edit tab allows changing it (`update_collection_object` permits
+  `collection_code` but never blanks it — NOT NULL). `catalog_number` remains the immutable
+  join key; do not mutate it once assigned.
 - `dwc:institutionCode` — **not stored in DB**; injected from `config.institution_code` at
   DwC export time.
 

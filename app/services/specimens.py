@@ -120,12 +120,21 @@ def save_specimen_entry(
 
 
 def update_collection_object(session: Session, co_id: int, **fields) -> CollectionObject:
-    """Update mutable fields on a CollectionObject. catalog_number is immutable."""
+    """Update mutable fields on a CollectionObject.
+
+    catalog_number and institution_code are immutable. collection_code MAY change
+    (a specimen can be re-homed to another collection when gifted), but is never
+    blanked — it is NOT NULL, so an empty value is ignored.
+    """
     co = session.get(CollectionObject, co_id)
     if co is None:
         raise ValueError(f"CollectionObject {co_id} not found")
     for attr, val in fields.items():
-        if attr in ("catalog_number", "collection_code", "institution_code"):
+        if attr in ("catalog_number", "institution_code"):
+            continue  # immutable
+        if attr == "collection_code":
+            if val:  # never blank the namespace (NOT NULL); ignore empty
+                co.collection_code = val
             continue
         if val == "":
             val = None

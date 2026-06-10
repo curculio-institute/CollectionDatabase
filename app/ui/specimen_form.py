@@ -148,6 +148,17 @@ def build_specimen_form(
                         .classes("col-span-1")
                         .tooltip("Set in Settings — applies to every new record")
                     )
+                elif is_edit:
+                    # collectionCode is editable: a specimen may be re-homed to
+                    # another collection when gifted. catalog_number stays
+                    # immutable (shown read-only in the header).
+                    coll_code_disp = (
+                        ui.input("collectionCode", value=init.get("collection_code") or "")
+                        .props("dense")
+                        .classes("col-span-1")
+                        .tooltip("Change only when re-homing this specimen to "
+                                 "another collection (gifting). catalogNumber is fixed.")
+                    )
             rem_in = ui.input("materialEntityRemarks", value=v_rem).classes("w-full mt-3")
 
         if is_standard:
@@ -170,7 +181,10 @@ def build_specimen_form(
         if is_edit:
             return {
                 "catalog_number":   init.get("catalog_number") or "",
-                "collection_code":  init.get("collection_code") or "",
+                # collection_code is editable in edit mode (gifting); read live.
+                "collection_code":  (coll_code_disp.value or "").strip()
+                                    if coll_code_disp is not None
+                                    else (init.get("collection_code") or ""),
                 "institution_code": "",
             }
         cfg = get_config()  # standard

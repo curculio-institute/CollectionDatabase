@@ -253,21 +253,22 @@ def build_records_tab(session_factory, *, on_saved: callable | None = None) -> N
 
         # ── Specimen card ────────────────────────────────────────────────
         # Shared specimen-field block (see app/ui/specimen_form.py), edit policy:
-        # catalog_number/collection_code are shown read-only in the header label;
-        # the remaining fields are seeded from the DB snapshot. Widgets are
-        # unpacked into locals so the save path below references them unchanged.
+        # catalog_number is immutable (shown read-only in the header); collectionCode
+        # is editable (gifting). Remaining fields are seeded from the DB snapshot.
+        # Widgets are unpacked into locals so the save path references them unchanged.
         spec = build_specimen_form(
             session_factory,
             identifier_policy="edit",
             initial=co_snap,
-            identity_label=f"#{co_id}  {co_snap['collection_code']} {co_snap['catalog_number']}",
+            identity_label=f"#{co_id}  {co_snap['catalog_number']}",
         )
-        count_in  = spec["count_in"]
-        preps_in  = spec["preps_in"]
-        stage_sel = spec["stage_sel"]
-        disp_sel  = spec["disp_sel"]
-        basis_sel = spec["basis_sel"]
-        rem_in    = spec["rem_in"]
+        count_in     = spec["count_in"]
+        preps_in     = spec["preps_in"]
+        stage_sel    = spec["stage_sel"]
+        disp_sel     = spec["disp_sel"]
+        basis_sel    = spec["basis_sel"]
+        rem_in       = spec["rem_in"]
+        coll_code_in = spec["coll_code_disp"]
 
         # ── Identifications card ──────────────────────────────────────────
         with ui.card().classes("w-full shadow-sm"):
@@ -456,6 +457,9 @@ def build_records_tab(session_factory, *, on_saved: callable | None = None) -> N
         # ── Save bar ─────────────────────────────────────────────────────────
         def _collect_co_fields() -> dict:
             return {
+                # collection_code may change (gifting); update_collection_object
+                # ignores an empty value (NOT NULL) and never touches catalog_number.
+                "collection_code":   (coll_code_in.value or "").strip(),
                 "individual_count":  int(count_in.value or 1),
                 "preparations":      preps_in.value,
                 "life_stage":        stage_sel.value,
@@ -490,6 +494,9 @@ def build_records_tab(session_factory, *, on_saved: callable | None = None) -> N
             }
 
         def _save():
+            if not (coll_code_in.value or "").strip():
+                ui.notify("collectionCode cannot be empty.", type="warning")
+                return
             try:
                 with session_factory() as s:
                     with s.begin():
