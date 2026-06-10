@@ -26,6 +26,8 @@ from app.ui.taxon_search import build_taxon_search
 from app.ui.date_input import attach_date_validation
 from app.ui.person_field import build_person_field
 from app.ui.type_status_field import build_type_status_field
+# Controlled vocabularies — single source of truth (app/ui/vocab.py).
+from app.ui.vocab import SEX_OPTIONS, LIFE_STAGE_OPTIONS
 
 # ---------------------------------------------------------------------------
 # Example CSV — downloadable from the upload card
@@ -47,14 +49,6 @@ _EXAMPLE_CSV = (
     "47.1833,15.4667,100,1250,,Fagus-Quercus forest,beating,"
     ",1,pinned,J. Jilg,2024-06-10,reared from hazel nuts\n"
 )
-
-SAMPLING_PROTOCOLS = [
-    "hand collecting", "sweep net", "beating", "pitfall trap",
-    "light trap", "sifting", "bark peeling", "rearing", "Berlese funnel",
-    "yellow pan trap", "window trap", "observation", "",
-]
-SEX_OPTIONS        = ["male", "female", "undetermined", ""]
-LIFE_STAGE_OPTIONS = ["adult", "larva", "pupa", "egg", ""]
 
 
 # ---------------------------------------------------------------------------

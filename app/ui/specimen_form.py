@@ -26,12 +26,7 @@ from nicegui import ui
 
 from app.config import get_config
 import app.services.identifiers as id_svc
-
-LIFE_STAGE_OPTIONS  = ["adult", "larva", "pupa", "egg", ""]
-BASIS_OPTIONS       = ["PreservedSpecimen", "FossilSpecimen", "LivingSpecimen",
-                       "HumanObservation", "MachineObservation"]
-DISPOSITION_OPTIONS = ["in collection", "on loan", "donated",
-                       "exchanged", "missing", "destroyed", ""]
+from app.ui.vocab import LIFE_STAGE_OPTIONS, BASIS_OPTIONS, DISPOSITION_OPTIONS
 
 
 def build_specimen_form(

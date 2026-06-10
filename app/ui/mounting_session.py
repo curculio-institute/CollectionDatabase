@@ -27,9 +27,11 @@ from app.ui.date_input import attach_date_validation
 from app.ui.person_field import build_person_field
 from app.ui.taxon_search import build_taxon_search
 from app.ui.type_status_field import build_type_status_field
-
-_LIFE_STAGE_OPTIONS = ["adult", "larva", "pupa", "egg", ""]
-_SEX_OPTIONS = ["male", "female", "undetermined", ""]
+# Controlled vocabularies — single source of truth (app/ui/vocab.py).
+from app.ui.vocab import (
+    LIFE_STAGE_OPTIONS as _LIFE_STAGE_OPTIONS,
+    SEX_OPTIONS as _SEX_OPTIONS,
+)
 
 
 def _empty_row() -> dict:

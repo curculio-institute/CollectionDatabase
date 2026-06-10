@@ -22,8 +22,9 @@ from app.ui.type_status_field import build_type_status_field
 
 from app.models import Taxon
 import app.services.person_defaults as pd_svc
+# Controlled vocabulary — single source of truth (app/ui/vocab.py).
+from app.ui.vocab import SEX_OPTIONS as _SEX_OPTIONS
 
-_SEX_OPTIONS = ["male", "female", "undetermined", ""]
 _SEX_SYMBOL  = {"male": "♂", "female": "♀"}
 
 _TYPE_STATUS_OPTIONS = [

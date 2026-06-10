@@ -38,6 +38,7 @@ from app.ui.person_field import build_person_field
 from app.ui.records_tab import build_records_tab
 from app.ui.mounting_session import build_mounting_session_section
 from app.ui.specimen_form import build_specimen_form
+from app.ui.vocab import SAMPLING_PROTOCOLS
 from app.services.biological import (
     sync_biological_relationships,
     get_relationship_options,
@@ -47,20 +48,8 @@ from app.services.biological import (
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
-
-DEFAULT_IDENTIFIED_BY = "J. Jilg"
-
-SAMPLING_PROTOCOLS = [
-    "hand collecting", "sweep net", "beating", "pitfall trap",
-    "light trap", "sifting", "bark peeling", "rearing", "Berlese funnel",
-    "yellow pan trap", "window trap", "observation", "",
-]
-SEX_OPTIONS         = ["male", "female", "undetermined", ""]
-LIFE_STAGE_OPTIONS  = ["adult", "larva", "pupa", "egg", ""]
-BASIS_OPTIONS       = ["PreservedSpecimen", "FossilSpecimen", "LivingSpecimen",
-                       "HumanObservation", "MachineObservation"]
-DISPOSITION_OPTIONS = ["in collection", "on loan", "donated",
-                       "exchanged", "missing", "destroyed", ""]
+# Controlled-vocabulary lists live in app/ui/vocab.py (single source of truth).
+# main.py only references SAMPLING_PROTOCOLS (imported above).
 
 TABLE_COLS = [
     {"name": "id",       "label": "ID",       "field": "id",       "align": "right",  "sortable": True},

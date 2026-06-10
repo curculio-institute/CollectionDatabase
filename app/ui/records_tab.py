@@ -15,24 +15,15 @@ from app.ui.identification_list import build_identification_list
 from app.ui.date_input import attach_date_validation
 from app.ui.person_field import build_person_field
 from app.ui.specimen_form import build_specimen_form
+# Controlled vocabularies live in app/ui/vocab.py (single source of truth).
+# Only samplingProtocol is still referenced in this file (event form).
+from app.ui.vocab import SAMPLING_PROTOCOLS as _SAMPLING_PROTOCOLS
 
 _FLOAT_ATTRS = frozenset({
     "decimal_latitude", "decimal_longitude",
     "coordinate_uncertainty_in_meters", "coordinate_precision",
     "minimum_elevation_in_meters", "maximum_elevation_in_meters",
 })
-
-_SAMPLING_PROTOCOLS = [
-    "hand collecting", "sweep net", "beating", "pitfall trap",
-    "light trap", "sifting", "bark peeling", "rearing", "Berlese funnel",
-    "yellow pan trap", "window trap", "observation", "",
-]
-_SEX_OPTIONS        = ["male", "female", "undetermined", ""]
-_LIFE_STAGE_OPTIONS = ["adult", "larva", "pupa", "egg", ""]
-_BASIS_OPTIONS      = ["PreservedSpecimen", "FossilSpecimen", "LivingSpecimen",
-                       "HumanObservation", "MachineObservation"]
-_DISPOSITION_OPTIONS= ["in collection", "on loan", "donated",
-                       "exchanged", "missing", "destroyed", ""]
 
 
 def build_records_tab(session_factory, *, on_saved: callable | None = None) -> None:
