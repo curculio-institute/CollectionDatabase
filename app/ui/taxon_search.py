@@ -347,6 +347,8 @@ def build_taxon_search(
     nomenclatural_codes: list[str] | None = None,
     sources: tuple | list = ("local", "taxonworks"),
     placeholder: str = "Enter genus or species name…",
+    initial_taxon_id: int | None = None,
+    initial_label: str = "",
 ) -> dict:
     """Build the taxon-search widget in the current NiceGUI context.
 
@@ -759,4 +761,9 @@ def build_taxon_search(
     search_inp.on("blur", _on_blur)
 
     state["clear"] = _clear
+
+    if initial_taxon_id and initial_label:
+        _enter_selected(_html_mod.escape(initial_label), label=initial_label)
+        state["taxon_id"] = initial_taxon_id
+
     return state

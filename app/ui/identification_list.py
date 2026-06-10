@@ -179,7 +179,7 @@ def build_identification_list(
             p for p in [
                 d.get("type_status"),
                 sex_sym,
-                d["identified_by"],
+                f"det. {d['identified_by']}" if d["identified_by"] else None,
                 d["date_identified"],
                 d["identification_qualifier"],
             ] if p

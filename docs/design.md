@@ -266,6 +266,26 @@ stops automatically when the browser tab closes.
 They are independent fields to allow future support for specimens from guest collections,
 where the two values may differ from the home collection defaults.
 
+### "det." display convention
+
+Whenever an identifying person's name is shown in **any UI display context** — a list row,
+a table cell, a summary line — it must be prefixed with `det.`:
+
+```
+det. Firstname Lastname
+```
+
+This applies to:
+- The meta line in the identification list (`identification_list.py`)
+- The "det" column in the recent specimens table (`main.py`)
+- The secondary info line in mounting session specimen rows (`mounting_session.py`)
+- Label PDFs (`labels.py`) — already uses this prefix
+
+It does **not** apply to form field labels, field placeholders, or the field value inside
+an `identifiedBy` input — only to read-only display of a resolved person name.
+
+---
+
 ### New-entry badge standard
 
 Whenever a widget presents the user with an item or field value that **does not yet exist
@@ -615,12 +635,20 @@ current context. The caller must wrap both in a flex row/div:
 
 ```python
 with ui.row().classes("flex-1 min-w-40 items-center gap-1"):
+    def _default_idby() -> str | None:
+        with session_factory() as s:
+            return pd_svc.get_defaults(s)[0]
+
     person_state = build_person_field(
         session_factory, "identifiedBy",
-        default_fn=lambda: get_config().default_identified_by or None,
+        default_fn=_default_idby,
         initial_value=loaded_value,
     )
 ```
+
+**Important:** person defaults live in the `person_defaults` DB table, not in
+`AppConfig`/`config.json`. Always retrieve them via `pd_svc.get_defaults(session)` —
+`[0]` for `identified_by`, `[1]` for `recorded_by`. Never use `get_config()` for this.
 
 The push_pin button uses `bind_visibility_from(sel, "value", lambda v: not v)` — it is
 only visible when the field is empty, consistent with Tier 2 field behaviour (see §3).
@@ -789,19 +817,87 @@ Add `"commit": callable` only if the widget creates DB rows on save (person fiel
 ---
 
 ## CatalogNumber and printing workflow
-For now, CatalogNumber should be generated as "collectionCode" + "-" + "5 digit ascending number", starting at 00000. it would climb like 00001 JJPC-03963. The Code label would have one QR-Code and the CatalogNumber with the collectionCode- (like JJPC-) in one line and the numerical in the next line. the numerical should have a larger size.
 
-### CatalogNumber Life cycle:
-CatalogNumber can be created in several fashions: Plain generation, or alongside a workflow named "Mounting Session". I will now elaborate on that:
-Mounting Session would be a special "mode" for Specimen Digitization, as this allows us to use the same UI elements: bug fixes and added features don't need to be duplicated. Think through if this is the right way to go.
+CatalogNumber format: `"collectionCode" + "-" + 5-digit zero-padded ascending number`
+(e.g. `JJPC-00001`, `JJPC-03963`). Generated via `id_svc.reserve_sequential_codes()`.
 
-Mounting Session mode would be like a normal Specimen Digitization, but it will save not just one specimen into the database, but several with an identical collectingEvent and identical biological associations. Imagine me taking several specimen out of the same collecting vial, mounting them, and then needing to add labels to them and add them to the database. 
+Code label layout: one QR-code; collection code prefix on one line; the 5-digit number on
+the next line in a larger size.
 
-Normally, Specimen Digitization would not send anything to the printing queue (it should not).
+### CatalogNumber lifecycle
 
-### UI
-To use Mounting Session Mode, there needs to be a toggle right at the top. We will later add additional modes. The toggle would also look like tabs. Toggling it would wipe all fields to flush existing unsaved entries (is this necessary? probably more stable that way).
-Toggling to Mounting Session mode will replace the specimen form with another form ("Specimen to be labeled") with similar function, and "Save Specimen" becomes "Save Specimens and Print labels".
-In the "Specimen to be labeled" form, the user can specify the number of entries (Specimen) to make. Each Specimen is represented as a Row, each with a newly generated identifier (this will be important later) and several tier 1 autofilled fields: n is 1, preparation is pinned, lifeStage is adult, disposition is in collection, basisOfRecord is PreservedSpecimen, institutionCode and collectionCode are the defaults from config and a tier 3 as in the specimen form. Each row can also get an identification, which is created via a modal that shows the "Identifications" form that is used in normal Specimen Digitization. To make things quicker, each row can be assigned the identification from the previous row (or do you have a better idea?).
+Codes are created in two ways:
+1. **Plain generation** — Labels tab, reserve a batch, print, pin physically.
+2. **Mounting Session** — codes generated atomically at save time alongside the DB records.
 
-Clicking "Save Specimens and Print labels" would send labels to the print queue and generate new identifiers. You'd make an entry and provide the number of specimens/entries to be made. This is distinct from the number of specimen in the darwin core entry (that is for several specimen on the same pin).  The printing sheet should always have separated rows for certain elements. Coming from Mounting Session Mode, there would be a row of the locality labels, directly below the identifier label, and below the identification label if present. One row would only have duplicates from one entry.
+Normal Specimen Digitization does **not** send anything to the print queue.
+
+### Mounting Session mode
+
+A special mode of the Digitize tab. The collecting event section, `recordedBy`, and
+biological associations are shared with normal mode (same widgets, same DOM). The mode
+toggle swaps visibility between:
+
+- **Standard mode**: taxon/sex/count/etc. fields + "Save specimen" button.
+- **Mounting Session**: "Specimens to be labeled" card + "Save Specimens and Print labels"
+  button (`mounting_session.py`).
+
+Toggling wipes all unsaved fields (both modes) for consistency.
+
+#### Specimens to be labeled card
+
+Each row represents one specimen. Rows are added/removed dynamically. Per-row fields:
+
+| Field | Tier | Default |
+|---|---|---|
+| `n` (individual count) | 1 | `1` |
+| `preparations` | 1 | `pinned` |
+| `lifeStage` | 1 | `adult` |
+| `disposition` | 1 | `in collection` (hardcoded at save) |
+| `basisOfRecord` | 1 | `PreservedSpecimen` (hardcoded at save) |
+| `institutionCode` | 3 | from config |
+| `collectionCode` | 3 | from config |
+| identification | per-row modal | none (required before save) |
+
+The catalog number is shown as `[auto]` and assigned at save time.
+
+#### Row identification display
+
+When an identification is set, the row shows:
+
+- A button with the taxon name and a ✓ icon (click to re-open the modal).
+- A secondary line in muted text with all non-empty metadata, dot-separated:
+  `sex · typeStatus · qualifier · det. Firstname Lastname · dateIdentified`
+
+#### Set identification modal
+
+Contains all fields of the identification form:
+
+| Field | Widget |
+|---|---|
+| taxon | `build_taxon_search` (local + TaxonWorks) |
+| `identifiedBy` | `build_person_field` with push_pin default |
+| `dateIdentified` | `ui.input` + `attach_date_validation(no_future=True)` |
+| `sex` | `ui.select` (`_SEX_OPTIONS`) |
+| `typeStatus` | `build_type_status_field` |
+| `identificationQualifier` | `ui.input` |
+| `remarks` | `ui.input` |
+
+Buttons: **Cancel** / **Apply to all below** / **Apply**. "Apply to all below" copies the
+identification to all rows from the current one downward — the fast path for a vial where
+all specimens are the same species. A copy-from-previous (↑) shortcut and copy-to-all-below
+(↓) shortcut also appear inline on rows.
+
+#### Save behaviour
+
+One transaction. `id_svc.reserve_sequential_codes()` generates all codes at once. The loop
+creates one `collecting_event` on the first iteration and reuses its ID for all subsequent
+specimens. Each specimen gets: identifier label + locality label + determination label queued
+to `print_queue`. Biological associations (shared from the bio section) are applied to every
+specimen row.
+
+#### Print sheet layout
+
+Coming from Mounting Session, the print sheet interleaves per-specimen: identifier label row
+/ locality label row / determination label row (if present). One group per specimen; no
+mixing across specimens on the same sheet row.

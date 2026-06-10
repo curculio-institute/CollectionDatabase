@@ -507,7 +507,7 @@ def index():
                         "locality":r.locality or "",
                         "date":    r.event_date or "",
                         "leg":     r.recorded_by or "",
-                        "det":     r.identified_by or "",
+                        "det":     f"det. {r.identified_by}" if r.identified_by else "",
                     }
                     for r in rows
                 ]

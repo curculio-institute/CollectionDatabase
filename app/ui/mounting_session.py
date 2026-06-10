@@ -22,11 +22,14 @@ import app.services.identifiers as id_svc
 import app.services.print_queue as pq_svc
 from app.config import get_config
 from app.services.biological import save_biological_association
+import app.services.person_defaults as pd_svc
 from app.ui.date_input import attach_date_validation
 from app.ui.person_field import build_person_field
 from app.ui.taxon_search import build_taxon_search
+from app.ui.type_status_field import build_type_status_field
 
 _LIFE_STAGE_OPTIONS = ["adult", "larva", "pupa", "egg", ""]
+_SEX_OPTIONS = ["male", "female", "undetermined", ""]
 
 
 def _empty_row() -> dict:
@@ -61,13 +64,19 @@ def build_mounting_session_section(
                     session_factory,
                     sources=("local", "taxonworks"),
                     placeholder="Enter genus or species name…",
+                    initial_taxon_id=prefill.get("taxon_id"),
+                    initial_label=prefill.get("taxon_label") or "",
                 )
+
+                def _default_idby() -> str | None:
+                    with session_factory() as s:
+                        return pd_svc.get_defaults(s)[0]
 
                 with ui.row().classes("w-full items-center gap-1 mt-3"):
                     idby_state = build_person_field(
                         session_factory,
                         "identifiedBy",
-                        default_fn=lambda: get_config().default_identified_by or None,
+                        default_fn=_default_idby,
                         initial_value=prefill.get("identified_by_name"),
                     )
 
@@ -81,11 +90,28 @@ def build_mounting_session_section(
                 )
                 attach_date_validation(date_in, no_future=True)
 
+                with ui.row().classes("w-full flex-wrap gap-2 mt-2"):
+                    sex_sel = ui.select(
+                        _SEX_OPTIONS, label="sex",
+                        value=prefill.get("sex") or "",
+                    ).classes("w-32")
+                    type_state = build_type_status_field(
+                        initial_value=prefill.get("type_status") or None,
+                        classes="w-36",
+                    )
+
                 qual_in = (
                     ui.input(
                         "identificationQualifier",
                         placeholder="cf., aff., ?",
                         value=prefill.get("qualifier") or "",
+                    )
+                    .classes("w-full mt-2")
+                )
+                rem_in = (
+                    ui.input(
+                        "remarks",
+                        value=prefill.get("remarks") or "",
                     )
                     .classes("w-full mt-2")
                 )
@@ -109,8 +135,10 @@ def build_mounting_session_section(
                         "identified_by_id":   idby_id,
                         "identified_by_name": idby_state["get_value"](),
                         "date_identified":    date_in.value or None,
+                        "sex":                sex_sel.value or None,
+                        "type_status":        type_state["get_value"]() or None,
                         "qualifier":          qual_in.value or None,
-                        "remarks":            None,
+                        "remarks":            rem_in.value or None,
                     }
                     targets = range(row_idx, len(rows)) if to_all_below else range(row_idx, row_idx + 1)
                     for i in targets:
@@ -211,14 +239,32 @@ def build_mounting_session_section(
                                 .tooltip("Copy identification from row above")
                             )
                     else:
-                        (
-                            ui.button(
-                                det["taxon_label"], icon="check_circle",
-                                on_click=lambda _, idx=i: _open_det_dialog(idx),
+                        with ui.column().classes("gap-0 shrink-0"):
+                            (
+                                ui.button(
+                                    det["taxon_label"], icon="check_circle",
+                                    on_click=lambda _, idx=i: _open_det_dialog(idx),
+                                )
+                                .props("flat dense size=sm color=positive")
+                                .tooltip("Click to change identification")
                             )
-                            .props("flat dense size=sm color=positive")
-                            .tooltip("Click to change identification")
-                        )
+                            _idby = det.get("identified_by_name")
+                            _parts = [
+                                p for p in [
+                                    det.get("sex") or None,
+                                    det.get("type_status") or None,
+                                    det.get("qualifier") or None,
+                                    f"det. {_idby}" if _idby else None,
+                                    det.get("date_identified") or None,
+                                ]
+                                if p
+                            ]
+                            if _parts:
+                                (
+                                    ui.label(" · ".join(_parts))
+                                    .classes("text-xs pl-2")
+                                    .style("color:var(--tp-base-soft)")
+                                )
                         # copy-to-all-below shortcut
                         if i < len(rows) - 1:
                             (
@@ -299,8 +345,8 @@ def build_mounting_session_section(
                                 "basis_of_record":   "PreservedSpecimen",
                             },
                             determination_fields={
-                                "sex":                      None,
-                                "type_status":              None,
+                                "sex":                      det.get("sex"),
+                                "type_status":              det.get("type_status"),
                                 "identified_by_id":         det["identified_by_id"],
                                 "date_identified":          det["date_identified"],
                                 "identification_qualifier": det["qualifier"],
