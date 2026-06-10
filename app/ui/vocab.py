@@ -7,9 +7,9 @@ Edit a list here and every dropdown picks it up.
 Convention: the empty-string sentinel ("") is always **last** so the blank option
 renders at the bottom of every ui.select (see CLAUDE.md → UI conventions).
 
-Note: BASIS_OPTIONS and DISPOSITION_OPTIONS mirror values that also have DB CHECK
-constraints — keep them in sync with the corresponding migrations if either set
-of allowed values changes.
+Note: BASIS_OPTIONS and DISPOSITION_OPTIONS mirror values constrained by DB CHECKs
+(migration 0019). They MUST stay a subset of those constraints or saving raises an
+IntegrityError. Keep them in sync if a future migration changes the allowed values.
 """
 from __future__ import annotations
 
@@ -17,11 +17,14 @@ SEX_OPTIONS = ["male", "female", "undetermined", ""]
 
 LIFE_STAGE_OPTIONS = ["adult", "larva", "pupa", "egg", ""]
 
-BASIS_OPTIONS = [
-    "PreservedSpecimen", "FossilSpecimen", "LivingSpecimen",
-    "HumanObservation", "MachineObservation",
-]
+# Must match ck_co_basis_of_record (migration 0019): exactly these three values.
+# basisOfRecord is NOT NULL, so no blank option. (TaxonWorks' DwC import accepts
+# only PreservedSpecimen/FossilSpecimen — HumanObservation is local-only, see
+# CLAUDE.md §5b — but it is a valid DB value and may be selected here.)
+BASIS_OPTIONS = ["PreservedSpecimen", "FossilSpecimen", "HumanObservation"]
 
+# Must match ck_co_disposition (migration 0019): these six, or NULL. The trailing
+# "" maps to NULL on save.
 DISPOSITION_OPTIONS = [
     "in collection", "on loan", "donated",
     "exchanged", "missing", "destroyed", "",
