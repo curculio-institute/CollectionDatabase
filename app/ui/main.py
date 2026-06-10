@@ -328,6 +328,11 @@ def index():
         --tp-base-lighter:      rgb(55,65,81);
         --tp-base-border:       rgb(203,213,225);
         --tp-base-content:      rgb(0,0,0);
+        /* Digitize mode accents (segmented toggle) — all ≥4.5:1 with white text,
+           used in BOTH themes so the active segment's label stays readable. */
+        --mode-standard:        rgb(3,105,161);   /* sky-700  */
+        --mode-mounting:        rgb(180,83,9);    /* amber-800 */
+        --mode-visiting:        rgb(15,118,110);  /* teal-700  */
       }
       .dark {
         --tp-primary:           rgb(23,23,23);
@@ -341,6 +346,8 @@ def index():
         --tp-base-lighter:      rgb(220,220,220);
         --tp-base-border:       rgb(55,55,55);
         --tp-base-content:      rgb(255,255,255);
+        /* mode accents inherit the deep, white-text-safe :root set (they read
+           fine as saturated fills on the dark surface). */
       }
       body              { background:var(--tp-base-background); color:var(--tp-base-content);
                           font-size:15px; }
@@ -350,6 +357,26 @@ def index():
       .app-mode-row     { padding:.3rem 1.5rem;
                           background:var(--tp-base-foreground);
                           border-bottom:1px solid var(--tp-base-border); }
+      /* ── Digitize mode segmented control ─────────────────────────────── */
+      .seg-toggle       { display:inline-flex; align-items:stretch;
+                          border:1px solid var(--tp-base-border);
+                          border-radius:9px; overflow:hidden;
+                          background:var(--tp-base-background); }
+      .seg-btn          { display:inline-flex; align-items:center; gap:6px;
+                          padding:5px 14px; font-size:.85rem; font-weight:500;
+                          color:var(--tp-base-soft); cursor:pointer;
+                          border-right:1px solid var(--tp-base-border);
+                          transition:background .12s ease, color .12s ease;
+                          user-select:none; white-space:nowrap; line-height:1.3; }
+      .seg-btn:last-child { border-right:none; }
+      .seg-btn:hover      { background:var(--tp-base-muted);
+                            color:var(--tp-base-content); }
+      .seg-btn .seg-ico   { font-size:1.15rem; }
+      .seg-btn.active     { color:#fff; background:var(--seg-color); }
+      .seg-btn.active:hover { color:#fff; background:var(--seg-color);
+                              filter:brightness(1.05); }
+      /* the active segment's left border should match its fill, not the grey */
+      .seg-btn.active + .seg-btn { border-left:none; }
       .app-tabs         { background:var(--tp-base-foreground) !important;
                           border-bottom:1px solid var(--tp-base-border); }
       .app-tabs .q-tab  { color:var(--tp-base-soft) !important; font-size:.9rem; min-height:44px; }
@@ -508,20 +535,39 @@ def index():
                     ui.tab("taxonomy", label="Taxonomy",              icon="account_tree")
                     ui.tab("labels",   label="Labels",                icon="label")
                     ui.tab("vocab",    label="Controlled Vocabularies", icon="manage_accounts")
-        # Row 3: mode toggle — only visible on Digitize tab
+        # Row 3: Digitize mode — segmented control, only visible on Digitize tab.
+        # Custom (not ui.toggle) so each segment gets its own accent colour + icon.
         _ms_active = [False]
+        _mode_defs = [
+            ("standard", "Standard",                  "biotech",   "var(--mode-standard)"),
+            ("mounting", "Mounting Session",          "grid_view", "var(--mode-mounting)"),
+            ("visiting", "Digitize other Collection", "museum",    "var(--mode-visiting)"),
+        ]
+        _mode_state = {"value": "standard", "handler": None}
+        _seg_btns: dict[str, object] = {}
+
+        def _set_mode(val: str) -> None:
+            if val == _mode_state["value"]:
+                return
+            _mode_state["value"] = val
+            for v, b in _seg_btns.items():
+                b.classes(add="active") if v == val else b.classes(remove="active")
+            if _mode_state["handler"]:
+                _mode_state["handler"](val)
+
         with ui.row().classes("app-mode-row w-full max-w-5xl mx-auto") as _mode_row:
-            mode_toggle = (
-                ui.toggle(
-                    {
-                        "standard": "Standard",
-                        "mounting": "Mounting Session",
-                        "visiting": "Visiting Collection",
-                    },
-                    value="standard",
-                )
-                .props("outline no-caps dense")
-            )
+            with ui.element("div").classes("seg-toggle"):
+                for _val, _label, _icon, _color in _mode_defs:
+                    _b = (
+                        ui.element("div")
+                        .classes("seg-btn" + (" active" if _val == "standard" else ""))
+                        .style(f"--seg-color:{_color}")
+                        .on("click", lambda _e, v=_val: _set_mode(v))
+                    )
+                    with _b:
+                        ui.icon(_icon).classes("seg-ico")
+                        ui.label(_label)
+                    _seg_btns[_val] = _b
         _mode_row.bind_visibility_from(main_tabs, "value", lambda v: v == "digitize")
 
     ui.timer(0.1, _init_theme, once=True)
@@ -1521,8 +1567,7 @@ def index():
                     for fn in _refreshers.values():
                         fn()
 
-                def _on_mode_toggle(e):
-                    mode = e.value
+                def _on_mode_toggle(mode):
                     is_ms       = mode == "mounting"
                     is_visiting = mode == "visiting"
                     is_standard = mode == "standard"
@@ -1558,7 +1603,7 @@ def index():
                     protocol_sel.value = ""
                     ms_state["wipe"]()
 
-                mode_toggle.on_value_change(_on_mode_toggle)
+                _mode_state["handler"] = _on_mode_toggle
 
 
         # ================================================================
