@@ -258,6 +258,54 @@ def index():
         '<link rel="icon" type="image/svg+xml" href="/static/favicon.svg">'
     )
 
+    # ── Notification hover-pause ─────────────────────────────────────────
+    # Global window.setTimeout wrapper: when a 1-30 s timer fires (notification
+    # range), check document.querySelector('.q-notification:hover').  If a
+    # notification is hovered, poll every 150 ms until it isn't, then fire
+    # after an 800 ms grace period.  window.clearTimeout is also wrapped so
+    # that Quasar's own early-dismiss path sets `cancelled = true` and stops
+    # any in-progress poll loop.  Installed before Quasar loads — no timing
+    # or DOM-body-null issue possible.
+    ui.add_head_html("""
+    <script>
+    (function () {
+      if (window._notifyHoverInit) return;
+      window._notifyHoverInit = true;
+
+      var _origST = window.setTimeout;
+      var _origCT = window.clearTimeout;
+      var _cancelMap = new Map();
+
+      window.clearTimeout = function (id) {
+        var cancel = _cancelMap.get(id);
+        if (cancel) { cancel(); _cancelMap.delete(id); }
+        return _origCT.call(window, id);
+      };
+
+      window.setTimeout = function (fn, delay) {
+        if (typeof fn !== 'function' || !(delay >= 1000 && delay <= 30000)) {
+          return _origST.apply(window, arguments);
+        }
+        var cancelled = false;
+        function fire() { if (!cancelled) fn(); }
+        function onFire(everHovered) {
+          if (cancelled) return;
+          var hovered = !!document.querySelector('.q-notification:hover');
+          if (hovered) {
+            _origST(function () { onFire(true); }, 150);
+          } else if (everHovered) {
+            _origST(fire, 800);
+          } else {
+            fire();
+          }
+        }
+        var id = _origST(function () { onFire(false); }, delay);
+        _cancelMap.set(id, function () { cancelled = true; });
+        return id;
+      };
+    })();
+    </script>""")
+
     # ── flash-prevention (runs before CSS paint) ─────────────────────────
     ui.add_head_html("""
     <script>
@@ -304,23 +352,30 @@ def index():
         --tp-base-border:       rgb(55,55,55);
         --tp-base-content:      rgb(255,255,255);
       }
-      body              { background:var(--tp-base-background); color:var(--tp-base-content); }
+      body              { background:var(--tp-base-background); color:var(--tp-base-content);
+                          font-size:15px; }
       .app-header       { background:var(--tp-primary) !important;
                           color:var(--tp-primary-content) !important; padding:.75rem 1.5rem; }
       .app-tabs         { background:var(--tp-base-foreground) !important;
                           border-bottom:1px solid var(--tp-base-border); }
-      .app-tabs .q-tab  { color:var(--tp-base-soft) !important; font-size:.82rem; min-height:42px; }
+      .app-tabs .q-tab  { color:var(--tp-base-soft) !important; font-size:.9rem; min-height:44px; }
       .app-tabs .q-tab--active      { color:var(--tp-secondary) !important; }
       .app-tabs .q-tabs__indicator  { background:var(--tp-secondary) !important; }
-      .section-label    { font-size:.68rem; font-weight:700; letter-spacing:.1em;
+      .section-label    { font-size:.75rem; font-weight:700; letter-spacing:.1em;
                           text-transform:uppercase; color:var(--tp-base-soft); }
-      .event-linked     { color:var(--tp-secondary); font-size:.8rem; font-style:italic; }
-      .event-new        { color:var(--tp-base-soft);  font-size:.8rem; font-style:italic; }
+      .event-linked     { color:var(--tp-secondary); font-size:.875rem; font-style:italic; }
+      .event-new        { color:var(--tp-base-soft);  font-size:.875rem; font-style:italic; }
+      /* Quasar dense input / select — make field text and labels readable */
+      .q-field__native,
+      .q-field__input   { font-size:15px !important; }
+      .q-field--dense .q-field__label,
+      .q-field--dense .q-field__marginal { font-size:.8rem !important; }
+      .q-item__label    { font-size:.9375rem; }
       .q-card           { border:1px solid var(--tp-base-border) !important;
                           background:var(--tp-base-foreground) !important; }
       .btn-save         { background:var(--tp-secondary) !important; color:#fff !important; }
       .btn-save:hover   { background:var(--tp-secondary-hover) !important; }
-      .q-table thead tr th       { color:var(--tp-base-lighter); font-size:.72rem; }
+      .q-table thead tr th       { color:var(--tp-base-lighter); font-size:.8rem; }
       .q-table tbody tr td       { border-bottom:1px solid var(--tp-base-muted);
                                    color:var(--tp-base-content); }
       .q-table tbody tr:hover td { background:var(--tp-base-background) !important; }
@@ -340,21 +395,21 @@ def index():
       .dark .q-tab-panel         { background:var(--tp-base-background) !important; }
       /* ── taxonomy checklist ────────────────────────────────────────── */
       /* rank-based typography — mirrors scientific paper checklists */
-      .rank-family    { font-size:1rem;   font-weight:700;
+      .rank-family    { font-size:1.05rem; font-weight:700;
                         text-transform:uppercase; letter-spacing:.06em; }
-      .rank-subfamily { font-size:.9rem;  font-weight:600; }
-      .rank-tribe     { font-size:.875rem;font-weight:500; }
-      .rank-subtribe  { font-size:.85rem; font-style:italic; }
-      .rank-genus     { font-size:.875rem;font-weight:700; font-style:italic; }
-      .rank-subgenus  { font-size:.85rem; font-style:italic; }
-      .rank-species     { font-size:.85rem; font-style:italic; }
-      .rank-subspecies  { font-size:.85rem; font-style:italic; }
-      .rank-variety     { font-size:.85rem; font-style:italic; }
-      .rank-form        { font-size:.85rem; font-style:italic; }
-      .rank-synonym   { font-size:.82rem; font-style:italic;
+      .rank-subfamily { font-size:.95rem;  font-weight:600; }
+      .rank-tribe     { font-size:.9rem;  font-weight:500; }
+      .rank-subtribe  { font-size:.875rem; font-style:italic; }
+      .rank-genus     { font-size:.9rem;  font-weight:700; font-style:italic; }
+      .rank-subgenus  { font-size:.875rem; font-style:italic; }
+      .rank-species     { font-size:.875rem; font-style:italic; }
+      .rank-subspecies  { font-size:.875rem; font-style:italic; }
+      .rank-variety     { font-size:.875rem; font-style:italic; }
+      .rank-form        { font-size:.875rem; font-style:italic; }
+      .rank-synonym   { font-size:.85rem; font-style:italic;
                         color:var(--tp-base-soft); }
       /* count chips */
-      .tax-stat-chip  { display:inline-block; font-size:.65rem; font-weight:600;
+      .tax-stat-chip  { display:inline-block; font-size:.7rem; font-weight:600;
                         padding:1px 6px; border-radius:10px; vertical-align:middle; }
       .tax-stat-spp   { background:rgba(3,105,161,.1);  color:var(--tp-secondary); }
       .tax-stat-spec  { background:var(--tp-base-muted); color:var(--tp-base-lighter); }

@@ -366,8 +366,7 @@ def build_identification_list(
 
     # ── Add new identification ────────────────────────────────────────────────
     ui.separator().classes("my-3")
-    ui.label("Add identification") \
-        .classes("text-xs font-semibold uppercase tracking-wider text-grey-6 mb-1")
+    ui.label("Add identification").classes("section-label mb-1")
 
     add_taxon_state = build_taxon_search(session_factory)
 

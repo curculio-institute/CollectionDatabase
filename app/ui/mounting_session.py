@@ -262,7 +262,7 @@ def build_mounting_session_section(
                             if _parts:
                                 (
                                     ui.label(" · ".join(_parts))
-                                    .classes("text-xs pl-2")
+                                    .classes("text-sm pl-2")
                                     .style("color:var(--tp-base-soft)")
                                 )
                         # copy-to-all-below shortcut

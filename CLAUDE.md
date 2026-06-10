@@ -385,6 +385,11 @@ Biological association UI: CRUD in DB, UI not yet built.
 
 ## 8. Conventions for Claude Code
 
+### Git discipline
+**Always `git commit` before making any code changes.** Every task starts with a commit of
+the current clean working tree so there is always a rollback point. This applies to
+experiments, UI tweaks, and small changes — not just large features.
+
 - Schema changes → Alembic migration, never hand-edited DDL on a live DB.
 - Data transforms → standalone, deterministic, tested scripts. No LLM in the data path.
 - Heavily test the **sync diff** and **habitat ambiguity** logic.

@@ -16,6 +16,7 @@ _ISO_YEAR_MONTH = re.compile(r'^\d{4}-\d{1,2}$')
 _ISO_FULL       = re.compile(r'^\d{4}-\d{1,2}-\d{1,2}$')
 _EU_FULL        = re.compile(r'^(\d{1,2})\.(\d{1,2})\.(\d{4})$')   # DD.MM.YYYY
 _EU_MONTH_YEAR  = re.compile(r'^(\d{1,2})\.(\d{4})$')              # MM.YYYY
+_SPACE_FULL     = re.compile(r'^(\d{4})\s+(\d{1,2})\s+(\d{1,2})$') # YYYY MM DD
 
 
 def _check_future(normalised: str) -> str | None:
@@ -48,8 +49,9 @@ def parse_dwc_date(
 
     Accepted input:
       ISO 8601  : YYYY, YYYY-MM, YYYY-MM-DD  (zero-padding normalised)
-      European  : DD.MM.YYYY, D.M.YYYY → YYYY-MM-DD
-                  MM.YYYY              → YYYY-MM
+      Space-sep : YYYY MM DD             → YYYY-MM-DD
+      European  : DD.MM.YYYY, D.M.YYYY  → YYYY-MM-DD
+                  MM.YYYY               → YYYY-MM
       Interval  : <date>/<date>  (when allow_interval=True; eventDate only)
 
     no_future=True rejects dates that lie after today (dateIdentified fields).
@@ -57,6 +59,11 @@ def parse_dwc_date(
     raw = raw.strip()
     if not raw:
         return ("", None)
+
+    # Normalize YYYY MM DD (space-separated) to YYYY-MM-DD before further checks.
+    m = _SPACE_FULL.match(raw)
+    if m:
+        raw = f"{m.group(1)}-{m.group(2)}-{m.group(3)}"
 
     if "/" in raw:
         if not allow_interval:

@@ -171,7 +171,7 @@ _TW_CSS = """
 .dark .tw-dropdown-item:hover { background:rgb(48,48,48); }
 .tw-dropdown-empty       { padding:12px 16px; color:rgb(156,163,175);
                            font-size:.85rem; font-style:italic; }
-.tw-section-label        { padding:4px 16px 2px; font-size:.65rem; font-weight:700;
+.tw-section-label        { padding:4px 16px 2px; font-size:.72rem; font-weight:700;
                            letter-spacing:.08em; text-transform:uppercase;
                            color:rgb(156,163,175); border-bottom:1px solid rgb(243,244,246); }
 .dark .tw-section-label  { border-color:rgb(48,48,48); }
@@ -199,7 +199,7 @@ _TW_CSS = """
 .dark .tw-dropdown-item--powo      { background:rgba(52,211,153,.06); }
 .tw-dropdown-item--powo:hover      { background:rgba(16,185,129,.10) !important; }
 .dark .tw-dropdown-item--powo:hover{ background:rgba(52,211,153,.13) !important; }
-.powo-section-label  { padding:4px 16px 2px; font-size:.65rem; font-weight:700;
+.powo-section-label  { padding:4px 16px 2px; font-size:.72rem; font-weight:700;
                        letter-spacing:.08em; text-transform:uppercase;
                        color:rgb(16,185,129); border-bottom:1px solid rgb(243,244,246); }
 .dark .powo-section-label { border-color:rgb(48,48,48); color:rgb(52,211,153); }

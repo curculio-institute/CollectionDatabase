@@ -25,8 +25,8 @@ AUTO_CHANGED_CSS = """
 
 
 _FORMAT_HINT = {
-    False: "Expected: YYYY, YYYY-MM, YYYY-MM-DD, or European DD.MM.YYYY / MM.YYYY.",
-    True:  "Expected: YYYY-MM-DD, YYYY-MM-DD/YYYY-MM-DD, or European equivalents.",
+    False: "Expected: YYYY, YYYY-MM, YYYY-MM-DD, YYYY MM DD, or European DD.MM.YYYY / MM.YYYY.",
+    True:  "Expected: YYYY-MM-DD, YYYY-MM-DD/YYYY-MM-DD, YYYY MM DD, or European equivalents.",
 }
 
 
