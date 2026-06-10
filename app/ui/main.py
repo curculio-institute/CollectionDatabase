@@ -355,7 +355,8 @@ def index():
       body              { background:var(--tp-base-background); color:var(--tp-base-content);
                           font-size:15px; }
       .app-header       { background:var(--tp-primary) !important;
-                          color:var(--tp-primary-content) !important; padding:.75rem 1.5rem; }
+                          color:var(--tp-primary-content) !important; }
+      .app-header-row   { padding:.75rem 1.5rem; }
       .app-tabs         { background:var(--tp-base-foreground) !important;
                           border-bottom:1px solid var(--tp-base-border); }
       .app-tabs .q-tab  { color:var(--tp-base-soft) !important; font-size:.9rem; min-height:44px; }
@@ -472,31 +473,48 @@ def index():
     # ── Settings dialog (content appended at end of index()) ─────────────
     settings_dialog = ui.dialog()
 
-    # ── header ───────────────────────────────────────────────────────────
-    with ui.header().classes("app-header items-center gap-4"):
-        ui.html('<span class="header-beetle"></span>')
-        ui.label("Collection").style(
-            "font-size:1.1rem; font-weight:300; letter-spacing:.12em;"
-        )
-        ui.space()
-        (
-            ui.button(icon="settings", on_click=lambda: _open_settings())
-            .props("flat round dense")
-            .style("color:rgb(156,163,175)")
-            .tooltip("Settings")
-        )
-        (
-            ui.button(icon="restart_alt", on_click=lambda: os.execv(sys.executable, [sys.executable] + sys.argv))
-            .props("flat round dense")
-            .style("color:rgb(156,163,175)")
-            .tooltip("Restart server")
-        )
-        theme_btn = (
-            ui.button(icon="dark_mode", on_click=_toggle_theme)
-            .props("flat round dense")
-            .style("color:rgb(156,163,175)")
-            .tooltip("Toggle dark / light mode")
-        )
+    # ── header (two rows: title + tabs — both fixed via q-header) ──────────
+    with ui.header().classes("app-header q-pa-none"):
+        # Row 1: title + controls
+        with ui.row().classes("app-header-row items-center gap-4 w-full"):
+            ui.html('<span class="header-beetle"></span>')
+            ui.label("Collection").style(
+                "font-size:1.1rem; font-weight:300; letter-spacing:.12em;"
+            )
+            ui.space()
+            (
+                ui.button(icon="settings", on_click=lambda: _open_settings())
+                .props("flat round dense")
+                .style("color:rgb(156,163,175)")
+                .tooltip("Settings")
+            )
+            (
+                ui.button(icon="restart_alt", on_click=lambda: os.execv(sys.executable, [sys.executable] + sys.argv))
+                .props("flat round dense")
+                .style("color:rgb(156,163,175)")
+                .tooltip("Restart server")
+            )
+            theme_btn = (
+                ui.button(icon="dark_mode", on_click=_toggle_theme)
+                .props("flat round dense")
+                .style("color:rgb(156,163,175)")
+                .tooltip("Toggle dark / light mode")
+            )
+        # Row 2: tab bar (light background, always visible via q-header fixed)
+        with ui.element("div").classes("app-tabs w-full"):
+            with ui.row().classes("w-full max-w-5xl mx-auto"):
+                main_tabs = (
+                    ui.tabs(value="digitize")
+                    .props("dense indicator-color=secondary align=left no-caps")
+                    .classes("app-tabs")
+                )
+                with main_tabs:
+                    ui.tab("digitize", label="Specimen Digitization", icon="biotech")
+                    ui.tab("records",  label="Records",               icon="edit_note")
+                    ui.tab("import",   label="Import & Assign",       icon="upload_file")
+                    ui.tab("taxonomy", label="Taxonomy",              icon="account_tree")
+                    ui.tab("labels",   label="Labels",                icon="label")
+                    ui.tab("vocab",    label="Controlled Vocabularies", icon="manage_accounts")
 
     ui.timer(0.1, _init_theme, once=True)
 
@@ -510,22 +528,6 @@ def index():
             pass  # TW unreachable — local rows serve as fallback
 
     asyncio.create_task(_bio_sync())
-
-    # ── tab bar ──────────────────────────────────────────────────────────
-    with ui.element("div").classes("app-tabs w-full sticky top-0").style("z-index:200"):
-        with ui.row().classes("w-full max-w-5xl mx-auto"):
-            main_tabs = (
-                ui.tabs(value="digitize")
-                .props("dense indicator-color=secondary align=left no-caps")
-                .classes("app-tabs")
-            )
-            with main_tabs:
-                ui.tab("digitize", label="Specimen Digitization", icon="biotech")
-                ui.tab("records",  label="Records",               icon="edit_note")
-                ui.tab("import",   label="Import & Assign",       icon="upload_file")
-                ui.tab("taxonomy", label="Taxonomy",              icon="account_tree")
-                ui.tab("labels",   label="Labels",                icon="label")
-                ui.tab("vocab",    label="Controlled Vocabularies", icon="manage_accounts")
 
     # Cross-tab refresh registry — populated as tabs build, called by earlier tabs.
     _refreshers: dict[str, callable] = {}
