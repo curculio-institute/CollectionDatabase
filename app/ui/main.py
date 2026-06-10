@@ -513,7 +513,11 @@ def index():
         with ui.row().classes("app-mode-row w-full max-w-5xl mx-auto") as _mode_row:
             mode_toggle = (
                 ui.toggle(
-                    {"standard": "Standard", "mounting": "Mounting Session"},
+                    {
+                        "standard": "Standard",
+                        "mounting": "Mounting Session",
+                        "visiting": "Visiting Collection",
+                    },
                     value="standard",
                 )
                 .props("outline no-caps dense")
@@ -581,15 +585,14 @@ def index():
                 # paths below reference them unchanged.
                 spec = build_specimen_form(_sf, identifier_policy="standard")
                 specimen_card  = spec["card"]
-                cat_num        = spec["cat_num"]
-                count_in       = spec["count_in"]
-                preps_in       = spec["preps_in"]
-                stage_sel      = spec["stage_sel"]
-                disp_sel       = spec["disp_sel"]
-                basis_sel      = spec["basis_sel"]
-                inst_code_disp = spec["inst_code_disp"]
-                coll_code_disp = spec["coll_code_disp"]
-                rem_in         = spec["rem_in"]
+                # Visiting-collection variant: free-text identity, pure data
+                # capture (no reserved code, no print queue). Hidden until the
+                # mode toggle selects it; occupies the same slot as the standard
+                # card (only one of the two is ever visible).
+                spec_visiting = build_specimen_form(_sf, identifier_policy="visiting")
+                spec_visiting["card"].set_visibility(False)
+                # The save/validate/clear paths read from whichever form is active.
+                _active_spec = [spec]
 
                 # ── IDENTIFICATION ────────────────────────────────────────
                 with ui.card().classes("w-full shadow-sm") as identification_card:
@@ -1354,29 +1357,39 @@ def index():
                     }
 
                 def _collect_specimen_fields() -> dict:
-                    cfg = get_config()
+                    active = _active_spec[0]
+                    ident = active["get_identity"]()
                     return {
-                        "catalog_number":    cat_num.value or "",
-                        "collection_code":   cfg.collection_code,
-                        "institution_code":  cfg.institution_code,
-                        "individual_count":  int(count_in.value or 1),
-                        "preparations":      preps_in.value,
-                        "life_stage":        stage_sel.value,
-                        "disposition":       disp_sel.value,
-                        "basis_of_record":   basis_sel.value,
-                        "occurrence_remarks":rem_in.value,
+                        "catalog_number":    ident["catalog_number"],
+                        "collection_code":   ident["collection_code"],
+                        "institution_code":  ident["institution_code"],
+                        "individual_count":  int(active["count_in"].value or 1),
+                        "preparations":      active["preps_in"].value,
+                        "life_stage":        active["stage_sel"].value,
+                        "disposition":       active["disp_sel"].value,
+                        "basis_of_record":   active["basis_sel"].value,
+                        "occurrence_remarks":active["rem_in"].value,
                     }
 
                 def _validate() -> str | None:
-                    cfg = get_config()
-                    if not cfg.institution_code:
-                        return "institutionCode is not configured. Open Settings to set it."
-                    if not cfg.collection_code:
-                        return "collectionCode is not configured. Open Settings to set it."
+                    active = _active_spec[0]
+                    ident = active["get_identity"]()
+                    if active["policy"] == "visiting":
+                        if not ident["catalog_number"]:
+                            return "Enter the specimen's catalogNumber (host number)."
+                        if not ident["collection_code"]:
+                            return "Enter the collectionCode (host collection namespace)."
+                        if not ident["institution_code"]:
+                            return "Enter the institutionCode (host institution)."
+                    else:  # standard
+                        if not ident["institution_code"]:
+                            return "institutionCode is not configured. Open Settings to set it."
+                        if not ident["collection_code"]:
+                            return "collectionCode is not configured. Open Settings to set it."
+                        if not ident["catalog_number"]:
+                            return "Select an identifier code first."
                     if not det_state["get_dets"]():
                         return "Add at least one identification."
-                    if not cat_num.value:
-                        return "Select an identifier code first."
                     cc = code_in.value.strip()
                     if cc and len(cc) != 2:
                         return "countryCode must be exactly 2 characters (or empty)."
@@ -1400,13 +1413,7 @@ def index():
                     return None
 
                 def _clear_after_save():
-                    cat_num.value   = None
-                    rem_in.value    = ""
-                    count_in.value  = 1
-                    preps_in.value  = ""
-                    stage_sel.value = "adult"
-                    disp_sel.value  = "in collection"
-                    basis_sel.value = "PreservedSpecimen"
+                    _active_spec[0]["reset"]()
                     # Clear bio associations
                     bio_state["associations"].clear()
                     bio_obj_state["clear"]()
@@ -1433,10 +1440,12 @@ def index():
                         ui.notify(err, type="negative")
                         return
                     try:
+                        active = _active_spec[0]
+                        is_visiting = active["policy"] == "visiting"
                         dets = det_state["get_dets"]()
                         cur_det  = next((d for d in dets if d["is_current"]), dets[0])
                         rest_det = [d for d in dets if d is not cur_det]
-                        code = cat_num.value
+                        code = active["get_identity"]()["catalog_number"]
                         with _sf() as session:
                             with session.begin():
                                 recby_id = recby_state["commit"](session)
@@ -1471,10 +1480,15 @@ def index():
                                         identification_remarks=d["identification_remarks"],
                                         is_current=0,
                                     )
-                                id_svc.assign_code(session, code, co.id)
                                 saved_id = co.id
-                                pq_svc.enqueue_data(session, co.id)
-                                pq_svc.enqueue_determination(session, co.id)
+                                # Standard mode: mark the reserved code used and
+                                # queue labels. Visiting mode is pure data capture
+                                # (foreign catalog number, no reserved code, no
+                                # labels printed), so skip all of that.
+                                if not is_visiting:
+                                    id_svc.assign_code(session, code, co.id)
+                                    pq_svc.enqueue_data(session, co.id)
+                                    pq_svc.enqueue_determination(session, co.id)
                                 # Save biological associations atomically with the specimen
                                 for assoc in bio_state["associations"]:
                                     save_biological_association(
@@ -1508,20 +1522,24 @@ def index():
                         fn()
 
                 def _on_mode_toggle(e):
-                    is_ms = e.value == "mounting"
+                    mode = e.value
+                    is_ms       = mode == "mounting"
+                    is_visiting = mode == "visiting"
+                    is_standard = mode == "standard"
                     _ms_active[0] = is_ms
-                    specimen_card.set_visibility(not is_ms)
+                    # Standard and Visiting share the identification card, event
+                    # card, bio card and save bar; only the specimen card swaps.
+                    # Mounting replaces the specimen + identification section with
+                    # its own row table.
+                    specimen_card.set_visibility(is_standard)
+                    spec_visiting["card"].set_visibility(is_visiting)
                     identification_card.set_visibility(not is_ms)
                     ms_section.set_visibility(is_ms)
                     std_save_row.set_visibility(not is_ms)
+                    _active_spec[0] = spec_visiting if is_visiting else spec
                     # Full wipe on every toggle to avoid unsaved state leaking
-                    cat_num.value   = None
-                    count_in.value  = 1
-                    preps_in.value  = ""
-                    stage_sel.value = "adult"
-                    disp_sel.value  = "in collection"
-                    basis_sel.value = "PreservedSpecimen"
-                    rem_in.value    = ""
+                    spec["reset"]()
+                    spec_visiting["reset"]()
                     det_state["clear"]()
                     bio_state["associations"].clear()
                     bio_obj_state["clear"]()
