@@ -14,6 +14,7 @@ from app.ui.taxon_search import build_taxon_search, _local_item_html
 from app.ui.identification_list import build_identification_list
 from app.ui.date_input import attach_date_validation
 from app.ui.person_field import build_person_field
+from app.ui.specimen_form import build_specimen_form
 
 _FLOAT_ATTRS = frozenset({
     "decimal_latitude", "decimal_longitude",
@@ -260,36 +261,22 @@ def build_records_tab(session_factory, *, on_saved: callable | None = None) -> N
         _s = lambda v: str(v) if v is not None else ""
 
         # ── Specimen card ────────────────────────────────────────────────
-        with ui.card().classes("w-full shadow-sm"):
-            with ui.row().classes("items-center gap-2 mb-1"):
-                ui.label("Specimen").classes("section-label")
-                ui.label(
-                    f"#{co_id}  {co_snap['collection_code']} {co_snap['catalog_number']}"
-                ).classes("text-sm font-mono").style("color:var(--tp-base-soft)")
-            ui.separator().classes("mb-3")
-
-            with ui.row().classes("w-full flex-wrap gap-3 items-end"):
-                count_in = ui.number(
-                    "n", value=co_snap["individual_count"] or 1, min=0, precision=0
-                ).classes("w-20")
-                preps_in = ui.input(
-                    "preparations", value=co_snap["preparations"] or ""
-                ).classes("flex-1 min-w-40")
-
-            with ui.expansion("More fields").classes("w-full mt-2"):
-                with ui.grid(columns=4).classes("w-full gap-3"):
-                    stage_sel = ui.select(
-                        _LIFE_STAGE_OPTIONS, label="lifeStage", value=co_snap["life_stage"]
-                    ).classes("col-span-1")
-                    disp_sel  = ui.select(
-                        _DISPOSITION_OPTIONS, label="disposition", value=co_snap["disposition"]
-                    ).classes("col-span-1")
-                    basis_sel = ui.select(
-                        _BASIS_OPTIONS, label="basisOfRecord", value=co_snap["basis_of_record"]
-                    ).classes("col-span-1")
-                rem_in = ui.input(
-                    "materialEntityRemarks", value=co_snap["occurrence_remarks"] or ""
-                ).classes("w-full mt-3")
+        # Shared specimen-field block (see app/ui/specimen_form.py), edit policy:
+        # catalog_number/collection_code are shown read-only in the header label;
+        # the remaining fields are seeded from the DB snapshot. Widgets are
+        # unpacked into locals so the save path below references them unchanged.
+        spec = build_specimen_form(
+            session_factory,
+            identifier_policy="edit",
+            initial=co_snap,
+            identity_label=f"#{co_id}  {co_snap['collection_code']} {co_snap['catalog_number']}",
+        )
+        count_in  = spec["count_in"]
+        preps_in  = spec["preps_in"]
+        stage_sel = spec["stage_sel"]
+        disp_sel  = spec["disp_sel"]
+        basis_sel = spec["basis_sel"]
+        rem_in    = spec["rem_in"]
 
         # ── Identifications card ──────────────────────────────────────────
         with ui.card().classes("w-full shadow-sm"):
