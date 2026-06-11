@@ -44,6 +44,7 @@ from app.services.biological import (
     get_relationship_options,
     save_biological_association,
 )
+from app.services.validation import validate_event_fields
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -537,7 +538,6 @@ def index():
                     ui.tab("vocab",    label="Controlled Vocabularies", icon="manage_accounts")
         # Row 3: Digitize mode — segmented control, only visible on Digitize tab.
         # Custom (not ui.toggle) so each segment gets its own accent colour + icon.
-        _ms_active = [False]
         _mode_defs = [
             ("standard", "Standard",                  "biotech",   "var(--mode-standard)"),
             ("mounting", "Mounting Session",          "grid_view", "var(--mode-mounting)"),
@@ -1436,27 +1436,7 @@ def index():
                             return "Select an identifier code first."
                     if not det_state["get_dets"]():
                         return "Add at least one identification."
-                    cc = code_in.value.strip()
-                    if cc and len(cc) != 2:
-                        return "countryCode must be exactly 2 characters (or empty)."
-                    for label, val, lo, hi in [
-                        ("latitude",  lat_in.value,  -90,  90),
-                        ("longitude", lon_in.value, -180, 180),
-                    ]:
-                        if val:
-                            try:
-                                f = float(val)
-                                if not (lo <= f <= hi):
-                                    return f"{label} out of range [{lo}, {hi}]."
-                            except ValueError:
-                                return f"{label} must be a number."
-                    if uncert_in.value:
-                        try:
-                            if float(uncert_in.value) < 0:
-                                return "coordinateUncertainty must be ≥ 0."
-                        except ValueError:
-                            return "coordinateUncertainty must be a number."
-                    return None
+                    return validate_event_fields(_collect_event_fields())
 
                 def _clear_after_save():
                     _active_spec[0]["reset"]()
@@ -1571,7 +1551,6 @@ def index():
                     is_ms       = mode == "mounting"
                     is_visiting = mode == "visiting"
                     is_standard = mode == "standard"
-                    _ms_active[0] = is_ms
                     # Standard and Visiting share the identification card, event
                     # card, bio card and save bar; only the specimen card swaps.
                     # Mounting replaces the specimen + identification section with

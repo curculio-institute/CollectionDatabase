@@ -164,16 +164,29 @@ def assign_code(session: Session, code: str, collection_object_id: int) -> Label
 
 
 def _next_sequential_number(session: Session, collection_code: str) -> int:
-    """Return the next 1-based sequence number for the given collection_code prefix."""
+    """Return the next 1-based sequence number for the given collection_code prefix.
+
+    The max is computed DB-side via a single aggregate (a prefix range-scan over
+    the indexed ``code`` column) rather than loading every matching row into Python.
+
+    Suffixes are zero-padded to 5 digits but may overflow to 6+ digits past 99999,
+    so we parse the numeric value (CAST) rather than relying on lexicographic order
+    or a fixed length — ``"99999"`` sorts *after* ``"100000"`` as text, so a plain
+    ``ORDER BY code DESC`` or a ``len == 5`` filter would miss the real maximum.
+    """
+    from sqlalchemy import func, cast, Integer
     prefix = f"{collection_code}-"
-    prefix_len = len(prefix)
-    rows = session.query(LabelCode.code).filter(LabelCode.code.like(f"{prefix}%")).all()
-    max_num = 0
-    for (code,) in rows:
-        suffix = code[prefix_len:]
-        if len(suffix) == 5 and suffix.isdigit():
-            max_num = max(max_num, int(suffix))
-    return max_num + 1
+    suffix = func.substr(LabelCode.code, len(prefix) + 1)
+    max_num = (
+        session.query(func.max(cast(suffix, Integer)))
+        .filter(
+            LabelCode.code.like(f"{prefix}%"),
+            suffix != "",
+            suffix.op("NOT GLOB")("*[^0-9]*"),  # suffix is entirely digits
+        )
+        .scalar()
+    )
+    return (max_num or 0) + 1
 
 
 def reserve_sequential_codes(

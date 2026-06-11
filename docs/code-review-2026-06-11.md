@@ -17,7 +17,7 @@ in `-`.
 
 ## Correctness
 
-- [ ] **CR-1 — `app/ui/mounting_session.py:298` — mounting `_validate()` skips
+- [x] **CR-1 — `app/ui/mounting_session.py:298` — mounting `_validate()` skips
   countryCode/coordinate checks.**
   It validates only the config codes and that each row has an identification. The
   standard Digitize `_validate()` also checks `len(countryCode) == 2`, latitude/longitude
@@ -29,7 +29,7 @@ in `-`.
   *Fix:* factor the standard path's event/coordinate validation into a shared helper and
   call it from mounting `_validate()` before reserving codes.
 
-- [ ] **CR-2 — `app/ui/mounting_session.py:139` — `dateIdentified` persisted without
+- [x] **CR-2 — `app/ui/mounting_session.py:139` — `dateIdentified` persisted without
   save-time normalisation.**
   `attach_date_validation` normalises only on the input's `blur` event (an async
   round-trip); `_do_apply` reads `date_in.value` and writes it verbatim to
@@ -40,7 +40,7 @@ in `-`.
   *Fix:* run `parse_dwc_date(date_in.value, no_future=True)` inside `_do_apply` and reject /
   normalise before storing.
 
-- [ ] **CR-3 — `app/services/identifiers.py:174` — sequential-number overflow past 99999.**
+- [x] **CR-3 — `app/services/identifiers.py:174` — sequential-number overflow past 99999.**
   `_next_sequential_number` only counts suffixes where `len == 5`, but
   `reserve_sequential_codes` formats with `:05d` (no truncation), so code `100000` has a
   6-digit suffix the scan ignores.
@@ -53,7 +53,7 @@ in `-`.
 
 ## Efficiency
 
-- [ ] **CR/EFF-1 — `app/ui/specimen_form.py:130` & `:169` — hidden standard form keeps
+- [x] **CR/EFF-1 — `app/ui/specimen_form.py:130` & `:169` — hidden standard form keeps
   polling the DB.**
   The standard policy's two `ui.timer(2.0, ...)` callbacks (a `reserved_codes` SELECT at
   L130 and a `get_config()` read at L169) are not gated on card visibility, so they keep
@@ -62,7 +62,7 @@ in `-`.
   config read every 2 s, for a form the user cannot see.
   *Fix:* gate the timers on `card.visible`, or stop them when the card is hidden.
 
-- [ ] **EFF-2 — `app/services/identifiers.py:170` — `_next_sequential_number` is an O(n)
+- [x] **EFF-2 — `app/services/identifiers.py:170` — `_next_sequential_number` is an O(n)
   full scan.**
   Loads every `LabelCode` matching `collection_code-%` into Python and maxes in a loop.
   *Cost:* grows unbounded with code history; a multi-hundred-ms hitch on each mounting save
@@ -72,7 +72,7 @@ in `-`.
 
 ## Cleanup
 
-- [ ] **CL-1 — `app/ui/mounting_session.py:38` — create-defaults duplicated and already
+- [x] **CL-1 — `app/ui/mounting_session.py:38` — create-defaults duplicated and already
   diverging.**
   `_empty_row` (`preparations='pinned'`, `life_stage='adult'`) and `_do_save`
   (`disposition='in collection'`, `basis='PreservedSpecimen'`) duplicate the seed defaults in
@@ -81,13 +81,13 @@ in `-`.
   *Cost:* a new specimen's default `preparations` depends on which tab created it; future
   changes must touch both. Move to one shared seed (e.g. in `vocab.py` or `specimen_form`).
 
-- [ ] **CL-2 — `app/ui/main.py:540` — `_ms_active` is write-only dead state.**
+- [x] **CL-2 — `app/ui/main.py:540` — `_ms_active` is write-only dead state.**
   Assigned at L540 and in `_on_mode_toggle` but never read; mode decisions use local
   `is_ms`/`is_visiting`/`is_standard`.
   *Cost:* a maintainer may treat it as the live "in mounting mode" flag and read a stale
   `False`. Delete it.
 
-- [ ] **CL-3 — `app/services/specimens.py:135` — silent skip of a blank `collection_code`.**
+- [x] **CL-3 — `app/services/specimens.py:135` — silent skip of a blank `collection_code`.**
   `update_collection_object` skips an empty `collection_code` (NOT NULL guard) with no
   signal.
   *Cost:* a caller intending to clear it gets a silent no-op edit (mild — `records_tab._save`

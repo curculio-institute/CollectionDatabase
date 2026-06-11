@@ -8,6 +8,10 @@ from app.services.events import format_event_summary, search_collecting_events, 
 from app.services.specimens import (
     save_specimen_entry, recent_specimens, update_collection_object,
 )
+from app.services.identifiers import (
+    reserve_sequential_codes, _next_sequential_number,
+)
+from app.models import LabelCode, LabelBatch
 
 
 # ---------------------------------------------------------------------------
@@ -252,7 +256,7 @@ def test_save_specimen_entry_creates_new_event_when_no_event_id(session):
 
 def test_update_collection_object_gifting_collection_code(session):
     """collection_code may change (gifting); catalog_number/institution_code stay
-    immutable; an empty collection_code is ignored (NOT NULL)."""
+    immutable; an empty collection_code is rejected loudly (NOT NULL)."""
     t = _taxon(session)
     ce = _event(session)
     co = save_specimen_entry(
@@ -274,9 +278,45 @@ def test_update_collection_object_gifting_collection_code(session):
     assert co.catalog_number == "G001"
     assert co.institution_code == "TEST"
 
-    # empty collection_code is ignored, not blanked (NOT NULL column)
-    update_collection_object(session, co.id, collection_code="")
+    # empty collection_code is rejected, not silently blanked (NOT NULL column)
+    with pytest.raises(ValueError):
+        update_collection_object(session, co.id, collection_code="")
     assert co.collection_code == "NHMW"
+
+
+def _seed_code(session, code: str) -> None:
+    """Insert a single reserved LabelCode (its own batch) for sequence-number tests."""
+    now = _utcnow()
+    batch = LabelBatch(created_at=now, updated_at=now)
+    session.add(batch)
+    session.flush()
+    session.add(LabelCode(code=code, status="reserved", batch_id=batch.id,
+                          created_at=now, updated_at=now))
+    session.flush()
+
+
+def test_next_sequential_number_empty_starts_at_one(session):
+    assert _next_sequential_number(session, "TEST") == 1
+
+
+def test_next_sequential_number_ignores_other_prefixes(session):
+    _seed_code(session, "TEST-00007")
+    _seed_code(session, "OTHER-09999")   # different prefix — must not count
+    assert _next_sequential_number(session, "TEST") == 8
+
+
+def test_next_sequential_number_survives_six_digit_overflow(session):
+    # Past 99999 the suffix widens to 6 digits; "99999" sorts AFTER "100000"
+    # as text, so a lexicographic or len==5 scan would miss the real maximum.
+    _seed_code(session, "TEST-99999")
+    _seed_code(session, "TEST-100000")
+    assert _next_sequential_number(session, "TEST") == 100001
+
+
+def test_reserve_sequential_codes_continues_after_overflow(session):
+    _seed_code(session, "TEST-100000")
+    _batch_id, codes = reserve_sequential_codes(session, "TEST", 2)
+    assert codes == ["TEST-100001", "TEST-100002"]
 
 
 def test_recent_specimens_newest_first(session):

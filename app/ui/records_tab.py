@@ -457,8 +457,9 @@ def build_records_tab(session_factory, *, on_saved: callable | None = None) -> N
         # ── Save bar ─────────────────────────────────────────────────────────
         def _collect_co_fields() -> dict:
             return {
-                # collection_code may change (gifting); update_collection_object
-                # ignores an empty value (NOT NULL) and never touches catalog_number.
+                # collection_code may change (gifting); _save rejects an empty value
+                # up front (NOT NULL) and update_collection_object never touches
+                # catalog_number.
                 "collection_code":   (coll_code_in.value or "").strip(),
                 "individual_count":  int(count_in.value or 1),
                 "preparations":      preps_in.value,

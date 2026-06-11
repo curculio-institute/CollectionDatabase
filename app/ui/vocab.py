@@ -35,3 +35,16 @@ SAMPLING_PROTOCOLS = [
     "light trap", "sifting", "bark peeling", "rearing", "Berlese funnel",
     "yellow pan trap", "window trap", "observation", "",
 ]
+
+# Seed values for a brand-new specimen (create mode). Single source of truth for
+# the Digitize standard form (specimen_form) and the Mounting Session, so the
+# create contract lives in one place rather than being duplicated as literals.
+# NOTE: `preparations` is intentionally NOT here — it defaults to "" in standard
+# digitizing but to "pinned" in a Mounting Session (where specimens are, by
+# definition, being pinned). That divergence is per-workflow, not an oversight.
+NEW_SPECIMEN_DEFAULTS = {
+    "individual_count": 1,
+    "life_stage":       "adult",
+    "disposition":      "in collection",
+    "basis_of_record":  "PreservedSpecimen",
+}

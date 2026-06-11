@@ -29,7 +29,9 @@ from nicegui import ui
 
 from app.config import get_config
 import app.services.identifiers as id_svc
-from app.ui.vocab import LIFE_STAGE_OPTIONS, BASIS_OPTIONS, DISPOSITION_OPTIONS
+from app.ui.vocab import (
+    LIFE_STAGE_OPTIONS, BASIS_OPTIONS, DISPOSITION_OPTIONS, NEW_SPECIMEN_DEFAULTS,
+)
 
 
 def build_specimen_form(
@@ -84,8 +86,10 @@ def build_specimen_form(
         v_basis = init.get("basis_of_record")
         v_rem   = init.get("occurrence_remarks") or ""
     else:
-        v_count, v_preps = 1, ""
-        v_stage, v_disp, v_basis = "adult", "in collection", "PreservedSpecimen"
+        v_count, v_preps = NEW_SPECIMEN_DEFAULTS["individual_count"], ""
+        v_stage = NEW_SPECIMEN_DEFAULTS["life_stage"]
+        v_disp  = NEW_SPECIMEN_DEFAULTS["disposition"]
+        v_basis = NEW_SPECIMEN_DEFAULTS["basis_of_record"]
         v_rem = ""
 
     # Defaults; reassigned per policy below.
@@ -127,7 +131,11 @@ def build_specimen_form(
                     "preparations", value=v_preps, placeholder="pinned, in ethanol…"
                 ).classes("flex-1 min-w-40")
             if is_standard:
-                ui.timer(2.0, lambda: cat_num.set_options({c: c for c in _reserved_opts()}))
+                # Skip the DB read while the card is hidden (Mounting / Visiting mode).
+                def _refresh_code_opts():
+                    if card.visible:
+                        cat_num.set_options({c: c for c in _reserved_opts()})
+                ui.timer(2.0, _refresh_code_opts)
 
         with ui.expansion("More fields").classes("w-full mt-2"):
             with ui.grid(columns=4).classes("w-full gap-3"):
@@ -163,6 +171,8 @@ def build_specimen_form(
 
         if is_standard:
             def _refresh_identity_display():
+                if not card.visible:   # hidden in Mounting / Visiting mode
+                    return
                 cfg = get_config()
                 inst_code_disp.value = cfg.institution_code
                 coll_code_disp.value = cfg.collection_code
@@ -204,11 +214,11 @@ def build_specimen_form(
         if is_visiting:
             coll_code_disp.value = ""
             inst_code_disp.value = ""
-        count_in.value  = 1
+        count_in.value  = NEW_SPECIMEN_DEFAULTS["individual_count"]
         preps_in.value  = ""
-        stage_sel.value = "adult"
-        disp_sel.value  = "in collection"
-        basis_sel.value = "PreservedSpecimen"
+        stage_sel.value = NEW_SPECIMEN_DEFAULTS["life_stage"]
+        disp_sel.value  = NEW_SPECIMEN_DEFAULTS["disposition"]
+        basis_sel.value = NEW_SPECIMEN_DEFAULTS["basis_of_record"]
         rem_in.value    = ""
 
     return {

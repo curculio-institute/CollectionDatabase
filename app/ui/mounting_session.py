@@ -22,6 +22,8 @@ import app.services.identifiers as id_svc
 import app.services.print_queue as pq_svc
 from app.config import get_config
 from app.services.biological import save_biological_association
+from app.services.dates import parse_dwc_date
+from app.services.validation import validate_event_fields
 import app.services.person_defaults as pd_svc
 from app.ui.date_input import attach_date_validation
 from app.ui.person_field import build_person_field
@@ -31,11 +33,19 @@ from app.ui.type_status_field import build_type_status_field
 from app.ui.vocab import (
     LIFE_STAGE_OPTIONS as _LIFE_STAGE_OPTIONS,
     SEX_OPTIONS as _SEX_OPTIONS,
+    NEW_SPECIMEN_DEFAULTS,
 )
 
 
 def _empty_row() -> dict:
-    return {"n": 1, "preparations": "pinned", "life_stage": "adult", "det": None}
+    # preparations defaults to "pinned" here (mounting workflow); the rest of the
+    # create defaults come from the shared NEW_SPECIMEN_DEFAULTS seed.
+    return {
+        "n":            NEW_SPECIMEN_DEFAULTS["individual_count"],
+        "preparations": "pinned",
+        "life_stage":   NEW_SPECIMEN_DEFAULTS["life_stage"],
+        "det":          None,
+    }
 
 
 def build_mounting_session_section(
@@ -126,6 +136,13 @@ def build_mounting_session_section(
                     if tid == -1:
                         ui.notify("Taxon import still in progress — wait a moment.", type="warning")
                         return
+                    # Normalise the date here (not only on the input's async blur),
+                    # so a value typed-then-Apply'd before blur completes still lands
+                    # as ISO in the DwC date column.
+                    date_norm, date_err = parse_dwc_date(date_in.value or "", no_future=True)
+                    if date_err:
+                        ui.notify(f"dateIdentified: {date_err}", type="warning")
+                        return
                     idby_id = None
                     if idby_state["get_value"]():
                         with session_factory() as s:
@@ -136,7 +153,7 @@ def build_mounting_session_section(
                         "taxon_label":        ts["label"],
                         "identified_by_id":   idby_id,
                         "identified_by_name": idby_state["get_value"](),
-                        "date_identified":    date_in.value or None,
+                        "date_identified":    date_norm or None,
                         "sex":                sex_sel.value or None,
                         "type_status":        type_state["get_value"]() or None,
                         "qualifier":          qual_in.value or None,
@@ -306,7 +323,10 @@ def build_mounting_session_section(
         for i, row in enumerate(rows):
             if row["det"] is None:
                 return f"Row {i + 1} has no identification — set it before saving."
-        return None
+        # Same event/coordinate checks as the standard Digitize path, so a malformed
+        # shared collecting event fails with a friendly message up front rather than
+        # a cryptic CHECK-constraint rollback after codes are reserved.
+        return validate_event_fields(collect_event_fields())
 
     # ── save ────────────────────────────────────────────────────────────────
 
@@ -343,8 +363,8 @@ def build_mounting_session_section(
                                 "individual_count":  row["n"],
                                 "preparations":      row["preparations"] or None,
                                 "life_stage":        row["life_stage"] or None,
-                                "disposition":       "in collection",
-                                "basis_of_record":   "PreservedSpecimen",
+                                "disposition":       NEW_SPECIMEN_DEFAULTS["disposition"],
+                                "basis_of_record":   NEW_SPECIMEN_DEFAULTS["basis_of_record"],
                             },
                             determination_fields={
                                 "sex":                      det.get("sex"),

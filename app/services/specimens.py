@@ -123,8 +123,8 @@ def update_collection_object(session: Session, co_id: int, **fields) -> Collecti
     """Update mutable fields on a CollectionObject.
 
     catalog_number and institution_code are immutable. collection_code MAY change
-    (a specimen can be re-homed to another collection when gifted), but is never
-    blanked — it is NOT NULL, so an empty value is ignored.
+    (a specimen can be re-homed to another collection when gifted), but is NOT NULL,
+    so an attempt to blank it is rejected loudly rather than silently skipped.
     """
     co = session.get(CollectionObject, co_id)
     if co is None:
@@ -133,8 +133,9 @@ def update_collection_object(session: Session, co_id: int, **fields) -> Collecti
         if attr in ("catalog_number", "institution_code"):
             continue  # immutable
         if attr == "collection_code":
-            if val:  # never blank the namespace (NOT NULL); ignore empty
-                co.collection_code = val
+            if not val:  # NOT NULL — refuse to blank the namespace
+                raise ValueError("collection_code cannot be blank (NOT NULL).")
+            co.collection_code = val
             continue
         if val == "":
             val = None
