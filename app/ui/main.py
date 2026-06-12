@@ -13,6 +13,7 @@ import math
 import os
 import re
 import sys
+from datetime import datetime
 
 import httpx
 
@@ -24,7 +25,7 @@ import app.services.taxonomy as tax_svc
 import app.services.identifiers as id_svc
 import app.services.labels as lbl_svc
 import app.services.print_queue as pq_svc
-from app.config import get_config, save_config
+from app.config import get_config, save_config, printed_pdf_dir
 import app.services.person_defaults as pd_svc
 from app.models import CollectionObject, CollectingEvent, TaxonDetermination, LabelCode
 from app.ui.taxon_search import build_taxon_search
@@ -1853,17 +1854,25 @@ def index():
                         if summary.total == 0:
                             ui.notify("Queue is empty.", type="warning")
                             return
+                        now = datetime.now()
+                        stamp_human = now.strftime("%Y-%m-%d %H:%M")
+                        stamp_file  = now.strftime("%Y%m%d-%H%M%S")
                         pdf = _with_session(
-                            lambda s: pq_svc.build_pdf(s, dict(_label_overrides))
+                            lambda s: pq_svc.build_pdf(s, dict(_label_overrides), stamp_human)
                         )
-                        ui.download(pdf, filename="labels_queue.pdf",
+                        # Archive every printed sheet to disk for reprint/audit
+                        # before clearing the queue.
+                        archive = printed_pdf_dir() / f"labels_{stamp_file}.pdf"
+                        archive.write_bytes(pdf)
+                        ui.download(pdf, filename=archive.name,
                                     media_type="application/pdf")
                         with _sf() as session:
                             with session.begin():
                                 pq_svc.clear_queue(session)
                         _label_overrides.clear()
                         _refresh_queue()
-                        ui.notify("Labels downloaded — queue cleared.", type="positive")
+                        ui.notify(f"Labels downloaded — queue cleared. Saved {archive.name}",
+                                  type="positive")
 
                     def _clear_queue():
                         with _sf() as session:
@@ -1939,8 +1948,15 @@ def index():
                         with _sf() as session:
                             with session.begin():
                                 batch_id, codes = id_svc.reserve_codes(session, n)
+                                # One print group for this reservation → prints
+                                # under a "New identifiers" header on the sheet.
+                                group_id = pq_svc.next_print_group_id(session)
                                 for lc in session.query(LabelCode).filter(LabelCode.batch_id == batch_id).all():
-                                    pq_svc.enqueue_identifier(session, lc.id)
+                                    pq_svc.enqueue_identifier(
+                                        session, lc.id,
+                                        print_group_id=group_id,
+                                        source=pq_svc.SOURCE_IDENTIFIERS,
+                                    )
                         pdf = lbl_svc.identifier_sheet(codes)
                         ui.download(pdf, filename=f"identifiers_{codes[0]}-{codes[-1]}.pdf",
                                     media_type="application/pdf")
@@ -2033,122 +2049,6 @@ def index():
                         n = sum(b.n_reserved for b in id_svc.all_batches_with_reserved(s))
                         reserved_count.set_text(f"{n} staged")
                     _with_session(_init_count)
-
-                # ── Mode B: occurrence labels from existing specimens ────
-                with ui.card().classes("w-full shadow-sm"):
-                    ui.label("Occurrence labels").classes("section-label mb-2")
-                    ui.label(
-                        "Generate full data labels for specimens already in the "
-                        "database. Select one or more specimens, assign a new "
-                        "identifier code to each, and download the label sheet."
-                    ).classes("text-sm mb-4").style("color:var(--tp-base-soft)")
-
-                    # Specimen picker — search by catalog number or determination
-                    def _specimen_options() -> dict:
-                        with _sf() as session:
-                            rows = (
-                                session.query(
-                                    CollectionObject.id,
-                                    CollectionObject.catalog_number,
-                                    TaxonDetermination.taxon_id,
-                                )
-                                .outerjoin(
-                                    TaxonDetermination,
-                                    (TaxonDetermination.collection_object_id == CollectionObject.id)
-                                    & (TaxonDetermination.is_current == 1),
-                                )
-                                .order_by(CollectionObject.id.desc())
-                                .limit(500)
-                                .all()
-                            )
-                        return {
-                            row.id: f"#{row.id}  {row.catalog_number}"
-                            for row in rows
-                        }
-
-                    occ_sel = (
-                        ui.select(
-                            options=_specimen_options(),
-                            multiple=True,
-                            with_input=True,
-                            label="Select specimens…",
-                            clearable=True,
-                        )
-                        .classes("w-full")
-                        .props("use-chips")
-                    )
-                    ui.timer(2.0, lambda: occ_sel.set_options(_specimen_options()))
-                    occ_status = ui.label("").classes("text-sm mt-2").style("color:var(--tp-base-soft)")
-
-                    def _generate_occ_labels():
-                        ids = occ_sel.value or []
-                        if not ids:
-                            occ_status.set_text("Select at least one specimen.")
-                            return
-                        with _sf() as session:
-                            with session.begin():
-                                rows: list[lbl_svc.OccurrenceLabel] = []
-                                for co_id in ids:
-                                    co = session.get(CollectionObject, co_id)
-                                    if co is None:
-                                        ui.notify(
-                                            f"Specimen #{co_id} no longer exists in the database. "
-                                            "Clear your selection and re-select.",
-                                            type="negative",
-                                        )
-                                        return
-                                    ev = co.collecting_event
-                                    # Reserve + assign a fresh code
-                                    _batch_id, codes = id_svc.reserve_codes(session, 1)
-                                    code = codes[0]
-                                    id_svc.assign_code(session, code, co_id)
-
-                                    det = next(
-                                        (d for d in co.determinations if d.is_current), None
-                                    )
-                                    taxon_label = None
-                                    if det and det.taxon:
-                                        from app.services.taxa import format_scientific_name
-                                        taxon_label = format_scientific_name(det.taxon)
-
-                                    assoc_names = [
-                                        ba.object_taxon.scientific_name
-                                        for ba in co.subject_associations
-                                        if ba.object_taxon
-                                    ]
-
-                                    rows.append(lbl_svc.OccurrenceLabel(
-                                        code=code,
-                                        country=ev.country if ev else None,
-                                        country_code=ev.country_code if ev else None,
-                                        state_province=ev.state_province if ev else None,
-                                        municipality=ev.municipality if ev else None,
-                                        county=ev.county if ev else None,
-                                        locality=ev.locality if ev else None,
-                                        verbatim_locality=ev.verbatim_locality if ev else None,
-                                        latitude=ev.decimal_latitude if ev else None,
-                                        longitude=ev.decimal_longitude if ev else None,
-                                        coordinate_uncertainty_m=ev.coordinate_uncertainty_in_meters if ev else None,
-                                        elevation_min=ev.minimum_elevation_in_meters if ev else None,
-                                        elevation_max=ev.maximum_elevation_in_meters if ev else None,
-                                        event_date=ev.event_date if ev else None,
-                                        recorded_by=ev.recorded_by_person.full_name if (ev and ev.recorded_by_person) else None,
-                                        habitat=ev.habitat if ev else None,
-                                        taxon=taxon_label,
-                                        associated_species=assoc_names or None,
-                                    ))
-
-                        pdf = lbl_svc.occurrence_sheet(rows)
-                        first = rows[0].code
-                        ui.download(pdf, filename=f"labels_{first}.pdf",
-                                    media_type="application/pdf")
-                        occ_status.set_text(
-                            f"✓ {len(rows)} label(s) generated, codes assigned."
-                        )
-
-                    ui.button("Generate & download", icon="download") \
-                        .classes("mt-4") \
-                        .on_click(_generate_occ_labels)
 
     # Rebuild + expand the taxonomy tree whenever the user switches to that tab.
     async def _on_tab_change(e):

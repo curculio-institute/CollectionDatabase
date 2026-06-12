@@ -132,6 +132,8 @@ def finalize_specimen(
     collection_object_id: int,
     code: str | None,
     queue_labels: bool = False,
+    print_group_id: int | None = None,
+    source: str | None = None,
     associations=(),
 ) -> None:
     """Post-create finalization shared by every create path (Digitize standard,
@@ -154,15 +156,22 @@ def finalize_specimen(
         identifier ↔ data per specimen).
       - Visiting: irrelevant (no ``code``, nothing queued).
 
+    `print_group_id` / `source` tag the queued rows so the printed sheet groups
+    them under one origin header (only used when `queue_labels`; allocate the id
+    once per batch via ``print_queue.next_print_group_id``).
+
     `associations` is an iterable of ``{"rel_id", "taxon_id"}`` dicts — the
     specimen is the subject, the taxon the object.
     """
     if code is not None:
         lc = assign_code(session, code, collection_object_id)
         if queue_labels:
-            enqueue_identifier(session, lc.id)
-            enqueue_data(session, collection_object_id)
-            enqueue_determination(session, collection_object_id)
+            enqueue_identifier(session, lc.id,
+                               print_group_id=print_group_id, source=source)
+            enqueue_data(session, collection_object_id,
+                         print_group_id=print_group_id, source=source)
+            enqueue_determination(session, collection_object_id,
+                                  print_group_id=print_group_id, source=source)
     for assoc in associations:
         save_biological_association(
             session,

@@ -11,6 +11,12 @@ class PrintQueue(Base, TimestampMixin):
     id:         Mapped[int] = mapped_column(Integer, primary_key=True)
     label_type: Mapped[str] = mapped_column(String, nullable=False)
 
+    # Grouping for the printed sheet: rows enqueued in one operation share a
+    # print_group_id and a `source` header (e.g. "Mounting Session"). Both
+    # nullable — legacy rows render as one fallback group. See migration 0028.
+    print_group_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    source:         Mapped[Optional[str]] = mapped_column(String, nullable=True)
+
     collection_object_id: Mapped[Optional[int]] = mapped_column(
         Integer, ForeignKey("collection_object.id", ondelete="CASCADE"), nullable=True
     )

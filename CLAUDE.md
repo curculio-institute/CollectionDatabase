@@ -78,24 +78,52 @@ tab.
 
 Every specimen-create path runs the same finalization tail through one seam,
 `app/services/specimens.py::finalize_specimen(session, *, collection_object_id, code,
-queue_labels=False, associations=())`: bind the reserved identifier code, optionally
-queue labels, and persist biological associations. Which modes queue labels is a
-deliberate policy, **not** an incidental of each tab:
+queue_labels=False, print_group_id=None, source=None, associations=())`: bind the reserved
+identifier code, optionally queue labels (tagged with a print group + origin header), and
+persist biological associations. Which modes queue labels is a deliberate policy, **not** an
+incidental of each tab:
 
 | Mode | `code` | `queue_labels` | Queues to `print_queue` |
 |------|--------|----------------|-------------------------|
 | **Digitize standard** | reserved code | `False` | **nothing** — identifier is pre-printed in a batch and pinned by hand; the specimen already carries its own data labels. The code is still bound (`assign_code`). |
 | **Digitize visiting** | `None` | — | nothing — foreign `catalogNumber`, no reserved code; bio associations still saved. |
-| **Mounting** | reserved code | `True` | identifier + data + determination — a freshly mounted specimen needs its whole sheet printed; the identifier label stays beside its data label so the pair can be matched while cutting (see the adjacent-sheet layout above). |
+| **Import & Assign** (retroactive digitisation) | reserved code | `False` | **nothing** — same as standard: the specimen already has its data + identification labels; only the pre-printed identifier is added. |
+| **Mounting** | reserved code | `True` | identifier + data + determination — a freshly mounted specimen needs its whole sheet printed, grouped under a "Mounting Session" header. |
 
-**Rationale:** standard/visiting specimens already have physical labels; only mounting
-produces fresh specimens that need a printed sheet. (Historical note: Digitize standard
-formerly enqueued data + determination labels — removed 2026-06-12; it now queues nothing.)
+**Rationale:** standard / visiting / import specimens already have physical labels; only
+mounting produces fresh specimens that need a printed sheet. (Historical note: Digitize
+standard and Import & Assign formerly enqueued data + determination labels — removed
+2026-06-12; they now queue nothing.)
+
+### Grouped print sheet (decided)
+
+The print queue renders as a **grouped, column-aligned sheet** (`labels.py::grouped_sheet`,
+fed by `print_queue.py::queued_groups`):
+
+- **Groups = queue additions.** Rows enqueued in one operation share a `print_group_id` +
+  a `source` header (`SOURCE_MOUNTING` "Mounting Session", `SOURCE_IDENTIFIERS`
+  "New identifiers", `SOURCE_REPRINT` "Reprint"). Allocate the id once per batch with
+  `next_print_group_id(session)`; columns added in migration 0028. Groups flow as
+  inline-block boxes that wrap, separated by a large gap.
+- **Within a group, one column per specimen**, with bands stacked top→bottom: **data /
+  identifier / determination**. A specimen's own labels touch (no gap) so they stay
+  associated while cutting; specimens are separated by a small gap. Built as an HTML
+  `<table>` per chunk (WeasyPrint's grid/inline-block sizing is unreliable; tables are not).
+  Wide groups wrap at `_LABELS_PER_ROW` columns. Gap/border metrics are named constants in
+  `labels.py` — tune by eye against a real PDF.
+- **Column reconstruction:** a data/determination row joins its column by
+  `collection_object_id`; an identifier row joins by its label code's `collection_object_id`
+  (set at assign time), or stands alone if the code is reserved-but-unassigned (a pre-print
+  identifier batch → an identifier-only group).
+- **Timestamp + archival:** the sheet prints a small "Printed: …" timestamp; on print, the
+  PDF is saved to `config.printed_pdf_dir` (default `data/printed_labels/`,
+  `config.printed_pdf_dir()` resolves + creates it) as `labels_<YYYYMMDD-HHMMSS>.pdf` before
+  the queue is cleared, for reprint/audit.
 
 **Planned (not built):** re-printing existing records by sending them to the print queue.
 The `enqueue_*` services are standalone, so this is an "enqueue for an existing
-`collection_object`, no `assign_code`" path; `finalize_specimen` is create-time only and
-need not change.
+`collection_object`, no `assign_code`" path (its own group, `SOURCE_REPRINT`);
+`finalize_specimen` is create-time only and need not change.
 
 ## Known bugs (audit 2026-06-07) — fix one by one
 
@@ -114,7 +142,7 @@ need not change.
 - [ ] **m-1** `taxon_editor.py:219` — Delete-eligibility check ignores `TaxonDetermination` rows; delete button enables incorrectly then `delete_taxon()` raises a confusing error on click.
 - [ ] **m-2** `bio_object_search.py:310` — `not r.get("synonym", None) is not None` is needlessly confusing; simplify to `r.get("synonym") is None`.
 - [ ] **m-3** `import_assign.py` — `island` field missing from DwC CSV row mapping; cannot be populated via Import & Assign.
-- [ ] **m-4** `labels.py:401` — `occurrence_sheet()` docstring says "interleaved per specimen" but output is all data labels then all id labels in batches.
+- [x] **m-4** `labels.py` — Fixed by redesigning the print sheet as a grouped, column-aligned layout (`grouped_sheet`): each queue addition is a group with an origin header; within a group every specimen is a column with data/identifier/determination bands stacked so corresponding labels stay adjacent for cutting. The print queue (`build_pdf` → `queued_groups`) reconstructs per-specimen columns from the queue rows. The old `occurrence_sheet()` / "Occurrence labels" Labels-tab card was **removed** (confusing one-off; the same need will be served by the planned "reprint existing records → print queue" path). See "Print-queue policy by create mode".
 - [ ] **m-5** `main.py` + `records_tab.py` + `import_assign.py` — `SEX_OPTIONS`, `SAMPLING_PROTOCOLS`, `DEFAULT_IDENTIFIED_BY`, `DEFAULT_NAMESPACE`, etc. duplicated in three files; centralise.
 - [ ] **m-6** `main.py:464` — `_refreshers` populated in tab-rendering order; missing keys would cause `KeyError` if tab order changes. Use `.get()` calls or pre-initialise with `None`.
 - [ ] **m-7** `labels.py` vs `label_text.py` — `_data_line1()` duplicates locality-formatting logic already in `format_locality_label()`.
@@ -349,7 +377,7 @@ manually in the TW UI. This constrains the sync direction to insert-only forever
 | **Digitize** | Main specimen entry form: collecting event (search/create), taxon (local-first search + TW fallback), sex, count, preparations, notes. Saves to DB. Standard/Visiting modes queue **no** labels (see "Print-queue policy by create mode"); only Mounting queues a sheet. |
 | **Taxonomy** | Checklist tree (family → synonyms). Filter by rank. Links to TaxonPages. Rebuilds on every tab switch and on every save (via `_refreshers["taxonomy_tree"]`). |
 | **Labels** | Generate identifier label batches (4-char codes). Preview + download PDF. Reprint a whole batch if unused. Staged-codes dashboard. |
-| **Print queue** | Preview and print all staged labels in one PDF (identifier, locality, identification types). |
+| **Print queue** | Preview and print all staged labels in one grouped PDF (per queue addition; data/identifier/determination column-aligned per specimen). Saves the PDF to `printed_pdf_dir` on print, then clears the queue. |
 | **Import & Assign** | Upload a DwC CSV; live-filter rows; assign taxon + per-specimen fields; save to DB. |
 
 ### Service layer (`app/services/`)

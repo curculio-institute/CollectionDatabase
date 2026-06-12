@@ -35,6 +35,20 @@ class AppConfig:
     # Values: "street" | "satellite" | "satellite_labels"
     map_default_layer: str = "street"
 
+    # Folder where every printed label-queue PDF is archived (for reprint/audit).
+    # Relative paths resolve against the project data/ dir; "" → data/printed_labels.
+    printed_pdf_dir: str = ""
+
+
+def printed_pdf_dir() -> Path:
+    """Resolved archival folder for printed label PDFs (created if missing)."""
+    raw = get_config().printed_pdf_dir
+    path = Path(raw) if raw else (_DATA_DIR / "printed_labels")
+    if not path.is_absolute():
+        path = _DATA_DIR / path
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
 
 _instance: AppConfig | None = None
 

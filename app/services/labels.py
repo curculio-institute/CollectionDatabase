@@ -335,143 +335,132 @@ def identifier_sheet(codes: list[str]) -> bytes:
 
 
 # ---------------------------------------------------------------------------
-# Combined sheet — print queue output
+# Grouped sheet — print queue output
 # ---------------------------------------------------------------------------
+# Layout: the sheet is a wrapping flow of groups (one per queue addition, e.g.
+# one Mounting Session save or one batch of reserved codes). Within a group,
+# labels are a column-per-specimen grid with three bands stacked TOP→BOTTOM:
+# data (occurrence) / identifier / determination. A specimen's own labels touch
+# (no row gap) so they stay associated while cutting; neighbouring specimens get
+# a small gap; whole groups get a large gap. Each group prints a small origin
+# header; the sheet prints a small "Printed:" timestamp at the top.
+#
+# These gap/border metrics are intentionally named constants — expect to tune
+# them by eye once a real PDF is inspected.
 
-_COMBINED_CSS = _BASE_CSS + _ID_TEXT_CSS + """
-/* data labels */
-.lbl-data {
-    width: 18mm; min-height: 2.5mm;
-    border: 0.1mm dashed #aaa;
-    padding: 0.19mm 0.53mm;
-    overflow: hidden;
-}
-/* determination labels */
-.lbl-det {
-    width: 18mm; height: 4.9mm;
-    border: 0.1mm dashed #aaa;
-    padding: 0.19mm 0.53mm;
-    overflow: hidden;
-}
-/* identifier labels */
-.lbl-id {
-    width: 18mm; height: 5.5mm;
-    border: 0.1mm dashed #aaa;
-    padding: 0.3mm 0.5mm;
-    display: flex; align-items: center; gap: 0.8mm;
-}
-.lbl-id img { width: 4.5mm; height: 4.5mm; flex-shrink: 0; image-rendering: pixelated; }
-/* section break: forces subsequent labels to a new flex row */
-.section-break { flex: 0 0 100%; height: 2mm; }
-"""
+_LABEL_W_MM  = 18.0    # one label column width (matches _W)
+_SPEC_GAP_MM = 1.2     # between specimens within a group (small, horizontal)
+_GROUP_GAP = "6mm"     # between separate queue-addition groups (large)
+_SPEC_GAP  = f"{_SPEC_GAP_MM}mm"
+_CHUNK_GAP = "1.5mm"   # between wrapped specimen-runs inside one group (vertical)
+_LABELS_PER_ROW = 10   # specimens per row before a group wraps (18mm each on A4)
 
 
-def combined_sheet(
-    data_rows: list[DataLabel],
-    det_rows:  list[DeterminationLabel],
-    id_codes:  list[str],
-) -> bytes:
-    """Single PDF with all three label types, each group on its own run of the sheet."""
-    items: list[str] = []
+def _chunk_width_mm(n: int) -> float:
+    """Exact width of an n-column chunk: n labels + (n-1) inter-specimen gaps."""
+    return n * _LABEL_W_MM + max(n - 1, 0) * _SPEC_GAP_MM
 
-    for lbl_data in data_rows:
-        l1, l2 = _data_line1(lbl_data), _data_line2(lbl_data)
-        lines = "".join(f"<div>{t}</div>" for t in [l1, l2] if t)
-        items.append(f'<div class="lbl-data">{lines}</div>')
-
-    if data_rows and (det_rows or id_codes):
-        items.append('<div class="section-break"></div>')
-
-    for lbl_det in det_rows:
-        l1, l2, l3 = _det_line1(lbl_det), _det_line2(lbl_det), _det_line3(lbl_det)
-        lines = "".join(f"<div>{t}</div>" for t in [l1, l2, l3] if t)
-        items.append(f'<div class="lbl-det">{lines}</div>')
-
-    if det_rows and id_codes:
-        items.append('<div class="section-break"></div>')
-
-    for code in id_codes:
-        items.append(f'<div class="lbl-id">{_id_label_inner(code)}</div>')
-
-    html = (f"<html><head><style>{_COMBINED_CSS}</style></head>"
-            f'<body><div class="sheet">{"".join(items)}</div></body></html>')
-    return HTML(string=html).write_pdf()
-
-
-# ---------------------------------------------------------------------------
-# Occurrence labels — convenience wrapper
-# ---------------------------------------------------------------------------
-# Kept for the UI: generates a data label + identifier label pair per specimen.
 
 @dataclass
-class OccurrenceLabel:
-    code: str
-    country: Optional[str]                  = None
-    country_code: Optional[str]             = None
-    state_province: Optional[str]           = None
-    municipality: Optional[str]             = None
-    county: Optional[str]                   = None
-    locality: Optional[str]                 = None
-    verbatim_locality: Optional[str]        = None
-    latitude: Optional[float]               = None
-    longitude: Optional[float]              = None
-    coordinate_uncertainty_m: Optional[float] = None
-    elevation_min: Optional[int]            = None
-    elevation_max: Optional[int]            = None
-    event_date: Optional[str]               = None
-    recorded_by: Optional[str]              = None
-    habitat: Optional[str]                  = None
-    taxon: Optional[str]                    = None
-    associated_species: Optional[list[str]] = None
+class SpecimenLabels:
+    """One specimen's labels within a group (any field may be absent)."""
+    data:          Optional[DataLabel]          = None
+    determination: Optional[DeterminationLabel] = None
+    id_code:       Optional[str]                = None
 
 
-def occurrence_sheet(rows: list[OccurrenceLabel]) -> bytes:
-    """Data label + identifier label for each specimen, interleaved on one sheet."""
-    data_rows = [DataLabel(
-        country=r.country, country_code=r.country_code,
-        state_province=r.state_province, municipality=r.municipality,
-        county=r.county,
-        locality=r.locality, verbatim_locality=r.verbatim_locality,
-        latitude=r.latitude, longitude=r.longitude,
-        coordinate_uncertainty_m=r.coordinate_uncertainty_m,
-        elevation_min=r.elevation_min, elevation_max=r.elevation_max,
-        event_date=r.event_date, recorded_by=r.recorded_by, habitat=r.habitat,
-        associated_species=r.associated_species,
-    ) for r in rows]
+@dataclass
+class LabelGroup:
+    source:    Optional[str]              # origin header, e.g. "Mounting Session"
+    specimens: list[SpecimenLabels]
 
-    # Build interleaved HTML: data label then identifier label per specimen,
-    # grouped in pairs so they print side by side and are easy to associate.
-    data_items = []
-    for lbl in data_rows:
-        l1, l2 = _data_line1(lbl), _data_line2(lbl)
-        lines = "".join(f"<div>{t}</div>" for t in [l1, l2] if t)
-        data_items.append(f'<div class="data-label">{lines}</div>')
 
-    id_items = [
-        f'<div class="id-label">{_id_label_inner(r.code)}</div>'
-        for r in rows
-    ]
-
-    css = _BASE_CSS + _ID_TEXT_CSS + """
-.sheet { display: flex; flex-wrap: wrap; gap: 0.3mm; align-content: flex-start; }
-.data-label {
-    width: 18mm; min-height: 2.5mm;
-    border: 0.1mm dashed #aaa;
-    padding: 0.19mm 0.53mm;
-    overflow: hidden;
-}
-.id-label {
-    width: 18mm; height: 5.5mm;
-    border: 0.1mm dashed #aaa;
-    padding: 0.3mm 0.5mm;
+# Layout uses an HTML table per chunk rather than CSS grid/flex: WeasyPrint's
+# grid `justify-content` and inline-block shrink-to-fit are both unreliable here
+# (columns stretch or wrap across group boundaries), but table layout is solid.
+# Each group is an inline-block box that wraps with a large margin; inside it a
+# fixed-layout table has one column per specimen and one row per band (data /
+# identifier / determination). `border-spacing` gives the small inter-specimen
+# gap with zero vertical gap, so a specimen's column stays together for cutting.
+_GROUPED_CSS = _BASE_CSS + _ID_TEXT_CSS + f"""
+.printed-at {{ font-size: 5pt; color: #666; margin-bottom: 3mm; }}
+.group {{ display: inline-block; vertical-align: top; margin: 0 {_GROUP_GAP} {_GROUP_GAP} 0; }}
+.group-header {{ font-size: 5pt; color: #666; margin-bottom: 0.4mm; letter-spacing: 0.2pt; }}
+.chunk {{ table-layout: fixed; border-collapse: separate; border-spacing: {_SPEC_GAP} 0; }}
+.chunk + .chunk {{ margin-top: {_CHUNK_GAP}; }}
+.cell {{ width: 18mm; padding: 0; vertical-align: top; }}
+.lbl-data {{
+    min-height: 2.5mm;
+    border: 0.1mm dashed #aaa; padding: 0.19mm 0.53mm; overflow: hidden;
+    font-size: {_FONT_SIZE};
+}}
+.lbl-det {{
+    height: 4.9mm;
+    border: 0.1mm dashed #aaa; padding: 0.19mm 0.53mm; overflow: hidden;
+    font-size: {_FONT_SIZE};
+}}
+.lbl-id {{
+    height: 5.5mm;
+    border: 0.1mm dashed #aaa; padding: 0.3mm 0.5mm;
     display: flex; align-items: center; gap: 0.8mm;
-}
-.id-label img { width: 4.5mm; height: 4.5mm; flex-shrink: 0; image-rendering: pixelated; }
+}}
+.lbl-id img {{ width: 4.5mm; height: 4.5mm; flex-shrink: 0; image-rendering: pixelated; }}
 """
-    # Print: all data labels first, then all identifier labels
-    html = (f"<html><head><style>{css}</style></head>"
-            f'<body><div class="sheet">'
-            f'{"".join(data_items)}'
-            f'{"".join(id_items)}'
-            f'</div></body></html>')
+
+
+def _data_cell(d: Optional[DataLabel]) -> str:
+    if d is None:
+        return '<td class="cell"></td>'
+    lines = "".join(f"<div>{t}</div>" for t in [_data_line1(d), _data_line2(d)] if t)
+    return f'<td class="cell"><div class="lbl-data">{lines}</div></td>'
+
+
+def _det_cell(d: Optional[DeterminationLabel]) -> str:
+    if d is None:
+        return '<td class="cell"></td>'
+    lines = "".join(f"<div>{t}</div>" for t in [_det_line1(d), _det_line2(d), _det_line3(d)] if t)
+    return f'<td class="cell"><div class="lbl-det">{lines}</div></td>'
+
+
+def _id_cell(code: Optional[str]) -> str:
+    if not code:
+        return '<td class="cell"></td>'
+    return f'<td class="cell"><div class="lbl-id">{_id_label_inner(code)}</div></td>'
+
+
+def _group_html(group: LabelGroup) -> str:
+    specs = group.specimens
+    if not specs:
+        return ""
+    has_data = any(s.data is not None for s in specs)
+    has_id   = any(s.id_code for s in specs)
+    has_det  = any(s.determination is not None for s in specs)
+
+    chunks: list[str] = []
+    for start in range(0, len(specs), _LABELS_PER_ROW):
+        chunk = specs[start:start + _LABELS_PER_ROW]
+        rows: list[str] = []
+        # Band order top→bottom: data, identifier, determination. Each present
+        # band is a table row with one cell per column (empty <td> if missing)
+        # so columns stay aligned across bands.
+        if has_data:
+            rows.append("<tr>" + "".join(_data_cell(s.data) for s in chunk) + "</tr>")
+        if has_id:
+            rows.append("<tr>" + "".join(_id_cell(s.id_code) for s in chunk) + "</tr>")
+        if has_det:
+            rows.append("<tr>" + "".join(_det_cell(s.determination) for s in chunk) + "</tr>")
+        chunks.append(f'<table class="chunk">{"".join(rows)}</table>')
+
+    header = f'<div class="group-header">{_e(group.source)}</div>' if group.source else ""
+    return f'<div class="group">{header}{"".join(chunks)}</div>'
+
+
+def grouped_sheet(groups: list[LabelGroup], printed_at: str) -> bytes:
+    """Render queued labels as a grouped, column-aligned sheet (see module note)."""
+    body = "".join(_group_html(g) for g in groups if g.specimens)
+    stamp = f'<div class="printed-at">Printed: {_e(printed_at)}</div>'
+    html = (f"<html><head><style>{_GROUPED_CSS}</style></head>"
+            f'<body>{stamp}<div class="sheet">{body}</div></body></html>')
     return HTML(string=html).write_pdf()
+
+

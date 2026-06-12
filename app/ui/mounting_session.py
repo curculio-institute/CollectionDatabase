@@ -19,6 +19,7 @@ from nicegui import ui
 
 import app.services as svc
 import app.services.identifiers as id_svc
+import app.services.print_queue as pq_svc
 from app.config import get_config
 from app.services.dates import parse_dwc_date
 from app.services.validation import validate_event_fields
@@ -345,6 +346,10 @@ def build_mounting_session_section(
                         s, cfg.collection_code, len(rows)
                     )
 
+                    # One print group for the whole session → the sheet prints
+                    # these specimens together under a "Mounting Session" header.
+                    group_id = pq_svc.next_print_group_id(s)
+
                     # Create specimens; reuse the same collecting event after the first
                     event_id: int | None = None
                     for row, code in zip(rows, codes):
@@ -386,6 +391,8 @@ def build_mounting_session_section(
                             collection_object_id=co.id,
                             code=code,
                             queue_labels=True,
+                            print_group_id=group_id,
+                            source=pq_svc.SOURCE_MOUNTING,
                             associations=bio_state["associations"],
                         )
 
