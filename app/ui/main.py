@@ -42,7 +42,6 @@ from app.ui.vocab import SAMPLING_PROTOCOLS
 from app.services.biological import (
     sync_biological_relationships,
     get_relationship_options,
-    save_biological_association,
 )
 from app.services.validation import validate_event_fields
 
@@ -1513,22 +1512,20 @@ def index():
                                         is_current=0,
                                     )
                                 saved_id = co.id
-                                # Standard mode: mark the reserved code used and
-                                # queue labels. Visiting mode is pure data capture
-                                # (foreign catalog number, no reserved code, no
-                                # labels printed), so skip all of that.
-                                if not is_visiting:
-                                    id_svc.assign_code(session, code, co.id)
-                                    pq_svc.enqueue_data(session, co.id)
-                                    pq_svc.enqueue_determination(session, co.id)
-                                # Save biological associations atomically with the specimen
-                                for assoc in bio_state["associations"]:
-                                    save_biological_association(
-                                        session,
-                                        collection_object_id=co.id,
-                                        biological_relationship_id=assoc["rel_id"],
-                                        object_taxon_id=assoc["taxon_id"],
-                                    )
+                                # Shared finalization seam (see finalize_specimen):
+                                # Standard binds the reserved code but queues no
+                                # labels — the identifier is pre-printed and pinned
+                                # by hand, and the specimen carries its own data
+                                # labels. Visiting passes code=None (foreign
+                                # catalogNumber, no reserved code). Both still
+                                # persist any bio associations atomically.
+                                svc.finalize_specimen(
+                                    session,
+                                    collection_object_id=co.id,
+                                    code=None if is_visiting else code,
+                                    queue_labels=False,
+                                    associations=bio_state["associations"],
+                                )
                         event_sel.set_options(_event_opts())
                         spec["refresh_codes"]()
                         ui.notify(f"Saved — specimen #{saved_id}  [{code}]", type="positive")

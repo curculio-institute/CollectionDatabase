@@ -19,9 +19,7 @@ from nicegui import ui
 
 import app.services as svc
 import app.services.identifiers as id_svc
-import app.services.print_queue as pq_svc
 from app.config import get_config
-from app.services.biological import save_biological_association
 from app.services.dates import parse_dwc_date
 from app.services.validation import validate_event_fields
 import app.services.person_defaults as pd_svc
@@ -378,20 +376,18 @@ def build_mounting_session_section(
                         if event_id is None:
                             event_id = co.collecting_event_id
 
-                        lc = id_svc.assign_code(s, code, co.id)
-
-                        # Queue: identifier label → locality label → determination label
-                        pq_svc.enqueue_identifier(s, lc.id)
-                        pq_svc.enqueue_data(s, co.id)
-                        pq_svc.enqueue_determination(s, co.id)
-
-                        for assoc in bio_state["associations"]:
-                            save_biological_association(
-                                s,
-                                collection_object_id=co.id,
-                                biological_relationship_id=assoc["rel_id"],
-                                object_taxon_id=assoc["taxon_id"],
-                            )
+                        # Shared finalization seam (see finalize_specimen): bind the
+                        # code and queue the full sheet — identifier + data
+                        # (occurrence) + determination labels — so a freshly mounted
+                        # specimen gets all its labels, with the identifier kept
+                        # beside its data label for matching while cutting.
+                        svc.finalize_specimen(
+                            s,
+                            collection_object_id=co.id,
+                            code=code,
+                            queue_labels=True,
+                            associations=bio_state["associations"],
+                        )
 
             n = len(rows)
 

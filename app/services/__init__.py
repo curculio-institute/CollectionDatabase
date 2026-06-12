@@ -11,6 +11,7 @@ from app.services.specimens import (
     create_collection_object,
     create_determination,
     save_specimen_entry,
+    finalize_specimen,
     recent_specimens,
 )
 
@@ -20,5 +21,5 @@ __all__ = [
     "EventOption", "format_event_summary", "search_collecting_events",
     "get_event", "create_collecting_event",
     "RecentRow", "create_collection_object", "create_determination",
-    "save_specimen_entry", "recent_specimens",
+    "save_specimen_entry", "finalize_specimen", "recent_specimens",
 ]

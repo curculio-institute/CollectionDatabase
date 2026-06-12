@@ -12,7 +12,14 @@ from app.models import (
     TaxonDetermination,
 )
 from app.models.base import _utcnow
+from app.services.biological import save_biological_association
 from app.services.events import create_collecting_event
+from app.services.identifiers import assign_code
+from app.services.print_queue import (
+    enqueue_data,
+    enqueue_determination,
+    enqueue_identifier,
+)
 from app.services.taxa import format_scientific_name
 
 
@@ -117,6 +124,52 @@ def save_specimen_entry(
         session, collection_object_id=co.id, taxon_id=taxon_id, **determination_fields
     )
     return co
+
+
+def finalize_specimen(
+    session: Session,
+    *,
+    collection_object_id: int,
+    code: str | None,
+    queue_labels: bool = False,
+    associations=(),
+) -> None:
+    """Post-create finalization shared by every create path (Digitize standard,
+    Visiting, Mounting): bind the reserved identifier code, optionally queue its
+    labels, and persist biological associations. Caller owns the transaction.
+
+    `code` is the reserved 4-char/sequential code to bind to this specimen, or
+    ``None`` for Visiting mode — there the catalogNumber belongs to a host
+    collection, so no code is assigned; only the biological associations (if any)
+    are saved.
+
+    `queue_labels` controls the print queue:
+      - Digitize standard: ``False`` — the identifier label is pre-printed in a
+        batch and pinned by hand, and the specimen already carries its own data
+        labels, so nothing is queued (the code is still bound).
+      - Mounting: ``True`` — these are freshly mounted specimens that need a whole
+        sheet printed, so the identifier, data (occurrence) and determination
+        labels are all queued. The identifier row sits with the data row so the
+        pair can be matched while cutting the sheet (the print service interleaves
+        identifier ↔ data per specimen).
+      - Visiting: irrelevant (no ``code``, nothing queued).
+
+    `associations` is an iterable of ``{"rel_id", "taxon_id"}`` dicts — the
+    specimen is the subject, the taxon the object.
+    """
+    if code is not None:
+        lc = assign_code(session, code, collection_object_id)
+        if queue_labels:
+            enqueue_identifier(session, lc.id)
+            enqueue_data(session, collection_object_id)
+            enqueue_determination(session, collection_object_id)
+    for assoc in associations:
+        save_biological_association(
+            session,
+            collection_object_id=collection_object_id,
+            biological_relationship_id=assoc["rel_id"],
+            object_taxon_id=assoc["taxon_id"],
+        )
 
 
 def update_collection_object(session: Session, co_id: int, **fields) -> CollectionObject:

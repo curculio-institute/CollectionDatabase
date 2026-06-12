@@ -105,7 +105,23 @@ in `-`.
   across a mode switch into the next saved record — the exact bug the "full wipe" comment
   guards against. Drive the clear off the field list or a form-level clear.
 
-- [ ] **ALT-2 — `app/ui/mounting_session.py:313` — third independent save orchestration.**
+- [x] **ALT-2 — `app/ui/mounting_session.py:313` — third independent save orchestration.**
+  Fixed: factored the post-create tail (bind reserved code → queue labels → save bio
+  associations) into one seam, `services.specimens.finalize_specimen(session, *,
+  collection_object_id, code, queue_labels=False, associations=())`. Both Digitize
+  `_on_save` and mounting `_do_save` now call it; the inline blocks and their imports
+  are gone. Print-queue policy is now explicit and centralised:
+    - **Digitize standard** — `queue_labels=False`: binds the code, queues **nothing**
+      (identifier is pre-printed; specimen carries its own data labels). *Behaviour
+      change:* standard previously enqueued data + determination labels; it no longer does.
+    - **Digitize visiting** — `code=None`: nothing bound/queued (foreign catalogNumber);
+      bio associations still saved.
+    - **Mounting** — `queue_labels=True`: queues identifier + data + determination so a
+      freshly mounted specimen gets its whole sheet, identifier beside its data label.
+  Covered by 4 new tests in `tests/test_services.py`.
+  *Future (noted, not built):* re-printing existing records by sending them to the print
+  queue. The `enqueue_*` services are standalone, so this is an "enqueue for an existing
+  co" path with no `assign_code` — `finalize_specimen` is create-time only and need not change.
   `_do_save` re-implements reserve → `save_specimen_entry` → `assign_code` → enqueue
   (data/determination/identifier) → bio-association, overlapping Digitize `_on_save` and the
   Records edit path; no shared "save specimen" seam.
