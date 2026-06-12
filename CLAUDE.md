@@ -148,6 +148,47 @@ The `enqueue_*` services are standalone, so this is an "enqueue for an existing
 - [ ] **m-7** `labels.py` vs `label_text.py` — `_data_line1()` duplicates locality-formatting logic already in `format_locality_label()`.
 - [ ] **m-8** `services/taxa.py:62` — `create_taxon_manual()` has no `nomenclatural_code` parameter; manually created taxa always get `NULL` code.
 
+## Known issues (found 2026-06-12) — fix later
+
+Captured for a later session; none fixed yet.
+
+### Major
+- [ ] **DB-1 (regression — data integrity)** `collecting_event` has **lost all its CHECK
+  constraints** in the live/migrated schema. The model (`app/models/collecting_event.py`)
+  declares `ck_ce_lat_range`, `ck_ce_lon_range`, `ck_ce_uncertainty_positive`,
+  `ck_ce_country_code_len`, `ck_ce_habitat_ambiguous_bool` (added by migrations
+  0001/0002/0008), but migrations **0021** and **0024** recreated the table via
+  `batch_alter_table(recreate=…)` for the person-FK conversion **without re-declaring the
+  CHECKs**, silently dropping them. A freshly-migrated DB has **zero** CHECKs on
+  `collecting_event`. Violates the core "DB-enforced constraints" principle (§2); currently
+  only the app-layer `validate_event_fields` guards bounds, so a script/direct insert could
+  write `latitude=200`. *Fix:* new migration re-adding the `ck_ce_*` constraints (pre-validate
+  existing rows first). *Also audit* every table recreated by 0021/0023/0024 (and any other
+  `recreate=` migration) for the same collateral loss of CHECKs/constraints.
+- [ ] **U-3 (workflow — important)** Shared Collecting Event form gives **no indication
+  whether selecting an existing event will edit that event** (mutating it for every specimen
+  that shares it) **or reuse/copy it**. Reuse is the whole point of shared events, but users
+  must not edit an existing event by accident. *Fix:* explicit edit-vs-reuse affordance — a
+  reused event should be read-only until the user deliberately chooses "edit this event" or
+  "make a copy", with a clear visual state for each.
+
+### Minor
+- [ ] **U-1** Mounting Session "Set identification" modal (`app/ui/mounting_session.py`) —
+  the `dateIdentified` input lacks the **Tier-2 `push_pin` "insert current year" default**
+  button present on the standard Digitize/Records forms. Inconsistent with the three-tier
+  field-filling policy (§ "Field-filling policy", Tier 2).
+- [ ] **U-2** Shared Collecting Event form — **"Search existing events" does not retrieve all
+  fields**: selecting an existing event leaves some locality/coordinate fields blank instead
+  of fully populating the form from the stored event.
+- [ ] **T-1 (test rot)** `tests/test_constraints.py` is stale — 10 of its 15 failures are
+  bit-rot, not real bugs: (a) helper `_obj()` and the catalog-number / biological-association
+  / FK tests pass `catalog_namespace=` (split into `collection_code` + `institution_code` in
+  migration 0015); (b) `test_seed_biological_relationships` asserts the pre-0013 hardcoded
+  seed names (the seed is now TW data incl. `[legacy]` rows, per M-1). *Fix:* refresh those
+  tests. The remaining **5** failures (`test_check_latitude_*`, `_longitude_*`,
+  `_uncertainty_*`, `_country_code_*`) are **correct** and flag DB-1 — they pass once DB-1 is
+  fixed; keep them.
+
 ## 1. What this project is
 
 A **local-first, single-user desktop application** for maintaining an entomological
