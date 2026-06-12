@@ -705,12 +705,15 @@ def get_or_create_from_powo_data(
         ancestor_fields["genus"] = genus
 
     # Populate authorship for each ancestor rank using the classification-derived
-    # rank → author map from the POWO record.
+    # rank → author map from the POWO record. Use a separate variable: reusing
+    # `auth` here would clobber the *target* taxon's authorship captured above,
+    # leaving directly-imported genera (and mis-attributing infraspecific taxa)
+    # with the last-iterated ancestor's value instead of their own.
     ancestor_authorships: dict[str, str] = powo_fields.get("ancestor_authorships") or {}
     for rank_name, _field_key, auth_key in _RANK_CHAIN:
-        auth = ancestor_authorships.get(rank_name)
-        if auth:
-            ancestor_fields[auth_key] = auth
+        anc_auth = ancestor_authorships.get(rank_name)
+        if anc_auth:
+            ancestor_fields[auth_key] = anc_auth
     # For infraspecific taxa, extract the parent species name so _ensure_parent_rows
     # creates the species row as the immediate parent instead of stopping at genus.
     if rank in ("subspecies", "variety", "subvariety", "form", "subform") and genus:

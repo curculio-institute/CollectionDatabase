@@ -150,7 +150,17 @@ The `enqueue_*` services are standalone, so this is an "enqueue for an existing
 
 ## Known issues (found 2026-06-12) — fix later
 
-Captured for a later session; none fixed yet.
+Captured for a later session.
+
+### Fixed
+- [x] **TX-1** `services/taxa.py::get_or_create_from_powo_data` — the ancestor-authorship
+  loop reused the `auth` variable, clobbering the *target* taxon's authorship (captured
+  earlier) with the loop's final value (`ancestor_authorships['species']`). A genus picked
+  directly from POWO has no `'species'` ancestor → it was created with **NULL authorship**;
+  a later species import then backfilled the genus author via `_ensure_parent_rows` (the
+  "authorship gets updated later" symptom). Infraspecific targets were similarly mis-attributed.
+  Fixed by using a separate loop variable (`anc_auth`). Tests in `tests/test_taxon_import.py`.
+  (Existing NULL-authorship genera self-heal on the next species import, or can be backfilled.)
 
 ### Major
 - [ ] **DB-1 (regression — data integrity)** `collecting_event` has **lost all its CHECK
