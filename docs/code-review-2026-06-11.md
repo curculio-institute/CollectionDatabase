@@ -95,7 +95,10 @@ in `-`.
 
 ## Altitude
 
-- [ ] **ALT-1 — `app/ui/main.py:1598` (and `:1474`) — hardcoded wipe tuple drifts.**
+- [x] **ALT-1 — `app/ui/main.py:1598` (and `:1474`) — hardcoded wipe tuple drifts.**
+  Fixed: a single `_event_widgets` (field name → widget) map is now the source of truth;
+  `_collect_event_fields()` derives from it and `_clear_event_widgets()` blanks it, called
+  from both wipe sites. Adding a collecting-event field is a one-line map edit.
   `_on_mode_toggle` (and `_clear_after_save`) wipe collecting-event state via a ~20-widget
   tuple that parallels the field declarations with no link.
   *Cost:* every new collecting-event field must be added to both tuples or it silently leaks
