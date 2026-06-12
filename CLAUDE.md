@@ -74,6 +74,29 @@ that share the same collecting event, sets the specimen count, queues them for p
 and the print sheet is generated in one go. Identifications are added later via the Records
 tab.
 
+### Print-queue policy by create mode (decided)
+
+Every specimen-create path runs the same finalization tail through one seam,
+`app/services/specimens.py::finalize_specimen(session, *, collection_object_id, code,
+queue_labels=False, associations=())`: bind the reserved identifier code, optionally
+queue labels, and persist biological associations. Which modes queue labels is a
+deliberate policy, **not** an incidental of each tab:
+
+| Mode | `code` | `queue_labels` | Queues to `print_queue` |
+|------|--------|----------------|-------------------------|
+| **Digitize standard** | reserved code | `False` | **nothing** — identifier is pre-printed in a batch and pinned by hand; the specimen already carries its own data labels. The code is still bound (`assign_code`). |
+| **Digitize visiting** | `None` | — | nothing — foreign `catalogNumber`, no reserved code; bio associations still saved. |
+| **Mounting** | reserved code | `True` | identifier + data + determination — a freshly mounted specimen needs its whole sheet printed; the identifier label stays beside its data label so the pair can be matched while cutting (see the adjacent-sheet layout above). |
+
+**Rationale:** standard/visiting specimens already have physical labels; only mounting
+produces fresh specimens that need a printed sheet. (Historical note: Digitize standard
+formerly enqueued data + determination labels — removed 2026-06-12; it now queues nothing.)
+
+**Planned (not built):** re-printing existing records by sending them to the print queue.
+The `enqueue_*` services are standalone, so this is an "enqueue for an existing
+`collection_object`, no `assign_code`" path; `finalize_specimen` is create-time only and
+need not change.
+
 ## Known bugs (audit 2026-06-07) — fix one by one
 
 ### Critical
@@ -323,7 +346,7 @@ manually in the TW UI. This constrains the sync direction to insert-only forever
 
 | Tab | Purpose |
 |-----|---------|
-| **Digitize** | Main specimen entry form: collecting event (search/create), taxon (local-first search + TW fallback), sex, count, preparations, notes. Saves to DB and pushes to print queue. |
+| **Digitize** | Main specimen entry form: collecting event (search/create), taxon (local-first search + TW fallback), sex, count, preparations, notes. Saves to DB. Standard/Visiting modes queue **no** labels (see "Print-queue policy by create mode"); only Mounting queues a sheet. |
 | **Taxonomy** | Checklist tree (family → synonyms). Filter by rank. Links to TaxonPages. Rebuilds on every tab switch and on every save (via `_refreshers["taxonomy_tree"]`). |
 | **Labels** | Generate identifier label batches (4-char codes). Preview + download PDF. Reprint a whole batch if unused. Staged-codes dashboard. |
 | **Print queue** | Preview and print all staged labels in one PDF (identifier, locality, identification types). |
