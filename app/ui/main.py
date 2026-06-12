@@ -1379,28 +1379,39 @@ def index():
 
                 # ── save / clear logic ────────────────────────────────────
 
+                # Single source of truth for the editable collecting-event widgets.
+                # `_collect_event_fields()` reads their values; `_clear_event_widgets()`
+                # blanks them. Add a new collecting-event field HERE only — both the
+                # save path and every wipe site derive from this map, so a new field can
+                # never silently leak across a save or mode switch (ALT-1).
+                _event_widgets = {
+                    "country":                          country_in,
+                    "country_code":                     code_in,
+                    "state_province":                   state_in,
+                    "county":                           county_in,
+                    "municipality":                     muni_in,
+                    "island":                           island_in,
+                    "locality":                         locality_in,
+                    "verbatim_locality":                verblocal_in,
+                    "event_date":                       edate_in,
+                    "verbatim_event_date":              verbdate_in,
+                    "decimal_latitude":                 lat_in,
+                    "decimal_longitude":                lon_in,
+                    "coordinate_uncertainty_in_meters": uncert_in,
+                    "minimum_elevation_in_meters":      elev_min_in,
+                    "maximum_elevation_in_meters":      elev_max_in,
+                    "habitat":                          habitat_in,
+                    "sampling_protocol":                protocol_sel,
+                    "field_number":                     fieldnum_in,
+                    "verbatim_label":                   verblabel_in,
+                }
+
                 def _collect_event_fields() -> dict:
-                    return {
-                        "country":                          country_in.value,
-                        "country_code":                     code_in.value,
-                        "state_province":                   state_in.value,
-                        "county":                           county_in.value,
-                        "municipality":                     muni_in.value,
-                        "island":                           island_in.value,
-                        "locality":                         locality_in.value,
-                        "verbatim_locality":                verblocal_in.value,
-                        "event_date":                       edate_in.value,
-                        "verbatim_event_date":              verbdate_in.value,
-                        "decimal_latitude":                 lat_in.value,
-                        "decimal_longitude":                lon_in.value,
-                        "coordinate_uncertainty_in_meters": uncert_in.value,
-                        "minimum_elevation_in_meters":      elev_min_in.value,
-                        "maximum_elevation_in_meters":      elev_max_in.value,
-                        "habitat":                          habitat_in.value,
-                        "sampling_protocol":                protocol_sel.value,
-                        "field_number":                     fieldnum_in.value,
-                        "verbatim_label":                   verblabel_in.value,
-                    }
+                    return {name: w.value for name, w in _event_widgets.items()}
+
+                def _clear_event_widgets():
+                    for w in _event_widgets.values():
+                        w.value = ""
 
                 def _collect_specimen_fields() -> dict:
                     active = _active_spec[0]
@@ -1451,12 +1462,7 @@ def index():
                         event_status.set_text("· new event")
                         event_status.classes(remove="event-linked", add="event-new")
                         recby_state["set_value"](None)
-                        for w in (country_in, code_in, state_in, county_in, muni_in,
-                                  island_in, locality_in, verblocal_in, edate_in, verbdate_in,
-                                  lat_in, lon_in, uncert_in, elev_min_in,
-                                  elev_max_in, habitat_in, fieldnum_in, verblabel_in):
-                            w.value = ""
-                        protocol_sel.value = ""
+                        _clear_event_widgets()
                     if not keep_det.value:
                         det_state["clear"]()
 
@@ -1574,12 +1580,7 @@ def index():
                     event_status.set_text("· new event")
                     event_status.classes(remove="event-linked", add="event-new")
                     recby_state["set_value"](None)
-                    for w in (country_in, code_in, state_in, county_in, muni_in,
-                              island_in, locality_in, verblocal_in, edate_in, verbdate_in,
-                              lat_in, lon_in, uncert_in, elev_min_in,
-                              elev_max_in, habitat_in, fieldnum_in, verblabel_in):
-                        w.value = ""
-                    protocol_sel.value = ""
+                    _clear_event_widgets()
                     ms_state["wipe"]()
 
                 _mode_state["handler"] = _on_mode_toggle
