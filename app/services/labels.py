@@ -30,7 +30,7 @@ from typing import Optional
 import qrcode
 from weasyprint import HTML
 
-from app.services.label_text import abbreviate_name
+from app.services.label_text import abbreviate_name, format_coords, format_country
 
 
 def _e(v: str | None) -> str:
@@ -103,19 +103,11 @@ class DataLabel:
     text_override: Optional[str]            = None
 
 
-_COUNTRY_THRESHOLD = 10  # chars; longer names use the 2-letter code
-
-
 def _data_line1(lbl: DataLabel) -> str:
     if lbl.text_override is not None:
         return _e(lbl.text_override)
 
-    country = lbl.country or ""
-    code = lbl.country_code or ""
-    if country and len(country) > _COUNTRY_THRESHOLD and code:
-        country_str = _e(code)
-    else:
-        country_str = _e(country)
+    country_str = format_country(lbl.country, lbl.country_code, html=True)
 
     parts: list[str] = []
 
@@ -123,11 +115,8 @@ def _data_line1(lbl: DataLabel) -> str:
         if f:
             parts.append(_e(f))
 
-    if lbl.latitude is not None and lbl.longitude is not None:
-        coords = f"{lbl.latitude:.4f}, {lbl.longitude:.4f}"
-        if lbl.coordinate_uncertainty_m is not None:
-            u = lbl.coordinate_uncertainty_m
-            coords += f" ±{round(u)}m" if u < 1000 else f" ±{u / 1000:.1f}km"
+    coords = format_coords(lbl.latitude, lbl.longitude, lbl.coordinate_uncertainty_m)
+    if coords:
         parts.append(coords)
 
     if lbl.elevation_min is not None:
