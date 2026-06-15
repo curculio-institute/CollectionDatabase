@@ -437,12 +437,22 @@ experiments, UI tweaks, and small changes — not just large features.
 
 - Schema changes → Alembic migration, never hand-edited DDL on a live DB.
 - **Migration discipline — never lose constraints.** A `batch_alter_table(recreate=...)`
-  (or any table rebuild) reflects columns but **silently drops STRICT typing, CHECK
-  constraints, and FK `ON DELETE` actions**. Any migration that rebuilds a table MUST
-  re-declare *all* of them (STRICT, every CHECK, every FK action, server DEFAULTs). This is
-  what caused DB-1 (migrations 0021/0024); migration 0029 restored it.
-  `tests/test_schema_integrity.py` guards against recurrence — it fails loudly if any
-  STRICT table loses STRICT, a CHECK, or an FK action. Run the suite after any migration.
+  (or any table rebuild) reflects columns but **silently drops STRICT typing, CHECK +
+  UNIQUE constraints, and FK `ON DELETE` actions**. Any migration that rebuilds a table MUST
+  re-declare *all* of them (STRICT, every CHECK, every UNIQUE, every FK action, server
+  DEFAULTs). This is what caused DB-1 (migrations 0021/0024); migration 0029 restored it.
+  `tests/test_schema_integrity.py` guards against recurrence — it fails loudly if any STRICT
+  table loses STRICT, a CHECK, a UNIQUE, or an FK action. Run the suite after any migration.
+  - **The models are NOT a complete schema mirror.** SQLAlchemy can't express STRICT, and
+    historically some constraints lived *only* in migration DDL: the `taxon.taxonomicStatus`
+    CHECK (unnamed, mig 0012), `biological_association`'s exclusive-arc CHECKs (unnamed, mig
+    0007), and `collection_object`'s `UNIQUE(collectionCode, catalogNumber)` (undeclared in
+    the model until 0029 — which is how 0029's first draft re-dropped it). Generating
+    rebuild DDL *from the models* will drop anything the model doesn't declare. Prefer
+    adding the constraint to the model so it's authoritative.
+  - **Restoring the live DB from a `.db` backup:** the DB is in WAL mode — `rm` the stale
+    `data/collection.db-wal`/`-shm` (or checkpoint) when swapping the file, or SQLite
+    replays the old WAL and the restore silently appears to do nothing.
 - Data transforms → standalone, deterministic, tested scripts. No LLM in the data path.
 - Heavily test the **sync diff** and **habitat ambiguity** logic.
 - Comment any TaxonWorks behavioural assumption with its source (`file:line` or API route).
