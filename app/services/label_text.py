@@ -51,6 +51,15 @@ def format_coords(
     return s
 
 
+def format_country(country: str | None, code: str | None, *, html: bool = False) -> str:
+    """Country for a locality label: full name, or the 2-letter ISO code when the
+    name is longer than the threshold. Shared by the label PDF and the previews."""
+    country = country or ""
+    code = code or ""
+    chosen = code if (country and len(country) > _COUNTRY_THRESHOLD and code) else country
+    return (_html.escape(chosen) if html else chosen) if chosen else ""
+
+
 def format_locality_label(
     ev: "CollectingEvent | None",
     associated_species: list[str] | None = None,
@@ -71,13 +80,7 @@ def format_locality_label(
     def _e(v: str | None) -> str:
         return (_html.escape(v) if html else v) if v else ""
 
-    # Country: full name if ≤ threshold chars, else 2-letter code
-    country = ev.country or ""
-    code = ev.country_code or ""
-    if country and len(country) > _COUNTRY_THRESHOLD and code:
-        country_str = _e(code)
-    else:
-        country_str = _e(country)
+    country_str = format_country(ev.country, ev.country_code, html=html)
 
     parts: list[str] = []
 
