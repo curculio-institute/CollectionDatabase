@@ -2,14 +2,14 @@
 from app.models import LabelCode
 import app.services.print_queue as pq
 from app.services.specimens import save_specimen_entry, finalize_specimen
-from app.services.identifiers import reserve_codes, reserve_sequential_codes
+from app.services.identifiers import reserve_sequential_codes
 
 # Reuse the specimen/event/taxon builders from the service tests.
 from tests.test_services import _taxon, _event
 
 
 def _enqueue_identifier_batch(session, n, *, group_id, source):
-    batch_id, _codes = reserve_codes(session, n)
+    batch_id, _codes = reserve_sequential_codes(session, "TEST", n)
     for lc in session.query(LabelCode).filter(LabelCode.batch_id == batch_id).all():
         pq.enqueue_identifier(session, lc.id, print_group_id=group_id, source=source)
     session.flush()

@@ -383,7 +383,7 @@ manually in the TW UI. This constrains the sync direction to insert-only forever
 | `taxonworks.py` | All TW API calls (async). Token hardcoded as `TW_TOKEN` at the top of the file. |
 | `events.py` | Collecting event CRUD + search |
 | `specimens.py` | `CollectionObject` + `TaxonDetermination` creation |
-| `identifiers.py` | `reserve_codes()` → `(batch_id, codes_list)` — always unpack the tuple |
+| `identifiers.py` | `reserve_sequential_codes(coll_code, n)` → `(batch_id, codes_list)` — always unpack the tuple |
 | `labels.py` | WeasyPrint HTML → PDF for identifier, locality, identification labels |
 | `print_queue.py` | Stage + retrieve + clear print-queue items |
 | `dwc_import.py` | Parse DwC CSV, field aliasing, row-to-form-field mapping |
@@ -458,7 +458,7 @@ experiments, UI tweaks, and small changes — not just large features.
 - Comment any TaxonWorks behavioural assumption with its source (`file:line` or API route).
 - Don't add dependencies casually; pin them; don't touch other conda envs.
 - Keep the UI layer thin; logic lives in service/repository functions callable from scripts.
-- `reserve_codes()` returns `(batch_id, codes_list)` — always unpack both values.
+- `reserve_sequential_codes()` returns `(batch_id, codes_list)` — always unpack both values.
 
 ### UI conventions
 
