@@ -18,7 +18,6 @@ import app.services.dwc_import as dwc_svc
 import app.services.taxonworks as tw_svc
 import app.services.taxa as taxa_svc
 import app.services.identifiers as id_svc
-import app.services.print_queue as pq_svc
 import app.services as svc
 from app.config import get_config
 import app.services.person_defaults as pd_svc
@@ -551,10 +550,17 @@ def build_import_assign_tab(session_factory, refreshers: dict) -> None:
                                 "verbatim_identification":  dwc_svc.row_scientific_name(row),
                             },
                         )
-                        id_svc.assign_code(session, code, co.id)
+                        # Retroactive digitisation: the specimen already carries
+                        # its own data + identification labels and the identifier
+                        # is pre-printed, so bind the code but queue no labels
+                        # (same policy as Digitize standard; see finalize_specimen).
+                        svc.finalize_specimen(
+                            session,
+                            collection_object_id=co.id,
+                            code=code,
+                            queue_labels=False,
+                        )
                         saved_id = co.id
-                        pq_svc.enqueue_data(session, co.id)
-                        pq_svc.enqueue_determination(session, co.id)
             except Exception as exc:
                 ui.notify(f"Save failed: {exc}", type="negative")
                 return

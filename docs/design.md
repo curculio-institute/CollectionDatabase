@@ -215,7 +215,29 @@ inside it), for every Tier 2 field without exception.
 |---|---|
 | `identifiedBy` | user's full name |
 | `recordedBy` | user's full name |
-| `dateIdentified` | current year |
+| `dateIdentified` | current 4-digit year (e.g. `"2026"`) — insert the year only; the user completes month/day |
+
+**Placement (mandatory):** the button must be a **sibling adjacent** to the field (in a flex
+row), **not** inside the field's `add_slot("append")`. Quasar QSelect intercepts all events
+inside its append slot and opens the dropdown, so `on_click` never fires independently. For
+`ui.input` (QInput) the append slot does work, but `push_pin` is still placed adjacent for
+visual consistency across all Tier 2 fields.
+
+**Tier 2 implementation pattern** (a `ui.select` person field; adapt for inputs):
+```python
+with ui.row().classes("flex-1 min-w-40 items-center gap-1"):
+    sel = ui.select(opts, label="identifiedBy", with_input=True, clearable=True).classes("flex-1")
+    (
+        ui.button("", icon="push_pin")
+        .props("flat dense round size=xs")
+        .tooltip("Insert default name")
+        .on_click(lambda: sel.set_value(get_config().default_identified_by) if get_config().default_identified_by else None)
+        .bind_visibility_from(sel, "value", lambda v: not v)   # hide once the field has a value
+    )
+```
+
+Always call `get_config()` **inside the lambda at click time** — never capture the value at
+render time, or the button freezes to whatever was configured when the page loaded.
 
 **Tier 3 — Background invisible default**
 Written silently into every saved record. Never shown as an editable form field.
@@ -892,12 +914,39 @@ all specimens are the same species. A copy-from-previous (↑) shortcut and copy
 
 One transaction. `id_svc.reserve_sequential_codes()` generates all codes at once. The loop
 creates one `collecting_event` on the first iteration and reuses its ID for all subsequent
-specimens. Each specimen gets: identifier label + locality label + determination label queued
-to `print_queue`. Biological associations (shared from the bio section) are applied to every
-specimen row.
+specimens. Each specimen is finalised through the shared seam
+`services.specimens.finalize_specimen(..., queue_labels=True, source=SOURCE_MOUNTING)`, which
+binds the reserved code and queues **data + identifier + determination** labels for that
+specimen under one shared print group. Biological associations (shared from the bio section)
+are applied to every specimen row. Mounting is the only create mode that queues labels — see
+CLAUDE.md → "Print-queue policy by create mode" for the authoritative per-mode policy.
 
-#### Print sheet layout
+### Grouped print sheet layout
 
-Coming from Mounting Session, the print sheet interleaves per-specimen: identifier label row
-/ locality label row / determination label row (if present). One group per specimen; no
-mixing across specimens on the same sheet row.
+The print queue (all sources, not just Mounting) renders as a **grouped, column-aligned
+sheet** (`labels.py::grouped_sheet`, fed by `print_queue.py::queued_groups`):
+
+- **Groups = queue additions.** Rows enqueued in one operation share a `print_group_id` +
+  a `source` header (`SOURCE_MOUNTING` "Mounting Session", `SOURCE_IDENTIFIERS`
+  "New identifiers", `SOURCE_REPRINT` "Reprint"). Allocate the id once per batch with
+  `next_print_group_id(session)` (columns added in migration 0028). Groups flow as
+  inline-block boxes that wrap, separated by a large gap.
+- **Within a group, one column per specimen**, with bands stacked top→bottom: **data /
+  identifier / determination**. A specimen's own labels touch (no gap) so they stay
+  associated while cutting; specimens are separated by a small gap. Built as an HTML
+  `<table>` per chunk (WeasyPrint's grid/inline-block sizing is unreliable; tables are not).
+  Wide groups wrap at `_LABELS_PER_ROW` columns. Gap/border metrics are named constants in
+  `labels.py` — tune by eye against a real PDF.
+- **Column reconstruction:** a data/determination row joins its column by
+  `collection_object_id`; an identifier row joins by its label code's `collection_object_id`
+  (set at assign time), or stands alone if the code is reserved-but-unassigned (a pre-print
+  identifier batch → an identifier-only group).
+- **Timestamp + archival:** the sheet prints a small "Printed: …" timestamp; on print, the
+  PDF is saved to `config.printed_pdf_dir` (default `data/printed_labels/`,
+  `config.printed_pdf_dir()` resolves + creates it) as `labels_<YYYYMMDD-HHMMSS>.pdf` before
+  the queue is cleared, for reprint/audit.
+
+**Planned (not built):** re-printing existing records by sending them to the print queue.
+The `enqueue_*` services are standalone, so this is an "enqueue for an existing
+`collection_object`, no `assign_code`" path (its own group, `SOURCE_REPRINT`);
+`finalize_specimen` is create-time only and need not change.

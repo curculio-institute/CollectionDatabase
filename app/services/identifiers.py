@@ -1,11 +1,10 @@
 """Identifier (label code) management.
 
-Two code formats are supported and coexist in the same table:
-  - Legacy random 4-char codes, e.g. "AB3C"  (reserve_codes)
-  - Sequential codes,           e.g. "JJPC-03963"  (reserve_sequential_codes)
+Codes are sequential per collection, e.g. "JJPC-03963" (reserve_sequential_codes).
+Legacy random 4-char codes (e.g. "AB3C") may still exist in the table from before
+the format change, but are no longer generated.
 
 Workflow:
-  reserve_codes(session, n)                       → create a batch, generate n unique random codes
   reserve_sequential_codes(session, coll_code, n) → create a batch of n sequential codes
   batches_with_reserved(session)    → list of (batch_id, created_at, n_reserved) for UI
   codes_for_batch(session, batch_id)→ reserved codes in a specific batch
@@ -15,44 +14,12 @@ Workflow:
 """
 from __future__ import annotations
 
-import secrets
-import string
 from dataclasses import dataclass
 
 from sqlalchemy.orm import Session
 
 from app.models import LabelBatch, LabelCode, CollectionObject
 from app.models.base import _utcnow
-
-_CHARS = string.ascii_uppercase + string.digits  # 36 characters
-
-
-def _random_code() -> str:
-    return "".join(secrets.choice(_CHARS) for _ in range(4))
-
-
-def reserve_codes(session: Session, count: int) -> tuple[int, list[str]]:
-    """Create a batch, generate `count` unique codes, return (batch_id, codes)."""
-    existing = {row.code for row in session.query(LabelCode.code).all()}
-    codes: list[str] = []
-    while len(codes) < count:
-        code = _random_code()
-        if code not in existing and code not in codes:
-            codes.append(code)
-
-    now = _utcnow()
-    batch = LabelBatch(created_at=now, updated_at=now)
-    session.add(batch)
-    session.flush()  # get batch.id
-
-    for code in codes:
-        session.add(LabelCode(
-            code=code, status="reserved",
-            batch_id=batch.id,
-            created_at=now, updated_at=now,
-        ))
-    session.flush()
-    return batch.id, codes
 
 
 @dataclass
@@ -194,7 +161,7 @@ def reserve_sequential_codes(
 ) -> tuple[int, list[str]]:
     """Generate `count` sequential codes like 'JJPC-03963' and reserve them in a new batch.
 
-    Same return signature as reserve_codes: (batch_id, codes).
+    Returns (batch_id, codes).
     Codes are reserved; call assign_code() per specimen after creating CollectionObjects.
     """
     start = _next_sequential_number(session, collection_code)

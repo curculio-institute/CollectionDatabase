@@ -1,5 +1,9 @@
 # Code review — 2026-06-11
 
+> **ARCHIVED.** All findings resolved except **ALT-3**, now tracked as
+> [issue #3](https://github.com/curculio-institute/CollectionDatabase/issues/3).
+> Kept for historical reference only.
+
 Scope: `git diff origin/main...HEAD` (merge-base `627fcfa`) — the specimen-form
 extraction, Visiting Collection mode, vocab centralisation, gifting (editable
 `collectionCode`), mounting session, and the segmented mode toggle.
@@ -95,14 +99,33 @@ in `-`.
 
 ## Altitude
 
-- [ ] **ALT-1 — `app/ui/main.py:1598` (and `:1474`) — hardcoded wipe tuple drifts.**
+- [x] **ALT-1 — `app/ui/main.py:1598` (and `:1474`) — hardcoded wipe tuple drifts.**
+  Fixed: a single `_event_widgets` (field name → widget) map is now the source of truth;
+  `_collect_event_fields()` derives from it and `_clear_event_widgets()` blanks it, called
+  from both wipe sites. Adding a collecting-event field is a one-line map edit.
   `_on_mode_toggle` (and `_clear_after_save`) wipe collecting-event state via a ~20-widget
   tuple that parallels the field declarations with no link.
   *Cost:* every new collecting-event field must be added to both tuples or it silently leaks
   across a mode switch into the next saved record — the exact bug the "full wipe" comment
   guards against. Drive the clear off the field list or a form-level clear.
 
-- [ ] **ALT-2 — `app/ui/mounting_session.py:313` — third independent save orchestration.**
+- [x] **ALT-2 — `app/ui/mounting_session.py:313` — third independent save orchestration.**
+  Fixed: factored the post-create tail (bind reserved code → queue labels → save bio
+  associations) into one seam, `services.specimens.finalize_specimen(session, *,
+  collection_object_id, code, queue_labels=False, associations=())`. Both Digitize
+  `_on_save` and mounting `_do_save` now call it; the inline blocks and their imports
+  are gone. Print-queue policy is now explicit and centralised:
+    - **Digitize standard** — `queue_labels=False`: binds the code, queues **nothing**
+      (identifier is pre-printed; specimen carries its own data labels). *Behaviour
+      change:* standard previously enqueued data + determination labels; it no longer does.
+    - **Digitize visiting** — `code=None`: nothing bound/queued (foreign catalogNumber);
+      bio associations still saved.
+    - **Mounting** — `queue_labels=True`: queues identifier + data + determination so a
+      freshly mounted specimen gets its whole sheet, identifier beside its data label.
+  Covered by 4 new tests in `tests/test_services.py`.
+  *Future (noted, not built):* re-printing existing records by sending them to the print
+  queue. The `enqueue_*` services are standalone, so this is an "enqueue for an existing
+  co" path with no `assign_code` — `finalize_specimen` is create-time only and need not change.
   `_do_save` re-implements reserve → `save_specimen_entry` → `assign_code` → enqueue
   (data/determination/identifier) → bio-association, overlapping Digitize `_on_save` and the
   Records edit path; no shared "save specimen" seam.

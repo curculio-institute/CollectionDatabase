@@ -101,6 +101,26 @@ def _powo_species(
     }
 
 
+def _powo_genus(
+    scientific_name: str,
+    family: str,
+    authorship: str = "L.",
+    nomenclatural_code: str = "ICN",
+    ancestor_authorships: dict | None = None,
+) -> dict:
+    """Return a powo_fields dict for a genus picked directly from POWO."""
+    return {
+        "scientific_name": scientific_name,
+        "taxon_rank": "genus",
+        "scientific_name_authorship": authorship,
+        "nomenclatural_code": nomenclatural_code,
+        "family": family,
+        "genus": None,
+        "ancestor_authorships": ancestor_authorships or {},
+        "is_synonym": False,
+    }
+
+
 # ---------------------------------------------------------------------------
 # Fixture — full manually-created plant hierarchy
 # ---------------------------------------------------------------------------
@@ -356,11 +376,8 @@ def test_powo_import_existing_species_no_duplicate(plant_tree, session):
 def test_powo_import_backfills_authorship(plant_tree, session):
     """POWO fills in authorship on existing rows that have none.
 
-    The POWO API includes the target taxon itself as the last entry in the
-    classification array with its author string.  fields_from_powo() puts
-    this in ancestor_authorships["species"], which the import loop picks up
-    as the final value of the loop variable and uses for the authorship
-    backfill.  We replicate that API behaviour here via ancestor_authorships.
+    The target taxon's authorship comes from `scientific_name_authorship`; the
+    backfill onto the existing (NULL-authorship) species row uses that value.
     """
     assert plant_tree["species"].scientific_name_authorship is None
 
@@ -374,6 +391,39 @@ def test_powo_import_backfills_authorship(plant_tree, session):
     session.refresh(plant_tree["species"])
 
     assert plant_tree["species"].scientific_name_authorship == "L."
+
+
+def test_powo_import_genus_directly_keeps_authorship(session):
+    """A genus imported directly from POWO retains its OWN authorship.
+
+    Regression: the ancestor-authorship loop reused the `auth` variable, so the
+    target genus was created with the loop's final value — ancestor_authorships
+    ['species'], which is absent for a genus record → None. A genus record's
+    classification carries family/genus authors but no species entry.
+    """
+    powo = _powo_genus(
+        "Achillea", family="Asteraceae", authorship="L.",
+        ancestor_authorships={"family": "Bercht. & J.Presl", "genus": "L."},
+    )
+    result = get_or_create_from_powo_data(session, powo)
+
+    assert result.taxon_rank == "genus"
+    assert result.scientific_name == "Achillea"
+    assert result.scientific_name_authorship == "L."   # was None before the fix
+
+
+def test_powo_import_species_keeps_own_authorship_without_species_classification(session):
+    """A directly-imported species keeps its own authorship even when the
+    classification map has no 'species' entry (guards the same clobber bug for
+    the species/infraspecific case)."""
+    powo = _powo_species(
+        "Achillea distans", genus="Achillea", family="Asteraceae", authorship="Waldst. & Kit.",
+    )
+    powo["ancestor_authorships"] = {"family": "Bercht. & J.Presl", "genus": "L."}
+    result = get_or_create_from_powo_data(session, powo)
+
+    assert result.taxon_rank == "species"
+    assert result.scientific_name_authorship == "Waldst. & Kit."   # was None before the fix
 
 
 def test_powo_import_does_not_overwrite_existing_authorship(plant_tree, session):

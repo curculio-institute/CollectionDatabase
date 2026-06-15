@@ -44,13 +44,13 @@ def _event(session) -> CollectingEvent:
 
 _obj_counter = 0
 
-def _obj(session, collecting_event=None, cat_num: str | None = None, cat_ns: str = "TEST") -> CollectionObject:
+def _obj(session, collecting_event=None, cat_num: str | None = None, coll_code: str = "TEST") -> CollectionObject:
     global _obj_counter
     _obj_counter += 1
     co = CollectionObject(
         collecting_event_id=collecting_event.id if collecting_event else None,
         catalog_number=cat_num or f"T-{_obj_counter:04d}",
-        catalog_namespace=cat_ns,
+        collection_code=coll_code,  # institution_code has a server_default of ""
         created_at=_utcnow(),
         updated_at=_utcnow(),
     )
@@ -81,12 +81,15 @@ def _rel(session, name="collected_on") -> BiologicalRelationship:
 # ---------------------------------------------------------------------------
 
 def test_seed_biological_relationships(session):
+    """Seeded from TaxonWorks data (migration 0013), which includes `[legacy]`
+    rows that stay in the DB but are filtered out of dropdowns (CLAUDE.md M-1)."""
     from sqlalchemy import text
     rows = session.execute(
         text("SELECT name FROM biological_relationship ORDER BY name")
     ).fetchall()
     names = {r[0] for r in rows}
-    assert {"collected_on", "feeds_on", "parasitizes", "reared_from", "associated_with"} <= names
+    assert {"collected from", "reared from", "feeding observed in the wild on"} <= names
+    assert any(n.startswith("[legacy]") for n in names)
 
 
 # ---------------------------------------------------------------------------
@@ -300,7 +303,7 @@ def test_catalog_number_unique_within_namespace(session):
     """Same catalogNumber in the same namespace must be rejected."""
     for _ in range(2):
         co = CollectionObject(
-            catalog_namespace="Jilg",
+            collection_code="COLL1",
             catalog_number="0001",
             created_at=_utcnow(), updated_at=_utcnow(),
         )
@@ -309,11 +312,12 @@ def test_catalog_number_unique_within_namespace(session):
         session.flush()
 
 
-def test_catalog_number_same_number_different_namespace_allowed(session):
-    """Same number in different namespaces is fine."""
-    for ns in ("Jilg", "MFNB"):
+def test_catalog_number_same_number_different_collection_allowed(session):
+    """Same catalogNumber under different collectionCodes is fine — uniqueness is
+    scoped per collection, so foreign datasets keep their own numbering."""
+    for cc in ("COLL1", "COLL2"):
         session.add(CollectionObject(
-            catalog_namespace=ns, catalog_number="0001",
+            collection_code=cc, catalog_number="0001",
             created_at=_utcnow(), updated_at=_utcnow(),
         ))
     session.flush()  # must not raise
@@ -322,7 +326,7 @@ def test_catalog_number_same_number_different_namespace_allowed(session):
 def test_catalog_number_required(session):
     """Inserting a collection_object without catalogNumber must be rejected."""
     co = CollectionObject(
-        catalog_namespace="Jilg",
+        collection_code="COLL1",
         created_at=_utcnow(), updated_at=_utcnow(),
     )
     session.add(co)

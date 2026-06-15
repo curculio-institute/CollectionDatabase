@@ -7,7 +7,9 @@ from app.services.taxa import format_scientific_name, search_taxa, TaxonOption
 from app.services.events import format_event_summary, search_collecting_events, create_collecting_event
 from app.services.specimens import (
     save_specimen_entry, recent_specimens, update_collection_object,
+    finalize_specimen,
 )
+from app.models import PrintQueue, BiologicalRelationship, BiologicalAssociation
 from app.services.identifiers import (
     reserve_sequential_codes, _next_sequential_number,
 )
@@ -370,3 +372,91 @@ def test_recent_specimens_returns_only_current_determination(session):
     assert "violaceus" in matching[0].scientific_name
     assert "coriaceus" not in matching[0].scientific_name
     assert matching[0].identified_by == "J. Jilg"
+
+
+# ---------------------------------------------------------------------------
+# finalize_specimen — shared create-time seam (assign code / queue / bio)
+# ---------------------------------------------------------------------------
+
+def _saved_co_with_code(session, *, catalog="A001", code="A001"):
+    """Create a specimen and a reserved LabelCode `code`; return (co, code)."""
+    t = _taxon(session)
+    ce = _event(session)
+    co = save_specimen_entry(
+        session, taxon_id=t.id, event_id=ce.id, event_fields={},
+        specimen_fields={"catalog_number": catalog, "collection_code": "TEST",
+                         "institution_code": "TEST"},
+        determination_fields={},
+    )
+    _seed_code(session, code)
+    session.flush()
+    return co, code
+
+
+def test_finalize_specimen_standard_assigns_code_but_queues_nothing(session):
+    """Digitize standard: the reserved code is bound (status→assigned) but NO
+    print-queue rows are created — the identifier is pre-printed and the specimen
+    carries its own data labels."""
+    co, code = _saved_co_with_code(session)
+
+    finalize_specimen(session, collection_object_id=co.id, code=code,
+                      queue_labels=False)
+    session.flush()
+
+    lc = session.query(LabelCode).filter_by(code=code).one()
+    assert lc.status == "assigned"
+    assert lc.collection_object_id == co.id
+    assert session.query(PrintQueue).count() == 0
+
+
+def test_finalize_specimen_mounting_queues_full_sheet(session):
+    """Mounting: code bound + identifier, data and determination labels all queued."""
+    co, code = _saved_co_with_code(session)
+
+    finalize_specimen(session, collection_object_id=co.id, code=code,
+                      queue_labels=True)
+    session.flush()
+
+    lc = session.query(LabelCode).filter_by(code=code).one()
+    assert lc.status == "assigned"
+    types = sorted(r.label_type for r in session.query(PrintQueue).all())
+    assert types == ["data", "determination", "identifier"]
+    # identifier row points at the label code; data/determination at the specimen
+    ident = session.query(PrintQueue).filter_by(label_type="identifier").one()
+    assert ident.label_code_id == lc.id and ident.collection_object_id is None
+    data = session.query(PrintQueue).filter_by(label_type="data").one()
+    assert data.collection_object_id == co.id and data.label_code_id is None
+
+
+def test_finalize_specimen_visiting_no_code_no_queue(session):
+    """Visiting: code=None — nothing is assigned or queued (foreign catalogNumber)."""
+    co, code = _saved_co_with_code(session)
+
+    finalize_specimen(session, collection_object_id=co.id, code=None)
+    session.flush()
+
+    lc = session.query(LabelCode).filter_by(code=code).one()
+    assert lc.status == "reserved"            # untouched
+    assert lc.collection_object_id is None
+    assert session.query(PrintQueue).count() == 0
+
+
+def test_finalize_specimen_saves_biological_associations(session):
+    """Associations are persisted regardless of mode (here: visiting, code=None)."""
+    co, _ = _saved_co_with_code(session)
+    host = _taxon(session, "Quercus", "robur", authorship="L.")
+    rel = BiologicalRelationship(name="collected_on",
+                                 created_at=_utcnow(), updated_at=_utcnow())
+    session.add(rel)
+    session.flush()
+
+    finalize_specimen(
+        session, collection_object_id=co.id, code=None,
+        associations=[{"rel_id": rel.id, "taxon_id": host.id}],
+    )
+    session.flush()
+
+    ba = session.query(BiologicalAssociation).filter_by(
+        subject_collection_object_id=co.id).one()
+    assert ba.object_taxon_id == host.id
+    assert ba.biological_relationship_id == rel.id
