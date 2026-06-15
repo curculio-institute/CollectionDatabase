@@ -436,6 +436,13 @@ the current clean working tree so there is always a rollback point. This applies
 experiments, UI tweaks, and small changes — not just large features.
 
 - Schema changes → Alembic migration, never hand-edited DDL on a live DB.
+- **Migration discipline — never lose constraints.** A `batch_alter_table(recreate=...)`
+  (or any table rebuild) reflects columns but **silently drops STRICT typing, CHECK
+  constraints, and FK `ON DELETE` actions**. Any migration that rebuilds a table MUST
+  re-declare *all* of them (STRICT, every CHECK, every FK action, server DEFAULTs). This is
+  what caused DB-1 (migrations 0021/0024); migration 0029 restored it.
+  `tests/test_schema_integrity.py` guards against recurrence — it fails loudly if any
+  STRICT table loses STRICT, a CHECK, or an FK action. Run the suite after any migration.
 - Data transforms → standalone, deterministic, tested scripts. No LLM in the data path.
 - Heavily test the **sync diff** and **habitat ambiguity** logic.
 - Comment any TaxonWorks behavioural assumption with its source (`file:line` or API route).

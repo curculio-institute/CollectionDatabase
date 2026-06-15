@@ -1,6 +1,6 @@
 from __future__ import annotations
 from typing import Optional, List
-from sqlalchemy import Integer, String, ForeignKey, CheckConstraint
+from sqlalchemy import Integer, String, ForeignKey, CheckConstraint, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from .base import Base, TimestampMixin
 
@@ -35,6 +35,11 @@ class CollectionObject(Base, TimestampMixin):
     occurrence_remarks: Mapped[Optional[str]] = mapped_column("dwc:materialEntityRemarks", String, nullable=True)
 
     __table_args__ = (
+        # Catalog number is unique per collection, not globally — foreign datasets
+        # may reuse numbers under their own collectionCode. (Was an unnamed UNIQUE in
+        # the live schema, undeclared in the model — that gap dropped it in migration
+        # 0029 until this was added. See CLAUDE.md migration discipline.)
+        UniqueConstraint("dwc:collectionCode", "dwc:catalogNumber", name="uq_co_collection_catalog"),
         CheckConstraint('"dwc:individualCount" >= 0', name="ck_co_individual_count_non_negative"),
         CheckConstraint(
             "\"dwc:basisOfRecord\" IN ('PreservedSpecimen', 'FossilSpecimen', 'HumanObservation')",
