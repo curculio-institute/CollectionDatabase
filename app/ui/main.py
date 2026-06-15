@@ -2060,7 +2060,9 @@ def index():
             await asyncio.sleep(0.15)
             await tax_tree.run_method("expandAll")
         elif e.value == "digitize":
-            _refreshers["person_opts"]()
+            refresh_persons = _refreshers.get("person_opts")
+            if refresh_persons:
+                refresh_persons()
 
     main_tabs.on_value_change(_on_tab_change)
 
