@@ -1920,8 +1920,9 @@ def index():
                     ui.label("Identifier labels").classes("section-label mb-2")
                     ui.label(
                         "Pre-print blank identifier labels to pin onto undigitised "
-                        "specimens. Each label carries a unique 4-character code and "
-                        "QR code. Codes are reserved in the database immediately."
+                        "specimens. Each label carries a unique sequential code "
+                        "(e.g. JJPC-00001) and QR code. Codes are reserved in the "
+                        "database immediately."
                     ).classes("text-sm mb-4").style("color:var(--tp-base-soft)")
 
                     with ui.row().classes("items-center gap-4"):
@@ -1945,9 +1946,10 @@ def index():
 
                     def _generate_id_labels():
                         n = int(count_input.value or 1)
+                        coll_code = get_config().collection_code
                         with _sf() as session:
                             with session.begin():
-                                batch_id, codes = id_svc.reserve_codes(session, n)
+                                batch_id, codes = id_svc.reserve_sequential_codes(session, coll_code, n)
                                 # One print group for this reservation → prints
                                 # under a "New identifiers" header on the sheet.
                                 group_id = pq_svc.next_print_group_id(session)
