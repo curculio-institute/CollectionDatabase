@@ -1,5 +1,9 @@
 # Code review — 2026-06-11
 
+> **ARCHIVED.** All findings resolved except **ALT-3**, now tracked as
+> [issue #3](https://github.com/curculio-institute/CollectionDatabase/issues/3).
+> Kept for historical reference only.
+
 Scope: `git diff origin/main...HEAD` (merge-base `627fcfa`) — the specimen-form
 extraction, Visiting Collection mode, vocab centralisation, gifting (editable
 `collectionCode`), mounting session, and the segmented mode toggle.

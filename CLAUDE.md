@@ -125,79 +125,28 @@ The `enqueue_*` services are standalone, so this is an "enqueue for an existing
 `collection_object`, no `assign_code`" path (its own group, `SOURCE_REPRINT`);
 `finalize_specimen` is create-time only and need not change.
 
-## Known bugs (audit 2026-06-07) — fix one by one
+## Open issues → GitHub
 
-### Critical
-- [x] **C-1** `records_tab.py:295` — Fixed: snapshot all det history as plain dicts inside session in `_load_specimen`; removed detached ORM access.
-- [x] **C-2** `import_assign.py:~377` — Fixed: use `r["id"]` (matching `taxon_search.py`); `get_or_create_from_tw_data` handles valid-name backfill. Bug only affected determinations in Import & Assign, not the taxonomy table.
-- [x] **C-3** `main.py:~1897` — Fixed: added `if co is None` guard with error notification and early return (not silent skip); added `ui.timer(2.0, ...)` to keep `occ_sel` options live.
+Bugs and tasks are tracked as **GitHub issues** on
+[`curculio-institute/CollectionDatabase`](https://github.com/curculio-institute/CollectionDatabase/issues),
+not in this file. Use `gh issue list` / `gh issue view <n>`. Resolved items live in git
+history (and the archived code review under `docs/archive/`).
 
-### Major
-- [x] **M-1** `biological.py:78` — Fixed: filter out `[legacy]` relationships entirely from `get_relationship_options()` rather than sorting them last. Legacy rows remain in the DB (existing associations unaffected) but never appear in any dropdown.
-- [x] **M-2** `models/print_queue.py` — Fixed: migration 0017 adds `ck_print_queue_label_type` (`IN ('data','determination','identifier')`) and `ck_print_queue_exclusive_arc` (data/determination→co_id only; identifier→label_code_id only).
-- [x] **M-3** `models/label_code.py:13` — Fixed: migration 0018 adds `ck_label_code_status` (`IN ('reserved','assigned')`). Also migration 0019 adds `ck_co_basis_of_record` (`IN ('PreservedSpecimen','FossilSpecimen','HumanObservation')`) and `ck_co_disposition` (NULL or 6-value set) to `collection_object`. Note: `recreate="always"` on `collection_object` requires `PRAGMA foreign_keys = OFF` around the batch operation due to child-table FKs.
-- [x] **M-4** `taxa.py:449` + `taxon_editor.py:24` — Fixed: both typos corrected to `"ICVCN"`. Existing Viruses root row patched directly in DB (one-off data fix; seed is idempotent so no migration needed).
+Historical short-codes used in commits/comments map to issues as follows:
 
-### Minor
-- [ ] **m-1** `taxon_editor.py:219` — Delete-eligibility check ignores `TaxonDetermination` rows; delete button enables incorrectly then `delete_taxon()` raises a confusing error on click.
-- [ ] **m-2** `bio_object_search.py:310` — `not r.get("synonym", None) is not None` is needlessly confusing; simplify to `r.get("synonym") is None`.
-- [ ] **m-3** `import_assign.py` — `island` field missing from DwC CSV row mapping; cannot be populated via Import & Assign.
-- [x] **m-4** `labels.py` — Fixed by redesigning the print sheet as a grouped, column-aligned layout (`grouped_sheet`): each queue addition is a group with an origin header; within a group every specimen is a column with data/identifier/determination bands stacked so corresponding labels stay adjacent for cutting. The print queue (`build_pdf` → `queued_groups`) reconstructs per-specimen columns from the queue rows. The old `occurrence_sheet()` / "Occurrence labels" Labels-tab card was **removed** (confusing one-off; the same need will be served by the planned "reprint existing records → print queue" path). See "Print-queue policy by create mode".
-- [ ] **m-5** `main.py` + `records_tab.py` + `import_assign.py` — `SEX_OPTIONS`, `SAMPLING_PROTOCOLS`, `DEFAULT_IDENTIFIED_BY`, `DEFAULT_NAMESPACE`, etc. duplicated in three files; centralise.
-- [ ] **m-6** `main.py:464` — `_refreshers` populated in tab-rendering order; missing keys would cause `KeyError` if tab order changes. Use `.get()` calls or pre-initialise with `None`.
-- [ ] **m-7** `labels.py` vs `label_text.py` — `_data_line1()` duplicates locality-formatting logic already in `format_locality_label()`.
-- [ ] **m-8** `services/taxa.py:62` — `create_taxon_manual()` has no `nomenclatural_code` parameter; manually created taxa always get `NULL` code.
+| Code | Issue | Code | Issue |
+|------|-------|------|-------|
+| DB-1 | [#1](https://github.com/curculio-institute/CollectionDatabase/issues/1) | m-3 | [#5](https://github.com/curculio-institute/CollectionDatabase/issues/5) |
+| U-3  | [#2](https://github.com/curculio-institute/CollectionDatabase/issues/2) | m-5 | [#6](https://github.com/curculio-institute/CollectionDatabase/issues/6) |
+| ALT-3| [#3](https://github.com/curculio-institute/CollectionDatabase/issues/3) | m-6 | [#7](https://github.com/curculio-institute/CollectionDatabase/issues/7) |
+| m-1  | [#4](https://github.com/curculio-institute/CollectionDatabase/issues/4) | m-7 | [#8](https://github.com/curculio-institute/CollectionDatabase/issues/8) |
+| m-8  | [#9](https://github.com/curculio-institute/CollectionDatabase/issues/9) | U-1 | [#10](https://github.com/curculio-institute/CollectionDatabase/issues/10) |
+| U-2  | [#11](https://github.com/curculio-institute/CollectionDatabase/issues/11) | T-1 | [#12](https://github.com/curculio-institute/CollectionDatabase/issues/12) |
+| m-2  | [#13](https://github.com/curculio-institute/CollectionDatabase/issues/13) | | |
 
-## Known issues (found 2026-06-12) — fix later
-
-Captured for a later session.
-
-### Fixed
-- [x] **TX-1** `services/taxa.py::get_or_create_from_powo_data` — the ancestor-authorship
-  loop reused the `auth` variable, clobbering the *target* taxon's authorship (captured
-  earlier) with the loop's final value (`ancestor_authorships['species']`). A genus picked
-  directly from POWO has no `'species'` ancestor → it was created with **NULL authorship**;
-  a later species import then backfilled the genus author via `_ensure_parent_rows` (the
-  "authorship gets updated later" symptom). Infraspecific targets were similarly mis-attributed.
-  Fixed by using a separate loop variable (`anc_auth`). Tests in `tests/test_taxon_import.py`.
-  (Existing NULL-authorship genera self-heal on the next species import, or can be backfilled.)
-
-### Major
-- [ ] **DB-1 (regression — data integrity)** `collecting_event` has **lost all its CHECK
-  constraints** in the live/migrated schema. The model (`app/models/collecting_event.py`)
-  declares `ck_ce_lat_range`, `ck_ce_lon_range`, `ck_ce_uncertainty_positive`,
-  `ck_ce_country_code_len`, `ck_ce_habitat_ambiguous_bool` (added by migrations
-  0001/0002/0008), but migrations **0021** and **0024** recreated the table via
-  `batch_alter_table(recreate=…)` for the person-FK conversion **without re-declaring the
-  CHECKs**, silently dropping them. A freshly-migrated DB has **zero** CHECKs on
-  `collecting_event`. Violates the core "DB-enforced constraints" principle (§2); currently
-  only the app-layer `validate_event_fields` guards bounds, so a script/direct insert could
-  write `latitude=200`. *Fix:* new migration re-adding the `ck_ce_*` constraints (pre-validate
-  existing rows first). *Also audit* every table recreated by 0021/0023/0024 (and any other
-  `recreate=` migration) for the same collateral loss of CHECKs/constraints.
-- [ ] **U-3 (workflow — important)** Shared Collecting Event form gives **no indication
-  whether selecting an existing event will edit that event** (mutating it for every specimen
-  that shares it) **or reuse/copy it**. Reuse is the whole point of shared events, but users
-  must not edit an existing event by accident. *Fix:* explicit edit-vs-reuse affordance — a
-  reused event should be read-only until the user deliberately chooses "edit this event" or
-  "make a copy", with a clear visual state for each.
-
-### Minor
-- [ ] **U-1** Mounting Session "Set identification" modal (`app/ui/mounting_session.py`) —
-  the `dateIdentified` input lacks the **Tier-2 `push_pin` "insert current year" default**
-  button present on the standard Digitize/Records forms. Inconsistent with the three-tier
-  field-filling policy (§ "Field-filling policy", Tier 2).
-- [ ] **U-2** Shared Collecting Event form — **"Search existing events" does not retrieve all
-  fields**: selecting an existing event leaves some locality/coordinate fields blank instead
-  of fully populating the form from the stored event.
-- [ ] **T-1 (test rot)** `tests/test_constraints.py` is stale — 10 of its 15 failures are
-  bit-rot, not real bugs: (a) helper `_obj()` and the catalog-number / biological-association
-  / FK tests pass `catalog_namespace=` (split into `collection_code` + `institution_code` in
-  migration 0015); (b) `test_seed_biological_relationships` asserts the pre-0013 hardcoded
-  seed names (the seed is now TW data incl. `[legacy]` rows, per M-1). *Fix:* refresh those
-  tests. The remaining **5** failures (`test_check_latitude_*`, `_longitude_*`,
-  `_uncertainty_*`, `_country_code_*`) are **correct** and flag DB-1 — they pass once DB-1 is
-  fixed; keep them.
+When you finish an issue, close it with `gh issue close <n>` (reference it in the commit,
+e.g. `Fixes #1`). C-1/2/3, M-1…4, m-4, TX-1 were already resolved before migration to
+GitHub (see git history).
 
 ## 1. What this project is
 
@@ -561,63 +510,19 @@ etc.) defined in Python constants — those never change at runtime.
 
 ### Field-filling policy (three tiers)
 
-Every form field falls into exactly one of three categories. This distinction must be
-consistent across all tabs (Digitize, Records, Import & Assign) and documented in any
-future UI help text.
+Every form field falls into exactly one of three tiers; this must be consistent across all
+tabs (Digitize, Records, Import & Assign). **The full template — field tables, the Tier-2
+`push_pin` placement rule + implementation pattern, and the Tier-3 read-only display
+template — lives in `docs/design.md` → "Auto-fill tiers". Use it when adding any new field.**
+Summary:
 
-#### Tier 1 — Auto-filled and editable
-Pre-populated with a sensible constant when a new record is created. The user sees the
-value and can change it before saving. These are "almost always correct" defaults.
-
-| DwC field | Pre-filled value | Notes |
-|-----------|-----------------|-------|
-| `basisOfRecord` | `"PreservedSpecimen"` | hardcoded; other values are rare exceptions |
-| `disposition` | `"in collection"` | hardcoded; changes only for loans/donations |
-
-#### Tier 2 — One-click configurable default
-Field starts **empty**. A small icon button adjacent to the field inserts the configured
-default. The user must actively click it — nothing is ever silently applied. This prevents
-stale values slipping through on rapid digitizing.
-
-| DwC field | Config key | Icon | Inserted value |
-|-----------|-----------|------|----------------|
-| `identifiedBy` | `default_identified_by` | `push_pin` | user's full name |
-| `recordedBy` | `default_recorded_by` | `push_pin` | user's full name |
-| `dateIdentified` | *(derived)* | `push_pin` | current 4-digit year (`"2026"`) |
-
-**Icon:** always `push_pin` for every Tier 2 default button, regardless of field type.
-
-**Placement:** the button must be placed **adjacent** to the field (sibling in a flex row),
-**not** inside the field's `add_slot("append")`. Quasar QSelect intercepts all events
-inside its append slot and opens the dropdown; `on_click` never fires independently.
-For `ui.input` (QInput) the append slot works, but `push_pin` is still placed adjacent
-for visual consistency across all Tier 2 fields.
-
-Implementation pattern for a `ui.select` (person) field:
-```python
-with ui.row().classes("flex-1 min-w-40 items-center gap-1"):
-    sel = ui.select(opts, label="identifiedBy", with_input=True, clearable=True).classes("flex-1")
-    (
-        ui.button("", icon="push_pin")
-        .props("flat dense round size=xs")
-        .tooltip("Insert default name")
-        .on_click(lambda: sel.set_value(get_config().default_identified_by) if get_config().default_identified_by else None)
-        .bind_visibility_from(sel, "value", lambda v: not v)
-    )
-```
-
-For `dateIdentified` insert only the year; the user completes month/day as needed.
-Always call `get_config()` inside the lambda at click time — never capture the value at
-render time, or the button will be frozen to whatever was configured when the page loaded.
-
-#### Tier 3 — Background invisible default
-Written silently into every saved record and every DwC export row. Never shown in any form
-field. The user configures these once in the Config tab and then forgets them.
-
-| DwC field | Config key | Notes |
-|-----------|-----------|-------|
-| `institutionCode` | `institution_code` | injected at export time; not stored per-row in the DB |
-| `collectionCode` | *(= `dwc:collectionCode` column)* | stored per-row; value comes from `DEFAULT_NAMESPACE` constant at digitize time |
+- **Tier 1 — auto-filled, editable.** Pre-filled with a sensible constant the user can change
+  before saving (`basisOfRecord` = `"PreservedSpecimen"`, `disposition` = `"in collection"`).
+- **Tier 2 — one-click default.** Field starts empty; a `push_pin` button adjacent to it
+  inserts the configured default (`identifiedBy`, `recordedBy`, `dateIdentified`). Never
+  applied silently — the user must click.
+- **Tier 3 — background invisible default.** Written silently into every saved record, never
+  shown as an editable field (`institutionCode`, `collectionCode`). Configured once in Settings.
 
 ### TaxonWorks namespace: institutionCode + collectionCode (verified)
 

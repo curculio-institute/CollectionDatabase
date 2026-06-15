@@ -215,7 +215,29 @@ inside it), for every Tier 2 field without exception.
 |---|---|
 | `identifiedBy` | user's full name |
 | `recordedBy` | user's full name |
-| `dateIdentified` | current year |
+| `dateIdentified` | current 4-digit year (e.g. `"2026"`) — insert the year only; the user completes month/day |
+
+**Placement (mandatory):** the button must be a **sibling adjacent** to the field (in a flex
+row), **not** inside the field's `add_slot("append")`. Quasar QSelect intercepts all events
+inside its append slot and opens the dropdown, so `on_click` never fires independently. For
+`ui.input` (QInput) the append slot does work, but `push_pin` is still placed adjacent for
+visual consistency across all Tier 2 fields.
+
+**Tier 2 implementation pattern** (a `ui.select` person field; adapt for inputs):
+```python
+with ui.row().classes("flex-1 min-w-40 items-center gap-1"):
+    sel = ui.select(opts, label="identifiedBy", with_input=True, clearable=True).classes("flex-1")
+    (
+        ui.button("", icon="push_pin")
+        .props("flat dense round size=xs")
+        .tooltip("Insert default name")
+        .on_click(lambda: sel.set_value(get_config().default_identified_by) if get_config().default_identified_by else None)
+        .bind_visibility_from(sel, "value", lambda v: not v)   # hide once the field has a value
+    )
+```
+
+Always call `get_config()` **inside the lambda at click time** — never capture the value at
+render time, or the button freezes to whatever was configured when the page loaded.
 
 **Tier 3 — Background invisible default**
 Written silently into every saved record. Never shown as an editable form field.
