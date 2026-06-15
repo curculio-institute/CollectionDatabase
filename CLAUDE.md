@@ -2,8 +2,27 @@
 
 Project context and working agreement for Claude Code. Read this before writing code.
 
-**Also read `docs/design.md`** — the working design document covering UI conventions,
-widget specs, and layer architecture. It overrides CLAUDE.md where they conflict.
+## Documentation map
+
+`CLAUDE.md` is the always-loaded entry point and the index to everything else. Read the
+linked file when working in that area:
+
+- **`docs/design.md`** — *how the UI is built*: UI conventions, widget specs, layout specs,
+  and reusable implementation templates (field-filling tiers, custom-dropdown checklist,
+  the grouped print sheet).
+- **`docs/schema.html`** — the database schema reference: tables, columns, and the full
+  integrity-constraint list (CHECK / STRICT / UNIQUE / FK).
+- **GitHub issues** — all open bugs and tasks live at
+  [`curculio-institute/CollectionDatabase`](https://github.com/curculio-institute/CollectionDatabase/issues)
+  (`gh issue list`), not in this file.
+- **`docs/archive/`** — superseded/historical documents; not maintained.
+
+**Ownership rule (sharp boundary, no duplication):** every topic has **exactly one home.**
+CLAUDE.md owns the *what / why* — decisions, policies, contracts, and reference. design.md
+owns the *how of the UI* — visual layout, widget construction, templates. When a topic spans
+both, CLAUDE.md states the decision and **links** to design.md for the build detail; the
+detail is never copied into both. (There is no "design.md overrides CLAUDE.md" rule — if you
+find the same thing described in both, that is a bug to fix, not a precedence to resolve.)
 
 ---
 
@@ -95,35 +114,10 @@ mounting produces fresh specimens that need a printed sheet. (Historical note: D
 standard and Import & Assign formerly enqueued data + determination labels — removed
 2026-06-12; they now queue nothing.)
 
-### Grouped print sheet (decided)
-
-The print queue renders as a **grouped, column-aligned sheet** (`labels.py::grouped_sheet`,
-fed by `print_queue.py::queued_groups`):
-
-- **Groups = queue additions.** Rows enqueued in one operation share a `print_group_id` +
-  a `source` header (`SOURCE_MOUNTING` "Mounting Session", `SOURCE_IDENTIFIERS`
-  "New identifiers", `SOURCE_REPRINT` "Reprint"). Allocate the id once per batch with
-  `next_print_group_id(session)`; columns added in migration 0028. Groups flow as
-  inline-block boxes that wrap, separated by a large gap.
-- **Within a group, one column per specimen**, with bands stacked top→bottom: **data /
-  identifier / determination**. A specimen's own labels touch (no gap) so they stay
-  associated while cutting; specimens are separated by a small gap. Built as an HTML
-  `<table>` per chunk (WeasyPrint's grid/inline-block sizing is unreliable; tables are not).
-  Wide groups wrap at `_LABELS_PER_ROW` columns. Gap/border metrics are named constants in
-  `labels.py` — tune by eye against a real PDF.
-- **Column reconstruction:** a data/determination row joins its column by
-  `collection_object_id`; an identifier row joins by its label code's `collection_object_id`
-  (set at assign time), or stands alone if the code is reserved-but-unassigned (a pre-print
-  identifier batch → an identifier-only group).
-- **Timestamp + archival:** the sheet prints a small "Printed: …" timestamp; on print, the
-  PDF is saved to `config.printed_pdf_dir` (default `data/printed_labels/`,
-  `config.printed_pdf_dir()` resolves + creates it) as `labels_<YYYYMMDD-HHMMSS>.pdf` before
-  the queue is cleared, for reprint/audit.
-
-**Planned (not built):** re-printing existing records by sending them to the print queue.
-The `enqueue_*` services are standalone, so this is an "enqueue for an existing
-`collection_object`, no `assign_code`" path (its own group, `SOURCE_REPRINT`);
-`finalize_specimen` is create-time only and need not change.
+**How the queued labels are rendered** (the grouped, column-aligned sheet — groups,
+per-specimen columns, archival, the planned reprint path) is a UI/layout concern and is
+specified in `docs/design.md` → "Grouped print sheet layout". This table is the authoritative
+*policy* (which mode queues what); design.md is authoritative for *layout*.
 
 ## Open issues → GitHub
 
