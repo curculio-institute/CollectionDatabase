@@ -100,7 +100,11 @@
   <p>Columns prefixed <code>dwc:</code> are Darwin Core terms and link to
      <a href="https://dwc.tdwg.org/list/">dwc.tdwg.org/list</a>.
      Local columns (PKs, FKs, management fields) carry no prefix.
-     All tables use SQLite <code>STRICT</code> mode. Migration head: 0012.</p>
+     Core/label tables use SQLite <code>STRICT</code> mode (see
+     <a href="#constraints">Integrity Constraints</a>).
+     <strong>Note:</strong> the per-column listings below reflect migration 0012 and are
+     partly stale (some columns since renamed/dropped); the Integrity Constraints section
+     reflects the current intended (post-0029) schema.</p>
 </header>
 
 <nav>
@@ -110,7 +114,8 @@
   <a href="#collection_object">collection_object</a><span class="sep">·</span>
   <a href="#taxon_determination">taxon_determination</a><span class="sep">·</span>
   <a href="#biological_relationship">biological_relationship</a><span class="sep">·</span>
-  <a href="#biological_association">biological_association</a>
+  <a href="#biological_association">biological_association</a><span class="sep">·</span>
+  <a href="#constraints">constraints</a>
 </nav>
 
 <main>
@@ -406,6 +411,59 @@ erDiagram
       <tr><td><span class="badge badge-INTEGER">INTEGER</span></td><td class="col-local">object_taxon_id</td><td><span class="tag tag-FK">FK</span> <span class="tag tag-ARC">ARC</span></td></tr>
       <tr><td><span class="badge badge-TEXT">TEXT</span></td><td class="col-local">notes</td><td></td></tr>
       <tr><td><span class="badge badge-TEXT">TEXT</span></td><td class="col-local">created_at / updated_at</td><td></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<!-- ── integrity constraints ──────────────────────────────────── -->
+<p class="section-heading" id="constraints">Integrity Constraints</p>
+
+<div class="table-card">
+  <h2>STRICT typing</h2>
+  <div class="desc">Core, label, and print-queue tables are declared SQLite <code>STRICT</code>,
+    so column types are enforced at write time (no silent affinity coercion).
+    <strong>Exceptions:</strong> <code>person</code> and <code>person_defaults</code> are not STRICT.
+    <br><em>Note:</em> migrations 0020/0021/0024–0027 recreated several tables via
+    <code>batch_alter_table(recreate=…)</code> and dropped STRICT + CHECKs; migration 0029
+    restores them. This page documents the intended (post-0029) schema.</div>
+</div>
+
+<div class="table-card">
+  <h2>CHECK constraints</h2>
+  <div class="desc">DB-enforced value rules. A row violating any of these is rejected at write time —
+    the project prefers a loud failure over a silent wrong value.</div>
+  <table>
+    <thead><tr><th>Constraint</th><th>Table</th><th>Rule</th></tr></thead>
+    <tbody>
+      <tr><td class="col-local">ck_ce_lat_range</td><td class="col-local">collecting_event</td><td><code>decimalLatitude</code> is empty, or between −90 and 90</td></tr>
+      <tr><td class="col-local">ck_ce_lon_range</td><td class="col-local">collecting_event</td><td><code>decimalLongitude</code> is empty, or between −180 and 180</td></tr>
+      <tr><td class="col-local">ck_ce_uncertainty_positive</td><td class="col-local">collecting_event</td><td><code>coordinateUncertaintyInMeters</code> is empty, or ≥ 0</td></tr>
+      <tr><td class="col-local">ck_ce_country_code_len</td><td class="col-local">collecting_event</td><td><code>countryCode</code> is empty, or exactly 2 characters (ISO 3166-1 alpha-2)</td></tr>
+      <tr><td class="col-local">ck_ce_habitat_ambiguous_bool</td><td class="col-local">collecting_event</td><td><code>habitat_ambiguous</code> is empty, or 0 / 1</td></tr>
+      <tr><td class="col-local">ck_co_individual_count_non_negative</td><td class="col-local">collection_object</td><td><code>individualCount</code> ≥ 0</td></tr>
+      <tr><td class="col-local">ck_co_basis_of_record</td><td class="col-local">collection_object</td><td><code>basisOfRecord</code> ∈ {PreservedSpecimen, FossilSpecimen, HumanObservation}</td></tr>
+      <tr><td class="col-local">ck_co_disposition</td><td class="col-local">collection_object</td><td><code>disposition</code> is empty, or ∈ {in collection, on loan, donated, exchanged, missing, destroyed}</td></tr>
+      <tr><td class="col-local">ck_td_is_current_bool</td><td class="col-local">taxon_determination</td><td><code>is_current</code> is 0 or 1</td></tr>
+      <tr><td class="col-local"><em>(unnamed)</em></td><td class="col-local">taxon</td><td><code>taxonomicStatus</code> ∈ {accepted, synonym}</td></tr>
+      <tr><td class="col-local">ck_ba_subject_exclusive_arc</td><td class="col-local">biological_association</td><td>exactly one of <code>subject_collection_object_id</code> / <code>subject_taxon_id</code> is set <span class="tag tag-ARC">ARC</span></td></tr>
+      <tr><td class="col-local">ck_ba_object_exclusive_arc</td><td class="col-local">biological_association</td><td>exactly one of <code>object_collection_object_id</code> / <code>object_taxon_id</code> is set <span class="tag tag-ARC">ARC</span></td></tr>
+      <tr><td class="col-local">ck_label_code_status</td><td class="col-local">label_code</td><td><code>status</code> ∈ {reserved, assigned}</td></tr>
+      <tr><td class="col-local">ck_print_queue_label_type</td><td class="col-local">print_queue</td><td><code>label_type</code> ∈ {data, determination, identifier}</td></tr>
+      <tr><td class="col-local">ck_print_queue_exclusive_arc</td><td class="col-local">print_queue</td><td>data / determination rows reference a <code>collection_object</code>; identifier rows reference a <code>label_code</code> (never both) <span class="tag tag-ARC">ARC</span></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<div class="table-card">
+  <h2>UNIQUE &amp; foreign-key rules</h2>
+  <div class="desc">Other DB-enforced integrity rules referenced above.</div>
+  <table>
+    <thead><tr><th>Kind</th><th>Where</th><th>Rule</th></tr></thead>
+    <tbody>
+      <tr><td><span class="tag tag-UQ">UQ</span></td><td class="col-local">collection_object</td><td>UNIQUE (<code>collectionCode</code>, <code>catalogNumber</code>) — the immutable sync join key</td></tr>
+      <tr><td><span class="tag tag-UQ">UQ</span></td><td class="col-local">biological_relationship</td><td>UNIQUE (<code>name</code>)</td></tr>
+      <tr><td><span class="tag tag-FK">FK</span></td><td class="col-local">taxon_determination</td><td><code>collection_object_id</code> → collection_object ON DELETE CASCADE; <code>taxon_id</code> → taxon ON DELETE RESTRICT</td></tr>
+      <tr><td><span class="tag tag-FK">FK</span></td><td class="col-local">person references</td><td>all <code>person</code> FKs (recordedBy, identifiedBy, defaults) are ON DELETE RESTRICT</td></tr>
     </tbody>
   </table>
 </div>
