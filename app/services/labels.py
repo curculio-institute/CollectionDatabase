@@ -25,10 +25,12 @@ import base64
 import html as _html
 import io
 from dataclasses import dataclass
+from functools import lru_cache
 from typing import Optional
 
 import qrcode
 from weasyprint import HTML
+from weasyprint.formatting_structure.boxes import LineBox as _LineBox
 
 from app.services.label_text import abbreviate_name, format_coords, format_country
 
@@ -141,10 +143,18 @@ def _data_line1(lbl: DataLabel) -> str:
 def _data_line2(lbl: DataLabel) -> str:
     if lbl.text_override is not None:
         return ""
-    name = abbreviate_name(lbl.recorded_by)
-    leg  = f"leg. {_e(name)}" if name else ""
     date = _e(lbl.event_date) if lbl.event_date else ""
-    return "  ".join(p for p in [leg, date] if p)
+
+    def _build(name: str | None) -> str:
+        leg = f"leg. {_e(name)}" if name else ""
+        return "  ".join(p for p in [leg, date] if p)
+
+    full = _build(lbl.recorded_by)
+    # Full collector name when it fits one line; otherwise abbreviate it
+    # ("Jakob Jilg" -> "J. Jilg"). Same rule as the determiner (_det_line3).
+    if not lbl.recorded_by or _fits_one_line(full):
+        return full
+    return _build(abbreviate_name(lbl.recorded_by))
 
 
 _DATA_CSS = _BASE_CSS + ".label { min-height: 2.5mm; }"
@@ -221,23 +231,71 @@ def _det_line2(lbl: DeterminationLabel) -> str:
 
 
 def _det_line3(lbl: DeterminationLabel) -> str:
-    det  = f"det. {_e(lbl.determiner)}" if lbl.determiner else ""
     year = _e(lbl.year) if lbl.year else ""
-    return "  ".join(p for p in [det, year] if p)
+
+    def _build(name: str | None) -> str:
+        det = f"det. {_e(name)}" if name else ""
+        return "  ".join(p for p in [det, year] if p)
+
+    full = _build(lbl.determiner)
+    # Full determiner name when it fits the label on one line; otherwise
+    # abbreviate it ("Jakob Jilg" -> "J. Jilg").
+    if not lbl.determiner or _fits_one_line(full):
+        return full
+    return _build(abbreviate_name(lbl.determiner))
 
 
-_DET_CSS = _BASE_CSS + ".label { height: 4.9mm; }"
+def _det_name_html(lbl: DeterminationLabel) -> str:
+    """Scientific-name block(s) for the determination label.
+
+    Keep the traditional line break after the genus/subgenus when the broken
+    two-line layout fits the label width (preferred look). When a name +
+    authorship is too long for that, collapse the break and let the whole name
+    flow and wrap as one block, so the label grows taller instead of clipping.
+    """
+    l1 = _det_line1(lbl)
+    l2 = _det_line2(lbl)
+    if l1 and l2 and _fits_one_line(l1) and _fits_one_line(l2):
+        return f"<div>{l1}</div><div>{l2}</div>"          # enough space → keep genus break
+    name = " ".join(p for p in (l1, l2) if p)
+    return f"<div>{name}</div>" if name else ""           # tight → flow + grow
+
+
+# min-height keeps the historical 4.9 mm floor; overflow:visible lets a long name
+# wrap and grow the label instead of being clipped (overriding _BASE_CSS).
+_DET_CSS = _BASE_CSS + ".label { min-height: 4.9mm; overflow: visible; }"
+
+
+@lru_cache(maxsize=2048)
+def _fits_one_line(inner_html: str) -> bool:
+    """True if `inner_html` lays out on a single line in an 18 mm label box (data
+    and determination labels share the same 18 mm width + font). Measured with
+    WeasyPrint because character count is a poor proxy for width in a proportional
+    condensed font (e.g. wide "M…" vs narrow "i…"). On any error, default to True —
+    the label grows rather than clips, so a wrong "fits" never loses data."""
+    try:
+        html = (f'<html><head><style>{_DET_CSS}</style></head><body>'
+                f'<div class="sheet"><div class="label"><div>{inner_html}</div>'
+                f'</div></div></body></html>')
+        doc = HTML(string=html).render()
+        lines, stack = 0, [doc.pages[0]._page_box]
+        while stack:
+            box = stack.pop()
+            if isinstance(box, _LineBox):
+                lines += 1
+            stack.extend(getattr(box, "children", None) or [])
+        return lines <= 1
+    except Exception:
+        return True
 
 
 def determination_sheet(rows: list[DeterminationLabel]) -> bytes:
     """PDF sheet of determination labels (18 × 4.9 mm)."""
     items = []
     for lbl in rows:
-        l1 = _det_line1(lbl)
-        l2 = _det_line2(lbl)
-        l3 = _det_line3(lbl)
-        lines = "".join(f"<div>{t}</div>" for t in [l1, l2, l3] if t)
-        items.append(f'<div class="label">{lines}</div>')
+        det = _det_line3(lbl)
+        body = _det_name_html(lbl) + (f"<div>{det}</div>" if det else "")
+        items.append(f'<div class="label">{body}</div>')
     html = (f"<html><head><style>{_DET_CSS}</style></head>"
             f'<body><div class="sheet">{"".join(items)}</div></body></html>')
     return HTML(string=html).write_pdf()
@@ -384,8 +442,8 @@ _GROUPED_CSS = _BASE_CSS + _ID_TEXT_CSS + f"""
     font-size: {_FONT_SIZE};
 }}
 .lbl-det {{
-    height: 4.9mm;
-    border: 0.1mm dashed #aaa; padding: 0.19mm 0.53mm; overflow: hidden;
+    min-height: 4.9mm;
+    border: 0.1mm dashed #aaa; padding: 0.19mm 0.53mm; overflow: visible;
     font-size: {_FONT_SIZE};
 }}
 .lbl-id {{
@@ -407,8 +465,9 @@ def _data_cell(d: Optional[DataLabel]) -> str:
 def _det_cell(d: Optional[DeterminationLabel]) -> str:
     if d is None:
         return '<td class="cell"></td>'
-    lines = "".join(f"<div>{t}</div>" for t in [_det_line1(d), _det_line2(d), _det_line3(d)] if t)
-    return f'<td class="cell"><div class="lbl-det">{lines}</div></td>'
+    det = _det_line3(d)
+    body = _det_name_html(d) + (f"<div>{det}</div>" if det else "")
+    return f'<td class="cell"><div class="lbl-det">{body}</div></td>'
 
 
 def _id_cell(code: Optional[str]) -> str:
