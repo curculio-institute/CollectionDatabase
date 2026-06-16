@@ -59,14 +59,16 @@ _BASE_CSS = f"""
 @page {{ size: A4; margin: 5mm; }}
 * {{ box-sizing: border-box; margin: 0; padding: 0; }}
 body {{ font-family: {_FONT}; font-size: {_FONT_SIZE}; line-height: {_LINE_H}; }}
-.sheet {{
-    display: flex;
-    flex-wrap: wrap;
-    gap: 0.3mm;
-    align-content: flex-start;
-}}
+/* Block flow with inline-block items (not flex): flex containers do not
+   fragment across pages in WeasyPrint, which wasted page 1 on any multi-page
+   sheet. Block flow lays items left-to-right, wraps, AND paginates. */
+.sheet {{ line-height: 0; }}
 .label {{
+    display: inline-block;
+    vertical-align: top;
+    line-height: {_LINE_H};
     width: {_W};
+    margin: 0 0.3mm 0.3mm 0;
     border: 0.1mm dashed #aaa;
     padding: {_PAD};
     page-break-inside: avoid;
@@ -265,18 +267,29 @@ def _det_name_html(lbl: DeterminationLabel) -> str:
 # wrap and grow the label instead of being clipped (overriding _BASE_CSS).
 _DET_CSS = _BASE_CSS + ".label { min-height: 4.9mm; overflow: visible; }"
 
+# Self-contained CSS for fit measurement: a plain *block* box at the label's
+# content width + font. Deliberately independent of the sheet/.label layout (which
+# is inline-block for pagination) so the line-box count reflects only text
+# wrapping, not an anonymous line box around an inline-block.
+_FIT_CSS = f"""
+@page {{ size: 60mm 60mm; margin: 0; }}
+* {{ box-sizing: border-box; margin: 0; padding: 0; }}
+body {{ font-family: {_FONT}; font-size: {_FONT_SIZE}; line-height: {_LINE_H}; }}
+.m {{ width: {_W}; padding: {_PAD}; }}
+"""
+
 
 @lru_cache(maxsize=2048)
 def _fits_one_line(inner_html: str) -> bool:
-    """True if `inner_html` lays out on a single line in an 18 mm label box (data
-    and determination labels share the same 18 mm width + font). Measured with
-    WeasyPrint because character count is a poor proxy for width in a proportional
-    condensed font (e.g. wide "M…" vs narrow "i…"). On any error, default to True —
-    the label grows rather than clips, so a wrong "fits" never loses data."""
+    """True if `inner_html` lays out on a single line at the 18 mm label content
+    width (data and determination labels share the same width + font). Measured
+    with WeasyPrint because character count is a poor proxy for width in a
+    proportional condensed font (e.g. wide "M…" vs narrow "i…"). On any error,
+    default to True — the label grows rather than clips, so a wrong "fits" never
+    loses data."""
     try:
-        html = (f'<html><head><style>{_DET_CSS}</style></head><body>'
-                f'<div class="sheet"><div class="label"><div>{inner_html}</div>'
-                f'</div></div></body></html>')
+        html = (f'<html><head><style>{_FIT_CSS}</style></head>'
+                f'<body><div class="m">{inner_html}</div></body></html>')
         doc = HTML(string=html).render()
         lines, stack = 0, [doc.pages[0]._page_box]
         while stack:
@@ -431,9 +444,9 @@ class LabelGroup:
 # gap with zero vertical gap, so a specimen's column stays together for cutting.
 _GROUPED_CSS = _BASE_CSS + _ID_TEXT_CSS + f"""
 .printed-at {{ font-size: 5pt; color: #666; margin-bottom: 3mm; }}
-.group {{ display: inline-block; vertical-align: top; margin: 0 {_GROUP_GAP} {_GROUP_GAP} 0; }}
+.group {{ display: inline-block; vertical-align: top; line-height: {_LINE_H}; margin: 0 {_GROUP_GAP} {_GROUP_GAP} 0; }}
 .group-header {{ font-size: 5pt; color: #666; margin-bottom: 0.4mm; letter-spacing: 0.2pt; }}
-.chunk {{ table-layout: fixed; border-collapse: separate; border-spacing: {_SPEC_GAP} 0; }}
+.chunk {{ table-layout: fixed; border-collapse: separate; border-spacing: {_SPEC_GAP} 0; page-break-inside: avoid; }}
 .chunk + .chunk {{ margin-top: {_CHUNK_GAP}; }}
 .cell {{ width: 18mm; padding: 0; vertical-align: top; }}
 .lbl-data {{
@@ -503,12 +516,15 @@ def _group_html(group: LabelGroup) -> str:
     return f'<div class="group">{header}{"".join(chunks)}</div>'
 
 
-def grouped_sheet(groups: list[LabelGroup], printed_at: str) -> bytes:
-    """Render queued labels as a grouped, column-aligned sheet (see module note)."""
+def _grouped_html(groups: list[LabelGroup], printed_at: str) -> str:
     body = "".join(_group_html(g) for g in groups if g.specimens)
     stamp = f'<div class="printed-at">Printed: {_e(printed_at)}</div>'
-    html = (f"<html><head><style>{_GROUPED_CSS}</style></head>"
+    return (f"<html><head><style>{_GROUPED_CSS}</style></head>"
             f'<body>{stamp}<div class="sheet">{body}</div></body></html>')
-    return HTML(string=html).write_pdf()
+
+
+def grouped_sheet(groups: list[LabelGroup], printed_at: str) -> bytes:
+    """Render queued labels as a grouped, column-aligned sheet (see module note)."""
+    return HTML(string=_grouped_html(groups, printed_at)).write_pdf()
 
 
