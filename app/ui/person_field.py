@@ -337,6 +337,10 @@ def build_person_field(
             inp.props("readonly")
         else:
             inp.props(remove="readonly")
+        # The push_pin inserts the default via set_value(), which bypasses the
+        # input's readonly — so disable the button too while read-only.
+        if pin_btn is not None:
+            pin_btn.set_enabled(not ro)
 
     return {
         "get_value":    get_value,
