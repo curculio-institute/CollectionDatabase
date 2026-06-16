@@ -137,4 +137,9 @@ def format_event_preview_html(ev: "CollectingEvent | None") -> str:
             text = text.replace(esc, highlighted)
         else:
             text = f"{highlighted} · {text}" if text else highlighted
+    # DB id, so the user can trace a specific event when debugging data.
+    if ev.id is not None:
+        eid = (f'<span style="color:var(--tp-base-soft,#888); font-weight:600">'
+               f'#{ev.id}</span>')
+        text = f"{eid} · {text}" if text else eid
     return text

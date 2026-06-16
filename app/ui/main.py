@@ -1447,6 +1447,13 @@ def index():
                     for w in _event_widgets.values():
                         w.props(remove="readonly") if editable else w.props("readonly")
                     recby_state["set_readonly"](not editable)
+                    # Disable the coordinate→locality lookup too — it writes into
+                    # read-only fields. set_enabled greys it (clear "disabled" cue).
+                    _lookup_btn.set_enabled(editable)
+                    _lookup_btn.tooltip(
+                        "Fill country / state / county from coordinates via Photon"
+                        if editable else "Read-only — detach a copy to edit first"
+                    )
 
                 def _hide_reuse_banner():
                     event_banner.clear()

@@ -231,3 +231,11 @@ def test_event_preview_uses_label_text_with_highlighted_date():
 def test_event_preview_none_is_empty():
     from app.services.label_text import format_event_preview_html
     assert format_event_preview_html(None) == ""
+
+
+def test_event_preview_includes_db_id():
+    from app.models import CollectingEvent
+    from app.services.label_text import format_event_preview_html
+    ev = CollectingEvent(locality="Kramerplateau", event_date="2025-06-14")
+    ev.id = 42
+    assert "#42" in format_event_preview_html(ev)
