@@ -1211,9 +1211,20 @@ def index():
                             event_status.set_text("· new event")
                             event_status.classes(remove="event-linked", add="event-new")
                             return
-                        ev = _with_session(lambda s: svc.get_event(s, eid))
-                        if ev is None:
+                        def _load_event(s):
+                            ev = svc.get_event(s, eid)
+                            if ev is None:
+                                return None
+                            # Snapshot the lazy relationship inside the session; `ev`
+                            # is detached after _with_session closes, so accessing
+                            # ev.recorded_by_person later raises DetachedInstanceError.
+                            recby = ev.recorded_by_person.full_name if ev.recorded_by_person else None
+                            return ev, recby
+
+                        loaded = _with_session(_load_event)
+                        if loaded is None:
                             return
+                        ev, recby_name = loaded
                         state["populating"] = True
                         country_in.value   = ev.country            or ""
                         code_in.value      = ev.country_code       or ""
@@ -1225,7 +1236,7 @@ def index():
                         verblocal_in.value = ev.verbatim_locality   or ""
                         edate_in.value     = ev.event_date         or ""
                         verbdate_in.value  = ev.verbatim_event_date or ""
-                        recby_state["set_value"](ev.recorded_by_person.full_name if ev.recorded_by_person else None)
+                        recby_state["set_value"](recby_name)
                         lat_in.value       = str(ev.decimal_latitude)  if ev.decimal_latitude  is not None else ""
                         lon_in.value       = str(ev.decimal_longitude) if ev.decimal_longitude is not None else ""
                         uncert_in.value    = str(ev.coordinate_uncertainty_in_meters) if ev.coordinate_uncertainty_in_meters is not None else ""
