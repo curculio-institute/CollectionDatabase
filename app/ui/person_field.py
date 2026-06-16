@@ -331,9 +331,17 @@ def build_person_field(
         _known.add(val)
         return p.id
 
+    def set_readonly(ro: bool) -> None:
+        """Make the field read-only (value visible, not editable) or editable."""
+        if ro:
+            inp.props("readonly")
+        else:
+            inp.props(remove="readonly")
+
     return {
-        "get_value": get_value,
-        "set_value": set_value,
-        "commit":    commit,
-        "refresh":   refresh,
+        "get_value":    get_value,
+        "set_value":    set_value,
+        "commit":       commit,
+        "refresh":      refresh,
+        "set_readonly": set_readonly,
     }
