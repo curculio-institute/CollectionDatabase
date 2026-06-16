@@ -119,3 +119,27 @@ def format_locality_label(
     if country_str:
         return f"{country_str}: {body}" if body else country_str
     return body
+
+
+def format_event_preview_html(ev: "CollectingEvent | None") -> str:
+    """HTML event summary for UI previews: the same text as the printed label
+    (`format_locality_label`), with the eventDate highlighted prominently. Call
+    inside a session — it reads `ev.recorded_by_person`. Returns "" for None."""
+    if ev is None:
+        return ""
+    text = format_locality_label(ev, html=True)
+    date = ev.event_date
+    if date:
+        esc = _html.escape(date)
+        highlighted = (f'<b style="color:var(--tp-accent,#1a6fa8); font-size:1.1em; '
+                       f'letter-spacing:0.02em">{esc}</b>')
+        if esc in text:
+            text = text.replace(esc, highlighted)
+        else:
+            text = f"{highlighted} · {text}" if text else highlighted
+    # DB id, so the user can trace a specific event when debugging data.
+    if ev.id is not None:
+        eid = (f'<span style="color:var(--tp-base-soft,#888); font-weight:600">'
+               f'#{ev.id}</span>')
+        text = f"{eid} · {text}" if text else eid
+    return text

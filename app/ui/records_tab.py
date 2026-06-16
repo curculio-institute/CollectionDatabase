@@ -15,6 +15,7 @@ from app.ui.identification_list import build_identification_list
 from app.ui.date_input import attach_date_validation
 from app.ui.person_field import build_person_field
 from app.ui.specimen_form import build_specimen_form
+from app.ui.event_reuse import build_event_share_banner
 # Controlled vocabularies live in app/ui/vocab.py (single source of truth).
 # Only samplingProtocol is still referenced in this file (event form).
 from app.ui.vocab import SAMPLING_PROTOCOLS as _SAMPLING_PROTOCOLS
@@ -296,28 +297,24 @@ def build_records_tab(session_factory, *, on_saved: callable | None = None) -> N
             ui.separator().classes("mb-3")
 
             if ev_n > 1 and ev_id:
-                with ui.row().classes("items-center gap-3 mb-3"):
-                    ui.icon("warning", size="sm").style("color:var(--tp-warning, #f59e0b)")
-                    ui.label(
-                        f"Editing these fields affects all {ev_n} specimens at this event."
-                    ).classes("text-sm").style("color:var(--tp-warning, #f59e0b)")
-                    ui.space()
+                def _detach():
+                    try:
+                        with session_factory() as s:
+                            with s.begin():
+                                new_id = ev_svc.copy_and_relink_event(s, co_id)
+                        ui.notify(
+                            f"Detached — new Event #{new_id} created for this specimen.",
+                            type="positive",
+                        )
+                        _load_specimen(co_id)
+                    except Exception as exc:
+                        ui.notify(f"Failed: {exc}", type="negative")
 
-                    def _detach():
-                        try:
-                            with session_factory() as s:
-                                with s.begin():
-                                    new_id = ev_svc.copy_and_relink_event(s, co_id)
-                            ui.notify(
-                                f"Detached — new Event #{new_id} created for this specimen.",
-                                type="positive",
-                            )
-                            _load_specimen(co_id)
-                        except Exception as exc:
-                            ui.notify(f"Failed: {exc}", type="negative")
-
-                    ui.button("Detach & copy event", icon="fork_right", on_click=_detach) \
-                        .props("flat no-caps color=secondary size=sm")
+                build_event_share_banner(
+                    message=f"Editing these fields affects all {ev_n} specimens at this event.",
+                    button_label="Detach & copy event",
+                    on_detach=_detach,
+                )
 
             if ev_id is None:
                 ui.label("No collecting event linked.").classes("text-sm italic") \

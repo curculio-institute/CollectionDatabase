@@ -27,6 +27,8 @@ import app.services.labels as lbl_svc
 import app.services.print_queue as pq_svc
 from app.config import get_config, save_config, printed_pdf_dir
 import app.services.person_defaults as pd_svc
+import app.services.events as ev_svc
+from app.services.label_text import format_event_preview_html
 from app.models import CollectionObject, CollectingEvent, TaxonDetermination, LabelCode
 from app.ui.taxon_search import build_taxon_search
 from app.ui.identification_list import build_identification_list
@@ -39,6 +41,7 @@ from app.ui.person_field import build_person_field
 from app.ui.records_tab import build_records_tab
 from app.ui.mounting_session import build_mounting_session_section
 from app.ui.specimen_form import build_specimen_form
+from app.ui.event_reuse import build_event_share_banner
 from app.ui.vocab import SAMPLING_PROTOCOLS
 from app.services.biological import (
     sync_biological_relationships,
@@ -650,7 +653,7 @@ def index():
                 with ui.card().classes("w-full shadow-sm"):
                     with ui.row().classes("items-center gap-3 mb-1"):
                         ui.label("Collecting Event").classes("section-label")
-                        event_status = ui.label("· new event").classes("event-new")
+                        event_status = ui.html("· new event").classes("event-new")
 
                     ui.separator().classes("mb-3")
 
@@ -662,10 +665,14 @@ def index():
                     )
                     ui.timer(2.0, lambda: event_sel.set_options(_event_opts()))
 
+                    # Reuse banner (orange "shared by N" + Detach-&-copy); populated
+                    # when an existing event is reused, cleared otherwise.
+                    event_banner = ui.column().classes("w-full")
+
                     def _on_event_field_edit(_=None):
                         if not state["populating"] and state["event_id"] is not None:
                             state["event_id"] = None
-                            event_status.set_text("· new event (edited)")
+                            event_status.set_content("· new event (edited)")
                             event_status.classes(remove="event-linked", add="event-new")
 
                     def _wipe_from(level: str) -> None:
@@ -1081,11 +1088,17 @@ def index():
 
                     with ui.row().classes("items-center gap-2 mt-2"):
                         def _open_map():
+                            # A reused (existing) event is read-only — apply view-only
+                            # state every time the map opens (the open-time call is the
+                            # reliable one; the event-select call can run before the
+                            # map's JS API exists and silently no-op).
+                            ro = not state.get("event_editable", True)
                             try:
                                 lat = float(lat_in.value)
                                 lon = float(lon_in.value)
                             except (TypeError, ValueError):
                                 _map["open"]()
+                                _map["set_readonly"](ro)
                                 return
                             unc = None
                             try:
@@ -1093,6 +1106,7 @@ def index():
                             except ValueError:
                                 pass
                             _map["fly_to"](lat, lon, unc)
+                            _map["set_readonly"](ro)
 
                         (
                             ui.button("Map", icon="map", on_click=_open_map)
@@ -1106,7 +1120,7 @@ def index():
                             uncert_in.value = ""
                             _on_event_field_edit()
 
-                        (
+                        _clear_coords_btn = (
                             ui.button("Clear", icon="clear", on_click=_clear_map_coords)
                             .props("flat dense size=sm")
                             .tooltip("Remove marker and clear coordinate fields")
@@ -1208,23 +1222,28 @@ def index():
                         eid = e.value
                         if eid is None:
                             state["event_id"] = None
-                            event_status.set_text("· new event")
+                            event_status.set_content("· new event")
                             event_status.classes(remove="event-linked", add="event-new")
+                            _set_event_editable(True)
+                            _hide_reuse_banner()
                             return
                         def _load_event(s):
                             ev = svc.get_event(s, eid)
                             if ev is None:
                                 return None
-                            # Snapshot the lazy relationship inside the session; `ev`
-                            # is detached after _with_session closes, so accessing
-                            # ev.recorded_by_person later raises DetachedInstanceError.
+                            # Snapshot everything needed inside the session; `ev` is
+                            # detached after _with_session closes, so lazy relationships
+                            # (recorded_by_person) would raise DetachedInstanceError.
                             recby = ev.recorded_by_person.full_name if ev.recorded_by_person else None
-                            return ev, recby
+                            preview = format_event_preview_html(ev)
+                            n_shared = ev_svc.count_co_at_event(s, eid)
+                            return ev, recby, preview, n_shared
 
                         loaded = _with_session(_load_event)
                         if loaded is None:
                             return
-                        ev, recby_name = loaded
+                        ev, recby_name, ev_preview, ev_n = loaded
+                        state["event_n"] = ev_n
                         state["populating"] = True
                         country_in.value   = ev.country            or ""
                         code_in.value      = ev.country_code       or ""
@@ -1248,8 +1267,10 @@ def index():
                         verblabel_in.value = ev.verbatim_label     or ""
                         state["populating"] = False
                         state["event_id"] = eid
-                        event_status.set_text(f"· linked #{eid}: {ev.country or ''} {ev.state_province or ''}")
+                        event_status.set_content(ev_preview)
                         event_status.classes(remove="event-new", add="event-linked")
+                        _set_event_editable(False)
+                        _show_reuse_banner(eid, ev_n)
 
                     event_sel.on_value_change(_on_event_selected)
 
@@ -1424,6 +1445,54 @@ def index():
                     for w in _event_widgets.values():
                         w.value = ""
 
+                # ── Event reuse: read-only fields + Detach-&-copy ──────────────
+                # A reused (existing) event is shown read-only; editing a shared
+                # event is only possible in Records. "Detach & copy to edit" turns
+                # the fields editable as a NEW event for this specimen (clears the
+                # link, so save creates a fresh event — the copy).
+                def _set_event_editable(editable: bool):
+                    # Dedicated flag — the map reads this, not state["event_id"], which a
+                    # geocode on_change can clear after populate (leaving fields read-only
+                    # but event_id None, so the map wrongly became editable).
+                    state["event_editable"] = editable
+                    for w in _event_widgets.values():
+                        w.props(remove="readonly") if editable else w.props("readonly")
+                    recby_state["set_readonly"](not editable)
+                    # Disable the coordinate→locality lookup too — it writes into
+                    # read-only fields. set_enabled greys it (clear "disabled" cue).
+                    _lookup_btn.set_enabled(editable)
+                    _lookup_btn.tooltip(
+                        "Fill country / state / county from coordinates via Photon"
+                        if editable else "Read-only — detach a copy to edit first"
+                    )
+                    # The coord "Clear" button and the map's edit controls also
+                    # bypass field readonly, so gate them too. The map stays
+                    # viewable — only location/radius editing is blocked.
+                    _clear_coords_btn.set_enabled(editable)
+                    _map["set_readonly"](not editable)
+
+                def _hide_reuse_banner():
+                    event_banner.clear()
+
+                def _detach_to_edit():
+                    state["event_id"] = None
+                    _set_event_editable(True)
+                    _hide_reuse_banner()
+                    event_status.set_content("· new event (editable copy)")
+                    event_status.classes(remove="event-linked", add="event-new")
+
+                def _show_reuse_banner(eid: int, n: int):
+                    event_banner.clear()
+                    shared = f" — shared by {n} specimens" if n > 1 else ""
+                    msg = (f"Reusing event #{eid}{shared}. Fields are read-only; detach a "
+                           f"copy to edit here, or edit the original in the Records tab.")
+                    with event_banner:
+                        build_event_share_banner(
+                            message=msg,
+                            button_label="Detach & copy to edit",
+                            on_detach=_detach_to_edit,
+                        )
+
                 def _collect_specimen_fields() -> dict:
                     active = _active_spec[0]
                     ident = active["get_identity"]()
@@ -1470,8 +1539,10 @@ def index():
                     if not keep_event.value:
                         event_sel.value = None
                         state["event_id"] = None
-                        event_status.set_text("· new event")
+                        event_status.set_content("· new event")
                         event_status.classes(remove="event-linked", add="event-new")
+                        _set_event_editable(True)
+                        _hide_reuse_banner()
                         recby_state["set_value"](None)
                         _clear_event_widgets()
                     if not keep_det.value:
@@ -1586,8 +1657,10 @@ def index():
                     _refresh_assoc_list()
                     event_sel.value = None
                     state["event_id"] = None
-                    event_status.set_text("· new event")
+                    event_status.set_content("· new event")
                     event_status.classes(remove="event-linked", add="event-new")
+                    _set_event_editable(True)
+                    _hide_reuse_banner()
                     recby_state["set_value"](None)
                     _clear_event_widgets()
                     ms_state["wipe"]()
