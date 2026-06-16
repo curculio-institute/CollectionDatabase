@@ -1088,11 +1088,17 @@ def index():
 
                     with ui.row().classes("items-center gap-2 mt-2"):
                         def _open_map():
+                            # A reused (existing) event is read-only — apply view-only
+                            # state every time the map opens (the open-time call is the
+                            # reliable one; the event-select call can run before the
+                            # map's JS API exists and silently no-op).
+                            ro = not state.get("event_editable", True)
                             try:
                                 lat = float(lat_in.value)
                                 lon = float(lon_in.value)
                             except (TypeError, ValueError):
                                 _map["open"]()
+                                _map["set_readonly"](ro)
                                 return
                             unc = None
                             try:
@@ -1100,6 +1106,7 @@ def index():
                             except ValueError:
                                 pass
                             _map["fly_to"](lat, lon, unc)
+                            _map["set_readonly"](ro)
 
                         (
                             ui.button("Map", icon="map", on_click=_open_map)
@@ -1113,7 +1120,7 @@ def index():
                             uncert_in.value = ""
                             _on_event_field_edit()
 
-                        (
+                        _clear_coords_btn = (
                             ui.button("Clear", icon="clear", on_click=_clear_map_coords)
                             .props("flat dense size=sm")
                             .tooltip("Remove marker and clear coordinate fields")
@@ -1444,6 +1451,10 @@ def index():
                 # the fields editable as a NEW event for this specimen (clears the
                 # link, so save creates a fresh event — the copy).
                 def _set_event_editable(editable: bool):
+                    # Dedicated flag — the map reads this, not state["event_id"], which a
+                    # geocode on_change can clear after populate (leaving fields read-only
+                    # but event_id None, so the map wrongly became editable).
+                    state["event_editable"] = editable
                     for w in _event_widgets.values():
                         w.props(remove="readonly") if editable else w.props("readonly")
                     recby_state["set_readonly"](not editable)
@@ -1454,6 +1465,11 @@ def index():
                         "Fill country / state / county from coordinates via Photon"
                         if editable else "Read-only — detach a copy to edit first"
                     )
+                    # The coord "Clear" button and the map's edit controls also
+                    # bypass field readonly, so gate them too. The map stays
+                    # viewable — only location/radius editing is blocked.
+                    _clear_coords_btn.set_enabled(editable)
+                    _map["set_readonly"](not editable)
 
                 def _hide_reuse_banner():
                     event_banner.clear()

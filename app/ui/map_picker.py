@@ -105,13 +105,18 @@ def build_map_picker(
 
         {
           'open':            fn()               → show the overlay,
-          'set_position':    fn(lat, lon, unc)  → fly + place marker,
+          'set_position':    fn(lat, lon, unc)  → place marker (no fly),
+          'fly_to':          fn(lat, lon, unc)  → fly + place marker,
           'set_uncertainty': fn(unc)            → resize circle only,
           'clear':           fn()               → remove marker + circle,
+          'set_readonly':    fn(bool)           → view-only: pan/zoom + view
+                                                  only; marker/handle snap back,
+                                                  clicks + slider inert,
         }
 
     ``on_change(lat, lon, uncertainty_m)`` fires on every marker move /
-    circle resize.
+    circle resize (never while read-only). `set_readonly` is general-purpose —
+    any caller can show an existing point without allowing edits.
     """
     # ── NiceGUI event sink (inside Vue app — only used as a socket relay) ─────
     sink    = ui.element("div").style("display:none")
@@ -290,7 +295,8 @@ def build_map_picker(
         }}
 
         /* ── State ───────────────────────────────────────────────────────── */
-        var marker = null, circle = null, handle = null, unc = 0;
+        var marker = null, circle = null, handle = null, unc = 0, ro = false;
+        var savedMarkerLatLng = null;   // official position (snap-back when read-only)
 
         var coordEl   = document.getElementById(uid + 'coord');
         var uncRow    = document.getElementById(uid + 'uncrow');
@@ -337,12 +343,14 @@ def build_map_picker(
                 marker = L.marker(latlng,
                     {{icon:mkIcon, draggable:true, zIndexOffset:100}}).addTo(map);
                 marker.on('drag', function(ev) {{
+                    if (ro) {{ marker.setLatLng(savedMarkerLatLng); return; }}
                     var p = ev.target.getLatLng();
                     if (circle) circle.setLatLng(p);
                     if (handle && unc) handle.setLatLng(eastOf(p, unc));
                     updateDisplay(p.lat, p.lng, unc);
                 }});
                 marker.on('dragend', function(ev) {{
+                    if (ro) {{ marker.setLatLng(savedMarkerLatLng); return; }}
                     var p = ev.target.getLatLng();
                     emitCoords(p.lat, p.lng, unc || null);
                 }});
@@ -365,6 +373,7 @@ def build_map_picker(
                         {{icon:hdIcon, draggable:true, zIndexOffset:200}}).addTo(map);
                     handle.on('drag', function(ev) {{
                         if (!marker) return;
+                        if (ro) {{ handle.setLatLng(eastOf(marker.getLatLng(), unc)); return; }}
                         unc = Math.max(1, Math.round(
                             map.distance(marker.getLatLng(), ev.target.getLatLng())));
                         if (circle) circle.setRadius(unc);
@@ -372,6 +381,7 @@ def build_map_picker(
                     }});
                     handle.on('dragend', function(ev) {{
                         if (!marker) return;
+                        if (ro) {{ handle.setLatLng(eastOf(marker.getLatLng(), unc)); return; }}
                         var c = marker.getLatLng();
                         unc = Math.max(1, Math.round(
                             map.distance(c, ev.target.getLatLng())));
@@ -388,10 +398,12 @@ def build_map_picker(
             }}
 
             updateDisplay(latlng.lat, latlng.lng, unc);
+            if (marker) savedMarkerLatLng = marker.getLatLng();
         }}
 
         /* zoom-based default radius on first click (iNaturalist formula) */
         map.on('click', function(ev) {{
+            if (ro) return;
             var r = unc > 0 ? unc
                   : Math.round((1 / Math.pow(2, map.getZoom())) * 2000000);
             placeAt(ev.latlng, r);
@@ -400,7 +412,7 @@ def build_map_picker(
 
         /* ── Editable uncertainty input + slider ────────────────────────── */
         function applyUncInput() {{
-            if (!marker) return;
+            if (ro || !marker) return;
             var v = parseInt(uncInput.value, 10);
             if (isNaN(v) || v < 1) return;
             placeAt(marker.getLatLng(), v);
@@ -414,7 +426,7 @@ def build_map_picker(
         }}
         if (uncSlider) {{
             uncSlider.addEventListener('input', function() {{
-                if (!marker) return;
+                if (ro || !marker) return;
                 var v = parseInt(this.value, 10);
                 placeAt(marker.getLatLng(), v);
                 emitCoords(marker.getLatLng().lat, marker.getLatLng().lng, v || null);
@@ -441,6 +453,11 @@ def build_map_picker(
                 if (handle) {{ handle.remove(); handle = null; }}
                 unc = 0;
                 resetDisplay();
+            }},
+            setReadonly: function(v) {{
+                ro = v;
+                if (uncInput)  uncInput.disabled  = v;
+                if (uncSlider) uncSlider.disabled = v;
             }}
         }};
 
@@ -505,10 +522,16 @@ def build_map_picker(
     def clear() -> None:
         _run(f"window['_mpapi_{uid}']?.clear();")
 
+    def set_readonly(read_only: bool) -> None:
+        """View-only mode: marker/handle not draggable, map clicks and the
+        uncertainty input/slider inert. The map stays viewable."""
+        _run(f"window['_mpapi_{uid}']?.setReadonly({str(bool(read_only)).lower()});")
+
     return {
         "open":            open_map,
         "set_position":    set_position,
         "fly_to":          fly_to,
         "set_uncertainty": set_uncertainty,
         "clear":           clear,
+        "set_readonly":    set_readonly,
     }
