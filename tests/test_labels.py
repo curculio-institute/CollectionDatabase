@@ -8,15 +8,29 @@ actual layout, not a character heuristic.
 """
 import pytest
 
+from weasyprint import HTML
+from weasyprint.formatting_structure.boxes import LineBox
+
 from app.services.labels import (
     DeterminationLabel, DataLabel,
     _det_line1, _det_name_html, _det_line3, _data_line2, _fits_one_line,
+    _grouped_html,
     determination_sheet, data_sheet, grouped_sheet, LabelGroup, SpecimenLabels,
 )
 
 
 def _keeps_genus_break(name_html: str) -> bool:
     return "</div><div>" in name_html
+
+
+def _page_line_count(page) -> int:
+    n, stack = 0, [page._page_box]
+    while stack:
+        box = stack.pop()
+        if isinstance(box, LineBox):
+            n += 1
+        stack.extend(getattr(box, "children", None) or [])
+    return n
 
 
 # --------------------------------------------------------------------------
@@ -165,3 +179,35 @@ def test_grouped_sheet_renders_mixed_lengths():
     ]
     pdf = grouped_sheet([LabelGroup(source="Mounting Session", specimens=specs)], "2026-06-15")
     assert pdf[:4] == b"%PDF" and len(pdf) > 1000
+
+
+# --------------------------------------------------------------------------
+# Pagination (#19) — a multi-page sheet must fill page 1 (flex did not
+# paginate, which left page 1 empty) and never split a label across pages.
+# --------------------------------------------------------------------------
+
+def _multipage_groups(n_groups=50, per=6):
+    """Many realistically-sized groups that together span more than one page."""
+    groups = []
+    for g in range(n_groups):
+        specs = [SpecimenLabels(
+            determination=DeterminationLabel(genus="Sitona", specific_epithet="lineatus",
+                authorship="(Linnaeus, 1758)", determiner="J. Jilg", year="2025"),
+            id_code=f"JJPRC-{g:02d}{i:02d}") for i in range(per)]
+        groups.append(LabelGroup(source=f"Batch {g + 1}", specimens=specs))
+    return groups
+
+
+def test_multipage_sheet_fills_first_page():
+    doc = HTML(string=_grouped_html(_multipage_groups(), "2026-06-16")).render()
+    assert len(doc.pages) >= 2, "test data should span more than one page"
+    # Before the fix (flex .sheet) page 1 held only the 'Printed:' line (~1 line box);
+    # block flow now fills it.
+    assert _page_line_count(doc.pages[0]) > 20, "page 1 is nearly empty — not paginating"
+
+
+def test_chunk_no_split_rule_present_and_paginates():
+    css = _grouped_html(_multipage_groups(), "x")
+    assert "page-break-inside: avoid" in css  # a label row is never split across pages
+    doc = HTML(string=css).render()
+    assert len(doc.pages) >= 2  # and it still actually paginates
