@@ -27,6 +27,8 @@ import app.services.labels as lbl_svc
 import app.services.print_queue as pq_svc
 from app.config import get_config, save_config, printed_pdf_dir
 import app.services.person_defaults as pd_svc
+import app.services.events as ev_svc
+from app.services.label_text import format_event_preview_html
 from app.models import CollectionObject, CollectingEvent, TaxonDetermination, LabelCode
 from app.ui.taxon_search import build_taxon_search
 from app.ui.identification_list import build_identification_list
@@ -650,7 +652,7 @@ def index():
                 with ui.card().classes("w-full shadow-sm"):
                     with ui.row().classes("items-center gap-3 mb-1"):
                         ui.label("Collecting Event").classes("section-label")
-                        event_status = ui.label("· new event").classes("event-new")
+                        event_status = ui.html("· new event").classes("event-new")
 
                     ui.separator().classes("mb-3")
 
@@ -665,7 +667,7 @@ def index():
                     def _on_event_field_edit(_=None):
                         if not state["populating"] and state["event_id"] is not None:
                             state["event_id"] = None
-                            event_status.set_text("· new event (edited)")
+                            event_status.set_content("· new event (edited)")
                             event_status.classes(remove="event-linked", add="event-new")
 
                     def _wipe_from(level: str) -> None:
@@ -1208,23 +1210,26 @@ def index():
                         eid = e.value
                         if eid is None:
                             state["event_id"] = None
-                            event_status.set_text("· new event")
+                            event_status.set_content("· new event")
                             event_status.classes(remove="event-linked", add="event-new")
                             return
                         def _load_event(s):
                             ev = svc.get_event(s, eid)
                             if ev is None:
                                 return None
-                            # Snapshot the lazy relationship inside the session; `ev`
-                            # is detached after _with_session closes, so accessing
-                            # ev.recorded_by_person later raises DetachedInstanceError.
+                            # Snapshot everything needed inside the session; `ev` is
+                            # detached after _with_session closes, so lazy relationships
+                            # (recorded_by_person) would raise DetachedInstanceError.
                             recby = ev.recorded_by_person.full_name if ev.recorded_by_person else None
-                            return ev, recby
+                            preview = format_event_preview_html(ev)
+                            n_shared = ev_svc.count_co_at_event(s, eid)
+                            return ev, recby, preview, n_shared
 
                         loaded = _with_session(_load_event)
                         if loaded is None:
                             return
-                        ev, recby_name = loaded
+                        ev, recby_name, ev_preview, ev_n = loaded
+                        state["event_n"] = ev_n
                         state["populating"] = True
                         country_in.value   = ev.country            or ""
                         code_in.value      = ev.country_code       or ""
@@ -1248,7 +1253,7 @@ def index():
                         verblabel_in.value = ev.verbatim_label     or ""
                         state["populating"] = False
                         state["event_id"] = eid
-                        event_status.set_text(f"· linked #{eid}: {ev.country or ''} {ev.state_province or ''}")
+                        event_status.set_content(ev_preview)
                         event_status.classes(remove="event-new", add="event-linked")
 
                     event_sel.on_value_change(_on_event_selected)
@@ -1470,7 +1475,7 @@ def index():
                     if not keep_event.value:
                         event_sel.value = None
                         state["event_id"] = None
-                        event_status.set_text("· new event")
+                        event_status.set_content("· new event")
                         event_status.classes(remove="event-linked", add="event-new")
                         recby_state["set_value"](None)
                         _clear_event_widgets()
@@ -1586,7 +1591,7 @@ def index():
                     _refresh_assoc_list()
                     event_sel.value = None
                     state["event_id"] = None
-                    event_status.set_text("· new event")
+                    event_status.set_content("· new event")
                     event_status.classes(remove="event-linked", add="event-new")
                     recby_state["set_value"](None)
                     _clear_event_widgets()
