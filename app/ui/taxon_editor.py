@@ -10,7 +10,7 @@ from app.services.taxa import (
     search_taxa,
     update_taxon,
 )
-from app.models import Taxon
+from app.models import Taxon, TaxonDetermination
 NOMEN_CODES = {
     "ICZN":  "ICZN",
     "ICN":   "🌿 ICN",
@@ -263,14 +263,24 @@ def build_taxon_editor(session_factory, on_saved: callable) -> None:
                 edit_form_api.update(
                     _build_taxon_form(edit_form_col, session_factory, taxon=taxon)
                 )
+                # Mirror the guards in delete_taxon() (services/taxa.py): a taxon
+                # with children, synonyms, or determinations cannot be deleted.
                 with session_factory() as s:
-                    blocked = (
-                        s.query(Taxon).filter(Taxon.parent_name_usage_id == tid).count() > 0
-                        or s.query(Taxon).filter(Taxon.accepted_name_usage_id == tid).count() > 0
-                    )
-                if blocked:
+                    has_children = s.query(Taxon).filter(Taxon.parent_name_usage_id == tid).count() > 0
+                    has_synonyms = s.query(Taxon).filter(Taxon.accepted_name_usage_id == tid).count() > 0
+                    has_dets = s.query(TaxonDetermination).filter(
+                        TaxonDetermination.taxon_id == tid
+                    ).count() > 0
+                if has_children or has_synonyms or has_dets:
                     delete_btn.disable()
-                    delete_btn.tooltip("Cannot delete: taxon has children or synonyms")
+                    reasons = [
+                        label for label, present in (
+                            ("children", has_children),
+                            ("synonyms", has_synonyms),
+                            ("determinations", has_dets),
+                        ) if present
+                    ]
+                    delete_btn.tooltip("Cannot delete: taxon has " + " and ".join(reasons))
                 else:
                     delete_btn.enable()
                     delete_btn.tooltip("Delete this taxon permanently")
