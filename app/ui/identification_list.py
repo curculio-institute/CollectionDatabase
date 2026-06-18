@@ -14,8 +14,6 @@ Auto-current logic:
 """
 from __future__ import annotations
 
-from datetime import date
-
 from nicegui import ui
 
 from app.ui.type_status_field import build_type_status_field
@@ -32,22 +30,9 @@ _TYPE_STATUS_OPTIONS = [
 ]
 from app.services.taxa import format_scientific_name
 from app.ui.taxon_search import build_taxon_search, _local_item_html
-from app.ui.date_input import AUTO_CHANGED_CSS, attach_date_validation
+from app.ui.date_input import AUTO_CHANGED_CSS, attach_date_validation, append_year_pin
 from app.ui.person_field import build_person_field
 import app.services.specimens as sp_svc
-
-
-def _append_year_btn(inp, *, visible_when_empty: bool = True) -> None:
-    """Add a push_pin icon button to inp's append slot that fills the current year."""
-    with inp.add_slot("append"):
-        btn = (
-            ui.button("", icon="push_pin")
-            .props("flat dense round size=xs")
-            .tooltip("Insert current year")
-            .on_click(lambda: inp.set_value(str(date.today().year)))
-        )
-        if visible_when_empty:
-            btn.bind_visibility_from(inp, "value", lambda v: not v)
 
 
 def build_identification_list(
@@ -282,7 +267,7 @@ def build_identification_list(
                         value=d["date_identified"] or "",
                         placeholder="YYYY-MM-DD",
                     ).classes("col-span-1")
-                    _append_year_btn(e_dtid, visible_when_empty=False)
+                    append_year_pin(e_dtid, visible_when_empty=False)
                     attach_date_validation(e_dtid, no_future=True)
                     e_sex = ui.select(
                         _SEX_OPTIONS, label="sex",
@@ -378,7 +363,7 @@ def build_identification_list(
                 default_fn=_default_idby,
             )
         add_dtid = ui.input("dateIdentified", placeholder="YYYY-MM-DD").classes("w-36")
-        _append_year_btn(add_dtid)
+        append_year_pin(add_dtid)
         attach_date_validation(add_dtid, no_future=True)
         add_sex  = ui.select(_SEX_OPTIONS, label="sex").classes("w-28")
         add_type = build_type_status_field(classes="w-36")

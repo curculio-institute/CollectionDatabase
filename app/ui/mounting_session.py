@@ -24,7 +24,7 @@ from app.config import get_config
 from app.services.dates import parse_dwc_date
 from app.services.validation import validate_event_fields
 import app.services.person_defaults as pd_svc
-from app.ui.date_input import attach_date_validation
+from app.ui.date_input import attach_date_validation, append_year_pin
 from app.ui.person_field import build_person_field
 from app.ui.taxon_search import build_taxon_search
 from app.ui.type_status_field import build_type_status_field
@@ -99,6 +99,7 @@ def build_mounting_session_section(
                     )
                     .classes("w-full mt-2")
                 )
+                append_year_pin(date_in)
                 attach_date_validation(date_in, no_future=True)
 
                 with ui.row().classes("w-full flex-wrap gap-2 mt-2"):

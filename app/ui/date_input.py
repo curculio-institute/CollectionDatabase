@@ -7,9 +7,29 @@ with the standard auto_fix_high notification (see design.md §3).
 """
 from __future__ import annotations
 
+from datetime import date
+
 from nicegui import ui
 
 from app.services.dates import parse_dwc_date
+
+
+def append_year_pin(inp, *, visible_when_empty: bool = True) -> None:
+    """Add a push_pin button that inserts the current year into a DwC date input.
+
+    The Tier-2 "insert current year" default for every dateIdentified field
+    (see design.md → Auto-fill tiers). Shared so the standard, records, and
+    mounting forms stay consistent.
+    """
+    with inp.add_slot("append"):
+        btn = (
+            ui.button("", icon="push_pin")
+            .props("flat dense round size=xs")
+            .tooltip("Insert current year")
+            .on_click(lambda: inp.set_value(str(date.today().year)))
+        )
+        if visible_when_empty:
+            btn.bind_visibility_from(inp, "value", lambda v: not v)
 
 # Shared CSS for the .auto-changed animation.  Import and inject this in any
 # widget that uses the auto_fix_high pulsing indicator.
