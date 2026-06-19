@@ -264,6 +264,37 @@ updates the row. Push-pin `default_fn` closures in UI files open their own sessi
   row had already drifted). **Do not re-introduce the column** — derive it in the export
   instead (`tests/test_schema_integrity.py::test_taxon_status_column_dropped` guards this).
 
+### Synonym integrity (acceptedNameUsageID is the single source)
+
+A taxon is a synonym **iff** it links to an accepted name. Two invariants hold, enforced by
+loud `BEFORE` triggers (migration 0031) that `RAISE` on any violating write — from raw SQL
+too — and re-declared on any future `taxon` rebuild (DB-1 discipline;
+`test_schema_integrity.py::test_synonym_integrity_triggers_present` guards them):
+
+- **`trg_taxon_synonym_parent_matches_accepted`** — a synonym shares its accepted name's
+  `parentNameUsageID`. In this model the classification lives on the *concept*: a name and
+  its synonyms sit under the same genus, even across original-combination genera (so
+  *Curculio rubidus* as a synonym of *Otiorhynchus norici* is parented under *Otiorhynchus*).
+  This is **stricter than GBIF**, which lets a synonym have no parent at all.
+- **`trg_taxon_accepted_is_terminal`** — `acceptedNameUsageID` must reference an accepted
+  (terminal) name, never another synonym. This is GBIF's *chained synonym* rule.
+
+**Single writers (chokepoint).** Every parent / accepted-link mutation on an *existing* taxon
+goes through `app/services/taxa.py`: `synonymize()` (resolve target to terminal, copy its
+parent, flatten the name's own synonyms onto it), `make_accepted()`, `reparent()` (re-home an
+accepted name and cascade the new parent to its synonyms — the one drift the write-time
+triggers can't catch). `create_taxon_direct`/`update_taxon` and the TW/POWO import paths all
+derive a synonym's parent from its accepted name. A static test
+(`test_synonym_integrity.py::test_parent_and_accepted_writes_are_centralised`) fails if any
+code outside `taxa.py` assigns these columns directly. **No fallback defaults** — required
+links are inherited or the op fails loudly, never guessed.
+
+**Manual audit, not automatic.** `verify_taxon_consistency(session)` is a read-only check
+(Taxonomy-tab "Check consistency" button) that reports drift the triggers structurally cannot
+catch at write time (e.g. a raw-SQL re-parent leaving a synonym stale). Issue names follow
+GBIF's `NameUsageIssue` vocabulary (`CHAINED_SYNONYM`, `PARENT_NAME_USAGE_ID_INVALID`, …);
+`SYNONYM_PARENT_MISMATCH` is this project's stricter rule. It is **not** run at startup.
+
 ### Parent-rank taxon rows
 
 Every TW species import creates dedicated `taxon` rows for each ancestor rank (genus,

@@ -291,6 +291,26 @@ def test_tw_import_synonym_both_new(session):
     assert synonym.accepted_name_usage_id == accepted.id
 
 
+def test_tw_import_cross_genus_synonym_shares_accepted_parent(session):
+    """A cross-genus synonym must take its accepted name's parent (Inv1), not its
+    own genus — otherwise the synonym-integrity trigger would reject the import."""
+    valid_tw, _ = _tw_species(
+        epithet="norici", genus="Otiorhynchus", family="Curculionidae",
+        order="Coleoptera", authorship="Reitter", otu_id=5001, nomenclatural_code="iczn",
+    )
+    syn_tw, syn_otu = _tw_synonym(
+        epithet="rubidus", genus="Curculio", family="Curculionidae",
+        valid_tw_dict=valid_tw, valid_otu_id=5001, otu_id=5002,
+    )
+    syn_tw["nomenclatural_code"] = "iczn"
+    synonym = get_or_create_from_tw_data(session, syn_tw, otu_id=syn_otu)   # must not raise
+    accepted = session.query(Taxon).filter_by(scientific_name="Otiorhynchus norici").first()
+    assert synonym.accepted_name_usage_id == accepted.id
+    assert synonym.parent_name_usage_id == accepted.parent_name_usage_id   # shares accepted's parent
+    curculio = session.query(Taxon).filter_by(scientific_name="Curculio", taxon_rank="genus").first()
+    assert curculio is None or synonym.parent_name_usage_id != curculio.id
+
+
 def test_tw_import_preserves_tribe_parent_chain(plant_tree, session):
     """TW provides tribe info, so the genus parent stays pointing at Anthemideae."""
     tribe_id_before = plant_tree["genus"].parent_name_usage_id

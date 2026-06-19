@@ -132,10 +132,10 @@ erDiagram
         INTEGER id PK
         TEXT scientificName
         TEXT taxonRank
-        TEXT taxonomicStatus
         TEXT scientificNameAuthorship
         INTEGER parentNameUsageID FK
         INTEGER acceptedNameUsageID FK
+        TEXT nomenclaturalCode
         INTEGER taxonworksOtuID
     }
 
@@ -257,18 +257,21 @@ erDiagram
     Hierarchy encoded via <code>dwc:parentNameUsageID</code> (FK to self) — no denormalised rank columns.
     Each ancestor rank (genus, family, order, …) has its own row linked upward by the same FK.
     <code>dwc:scientificName</code> stores the bare name without authorship.
-    <code>dwc:taxonomicStatus</code>: "accepted" | "synonym" (CHECK constraint).
-    NULL <code>dwc:acceptedNameUsageID</code> = accepted; set = synonym pointing to its accepted taxon.</div>
+    Synonymy is encoded <em>solely</em> by <code>dwc:acceptedNameUsageID</code>: NULL = accepted,
+    set = synonym pointing to its accepted taxon (the DwC <code>taxonomicStatus</code> term is
+    derived at export, not stored — dropped in migration 0030). A synonym shares its accepted
+    name's <code>parentNameUsageID</code> and that name must be accepted, not another synonym —
+    both enforced by BEFORE triggers (migration 0031); see Integrity Constraints → Triggers.</div>
   <table>
     <thead><tr><th>Type</th><th>Column</th><th>Notes</th></tr></thead>
     <tbody>
       <tr><td><span class="badge badge-INTEGER">INTEGER</span></td><td class="col-local">id</td><td><span class="tag tag-PK">PK</span></td></tr>
       <tr><td><span class="badge badge-TEXT">TEXT</span></td><td class="col-dwc"><a href="https://dwc.tdwg.org/list/#dwc_scientificName">dwc:scientificName</a></td><td><span class="tag tag-NN">NN</span> bare name without authorship</td></tr>
       <tr><td><span class="badge badge-TEXT">TEXT</span></td><td class="col-dwc"><a href="https://dwc.tdwg.org/list/#dwc_taxonRank">dwc:taxonRank</a></td><td><span class="tag tag-NN">NN</span> e.g. "species", "genus", "family"</td></tr>
-      <tr><td><span class="badge badge-TEXT">TEXT</span></td><td class="col-dwc"><a href="https://dwc.tdwg.org/list/#dwc_taxonomicStatus">dwc:taxonomicStatus</a></td><td><span class="tag tag-NN">NN</span> CHECK "accepted" | "synonym"</td></tr>
       <tr><td><span class="badge badge-TEXT">TEXT</span></td><td class="col-dwc"><a href="https://dwc.tdwg.org/list/#dwc_scientificNameAuthorship">dwc:scientificNameAuthorship</a></td><td></td></tr>
-      <tr><td><span class="badge badge-INTEGER">INTEGER</span></td><td class="col-dwc"><a href="https://dwc.tdwg.org/list/#dwc_parentNameUsageID">dwc:parentNameUsageID</a></td><td><span class="tag tag-FK">FK</span> → taxon (self); encodes hierarchy; RESTRICT delete</td></tr>
-      <tr><td><span class="badge badge-INTEGER">INTEGER</span></td><td class="col-dwc"><a href="https://dwc.tdwg.org/list/#dwc_acceptedNameUsageID">dwc:acceptedNameUsageID</a></td><td><span class="tag tag-FK">FK</span> → taxon (self); NULL = accepted, set = synonym; RESTRICT delete</td></tr>
+      <tr><td><span class="badge badge-INTEGER">INTEGER</span></td><td class="col-dwc"><a href="https://dwc.tdwg.org/list/#dwc_parentNameUsageID">dwc:parentNameUsageID</a></td><td><span class="tag tag-FK">FK</span> → taxon (self); encodes hierarchy; RESTRICT delete; a synonym's value must equal its accepted name's (trigger)</td></tr>
+      <tr><td><span class="badge badge-INTEGER">INTEGER</span></td><td class="col-dwc"><a href="https://dwc.tdwg.org/list/#dwc_acceptedNameUsageID">dwc:acceptedNameUsageID</a></td><td><span class="tag tag-FK">FK</span> → taxon (self); NULL = accepted, set = synonym (must point to an accepted, non-synonym row — trigger); RESTRICT delete</td></tr>
+      <tr><td><span class="badge badge-TEXT">TEXT</span></td><td class="col-dwc"><a href="https://dwc.tdwg.org/list/#dwc_nomenclaturalCode">dwc:nomenclaturalCode</a></td><td>uppercased ("ICZN"/"ICN"/…); inherited from parent</td></tr>
       <tr><td><span class="badge badge-INTEGER">INTEGER</span></td><td class="col-local">taxonworksOtuID</td><td>TW OTU ID; nullable until linked</td></tr>
       <tr><td><span class="badge badge-TEXT">TEXT</span></td><td class="col-local">created_at / updated_at</td><td></td></tr>
     </tbody>
@@ -444,7 +447,6 @@ erDiagram
       <tr><td class="col-local">ck_co_basis_of_record</td><td class="col-local">collection_object</td><td><code>basisOfRecord</code> ∈ {PreservedSpecimen, FossilSpecimen, HumanObservation}</td></tr>
       <tr><td class="col-local">ck_co_disposition</td><td class="col-local">collection_object</td><td><code>disposition</code> is empty, or ∈ {in collection, on loan, donated, exchanged, missing, destroyed}</td></tr>
       <tr><td class="col-local">ck_td_is_current_bool</td><td class="col-local">taxon_determination</td><td><code>is_current</code> is 0 or 1</td></tr>
-      <tr><td class="col-local"><em>(unnamed)</em></td><td class="col-local">taxon</td><td><code>taxonomicStatus</code> ∈ {accepted, synonym}</td></tr>
       <tr><td class="col-local">ck_ba_subject_exclusive_arc</td><td class="col-local">biological_association</td><td>exactly one of <code>subject_collection_object_id</code> / <code>subject_taxon_id</code> is set <span class="tag tag-ARC">ARC</span></td></tr>
       <tr><td class="col-local">ck_ba_object_exclusive_arc</td><td class="col-local">biological_association</td><td>exactly one of <code>object_collection_object_id</code> / <code>object_taxon_id</code> is set <span class="tag tag-ARC">ARC</span></td></tr>
       <tr><td class="col-local">ck_label_code_status</td><td class="col-local">label_code</td><td><code>status</code> ∈ {reserved, assigned}</td></tr>
@@ -464,6 +466,26 @@ erDiagram
       <tr><td><span class="tag tag-UQ">UQ</span></td><td class="col-local">biological_relationship</td><td>UNIQUE (<code>name</code>)</td></tr>
       <tr><td><span class="tag tag-FK">FK</span></td><td class="col-local">taxon_determination</td><td><code>collection_object_id</code> → collection_object ON DELETE CASCADE; <code>taxon_id</code> → taxon ON DELETE RESTRICT</td></tr>
       <tr><td><span class="tag tag-FK">FK</span></td><td class="col-local">person references</td><td>all <code>person</code> FKs (recordedBy, identifiedBy, defaults) are ON DELETE RESTRICT</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<div class="table-card">
+  <h2>Triggers</h2>
+  <div class="desc">Cross-row rules a <code>CHECK</code> cannot express (it sees only one row).
+    These <code>BEFORE</code> triggers <code>RAISE(ABORT)</code> on any violating write — raw SQL
+    included — making the synonym-side bad state unreachable. Added in migration 0031.
+    <strong>A <code>taxon</code> table rebuild silently drops triggers</strong> (like it drops
+    CHECKs/FKs — see STRICT note); any rebuild migration must re-create them, and
+    <code>tests/test_schema_integrity.py::test_synonym_integrity_triggers_present</code> guards it.
+    The remaining drift a write-time trigger cannot catch (re-parenting an accepted name leaves
+    its synonyms stale) is handled by the <code>reparent()</code> service op and surfaced by the
+    manual <code>verify_taxon_consistency()</code> audit (Taxonomy-tab "Check consistency").</div>
+  <table>
+    <thead><tr><th>Trigger</th><th>Table</th><th>Rule</th></tr></thead>
+    <tbody>
+      <tr><td class="col-local">trg_taxon_synonym_parent_matches_accepted</td><td class="col-local">taxon</td><td>a synonym's <code>parentNameUsageID</code> must equal its accepted name's (INSERT + UPDATE)</td></tr>
+      <tr><td class="col-local">trg_taxon_accepted_is_terminal</td><td class="col-local">taxon</td><td><code>acceptedNameUsageID</code> must reference an accepted (terminal) name, never another synonym — GBIF "chained synonym" rule (INSERT + UPDATE)</td></tr>
     </tbody>
   </table>
 </div>

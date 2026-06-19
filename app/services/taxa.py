@@ -553,12 +553,18 @@ def update_taxon(
     t.scientific_name = scientific_name
     t.taxon_rank = taxon_rank
     t.scientific_name_authorship = scientific_name_authorship or None
-    t.parent_name_usage_id = parent_name_usage_id
-    t.accepted_name_usage_id = accepted_name_usage_id
     t.nomenclatural_code = nomenclatural_code or None
     t.taxonworks_otu_id = taxonworks_otu_id
     t.updated_at = _utcnow()
     session.flush()
+    # Synonymy + parent are derived/cascaded, never set independently here:
+    # making it a synonym copies the accepted name's parent (and flattens any
+    # chain); making it accepted re-parents it and cascades to its synonyms.
+    if accepted_name_usage_id is not None:
+        synonymize(session, name_id=taxon_id, accepted_id=accepted_name_usage_id)
+    else:
+        make_accepted(session, taxon_id)
+        reparent(session, taxon_id=taxon_id, new_parent_id=parent_name_usage_id)
     return t
 
 
@@ -581,6 +587,138 @@ def delete_taxon(session: Session, taxon_id: int) -> None:
     session.flush()
 
 
+# ---------------------------------------------------------------------------
+# Synonym integrity
+#
+# Synonymy is encoded solely by acceptedNameUsageID; a synonym shares its
+# accepted name's parent (the classification lives on the concept). Two BEFORE
+# triggers (migration 0031) make the synonym-side bad state unreachable from any
+# write path. These service ops are the single writers that do the multi-row
+# work keeping it true across edits — every parent / accepted-link mutation on an
+# existing taxon goes through synonymize / make_accepted / reparent.
+# ---------------------------------------------------------------------------
+
+def _terminal_accepted(session: Session, taxon: "Taxon") -> "Taxon":
+    """Follow acceptedNameUsageID to the terminal accepted name (no chains)."""
+    cur, seen = taxon, {taxon.id}
+    while cur.accepted_name_usage_id is not None:
+        nxt = session.get(Taxon, cur.accepted_name_usage_id)
+        if nxt is None or nxt.id in seen:
+            break
+        cur, _ = nxt, seen.add(nxt.id)
+    return cur
+
+
+def synonymize(session: Session, *, name_id: int, accepted_id: int) -> "Taxon":
+    """Make ``name_id`` a synonym of ``accepted_id``.
+
+    Resolves the target to its terminal accepted name (GBIF "chained synonym"
+    rule — never a synonym of a synonym), copies that name's parent onto the
+    synonym, and re-points the name's own existing synonyms onto the same
+    accepted name so no chain forms. Atomic; caller wraps in a transaction.
+    """
+    name = session.get(Taxon, name_id)
+    target = session.get(Taxon, accepted_id)
+    if name is None or target is None:
+        raise ValueError("name or accepted taxon not found")
+    terminal = _terminal_accepted(session, target)
+    if terminal.id == name.id:
+        raise ValueError("a name cannot be a synonym of itself")
+    if name.nomenclatural_code != terminal.nomenclatural_code:
+        raise ValueError(
+            "synonym and accepted name must share the nomenclatural code "
+            f"({name.nomenclatural_code} vs {terminal.nomenclatural_code})"
+        )
+    has_children = (
+        session.query(Taxon)
+        .filter(Taxon.parent_name_usage_id == name.id,
+                Taxon.accepted_name_usage_id.is_(None))
+        .count()
+    )
+    if has_children:
+        raise ValueError("cannot synonymize a name that has subordinate taxa")
+    # The name itself plus its current synonyms all move onto `terminal`.
+    movers = [name] + (
+        session.query(Taxon).filter(Taxon.accepted_name_usage_id == name.id).all()
+    )
+    for m in movers:
+        m.accepted_name_usage_id = terminal.id
+        m.parent_name_usage_id = terminal.parent_name_usage_id
+        m.updated_at = _utcnow()
+    session.flush()
+    return name
+
+
+def make_accepted(session: Session, taxon_id: int) -> "Taxon":
+    """Clear a taxon's synonym link, making it an accepted name (keeps its parent)."""
+    t = session.get(Taxon, taxon_id)
+    if t is None:
+        raise ValueError(f"Taxon {taxon_id} not found")
+    if t.accepted_name_usage_id is not None:
+        t.accepted_name_usage_id = None
+        t.updated_at = _utcnow()
+        session.flush()
+    return t
+
+
+def reparent(session: Session, *, taxon_id: int, new_parent_id: int | None) -> "Taxon":
+    """Re-parent an accepted name, cascading the new parent to its synonyms.
+
+    Synonyms share their accepted name's parent, so re-homing an accepted name
+    must move its synonyms too — the one drift vector the write-time triggers
+    cannot catch (re-parenting never touches the synonym rows).
+    """
+    t = session.get(Taxon, taxon_id)
+    if t is None:
+        raise ValueError(f"Taxon {taxon_id} not found")
+    if t.accepted_name_usage_id is not None:
+        raise ValueError("cannot reparent a synonym directly — reparent its accepted name")
+    t.parent_name_usage_id = new_parent_id
+    t.updated_at = _utcnow()
+    session.flush()  # accepted row first, so the synonym writes satisfy the trigger
+    for syn in session.query(Taxon).filter(Taxon.accepted_name_usage_id == taxon_id).all():
+        syn.parent_name_usage_id = new_parent_id
+        syn.updated_at = _utcnow()
+    session.flush()
+    return t
+
+
+def verify_taxon_consistency(session: Session) -> list[dict]:
+    """Audit taxon hierarchy/synonymy invariants; return a list of violations.
+
+    Read-only — run manually (Taxonomy-tab button / tests), not at startup. It
+    catches the drift the write-time triggers structurally cannot (chiefly a
+    synonym whose stored parent no longer matches its accepted name's, e.g. from
+    a raw-SQL re-parent). Issue names follow GBIF's NameUsageIssue vocabulary
+    where they map; SYNONYM_PARENT_MISMATCH is this project's stricter rule.
+    """
+    issues: list[dict] = []
+    taxa = session.query(Taxon).all()
+    by_id = {t.id: t for t in taxa}
+    for t in taxa:
+        if t.parent_name_usage_id is not None and t.parent_name_usage_id not in by_id:
+            issues.append({"issue": "PARENT_NAME_USAGE_ID_INVALID", "taxon_id": t.id,
+                           "name": t.scientific_name,
+                           "detail": f"parentNameUsageID {t.parent_name_usage_id} does not resolve"})
+        if t.accepted_name_usage_id is None:
+            continue
+        acc = by_id.get(t.accepted_name_usage_id)
+        if acc is None:
+            issues.append({"issue": "ACCEPTED_NAME_USAGE_ID_INVALID", "taxon_id": t.id,
+                           "name": t.scientific_name,
+                           "detail": f"acceptedNameUsageID {t.accepted_name_usage_id} does not resolve"})
+            continue
+        if acc.accepted_name_usage_id is not None:
+            issues.append({"issue": "CHAINED_SYNONYM", "taxon_id": t.id,
+                           "name": t.scientific_name,
+                           "detail": f"accepted name '{acc.scientific_name}' is itself a synonym"})
+        if t.parent_name_usage_id != acc.parent_name_usage_id:
+            issues.append({"issue": "SYNONYM_PARENT_MISMATCH", "taxon_id": t.id,
+                           "name": t.scientific_name,
+                           "detail": f"parent differs from accepted name '{acc.scientific_name}'"})
+    return issues
+
+
 def create_taxon_direct(
     session: Session,
     *,
@@ -592,7 +730,19 @@ def create_taxon_direct(
     nomenclatural_code: str | None = None,
     taxonworks_otu_id: int | None = None,
 ) -> "Taxon":
-    """Create a taxon row directly from fully specified fields (no parent inference)."""
+    """Create a taxon row directly from fully specified fields (no parent inference).
+
+    When an accepted name is given the row is a synonym, so its parent is taken
+    from the (terminal) accepted name rather than the passed value — synonyms
+    share their accepted name's parent.
+    """
+    if accepted_name_usage_id is not None:
+        acc = session.get(Taxon, accepted_name_usage_id)
+        if acc is None:
+            raise ValueError("accepted taxon not found")
+        terminal = _terminal_accepted(session, acc)
+        accepted_name_usage_id = terminal.id
+        parent_name_usage_id = terminal.parent_name_usage_id
     t = Taxon(
         scientific_name=scientific_name,
         taxon_rank=taxon_rank,
@@ -670,12 +820,14 @@ def get_or_create_from_tw_data(
     """
     # If this is a synonym, ensure the valid (accepted) taxon exists first.
     accepted_id: int | None = None
+    acc_parent_id: int | None = None   # a synonym shares its accepted name's parent
     valid_tw = tw.get("_valid_tw_data")
     if valid_tw:
         valid_taxon = get_or_create_from_tw_data(
             session, valid_tw, otu_id=tw.get("_valid_otu_id"), mismatches=mismatches
         )
         accepted_id = valid_taxon.id
+        acc_parent_id = valid_taxon.parent_name_usage_id
 
     fields = _fields_from_tw(tw)
     sci_name = fields["scientific_name"]
@@ -709,6 +861,7 @@ def get_or_create_from_tw_data(
         if accepted_id:
             if not existing.accepted_name_usage_id:
                 existing.accepted_name_usage_id = accepted_id
+                existing.parent_name_usage_id = acc_parent_id   # Inv1: share accepted's parent
                 dirty = True
             elif existing.accepted_name_usage_id != accepted_id and mismatches is not None:
                 local_acc = session.get(Taxon, existing.accepted_name_usage_id)
@@ -718,7 +871,9 @@ def get_or_create_from_tw_data(
                 mismatches.append(
                     f"{sci_name}: accepted name is {lname!r} locally, import says {iname!r}"
                 )
-        if parent_id is not None:
+        # Parent backfill applies to accepted names only; a synonym's parent is
+        # taken from its accepted name above.
+        if parent_id is not None and not accepted_id:
             if existing.parent_name_usage_id is None:
                 existing.parent_name_usage_id = parent_id
                 dirty = True
@@ -742,7 +897,7 @@ def get_or_create_from_tw_data(
         scientific_name=sci_name,
         taxon_rank=rank,
         scientific_name_authorship=fields.get("scientific_name_authorship"),
-        parent_name_usage_id=parent_id,
+        parent_name_usage_id=(acc_parent_id if accepted_id else parent_id),
         accepted_name_usage_id=accepted_id,
         taxonworks_otu_id=otu_id,
         nomenclatural_code=nomen_code,
@@ -790,10 +945,12 @@ def get_or_create_from_powo_data(
 
     # Create the accepted name first so the synonym can link to it.
     accepted_taxon: Taxon | None = None
+    acc_parent_id: int | None = None   # a synonym shares its accepted name's parent
     if is_synonym and accepted_fields:
         accepted_taxon = get_or_create_from_powo_data(
             session, accepted_fields, mismatches=mismatches
         )
+        acc_parent_id = accepted_taxon.parent_name_usage_id
 
     # POWO gives family → genus → species (no subfamily/tribe available).
     ancestor_fields: dict = {"taxon_rank": rank, "nomenclatural_code": nomen_code}
@@ -842,7 +999,9 @@ def get_or_create_from_powo_data(
                     f"{sci_name}: authorship is {existing.scientific_name_authorship!r} locally, "
                     f"import says {auth!r}"
                 )
-        if parent_id is not None:
+        # Parent backfill applies to accepted names only; a synonym's parent is
+        # taken from its accepted name below.
+        if parent_id is not None and not accepted_taxon:
             if existing.parent_name_usage_id is None:
                 existing.parent_name_usage_id = parent_id
                 dirty = True
@@ -860,6 +1019,7 @@ def get_or_create_from_powo_data(
         if accepted_taxon:
             if not existing.accepted_name_usage_id:
                 existing.accepted_name_usage_id = accepted_taxon.id
+                existing.parent_name_usage_id = acc_parent_id   # Inv1: share accepted's parent
                 dirty = True
             elif existing.accepted_name_usage_id != accepted_taxon.id and mismatches is not None:
                 local_acc = session.get(Taxon, existing.accepted_name_usage_id)
@@ -877,7 +1037,7 @@ def get_or_create_from_powo_data(
         scientific_name=sci_name,
         taxon_rank=rank,
         scientific_name_authorship=auth,
-        parent_name_usage_id=parent_id,
+        parent_name_usage_id=(acc_parent_id if accepted_taxon else parent_id),
         accepted_name_usage_id=accepted_taxon.id if accepted_taxon else None,
         nomenclatural_code=nomen_code,
         created_at=_utcnow(),

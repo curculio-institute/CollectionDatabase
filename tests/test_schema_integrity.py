@@ -149,3 +149,18 @@ def test_taxon_status_column_dropped(engine):
     sql = _table_sql(engine, "taxon")
     assert "taxonomicStatus" not in sql, \
         "taxon re-introduced the derived taxonomicStatus column (see migration 0030 / CLAUDE.md §4)"
+
+
+def test_synonym_integrity_triggers_present(engine):
+    # migration 0031; a taxon table rebuild silently drops triggers — re-create them.
+    expected = {
+        "trg_taxon_synonym_parent_matches_accepted_ins",
+        "trg_taxon_synonym_parent_matches_accepted_upd",
+        "trg_taxon_accepted_is_terminal_ins",
+        "trg_taxon_accepted_is_terminal_upd",
+    }
+    with engine.connect() as conn:
+        live = {r[0] for r in conn.exec_driver_sql(
+            "SELECT name FROM sqlite_master WHERE type='trigger' AND tbl_name='taxon'")}
+    missing = expected - live
+    assert not missing, f"taxon lost synonym-integrity trigger(s): {sorted(missing)}"
