@@ -11,12 +11,6 @@ from app.services.taxa import (
     update_taxon,
 )
 from app.models import Taxon, TaxonDetermination
-NOMEN_CODES = {
-    "ICZN":  "ICZN",
-    "ICN":   "🌿 ICN",
-    "ICNP":  "ICNP",
-    "ICVCN": "ICVCN",
-}
 
 
 def _taxon_opts(session_factory) -> dict:
@@ -41,18 +35,20 @@ def _build_taxon_form(container, session_factory, *, taxon: Taxon | None = None)
             for t in all_taxa_raw
         ]
 
-    def _make_parent_opts(rank: str | None, code: str | None) -> dict:
+    def _make_parent_opts(rank: str | None) -> dict:
         opts = {}
-        for tid, label, t_rank, t_code in _all_taxa:
+        for tid, label, t_rank, _t_code in _all_taxa:
             if rank and rank in TAXON_RANKS and t_rank in TAXON_RANKS:
                 if TAXON_RANKS.index(t_rank) >= TAXON_RANKS.index(rank):
                     continue
-            if code and t_code and t_code != code:
-                continue
             opts[tid] = label
         return opts
 
     all_taxon_opts = {tid: label for tid, label, _, _ in _all_taxa}
+    # Nomenclatural code is inherited from the chosen parent, never entered by
+    # hand: the code must always equal the parent's (a child cannot be governed
+    # by a different code than its lineage). Look it up from the loaded taxa.
+    code_by_id = {tid: code for tid, _, _, code in _all_taxa}
 
     with container:
         name_in = ui.input(
@@ -77,17 +73,9 @@ def _build_taxon_form(container, session_factory, *, taxon: Taxon | None = None)
             value=taxon.scientific_name_authorship or "" if taxon else "",
         ).classes("w-full")
 
-        nomen_sel = ui.select(
-            NOMEN_CODES,
-            label="Nomenclatural code *",
-            value=taxon.nomenclatural_code if taxon else None,
-        ).classes("w-full")
-
-        # Parent taxon: filtered to valid parents (rank above child, matching code).
-        init_parent_opts = _make_parent_opts(
-            taxon.taxon_rank if taxon else None,
-            taxon.nomenclatural_code if taxon else None,
-        )
+        # Parent taxon: filtered to valid parents (rank above child). The
+        # nomenclatural code is inherited from whichever parent is chosen.
+        init_parent_opts = _make_parent_opts(taxon.taxon_rank if taxon else None)
         if editing_root:
             init_parent_opts = {None: "(root — no parent)", **init_parent_opts}
             parent_val = None
@@ -118,18 +106,17 @@ def _build_taxon_form(container, session_factory, *, taxon: Taxon | None = None)
         ).classes("w-full")
 
     def _refresh_parent_opts():
-        new_opts = _make_parent_opts(rank_sel.value, nomen_sel.value)
+        new_opts = _make_parent_opts(rank_sel.value)
         if editing_root:
             new_opts = {None: "(root — no parent)", **new_opts}
         cur = parent_sel.value
         if cur and cur not in new_opts:
             parent_sel.value = None
-            ui.notify("Parent cleared: no longer valid for the selected rank/code.", type="warning")
+            ui.notify("Parent cleared: no longer valid for the selected rank.", type="warning")
         parent_sel.options = new_opts
         parent_sel.update()
 
     rank_sel.on_value_change(lambda _: _refresh_parent_opts())
-    nomen_sel.on_value_change(lambda _: _refresh_parent_opts())
 
     def get_fields() -> dict:
         try:
@@ -137,14 +124,21 @@ def _build_taxon_form(container, session_factory, *, taxon: Taxon | None = None)
             otu_id = int(raw_otu) if raw_otu else None
         except ValueError:
             otu_id = None
+        parent_id = parent_sel.value or None
+        if parent_id:
+            # Normal case: inherit the code from the chosen parent.
+            nomen_code = code_by_id.get(parent_id)
+        else:
+            # No parent → editing a seeded root; preserve its existing code.
+            nomen_code = taxon.nomenclatural_code if taxon else None
         return {
             "scientific_name": (name_in.value or "").strip(),
             "taxon_rank": rank_sel.value or "",
             "taxonomic_status": status_sel.value or "accepted",
             "scientific_name_authorship": (auth_in.value or "").strip() or None,
-            "parent_name_usage_id": parent_sel.value or None,
+            "parent_name_usage_id": parent_id,
             "accepted_name_usage_id": accepted_sel.value or None,
-            "nomenclatural_code": nomen_sel.value or None,
+            "nomenclatural_code": nomen_code,
             "taxonworks_otu_id": otu_id,
         }
 
@@ -153,16 +147,17 @@ def _build_taxon_form(container, session_factory, *, taxon: Taxon | None = None)
             return "Scientific name is required."
         if not fields["taxon_rank"]:
             return "Rank is required."
-        if not fields["nomenclatural_code"]:
-            return "Nomenclatural code is required."
         if not editing_root and not fields["parent_name_usage_id"]:
             return "Parent taxon is required (select a root taxon if top-level)."
+        # Code is inherited from the parent; a NULL here means the parent itself
+        # has no code (a data-integrity problem, not a missing user input).
+        if not fields["nomenclatural_code"]:
+            return "Cannot determine nomenclatural code: the selected parent has none."
         if fields["taxonomic_status"] == "synonym" and not fields["accepted_name_usage_id"]:
             return "Synonyms must link to an accepted name."
 
         parent_id  = fields.get("parent_name_usage_id")
         child_rank = fields.get("taxon_rank", "")
-        child_code = fields.get("nomenclatural_code")
         if parent_id and child_rank:
             with session_factory() as s:
                 parent = s.get(Taxon, parent_id)
@@ -172,12 +167,6 @@ def _build_taxon_form(container, session_factory, *, taxon: Taxon | None = None)
                         return (
                             f"Rank conflict: '{parent.scientific_name}' is "
                             f"{parent.taxon_rank!r}, which is not above {child_rank!r}."
-                        )
-                if child_code and parent.nomenclatural_code:
-                    if parent.nomenclatural_code != child_code:
-                        return (
-                            f"Nomenclatural code mismatch: '{parent.scientific_name}' is "
-                            f"{parent.nomenclatural_code} but this taxon is {child_code}."
                         )
         return None
 
