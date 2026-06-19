@@ -56,17 +56,14 @@ def _build_taxon_form(container, session_factory, *, taxon: Taxon | None = None)
             value=taxon.scientific_name if taxon else "",
         ).classes("w-full")
 
-        with ui.row().classes("w-full gap-3"):
-            rank_sel = ui.select(
-                TAXON_RANKS,
-                label="Rank *",
-                value=taxon.taxon_rank if taxon else None,
-            ).classes("flex-1")
-            status_sel = ui.select(
-                ["accepted", "synonym"],
-                label="Taxonomic status *",
-                value=taxon.taxonomic_status if taxon else "accepted",
-            ).classes("flex-1")
+        rank_sel = ui.select(
+            TAXON_RANKS,
+            label="Rank *",
+            value=taxon.taxon_rank if taxon else None,
+        ).classes("w-full")
+        # Synonymy is controlled solely by the accepted-name link below: a taxon
+        # is a synonym iff an accepted name is set. There is no separate status
+        # field (taxonomicStatus is derived from the link at DwC export time).
 
         auth_in = ui.input(
             "Authorship, e.g. Linnaeus, 1758 or (Linnaeus, 1758)",
@@ -90,12 +87,13 @@ def _build_taxon_form(container, session_factory, *, taxon: Taxon | None = None)
             value=parent_val,
         ).classes("w-full")
 
-        # Accepted name link (synonym → accepted name) — all taxa, no rank filter.
+        # Accepted-name link — all taxa, no rank filter. Setting this is what
+        # makes the taxon a synonym (there is no separate status field).
         accepted_sel = ui.select(
-            options={None: "(none)", **all_taxon_opts},
+            options={None: "(none — this is an accepted name)", **all_taxon_opts},
             with_input=True,
             clearable=True,
-            label="Accepted name (if synonym)",
+            label="Accepted name (set to mark this taxon a synonym)",
             value=taxon.accepted_name_usage_id if taxon else None,
         ).classes("w-full")
 
@@ -134,7 +132,6 @@ def _build_taxon_form(container, session_factory, *, taxon: Taxon | None = None)
         return {
             "scientific_name": (name_in.value or "").strip(),
             "taxon_rank": rank_sel.value or "",
-            "taxonomic_status": status_sel.value or "accepted",
             "scientific_name_authorship": (auth_in.value or "").strip() or None,
             "parent_name_usage_id": parent_id,
             "accepted_name_usage_id": accepted_sel.value or None,
@@ -153,8 +150,6 @@ def _build_taxon_form(container, session_factory, *, taxon: Taxon | None = None)
         # has no code (a data-integrity problem, not a missing user input).
         if not fields["nomenclatural_code"]:
             return "Cannot determine nomenclatural code: the selected parent has none."
-        if fields["taxonomic_status"] == "synonym" and not fields["accepted_name_usage_id"]:
-            return "Synonyms must link to an accepted name."
 
         parent_id  = fields.get("parent_name_usage_id")
         child_rank = fields.get("taxon_rank", "")

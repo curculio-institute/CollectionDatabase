@@ -267,7 +267,7 @@ def test_tw_import_synonym_of_existing_accepted(plant_tree, session):
 
     assert after == before + 1  # only the synonym row is new
     assert synonym.scientific_name == "Achillea lanulosa"
-    assert synonym.taxonomic_status == "synonym"
+    assert synonym.accepted_name_usage_id is not None
     assert synonym.accepted_name_usage_id == plant_tree["species"].id
 
 
@@ -286,8 +286,8 @@ def test_tw_import_synonym_both_new(session):
     accepted = session.query(Taxon).filter_by(scientific_name="Achillea ligustica").first()
 
     assert accepted is not None
-    assert accepted.taxonomic_status == "accepted"
-    assert synonym.taxonomic_status == "synonym"
+    assert accepted.accepted_name_usage_id is None
+    assert synonym.accepted_name_usage_id is not None
     assert synonym.accepted_name_usage_id == accepted.id
 
 
@@ -455,7 +455,7 @@ def test_powo_import_synonym_linked_to_existing_accepted(plant_tree, session):
     after = session.query(Taxon).count()
 
     assert after == before + 1  # only the synonym row is new
-    assert synonym.taxonomic_status == "synonym"
+    assert synonym.accepted_name_usage_id is not None
     assert synonym.accepted_name_usage_id == plant_tree["species"].id
 
 
@@ -472,6 +472,6 @@ def test_powo_import_synonym_both_new(session):
     synonym = get_or_create_from_powo_data(session, synonym_fields, accepted_fields=accepted_fields)
     accepted = session.query(Taxon).filter_by(scientific_name="Achillea ligustica").first()
 
-    assert accepted is not None and accepted.taxonomic_status == "accepted"
-    assert synonym.taxonomic_status == "synonym"
+    assert accepted is not None and accepted.accepted_name_usage_id is None
+    assert synonym.accepted_name_usage_id is not None
     assert synonym.accepted_name_usage_id == accepted.id

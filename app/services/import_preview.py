@@ -63,7 +63,9 @@ def _snapshot(t: Taxon, session: Session) -> dict:
     return {
         "scientific_name":            t.scientific_name,
         "taxon_rank":                 t.taxon_rank,
-        "taxonomic_status":           t.taxonomic_status,
+        # Derived (not stored): a taxon is a synonym iff it links to an accepted
+        # name. Shown here because this is the value the DwC export emits.
+        "taxonomic_status":           "synonym" if t.accepted_name_usage_id is not None else "accepted",
         "scientific_name_authorship": t.scientific_name_authorship,
         "parent_name":                parent_name,
         "accepted_name":              accepted_name,

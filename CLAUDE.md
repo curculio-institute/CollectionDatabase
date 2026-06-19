@@ -213,7 +213,7 @@ attributes. Mermaid diagrams use plain camelCase. Do not deviate from this patte
 |-------|---------|
 | `collection_object` | One physical specimen or lot. `catalog_number` (NOT NULL) is the stable sync join key. `dwc:basisOfRecord`, `dwc:sex`, `dwc:preparations`, `dwc:typeStatus`, etc. |
 | `collecting_event` | Where/when collected; shared by many specimens. Full DwC locality + coordinate block. `dwc:eventDate` supports ISO 8601 intervals (`2024-06-15/2024-06-20`). `dwc:recordedBy` FK → `person(full_name)`. |
-| `taxon` | Local OTU analogue. DwC parent-link model (GBIF best practices). Columns: `dwc:scientificName` (bare name without authorship), `dwc:taxonRank`, `dwc:taxonomicStatus` ("accepted"/"synonym"), `dwc:scientificNameAuthorship`, `dwc:parentNameUsageID` (self-FK, encodes hierarchy), `dwc:acceptedNameUsageID` (self-FK, marks synonyms), `taxonworksOtuID`. No denormalised rank columns. |
+| `taxon` | Local OTU analogue. DwC parent-link model (GBIF best practices). Columns: `dwc:scientificName` (bare name without authorship), `dwc:taxonRank`, `dwc:scientificNameAuthorship`, `dwc:parentNameUsageID` (self-FK, encodes hierarchy), `dwc:acceptedNameUsageID` (self-FK, marks synonyms — its presence *is* synonym status; `taxonomicStatus` is derived at export, not stored, see below), `taxonworksOtuID`. No denormalised rank columns. |
 | `taxon_determination` | `collection_object` → `taxon` link. `is_current` flag. `taxon_id` may reference a synonym row (deliberate design). `dwc:identifiedBy` FK → `person(full_name)`. |
 | `biological_relationship` | Kind of association (`collected_on`, `feeds_on`, …). |
 | `biological_association` | Exclusive-arc pattern: (`subject_collection_object_id` XOR `subject_taxon_id`) and (`object_collection_object_id` XOR `object_taxon_id`). CHECK enforces exactly-one-non-null per role. |
@@ -255,9 +255,14 @@ updates the row. Push-pin `default_fn` closures in UI files open their own sessi
   `collection_object`; `occurrenceID` is not separately stored at this stage.
 - **Denormalised rank columns** — removed (migration 0012). `dwc:family`, `dwc:genus`,
   `dwc:specificEpithet`, etc. replaced by the DwC parent-link model.
-- **`dwc:taxonomicStatus`** — originally dropped (migration 0011) as redundant with
-  `acceptedNameUsageID`; restored in migration 0012 as an explicit CHECK-constrained
-  column (`"accepted"` | `"synonym"`), which is required by the DwC Taxon core.
+- **`dwc:taxonomicStatus`** — **not stored** (dropped in migration 0030). Synonymy is
+  encoded *solely* by `acceptedNameUsageID`: a taxon is a synonym iff it links to an
+  accepted name, otherwise accepted. The DwC Taxon-core `taxonomicStatus` term is **derived
+  from that link at export time**, never stored. History: dropped in 0011 as redundant,
+  restored in 0012 as a CHECK-constrained column for DwC compliance, then re-dropped in 0030
+  because storing a derived value let it drift out of sync with `acceptedNameUsageID` (one
+  row had already drifted). **Do not re-introduce the column** — derive it in the export
+  instead (`tests/test_schema_integrity.py::test_taxon_status_column_dropped` guards this).
 
 ### Parent-rank taxon rows
 
@@ -444,9 +449,9 @@ experiments, UI tweaks, and small changes — not just large features.
   `tests/test_schema_integrity.py` guards against recurrence — it fails loudly if any STRICT
   table loses STRICT, a CHECK, a UNIQUE, or an FK action. Run the suite after any migration.
   - **The models are NOT a complete schema mirror.** SQLAlchemy can't express STRICT, and
-    historically some constraints lived *only* in migration DDL: the `taxon.taxonomicStatus`
-    CHECK (unnamed, mig 0012), `biological_association`'s exclusive-arc CHECKs (unnamed, mig
-    0007), and `collection_object`'s `UNIQUE(collectionCode, catalogNumber)` (undeclared in
+    historically some constraints lived *only* in migration DDL: `biological_association`'s
+    exclusive-arc CHECKs (unnamed, mig 0007) and `collection_object`'s `UNIQUE(collectionCode,
+    catalogNumber)` (undeclared in
     the model until 0029 — which is how 0029's first draft re-dropped it). Generating
     rebuild DDL *from the models* will drop anything the model doesn't declare. Prefer
     adding the constraint to the model so it's authoritative.

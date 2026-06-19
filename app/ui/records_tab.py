@@ -144,7 +144,7 @@ def build_records_tab(session_factory, *, on_saved: callable | None = None) -> N
             for d in sp_svc.get_determination_history(s, co_id):
                 t = d.taxon
                 if t:
-                    is_syn = t.taxonomic_status == "synonym"
+                    is_syn = t.accepted_name_usage_id is not None
                     acc_label = None
                     if is_syn and t.accepted_name_usage_id:
                         acc = s.get(Taxon, t.accepted_name_usage_id)

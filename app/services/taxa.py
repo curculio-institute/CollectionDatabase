@@ -113,7 +113,6 @@ def create_taxon_manual(
     t = Taxon(
         scientific_name=sci_name,
         taxon_rank=rank,
-        taxonomic_status="accepted",
         scientific_name_authorship=scientific_name_authorship or None,
         parent_name_usage_id=parent_id,
         created_at=_utcnow(),
@@ -365,7 +364,6 @@ def _ensure_parent_rows(
             existing = Taxon(
                 scientific_name=name,
                 taxon_rank=rank_name,
-                taxonomic_status="accepted",
                 scientific_name_authorship=auth or None,
                 parent_name_usage_id=parent_id,
                 taxonworks_otu_id=otu_id,
@@ -436,7 +434,6 @@ def update_taxon(
     *,
     scientific_name: str,
     taxon_rank: str,
-    taxonomic_status: str,
     scientific_name_authorship: str | None,
     parent_name_usage_id: int | None,
     accepted_name_usage_id: int | None,
@@ -448,7 +445,6 @@ def update_taxon(
         raise ValueError(f"Taxon {taxon_id} not found")
     t.scientific_name = scientific_name
     t.taxon_rank = taxon_rank
-    t.taxonomic_status = taxonomic_status
     t.scientific_name_authorship = scientific_name_authorship or None
     t.parent_name_usage_id = parent_name_usage_id
     t.accepted_name_usage_id = accepted_name_usage_id
@@ -483,7 +479,6 @@ def create_taxon_direct(
     *,
     scientific_name: str,
     taxon_rank: str,
-    taxonomic_status: str = "accepted",
     scientific_name_authorship: str | None = None,
     parent_name_usage_id: int | None = None,
     accepted_name_usage_id: int | None = None,
@@ -494,7 +489,6 @@ def create_taxon_direct(
     t = Taxon(
         scientific_name=scientific_name,
         taxon_rank=taxon_rank,
-        taxonomic_status=taxonomic_status,
         scientific_name_authorship=scientific_name_authorship or None,
         parent_name_usage_id=parent_name_usage_id,
         accepted_name_usage_id=accepted_name_usage_id,
@@ -531,7 +525,6 @@ def seed_root_taxa(session: Session) -> None:
             session.add(Taxon(
                 scientific_name=sci_name,
                 taxon_rank=rank,
-                taxonomic_status="accepted",
                 nomenclatural_code=code,
                 parent_name_usage_id=None,
                 created_at=_utcnow(),
@@ -609,7 +602,6 @@ def get_or_create_from_tw_data(
         if accepted_id:
             if not existing.accepted_name_usage_id:
                 existing.accepted_name_usage_id = accepted_id
-                existing.taxonomic_status = "synonym"
                 dirty = True
             elif existing.accepted_name_usage_id != accepted_id and mismatches is not None:
                 local_acc = session.get(Taxon, existing.accepted_name_usage_id)
@@ -642,7 +634,6 @@ def get_or_create_from_tw_data(
     t = Taxon(
         scientific_name=sci_name,
         taxon_rank=rank,
-        taxonomic_status="synonym" if accepted_id else "accepted",
         scientific_name_authorship=fields.get("scientific_name_authorship"),
         parent_name_usage_id=parent_id,
         accepted_name_usage_id=accepted_id,
@@ -762,7 +753,6 @@ def get_or_create_from_powo_data(
         if accepted_taxon:
             if not existing.accepted_name_usage_id:
                 existing.accepted_name_usage_id = accepted_taxon.id
-                existing.taxonomic_status = "synonym"
                 dirty = True
             elif existing.accepted_name_usage_id != accepted_taxon.id and mismatches is not None:
                 local_acc = session.get(Taxon, existing.accepted_name_usage_id)
@@ -776,11 +766,9 @@ def get_or_create_from_powo_data(
             session.flush()
         return existing
 
-    taxonomic_status = "synonym" if (is_synonym and accepted_taxon) else "accepted"
     t = Taxon(
         scientific_name=sci_name,
         taxon_rank=rank,
-        taxonomic_status=taxonomic_status,
         scientific_name_authorship=auth,
         parent_name_usage_id=parent_id,
         accepted_name_usage_id=accepted_taxon.id if accepted_taxon else None,
