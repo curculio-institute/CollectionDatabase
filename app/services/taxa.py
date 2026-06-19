@@ -34,6 +34,45 @@ def format_scientific_name(taxon: Taxon) -> str:
     return name or f"taxon #{taxon.id}"
 
 
+def parse_scientific_name(
+    name: str,
+) -> tuple[str, str | None, str | None, str | None]:
+    """Split a bare scientific name into (genus, subgenus, specific_epithet, infraspecific).
+
+    Operates on the *bare* name only (no authorship). The subgenus is the token
+    wrapped in parentheses, if present.
+
+        'Sitona'                         → ('Sitona', None, None, None)
+        'Sitona lineatus'                → ('Sitona', None, 'lineatus', None)
+        'Sitona (Sitona) lineatus'       → ('Sitona', 'Sitona', 'lineatus', None)
+        'Sitona lineatus lineatus'       → ('Sitona', None, 'lineatus', 'lineatus')
+        'Sitona (Sitona) lineatus allii' → ('Sitona', 'Sitona', 'lineatus', 'allii')
+    """
+    parts = name.split()
+    if not parts:
+        return "", None, None, None
+    if len(parts) == 1:
+        return parts[0], None, None, None
+    genus = parts[0]
+    if len(parts) >= 3 and parts[1].startswith("("):
+        subgenus = parts[1].strip("()")
+        specific = parts[2]
+        infra = parts[3] if len(parts) > 3 else None
+        return genus, subgenus, specific, infra
+    specific = parts[1]
+    infra = parts[2] if len(parts) > 2 else None
+    return genus, None, specific, infra
+
+
+def rank_from_parse(specific: str | None, infraspecific: str | None) -> str:
+    """Rank implied by a parsed binomial: subspecies / species / genus."""
+    if infraspecific:
+        return "subspecies"
+    if specific:
+        return "species"
+    return "genus"
+
+
 def find_taxon_by_name(session: Session, scientific_name: str) -> "Taxon | None":
     """Find an accepted taxon matching a name string.
 
@@ -67,6 +106,74 @@ def find_taxon_by_name(session: Session, scientific_name: str) -> "Taxon | None"
                 return results[0]
 
     return None
+
+
+_EPITHET_RE = re.compile(r"^[a-z][a-z-]*$")
+
+
+def build_manual_taxon_prefill(session: Session, row: dict) -> dict:
+    """Starting values for the manual 'add taxon' form, parsed from a DwC row.
+
+    Parses the row's ``scientificName`` into a bare name + rank, takes authorship
+    from the ``scientificNameAuthorship`` column, and — the point of parsing —
+    resolves ``parent_name_usage_id`` by looking up the parsed subgenus then
+    genus (most specific that already exists) in the local DB, so the parent and
+    its inherited code are pre-selected with no gap. ``accepted_name_usage_id`` is
+    resolved from the row's ``acceptedNameUsage`` name when it matches a local
+    taxon. Every value is a starting point the user can adjust before saving.
+    """
+    raw = (row.get("scientificName") or "").strip()
+    genus, subgenus, specific, infra = parse_scientific_name(raw)
+    # Drop tokens that aren't valid lowercase epithets (e.g. leaked authorship).
+    if specific and not _EPITHET_RE.match(specific):
+        specific = infra = None
+    if infra and not _EPITHET_RE.match(infra):
+        infra = None
+
+    bare = genus
+    if subgenus:
+        bare += f" ({subgenus})"
+    if specific:
+        bare += f" {specific}"
+    if infra:
+        bare += f" {infra}"
+
+    # Parent: only species/subspecies have a parent derivable from the binomial
+    # (a new genus's parent is a family the user must pick). Prefer subspecies →
+    # species, species → subgenus → genus; first that exists locally wins.
+    parent_id = None
+    if specific:
+        candidates: list[tuple[str, str]] = []
+        if infra:
+            sp_name = f"{genus} ({subgenus}) {specific}" if subgenus else f"{genus} {specific}"
+            candidates.append((sp_name, "species"))
+        if subgenus:
+            candidates.append((subgenus, "subgenus"))
+        candidates.append((genus, "genus"))
+        for cname, crank in candidates:
+            match = (
+                session.query(Taxon)
+                .filter(Taxon.scientific_name == cname, Taxon.taxon_rank == crank)
+                .first()
+            )
+            if match:
+                parent_id = match.id
+                break
+
+    accepted_id = None
+    acc_name = (row.get("acceptedNameUsage") or "").strip()
+    if acc_name:
+        acc = find_taxon_by_name(session, acc_name)
+        if acc:
+            accepted_id = acc.id
+
+    return {
+        "scientific_name": bare,
+        "taxon_rank": rank_from_parse(specific, infra),
+        "scientific_name_authorship": (row.get("scientificNameAuthorship") or "").strip() or None,
+        "parent_name_usage_id": parent_id,
+        "accepted_name_usage_id": accepted_id,
+    }
 
 
 def create_taxon_manual(

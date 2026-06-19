@@ -3,7 +3,10 @@ import pytest
 from app.models import Taxon, CollectingEvent, CollectionObject, TaxonDetermination
 from app.models.person import Person
 from app.models.base import _utcnow
-from app.services.taxa import format_scientific_name, search_taxa, TaxonOption
+from app.services.taxa import (
+    format_scientific_name, search_taxa, TaxonOption,
+    parse_scientific_name, rank_from_parse, build_manual_taxon_prefill,
+)
 from app.services.events import format_event_summary, search_collecting_events, create_collecting_event
 from app.services.specimens import (
     save_specimen_entry, recent_specimens, update_collection_object,
@@ -85,6 +88,67 @@ def test_format_scientific_name_no_name():
 def test_format_scientific_name_genus_only():
     t = Taxon(scientific_name="Ceutorhynchus", taxon_rank="genus")
     assert format_scientific_name(t) == "Ceutorhynchus"
+
+
+# ---------------------------------------------------------------------------
+# parse_scientific_name / rank_from_parse
+# ---------------------------------------------------------------------------
+
+def test_parse_scientific_name_variants():
+    assert parse_scientific_name("Sitona") == ("Sitona", None, None, None)
+    assert parse_scientific_name("Sitona lineatus") == ("Sitona", None, "lineatus", None)
+    assert parse_scientific_name("Sitona (Sitona) lineatus") == ("Sitona", "Sitona", "lineatus", None)
+    assert parse_scientific_name("Sitona lineatus allii") == ("Sitona", None, "lineatus", "allii")
+    assert parse_scientific_name("Sitona (Sitona) lineatus allii") == ("Sitona", "Sitona", "lineatus", "allii")
+    assert parse_scientific_name("") == ("", None, None, None)
+
+
+def test_rank_from_parse():
+    assert rank_from_parse(None, None) == "genus"
+    assert rank_from_parse("lineatus", None) == "species"
+    assert rank_from_parse("lineatus", "allii") == "subspecies"
+
+
+# ---------------------------------------------------------------------------
+# build_manual_taxon_prefill
+# ---------------------------------------------------------------------------
+
+def test_prefill_resolves_genus_parent(session):
+    genus = _taxon(session, "Otiorhynchus", species=None)
+    pf = build_manual_taxon_prefill(
+        session, {"scientificName": "Otiorhynchus norici", "scientificNameAuthorship": "Reitter, 1912"}
+    )
+    assert pf["scientific_name"] == "Otiorhynchus norici"
+    assert pf["taxon_rank"] == "species"
+    assert pf["scientific_name_authorship"] == "Reitter, 1912"
+    assert pf["parent_name_usage_id"] == genus.id
+    assert pf["accepted_name_usage_id"] is None
+
+
+def test_prefill_prefers_subgenus_over_genus(session):
+    genus = _taxon(session, "Otiorhynchus", species=None)
+    subg = Taxon(scientific_name="Magnanotius", taxon_rank="subgenus",
+                 parent_name_usage_id=genus.id, nomenclatural_code="ICZN",
+                 created_at=_utcnow(), updated_at=_utcnow())
+    session.add(subg); session.flush()
+    pf = build_manual_taxon_prefill(
+        session, {"scientificName": "Otiorhynchus (Magnanotius) norici"}
+    )
+    assert pf["scientific_name"] == "Otiorhynchus (Magnanotius) norici"
+    assert pf["parent_name_usage_id"] == subg.id
+
+
+def test_prefill_no_parent_when_genus_absent(session):
+    pf = build_manual_taxon_prefill(session, {"scientificName": "Unknownus novus"})
+    assert pf["parent_name_usage_id"] is None
+    assert pf["taxon_rank"] == "species"
+
+
+def test_prefill_strips_leaked_authorship_from_name(session):
+    # Authorship accidentally left in the scientificName must not become an epithet.
+    pf = build_manual_taxon_prefill(session, {"scientificName": "Otiorhynchus norici Reitter"})
+    assert pf["scientific_name"] == "Otiorhynchus norici"
+    assert pf["taxon_rank"] == "species"
 
 
 # ---------------------------------------------------------------------------
