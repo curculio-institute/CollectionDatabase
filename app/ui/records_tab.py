@@ -12,13 +12,9 @@ import app.services.biological as bio_svc
 from app.services.taxa import format_scientific_name
 from app.ui.taxon_search import build_taxon_search, _local_item_html
 from app.ui.identification_list import build_identification_list
-from app.ui.date_input import attach_date_validation
-from app.ui.person_field import build_person_field
+from app.ui.collecting_event_form import build_collecting_event_form
 from app.ui.specimen_form import build_specimen_form
 from app.ui.event_reuse import build_event_share_banner
-# Controlled vocabularies live in app/vocab.py (single source of truth).
-# Only samplingProtocol is still referenced in this file (event form).
-from app.vocab import SAMPLING_PROTOCOLS as _SAMPLING_PROTOCOLS
 
 _FLOAT_ATTRS = frozenset({
     "decimal_latitude", "decimal_longitude",
@@ -167,7 +163,6 @@ def build_records_tab(session_factory, *, on_saved: callable | None = None) -> N
                     "is_current":               bool(d.is_current),
                 })
 
-            _f = lambda v: str(v) if v is not None else ""
             ev_snap = {
                 "country":                          ev.country              if ev else None,
                 "country_code":                     ev.country_code         if ev else None,
@@ -250,7 +245,6 @@ def build_records_tab(session_factory, *, on_saved: callable | None = None) -> N
     def _build_specimen_form(
         co_id, ev_id, ev_n, co_snap, det_snaps, ev_snap, assocs
     ):
-        _s = lambda v: str(v) if v is not None else ""
 
         # ── Specimen card ────────────────────────────────────────────────
         # Shared specimen-field block (see app/ui/specimen_form.py), edit policy:
@@ -319,45 +313,11 @@ def build_records_tab(session_factory, *, on_saved: callable | None = None) -> N
             if ev_id is None:
                 ui.label("No collecting event linked.").classes("text-sm italic") \
                     .style("color:var(--tp-base-soft)")
-                # Stub locals so the save handler doesn't reference undefined names
-                ev_country_in = ev_code_in = ev_state_in = ev_county_in = None
-                ev_muni_in = ev_island_in = ev_locality_in = ev_verblocal_in = None
-                ev_edate_in = ev_verbdate_in = ev_lat_in = ev_lon_in = None
-                ev_uncert_in = ev_elevmin_in = ev_elevmax_in = ev_habitat_in = None
-                ev_protocol_sel = ev_fieldnum_in = ev_verblabel_in = None
+                ev_ce = None
             else:
-                with ui.grid(columns=2).classes("w-full gap-3"):
-                    ev_country_in  = ui.input("country",       value=ev_snap["country"] or "").classes("col-span-1")
-                    ev_code_in     = ui.input("countryCode",   value=ev_snap["country_code"] or "", placeholder="DE").classes("col-span-1")
-                    ev_state_in    = ui.input("stateProvince", value=ev_snap["state_province"] or "").classes("col-span-1")
-                    ev_county_in   = ui.input("county",        value=ev_snap["county"] or "").classes("col-span-1")
-                    ev_muni_in     = ui.input("municipality",  value=ev_snap["municipality"] or "").classes("col-span-1")
-                    ev_island_in   = ui.input("island",        value=ev_snap["island"] or "").classes("col-span-1")
-                ev_locality_in  = ui.input("locality",         value=ev_snap["locality"] or "").classes("w-full mt-2")
-                ev_verblocal_in = ui.input("verbatimLocality", value=ev_snap["verbatim_locality"] or "").classes("w-full mt-2")
-                with ui.grid(columns=3).classes("w-full gap-3 mt-2"):
-                    ev_edate_in    = ui.input("eventDate",     value=ev_snap["event_date"] or "").classes("col-span-1")
-                    attach_date_validation(ev_edate_in, allow_interval=True)
-                    ev_verbdate_in = ui.input("verbatimDate",  value=ev_snap["verbatim_event_date"] or "").classes("col-span-1")
-                    with ui.element("div").classes("col-span-1 flex items-center gap-1"):
-                        ev_recby_state = build_person_field(
-                            session_factory, "recordedBy",
-                            default_fn=_default_recby,
-                            initial_value=ev_snap["recorded_by"] or None,
-                        )
-                with ui.grid(columns=4).classes("w-full gap-3 mt-2"):
-                    ev_lat_in    = ui.input("latitude",    value=_s(ev_snap["decimal_latitude"])).classes("col-span-1")
-                    ev_lon_in    = ui.input("longitude",   value=_s(ev_snap["decimal_longitude"])).classes("col-span-1")
-                    ev_uncert_in = ui.input("uncertainty m", value=_s(ev_snap["coordinate_uncertainty_in_meters"])).classes("col-span-1")
-                    ev_habitat_in= ui.input("habitat",     value=ev_snap["habitat"] or "").classes("col-span-1")
-                with ui.grid(columns=3).classes("w-full gap-3 mt-2"):
-                    ev_elevmin_in  = ui.input("elev min m",  value=_s(ev_snap["minimum_elevation_in_meters"])).classes("col-span-1")
-                    ev_elevmax_in  = ui.input("elev max m",  value=_s(ev_snap["maximum_elevation_in_meters"])).classes("col-span-1")
-                    ev_protocol_sel= ui.select(_SAMPLING_PROTOCOLS, label="samplingProtocol",
-                                               value=ev_snap["sampling_protocol"]).classes("col-span-1")
-                with ui.grid(columns=2).classes("w-full gap-3 mt-2"):
-                    ev_fieldnum_in  = ui.input("fieldNumber",   value=ev_snap["field_number"] or "").classes("col-span-1")
-                    ev_verblabel_in = ui.input("verbatimLabel", value=ev_snap["verbatim_label"] or "").classes("col-span-1")
+                # Shared widget (same form as Digitize); seeded from the snapshot.
+                ev_ce = build_collecting_event_form(session_factory, default_recby_fn=_default_recby)
+                ev_ce["load"](ev_snap)
 
         # ── Biological Associations card ───────────────────────────────────
         with ui.card().classes("w-full shadow-sm"):
@@ -467,29 +427,7 @@ def build_records_tab(session_factory, *, on_saved: callable | None = None) -> N
             }
 
         def _collect_ev_fields() -> dict:
-            if ev_country_in is None:
-                return {}
-            return {
-                "country":                          ev_country_in.value,
-                "country_code":                     ev_code_in.value,
-                "state_province":                   ev_state_in.value,
-                "county":                           ev_county_in.value,
-                "municipality":                     ev_muni_in.value,
-                "island":                           ev_island_in.value,
-                "locality":                         ev_locality_in.value,
-                "verbatim_locality":                ev_verblocal_in.value,
-                "event_date":                       ev_edate_in.value,
-                "verbatim_event_date":              ev_verbdate_in.value,
-                "decimal_latitude":                 ev_lat_in.value,
-                "decimal_longitude":                ev_lon_in.value,
-                "coordinate_uncertainty_in_meters": ev_uncert_in.value,
-                "minimum_elevation_in_meters":      ev_elevmin_in.value,
-                "maximum_elevation_in_meters":      ev_elevmax_in.value,
-                "habitat":                          ev_habitat_in.value,
-                "sampling_protocol":                ev_protocol_sel.value,
-                "field_number":                     ev_fieldnum_in.value,
-                "verbatim_label":                   ev_verblabel_in.value,
-            }
+            return ev_ce["collect_fields"]() if ev_ce else {}
 
         def _save():
             if not (coll_code_in.value or "").strip():
@@ -501,7 +439,7 @@ def build_records_tab(session_factory, *, on_saved: callable | None = None) -> N
                         sp_svc.update_collection_object(s, co_id, **_collect_co_fields())
                         ev_fields = _collect_ev_fields()
                         if ev_fields and ev_id:
-                            recby_id = ev_recby_state["commit"](s)
+                            recby_id = ev_ce["commit"](s)
                             ev_svc.update_collecting_event(
                                 s, ev_id,
                                 recorded_by_id=recby_id,
@@ -520,7 +458,6 @@ def build_records_tab(session_factory, *, on_saved: callable | None = None) -> N
 
     # ── Event form ─────────────────────────────────────────────────────────────
     def _build_event_form(ev_id, n, cos, ev_snap):
-        _s = lambda v: str(v) if v is not None else ""
 
         with ui.card().classes("w-full shadow-sm"):
             with ui.row().classes("items-center gap-2 mb-1"):
@@ -537,69 +474,19 @@ def build_records_tab(session_factory, *, on_saved: callable | None = None) -> N
                         ui.label(f"… and {n - len(cos)} more") \
                             .classes("text-xs italic").style("color:var(--tp-base-soft)")
 
-            with ui.grid(columns=2).classes("w-full gap-3"):
-                ev_country_in  = ui.input("country",       value=ev_snap["country"] or "").classes("col-span-1")
-                ev_code_in     = ui.input("countryCode",   value=ev_snap["country_code"] or "", placeholder="DE").classes("col-span-1")
-                ev_state_in    = ui.input("stateProvince", value=ev_snap["state_province"] or "").classes("col-span-1")
-                ev_county_in   = ui.input("county",        value=ev_snap["county"] or "").classes("col-span-1")
-                ev_muni_in     = ui.input("municipality",  value=ev_snap["municipality"] or "").classes("col-span-1")
-                ev_island_in   = ui.input("island",        value=ev_snap["island"] or "").classes("col-span-1")
-            ev_locality_in  = ui.input("locality",         value=ev_snap["locality"] or "").classes("w-full mt-2")
-            ev_verblocal_in = ui.input("verbatimLocality", value=ev_snap["verbatim_locality"] or "").classes("w-full mt-2")
-            with ui.grid(columns=3).classes("w-full gap-3 mt-2"):
-                ev_edate_in    = ui.input("eventDate",    value=ev_snap["event_date"] or "").classes("col-span-1")
-                attach_date_validation(ev_edate_in, allow_interval=True)
-                ev_verbdate_in = ui.input("verbatimDate", value=ev_snap["verbatim_event_date"] or "").classes("col-span-1")
-                with ui.element("div").classes("col-span-1 flex items-center gap-1"):
-                    ev_recby_state = build_person_field(
-                        session_factory, "recordedBy",
-                        default_fn=_default_recby,
-                        initial_value=ev_snap["recorded_by"] or None,
-                    )
-            with ui.grid(columns=4).classes("w-full gap-3 mt-2"):
-                ev_lat_in    = ui.input("latitude",     value=_s(ev_snap["decimal_latitude"])).classes("col-span-1")
-                ev_lon_in    = ui.input("longitude",    value=_s(ev_snap["decimal_longitude"])).classes("col-span-1")
-                ev_uncert_in = ui.input("uncertainty m",value=_s(ev_snap["coordinate_uncertainty_in_meters"])).classes("col-span-1")
-                ev_habitat_in= ui.input("habitat",      value=ev_snap["habitat"] or "").classes("col-span-1")
-            with ui.grid(columns=3).classes("w-full gap-3 mt-2"):
-                ev_elevmin_in  = ui.input("elev min m", value=_s(ev_snap["minimum_elevation_in_meters"])).classes("col-span-1")
-                ev_elevmax_in  = ui.input("elev max m", value=_s(ev_snap["maximum_elevation_in_meters"])).classes("col-span-1")
-                ev_protocol_sel= ui.select(_SAMPLING_PROTOCOLS, label="samplingProtocol",
-                                           value=ev_snap["sampling_protocol"]).classes("col-span-1")
-            with ui.grid(columns=2).classes("w-full gap-3 mt-2"):
-                ev_fieldnum_in  = ui.input("fieldNumber",   value=ev_snap["field_number"] or "").classes("col-span-1")
-                ev_verblabel_in = ui.input("verbatimLabel", value=ev_snap["verbatim_label"] or "").classes("col-span-1")
+            # Shared widget (same form as Digitize); seeded from the snapshot.
+            ev_ce = build_collecting_event_form(session_factory, default_recby_fn=_default_recby)
+            ev_ce["load"](ev_snap)
 
         def _save_event():
-            fields = {
-                "country":                          ev_country_in.value,
-                "country_code":                     ev_code_in.value,
-                "state_province":                   ev_state_in.value,
-                "county":                           ev_county_in.value,
-                "municipality":                     ev_muni_in.value,
-                "island":                           ev_island_in.value,
-                "locality":                         ev_locality_in.value,
-                "verbatim_locality":                ev_verblocal_in.value,
-                "event_date":                       ev_edate_in.value,
-                "verbatim_event_date":              ev_verbdate_in.value,
-                "decimal_latitude":                 ev_lat_in.value,
-                "decimal_longitude":                ev_lon_in.value,
-                "coordinate_uncertainty_in_meters": ev_uncert_in.value,
-                "minimum_elevation_in_meters":      ev_elevmin_in.value,
-                "maximum_elevation_in_meters":      ev_elevmax_in.value,
-                "habitat":                          ev_habitat_in.value,
-                "sampling_protocol":                ev_protocol_sel.value,
-                "field_number":                     ev_fieldnum_in.value,
-                "verbatim_label":                   ev_verblabel_in.value,
-            }
             try:
                 with session_factory() as s:
                     with s.begin():
-                        recby_id = ev_recby_state["commit"](s)
+                        recby_id = ev_ce["commit"](s)
                         ev_svc.update_collecting_event(
                             s, ev_id,
                             recorded_by_id=recby_id,
-                            **fields,
+                            **ev_ce["collect_fields"](),
                         )
                 ui.notify(f"Event #{ev_id} saved.", type="positive")
                 if on_saved:
