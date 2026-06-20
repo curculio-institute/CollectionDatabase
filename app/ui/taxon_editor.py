@@ -19,14 +19,22 @@ def _taxon_opts(session_factory) -> dict:
     return {t.id: t.label for t in taxa}
 
 
-def _build_taxon_form(container, session_factory, *, taxon: Taxon | None = None):
+def _build_taxon_form(
+    container, session_factory, *, taxon: Taxon | None = None, prefill: dict | None = None
+):
     """Render all taxon fields into *container*. Returns {get_fields, validate}.
 
     taxon=None  → new-taxon mode  → parent is required.
     taxon set with parent_name_usage_id=None  → editing a root taxon → parent optional.
     taxon set with parent_name_usage_id set   → editing non-root → parent required.
+
+    prefill (new-taxon mode only) seeds the fields from a parsed DwC row:
+    scientific_name / taxon_rank / scientific_name_authorship / parent_name_usage_id /
+    accepted_name_usage_id. Every value is a starting point the user can change; the
+    nomenclatural code is still inherited from whichever parent is chosen.
     """
     editing_root = taxon is not None and taxon.parent_name_usage_id is None
+    pf = prefill or {}
 
     with session_factory() as s:
         all_taxa_raw = search_taxa(s, "", limit=500)
@@ -53,13 +61,13 @@ def _build_taxon_form(container, session_factory, *, taxon: Taxon | None = None)
     with container:
         name_in = ui.input(
             "Scientific name (without authorship) *",
-            value=taxon.scientific_name if taxon else "",
+            value=taxon.scientific_name if taxon else pf.get("scientific_name", ""),
         ).classes("w-full")
 
         rank_sel = ui.select(
             TAXON_RANKS,
             label="Rank *",
-            value=taxon.taxon_rank if taxon else None,
+            value=taxon.taxon_rank if taxon else pf.get("taxon_rank"),
         ).classes("w-full")
         # Synonymy is controlled solely by the accepted-name link below: a taxon
         # is a synonym iff an accepted name is set. There is no separate status
@@ -67,17 +75,20 @@ def _build_taxon_form(container, session_factory, *, taxon: Taxon | None = None)
 
         auth_in = ui.input(
             "Authorship, e.g. Linnaeus, 1758 or (Linnaeus, 1758)",
-            value=taxon.scientific_name_authorship or "" if taxon else "",
+            value=(taxon.scientific_name_authorship or "") if taxon
+            else (pf.get("scientific_name_authorship") or ""),
         ).classes("w-full")
 
         # Parent taxon: filtered to valid parents (rank above child). The
         # nomenclatural code is inherited from whichever parent is chosen.
-        init_parent_opts = _make_parent_opts(taxon.taxon_rank if taxon else None)
+        init_parent_opts = _make_parent_opts(
+            taxon.taxon_rank if taxon else pf.get("taxon_rank")
+        )
         if editing_root:
             init_parent_opts = {None: "(root — no parent)", **init_parent_opts}
             parent_val = None
         else:
-            parent_val = taxon.parent_name_usage_id if taxon else None
+            parent_val = taxon.parent_name_usage_id if taxon else pf.get("parent_name_usage_id")
 
         parent_sel = ui.select(
             options=init_parent_opts,
@@ -94,7 +105,7 @@ def _build_taxon_form(container, session_factory, *, taxon: Taxon | None = None)
             with_input=True,
             clearable=True,
             label="Accepted name (set to mark this taxon a synonym)",
-            value=taxon.accepted_name_usage_id if taxon else None,
+            value=taxon.accepted_name_usage_id if taxon else pf.get("accepted_name_usage_id"),
         ).classes("w-full")
 
         tw_in = ui.input(
@@ -168,29 +179,29 @@ def _build_taxon_form(container, session_factory, *, taxon: Taxon | None = None)
     return {"get_fields": get_fields, "validate": validate}
 
 
-def build_taxon_editor(session_factory, on_saved: callable) -> None:
-    """Render New Taxon and Edit Taxon buttons + their dialogs in the current container."""
+def open_new_taxon_dialog(
+    session_factory, *, prefill: dict | None = None, on_created=None
+) -> None:
+    """Open a one-off New Taxon dialog and create the taxon on save.
 
-    # ── New Taxon dialog ────────────────────────────────────────────────────
-    new_dialog = ui.dialog()
-    with new_dialog:
+    The single new-taxon dialog shared by every caller (Taxonomy tab's
+    "New Taxon" button and Import & Assign's manual add). ``prefill`` seeds the
+    form (see _build_taxon_form); ``on_created(new_id)`` runs after a successful
+    create — callers use it to refresh a view or route the new taxon back into a
+    determination. The code is inherited from the chosen parent, never entered.
+    """
+    dialog = ui.dialog()
+    with dialog:
         with ui.card().classes("min-w-[480px] max-w-[600px]"):
             ui.label("New Taxon").classes("section-label mb-3")
             ui.separator().classes("mb-3")
             form_col = ui.column().classes("w-full gap-2")
-            form_api: dict = {}
-
+            form_api = _build_taxon_form(form_col, session_factory, prefill=prefill)
             with ui.row().classes("mt-4 gap-2 justify-end w-full"):
-                ui.button("Cancel", on_click=new_dialog.close).props("flat")
-                save_new_btn = ui.button("Save", icon="save").props("color=secondary")
+                ui.button("Cancel", on_click=dialog.close).props("flat")
+                save_btn = ui.button("Save", icon="save").props("color=secondary")
 
-    def _open_new():
-        form_col.clear()
-        form_api.clear()
-        form_api.update(_build_taxon_form(form_col, session_factory))
-        new_dialog.open()
-
-    def _save_new():
+    def _save():
         fields = form_api["get_fields"]()
         err = form_api["validate"](fields)
         if err:
@@ -199,14 +210,26 @@ def build_taxon_editor(session_factory, on_saved: callable) -> None:
         try:
             with session_factory() as s:
                 with s.begin():
-                    create_taxon_direct(s, **fields)
-            new_dialog.close()
+                    new_id = create_taxon_direct(s, **fields).id
+            dialog.close()
             ui.notify("Taxon created.", type="positive")
-            on_saved()
+            if on_created:
+                on_created(new_id)
         except Exception as exc:
             ui.notify(f"Failed: {exc}", type="negative")
 
-    save_new_btn.on_click(_save_new)
+    save_btn.on_click(_save)
+    # Per-action dialog: delete it (not just close) when dismissed so any timers
+    # the form's selects install don't leak (CLAUDE.md dialog-timer note).
+    dialog.on_value_change(lambda e: dialog.delete() if not e.value else None)
+    dialog.open()
+
+
+def build_taxon_editor(session_factory, on_saved: callable) -> None:
+    """Render New Taxon and Edit Taxon buttons + their dialogs in the current container."""
+
+    def _open_new():
+        open_new_taxon_dialog(session_factory, on_created=lambda _id: on_saved())
 
     # ── Edit Taxon dialog ───────────────────────────────────────────────────
     edit_dialog = ui.dialog()

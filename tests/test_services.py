@@ -151,6 +151,33 @@ def test_prefill_strips_leaked_authorship_from_name(session):
     assert pf["taxon_rank"] == "species"
 
 
+def test_manual_create_inherits_parent_code(session):
+    # Issue #9: a manually-added species must inherit its parent's nomenclatural
+    # code, not land NULL. The Import & Assign path is prefill → create_taxon_direct
+    # with the code derived from the resolved parent (as the editor does it).
+    from app.services.taxa import create_taxon_direct
+    genus = _taxon(session, "Otiorhynchus", species=None)
+    genus.nomenclatural_code = "ICZN"
+    session.flush()
+
+    pf = build_manual_taxon_prefill(session, {"scientificName": "Otiorhynchus norici"})
+    assert pf["parent_name_usage_id"] == genus.id
+
+    # The UI inherits the code from the chosen parent before saving.
+    parent = session.get(Taxon, pf["parent_name_usage_id"])
+    new = create_taxon_direct(
+        session,
+        scientific_name=pf["scientific_name"],
+        taxon_rank=pf["taxon_rank"],
+        scientific_name_authorship=pf["scientific_name_authorship"],
+        parent_name_usage_id=pf["parent_name_usage_id"],
+        accepted_name_usage_id=pf["accepted_name_usage_id"],
+        nomenclatural_code=parent.nomenclatural_code,
+    )
+    assert new.nomenclatural_code == "ICZN"
+    assert new.parent_name_usage_id == genus.id
+
+
 # ---------------------------------------------------------------------------
 # search_taxa
 # ---------------------------------------------------------------------------

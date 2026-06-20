@@ -176,60 +176,6 @@ def build_manual_taxon_prefill(session: Session, row: dict) -> dict:
     }
 
 
-def create_taxon_manual(
-    session: Session,
-    *,
-    genus: str,
-    specific_epithet: str | None = None,
-    infraspecific_epithet: str | None = None,
-    scientific_name_authorship: str | None = None,
-    family: str | None = None,
-    subfamily: str | None = None,
-    tribe: str | None = None,
-    subtribe: str | None = None,
-    subgenus: str | None = None,
-) -> "Taxon":
-    """Create a new accepted taxon from manually entered fields.
-
-    Builds scientificName and taxonRank from components, creates any missing
-    parent-rank rows, and links the new row via parentNameUsageID.
-    """
-    if specific_epithet:
-        if subgenus:
-            sci_name = f"{genus} ({subgenus}) {specific_epithet}"
-        else:
-            sci_name = f"{genus} {specific_epithet}"
-        if infraspecific_epithet:
-            sci_name = f"{sci_name} {infraspecific_epithet}"
-        rank = "subspecies" if infraspecific_epithet else "species"
-    else:
-        sci_name = genus
-        rank = "genus"
-
-    fields = {
-        "taxon_rank": rank,
-        "genus": genus or None,
-        "subgenus": subgenus or None,
-        "subtribe": subtribe or None,
-        "tribe": tribe or None,
-        "subfamily": subfamily or None,
-        "family": family or None,
-    }
-    parent_id = _ensure_parent_rows(session, fields)
-
-    t = Taxon(
-        scientific_name=sci_name,
-        taxon_rank=rank,
-        scientific_name_authorship=scientific_name_authorship or None,
-        parent_name_usage_id=parent_id,
-        created_at=_utcnow(),
-        updated_at=_utcnow(),
-    )
-    session.add(t)
-    session.flush()
-    return t
-
-
 @dataclass(frozen=True)
 class TaxonSearchResult:
     id: int
