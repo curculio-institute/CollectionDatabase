@@ -14,109 +14,42 @@ import re
 # ---------------------------------------------------------------------------
 # Column-name normalisation
 # ---------------------------------------------------------------------------
-# Maps lowercased / stripped variants → canonical DwC camelCase key.
+# The importer expects valid Darwin Core: every column header is a DwC term.
+# We deliberately do NOT map informal synonyms ("leg", "lat", "species", …) nor
+# remap one DwC term onto a different column — standardising header names is
+# precisely what Darwin Core is for, and a value that feeds a given column must
+# arrive under that column's own DwC term. The only normalisation is casing and
+# separators, handled by _norm_key ("ScientificName", "scientific name" and
+# "SCIENTIFICNAME" all resolve to "scientificName"). _ALIASES is therefore
+# *derived* from the supported-term list: exactly one entry per term, no
+# hand-maintained spelling variants (which silently go dead once _norm_key runs).
 
-_ALIASES: dict[str, str] = {
+def _norm_key(raw: str) -> str:
+    return re.sub(r"[^a-z0-9]", "", raw.lower())
+
+
+# Darwin Core terms the Import & Assign workflow reads (row_to_* below, the
+# prefill resolver, and _SEARCH_FIELDS). Add a term here only when code reads it.
+_DWC_TERMS: tuple[str, ...] = (
     # Taxon / identification
-    "scientificname":                   "scientificName",
-    "scientific_name":                  "scientificName",
-    "taxon":                            "scientificName",
-    "species":                          "scientificName",
-    "genus":                            "genus",
-    "specificepithet":                  "specificEpithet",
-    "specific_epithet":                 "specificEpithet",
-    "infraspecificepithet":             "infraspecificEpithet",
-    "infraspecific_epithet":            "infraspecificEpithet",
-    "scientificnameauthorship":         "scientificNameAuthorship",
-    "authorship":                       "scientificNameAuthorship",
-    "author":                           "scientificNameAuthorship",
-    "taxonrank":                        "taxonRank",
-    "rank":                             "taxonRank",
-    "identifiedby":                     "identifiedBy",
-    "identified_by":                    "identifiedBy",
-    "det":                              "identifiedBy",
-    "dateidentified":                   "dateIdentified",
-    "date_identified":                  "dateIdentified",
+    "scientificName", "scientificNameAuthorship", "acceptedNameUsage",
+    "genus", "specificEpithet", "identifiedBy", "dateIdentified",
     # Collecting event
-    "eventdate":                        "eventDate",
-    "event_date":                       "eventDate",
-    "date":                             "eventDate",
-    "verbatimeventdate":                "verbatimEventDate",
-    "verbatim_event_date":              "verbatimEventDate",
-    "recordedby":                       "recordedBy",
-    "recorded_by":                      "recordedBy",
-    "leg":                              "recordedBy",
-    "collector":                        "recordedBy",
-    "country":                          "country",
-    "countrycode":                      "countryCode",
-    "country_code":                     "countryCode",
-    "stateprovince":                    "stateProvince",
-    "state_province":                   "stateProvince",
-    "state":                            "stateProvince",
-    "province":                         "stateProvince",
-    "county":                           "county",
-    "municipality":                     "municipality",
-    "locality":                         "locality",
-    "verbatimlocality":                 "verbatimLocality",
-    "verbatim_locality":                "verbatimLocality",
-    "decimallatitude":                  "decimalLatitude",
-    "decimal_latitude":                 "decimalLatitude",
-    "latitude":                         "decimalLatitude",
-    "lat":                              "decimalLatitude",
-    "decimallongitude":                 "decimalLongitude",
-    "decimal_longitude":                "decimalLongitude",
-    "longitude":                        "decimalLongitude",
-    "lon":                              "decimalLongitude",
-    "lng":                              "decimalLongitude",
-    "coordinateuncertaintyinmeters":    "coordinateUncertaintyInMeters",
-    "coordinate_uncertainty_in_meters": "coordinateUncertaintyInMeters",
-    "minimumelevationinmeters":         "minimumElevationInMeters",
-    "minimum_elevation_in_meters":      "minimumElevationInMeters",
-    "elevmin":                          "minimumElevationInMeters",
-    "maximumelevationinmeters":         "maximumElevationInMeters",
-    "maximum_elevation_in_meters":      "maximumElevationInMeters",
-    "elevmax":                          "maximumElevationInMeters",
-    "elevation":                        "minimumElevationInMeters",
-    "elev":                             "minimumElevationInMeters",
-    "habitat":                          "habitat",
-    "samplingprotocol":                 "samplingProtocol",
-    "sampling_protocol":                "samplingProtocol",
-    "method":                           "samplingProtocol",
-    "fieldnumber":                      "fieldNumber",
-    "field_number":                     "fieldNumber",
+    "eventDate", "verbatimEventDate", "recordedBy",
+    "country", "countryCode", "stateProvince", "county", "municipality",
+    "island", "locality", "verbatimLocality",
+    "decimalLatitude", "decimalLongitude", "coordinateUncertaintyInMeters",
+    "minimumElevationInMeters", "maximumElevationInMeters",
+    "habitat", "samplingProtocol", "fieldNumber",
     # Specimen
-    "sex":                              "sex",
-    "individualcount":                  "individualCount",
-    "individual_count":                 "individualCount",
-    "count":                            "individualCount",
-    "n":                                "individualCount",
-    "preparations":                     "preparations",
-    "prep":                             "preparations",
-    "lifestage":                        "lifeStage",
-    "life_stage":                       "lifeStage",
-    "typestatus":                       "typeStatus",
-    "type_status":                      "typeStatus",
-    "materialentityremarks":            "materialEntityRemarks",
-    "material_entity_remarks":          "materialEntityRemarks",
-    "occurrenceremarks":                "materialEntityRemarks",
-    "occurrence_remarks":               "materialEntityRemarks",
-    "remarks":                          "materialEntityRemarks",
-    # Higher taxonomy
-    "family":                           "family",
-    "subfamily":                        "subfamily",
-    "tribe":                            "tribe",
-    "subtribe":                         "subtribe",
-    "subgenus":                         "subgenus",
-    "order":                            "order",
+    "sex", "individualCount", "preparations", "lifeStage", "typeStatus",
+    "materialEntityRemarks",
     # Identifiers / provenance
-    "occurrenceid":                     "occurrenceID",
-    "occurrence_id":                    "occurrenceID",
-    "catalognumber":                    "catalogNumber",
-    "catalog_number":                   "catalogNumber",
-    "verbatimlabel":                    "verbatimLabel",
-    "verbatim_label":                   "verbatimLabel",
-    "fieldnotes":                       "verbatimLabel",
-}
+    "occurrenceID", "catalogNumber", "verbatimLabel",
+)
+
+# normalised header → canonical DwC term (casing restored).
+_ALIASES: dict[str, str] = {_norm_key(t): t for t in _DWC_TERMS}
 
 _SEARCH_FIELDS = [
     "scientificName", "genus", "specificEpithet",
@@ -125,10 +58,6 @@ _SEARCH_FIELDS = [
     "recordedBy", "identifiedBy",
     "occurrenceID", "catalogNumber",
 ]
-
-
-def _norm_key(raw: str) -> str:
-    return re.sub(r"[^a-z0-9]", "", raw.lower())
 
 
 def _normalise_row(raw: dict[str, str]) -> dict[str, str]:
@@ -204,6 +133,7 @@ def row_to_event_fields(row: dict) -> dict:
         "state_province":                   row.get("stateProvince") or "",
         "county":                           row.get("county") or "",
         "municipality":                     row.get("municipality") or "",
+        "island":                           row.get("island") or "",
         "locality":                         row.get("locality") or "",
         "verbatim_locality":                row.get("verbatimLocality") or "",
         "event_date":                       row.get("eventDate") or "",
@@ -237,5 +167,5 @@ def row_to_specimen_prefill(row: dict) -> dict:
         "individual_count":  row.get("individualCount") or "1",
         "preparations":      row.get("preparations") or "",
         "life_stage":        row.get("lifeStage") or "",
-        "occurrence_remarks":row.get("materialEntityRemarks") or row.get("occurrenceRemarks") or "",
+        "occurrence_remarks": row.get("materialEntityRemarks") or "",
     }
