@@ -22,6 +22,7 @@ import app.services as svc
 from app.config import get_config
 import app.services.person_defaults as pd_svc
 from app.ui.taxon_search import build_taxon_search
+from app.ui.taxon_editor import open_new_taxon_dialog
 from app.ui.date_input import attach_date_validation
 from app.ui.person_field import build_person_field
 from app.ui.type_status_field import build_type_status_field
@@ -348,14 +349,16 @@ def build_import_assign_tab(session_factory, refreshers: dict) -> None:
                     with ui.row().classes("items-center gap-2 mt-2"):
                         ui.label("or").classes("text-xs").style("color:var(--tp-base-soft)")
                         ui.button("Add manually", icon="add").props("flat dense size=sm") \
-                          .on_click(lambda: _show_manual_form(taxon_section, row))
+                          .on_click(lambda: _open_manual_dialog(row))
             else:
                 with taxon_section:
                     with ui.row().classes("items-center gap-2 mb-2"):
                         ui.icon("warning", size="sm").style("color:#d97706")
                         ui.label(f'"{name}" not found in TaxonWorks.') \
                           .classes("text-sm")
-                    _build_manual_form(taxon_section, row)
+                    ui.button("Add taxon manually", icon="add") \
+                      .props("color=secondary dense") \
+                      .on_click(lambda: _open_manual_dialog(row))
 
         def _build_tw_search(container, row: dict):
             """Embed the standard TW search widget (for rows with no scientificName)."""
@@ -415,67 +418,36 @@ def build_import_assign_tab(session_factory, refreshers: dict) -> None:
                     ui.label("imported from TaxonWorks") \
                       .classes("text-xs").style("color:var(--tp-base-soft)")
 
-        def _show_manual_form(container, row: dict):
-            container.clear()
-            with container:
-                _build_manual_form(container, row)
+        def _open_manual_dialog(row: dict):
+            """Open the shared New Taxon dialog, prefilled from this DwC row.
 
-        def _build_manual_form(container, row: dict):
-            """Inline form for adding a taxon not found anywhere."""
-            with container:
-                ui.label("Add taxon manually:") \
-                  .classes("text-xs font-medium mb-1").style("color:var(--tp-base-soft)")
-                with ui.grid(columns=3).classes("w-full gap-2"):
-                    g_in  = ui.input("Genus *",
-                                     value=row.get("genus") or "").classes("col-span-1")
-                    sp_in = ui.input("specificEpithet",
-                                     value=row.get("specificEpithet") or "").classes("col-span-1")
-                    au_in = ui.input("authorship",
-                                     value=row.get("scientificNameAuthorship") or "").classes("col-span-1")
-                with ui.grid(columns=3).classes("w-full gap-2 mt-1"):
-                    fam_in = ui.input("family",
-                                      value=row.get("family") or "").classes("col-span-1")
-                    sfam_in = ui.input("subfamily",
-                                       value=row.get("subfamily") or "").classes("col-span-1")
-                    sg_in  = ui.input("subgenus",
-                                      value=row.get("subgenus") or "").classes("col-span-1")
-                ui.label("This taxon will be added without a TaxonWorks link.") \
-                  .classes("text-xs mt-1").style("color:var(--tp-base-soft)")
+            Same dialog as the Taxonomy tab's "New Taxon"; the parent (and its
+            inherited nomenclatural code) is pre-resolved from the parsed name when
+            the genus/subgenus/species already exists locally. If it doesn't, the
+            user creates that ancestor first (it appears as a parent option once
+            saved), then the species — a deliberate two-step that guarantees code
+            inheritance and no orphan rows.
+            """
+            with session_factory() as s:
+                prefill = taxa_svc.build_manual_taxon_prefill(s, row)
+            open_new_taxon_dialog(
+                session_factory, prefill=prefill, on_created=_on_manual_created
+            )
 
-                def _add_manual():
-                    genus = g_in.value.strip()
-                    if not genus:
-                        ui.notify("Genus is required.", type="warning")
-                        return
-                    try:
-                        with session_factory() as session:
-                            with session.begin():
-                                t = taxa_svc.create_taxon_manual(
-                                    session,
-                                    genus=genus,
-                                    specific_epithet=sp_in.value.strip() or None,
-                                    scientific_name_authorship=au_in.value.strip() or None,
-                                    family=fam_in.value.strip() or None,
-                                    subfamily=sfam_in.value.strip() or None,
-                                    subgenus=sg_in.value.strip() or None,
-                                )
-                                tid = t.id
-                    except Exception as exc:
-                        ui.notify(f"DB error: {exc}", type="negative")
-                        return
-                    _set_taxon(tid)
-                    container.clear()
-                    with container:
-                        with ui.row().classes("items-center gap-2"):
-                            ui.icon("check_circle", size="sm").style("color:#16a34a")
-                            ui.label(f"{genus} {sp_in.value}".strip()).classes("text-sm italic")
-                            ui.label("added manually") \
-                              .classes("text-xs").style("color:var(--tp-base-soft)")
-                    if "taxonomy_stats" in refreshers:
-                        refreshers["taxonomy_stats"]()
-
-                ui.button("Add taxon", icon="add").props("color=secondary dense").classes("mt-2") \
-                  .on_click(_add_manual)
+        def _on_manual_created(tid: int):
+            _set_taxon(tid)
+            with session_factory() as s:
+                t = s.get(taxa_svc.Taxon, tid)
+                label = taxa_svc.format_scientific_name(t) if t else f"taxon #{tid}"
+            taxon_section.clear()
+            with taxon_section:
+                with ui.row().classes("items-center gap-2"):
+                    ui.icon("check_circle", size="sm").style("color:#16a34a")
+                    ui.label(label).classes("text-sm italic")
+                    ui.label("added manually") \
+                      .classes("text-xs").style("color:var(--tp-base-soft)")
+            if "taxonomy_stats" in refreshers:
+                refreshers["taxonomy_stats"]()
 
         def _set_taxon(tid: int):
             state["taxon_id"] = tid

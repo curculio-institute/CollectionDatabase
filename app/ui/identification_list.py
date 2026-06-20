@@ -67,7 +67,7 @@ def build_identification_list(
             for d in sp_svc.get_determination_history(s, co_id):
                 t = d.taxon
                 if t:
-                    is_syn = t.taxonomic_status == "synonym"
+                    is_syn = t.accepted_name_usage_id is not None
                     acc_label = None
                     if is_syn and t.accepted_name_usage_id:
                         acc = s.get(Taxon, t.accepted_name_usage_id)
@@ -409,7 +409,7 @@ def build_identification_list(
             with session_factory() as s:
                 t = s.get(Taxon, new_tid)
                 if t:
-                    is_syn = t.taxonomic_status == "synonym"
+                    is_syn = t.accepted_name_usage_id is not None
                     acc_label = None
                     if is_syn and t.accepted_name_usage_id:
                         acc = s.get(Taxon, t.accepted_name_usage_id)

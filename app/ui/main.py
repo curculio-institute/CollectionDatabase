@@ -1735,6 +1735,30 @@ def index():
 
                         build_taxon_editor(_sf, _on_saved_taxon)
 
+                        def _check_consistency():
+                            from app.services.taxa import verify_taxon_consistency
+                            with _sf() as s:
+                                issues = verify_taxon_consistency(s)
+                            if not issues:
+                                ui.notify("Taxonomy is consistent — no issues found.",
+                                          type="positive")
+                                return
+                            dlg = ui.dialog()
+                            with dlg, ui.card().classes("min-w-[480px] max-w-[680px]"):
+                                ui.label(f"{len(issues)} consistency issue(s)") \
+                                  .classes("section-label mb-2")
+                                with ui.column().classes("w-full gap-1"):
+                                    for it in issues:
+                                        ui.label(f"• [{it['issue']}] {it['name']} — {it['detail']}") \
+                                          .classes("text-xs").style("color:var(--tp-base-soft)")
+                                with ui.row().classes("justify-end w-full mt-2"):
+                                    ui.button("Close", on_click=dlg.close).props("flat")
+                            dlg.on_value_change(lambda e: dlg.delete() if not e.value else None)
+                            dlg.open()
+
+                        ui.button("Check consistency", icon="fact_check") \
+                          .props("flat dense").on_click(_check_consistency)
+
                 # ── checklist card ───────────────────────────────────────
                 with ui.card().classes("w-full shadow-sm"):
                     with ui.row().classes("items-center gap-2 mb-3"):

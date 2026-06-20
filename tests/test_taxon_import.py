@@ -267,7 +267,7 @@ def test_tw_import_synonym_of_existing_accepted(plant_tree, session):
 
     assert after == before + 1  # only the synonym row is new
     assert synonym.scientific_name == "Achillea lanulosa"
-    assert synonym.taxonomic_status == "synonym"
+    assert synonym.accepted_name_usage_id is not None
     assert synonym.accepted_name_usage_id == plant_tree["species"].id
 
 
@@ -286,9 +286,29 @@ def test_tw_import_synonym_both_new(session):
     accepted = session.query(Taxon).filter_by(scientific_name="Achillea ligustica").first()
 
     assert accepted is not None
-    assert accepted.taxonomic_status == "accepted"
-    assert synonym.taxonomic_status == "synonym"
+    assert accepted.accepted_name_usage_id is None
+    assert synonym.accepted_name_usage_id is not None
     assert synonym.accepted_name_usage_id == accepted.id
+
+
+def test_tw_import_cross_genus_synonym_shares_accepted_parent(session):
+    """A cross-genus synonym must take its accepted name's parent (Inv1), not its
+    own genus — otherwise the synonym-integrity trigger would reject the import."""
+    valid_tw, _ = _tw_species(
+        epithet="norici", genus="Otiorhynchus", family="Curculionidae",
+        order="Coleoptera", authorship="Reitter", otu_id=5001, nomenclatural_code="iczn",
+    )
+    syn_tw, syn_otu = _tw_synonym(
+        epithet="rubidus", genus="Curculio", family="Curculionidae",
+        valid_tw_dict=valid_tw, valid_otu_id=5001, otu_id=5002,
+    )
+    syn_tw["nomenclatural_code"] = "iczn"
+    synonym = get_or_create_from_tw_data(session, syn_tw, otu_id=syn_otu)   # must not raise
+    accepted = session.query(Taxon).filter_by(scientific_name="Otiorhynchus norici").first()
+    assert synonym.accepted_name_usage_id == accepted.id
+    assert synonym.parent_name_usage_id == accepted.parent_name_usage_id   # shares accepted's parent
+    curculio = session.query(Taxon).filter_by(scientific_name="Curculio", taxon_rank="genus").first()
+    assert curculio is None or synonym.parent_name_usage_id != curculio.id
 
 
 def test_tw_import_preserves_tribe_parent_chain(plant_tree, session):
@@ -455,7 +475,7 @@ def test_powo_import_synonym_linked_to_existing_accepted(plant_tree, session):
     after = session.query(Taxon).count()
 
     assert after == before + 1  # only the synonym row is new
-    assert synonym.taxonomic_status == "synonym"
+    assert synonym.accepted_name_usage_id is not None
     assert synonym.accepted_name_usage_id == plant_tree["species"].id
 
 
@@ -472,6 +492,6 @@ def test_powo_import_synonym_both_new(session):
     synonym = get_or_create_from_powo_data(session, synonym_fields, accepted_fields=accepted_fields)
     accepted = session.query(Taxon).filter_by(scientific_name="Achillea ligustica").first()
 
-    assert accepted is not None and accepted.taxonomic_status == "accepted"
-    assert synonym.taxonomic_status == "synonym"
+    assert accepted is not None and accepted.accepted_name_usage_id is None
+    assert synonym.accepted_name_usage_id is not None
     assert synonym.accepted_name_usage_id == accepted.id

@@ -15,8 +15,11 @@ class Taxon(Base, TimestampMixin):
     sulcatus"). format_scientific_name() appends scientificNameAuthorship for
     display.  DwC export concatenates them at export time.
 
-    taxonomicStatus: "accepted" | "synonym".
-    Synonyms also set acceptedNameUsageID → the accepted taxon row.
+    Synonymy is encoded solely by acceptedNameUsageID: a row is a synonym iff it
+    links to an accepted taxon, otherwise it is accepted. The DwC Taxon-core
+    `taxonomicStatus` term is *derived* from that link at export time and is not
+    stored (it was dropped in migration 0030 to remove a redundant column that
+    could — and did — drift out of sync with acceptedNameUsageID).
     """
 
     __tablename__ = "taxon"
@@ -28,9 +31,6 @@ class Taxon(Base, TimestampMixin):
     )
     taxon_rank: Mapped[str] = mapped_column(
         "dwc:taxonRank", String, nullable=False
-    )
-    taxonomic_status: Mapped[str] = mapped_column(
-        "dwc:taxonomicStatus", String, nullable=False, default="accepted"
     )
     scientific_name_authorship: Mapped[Optional[str]] = mapped_column(
         "dwc:scientificNameAuthorship", String, nullable=True

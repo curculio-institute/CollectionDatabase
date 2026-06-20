@@ -174,37 +174,12 @@ def _co_to_data_label(
     )
 
 
-def _parse_sci_name(
-    name: str,
-) -> tuple[str, str | None, str | None, str | None]:
-    """Split a bare scientific name into (genus, subgenus, specific_epithet, infraspecific).
-
-    Handles:  'Sitona'                         → ('Sitona', None, None, None)
-              'Sitona lineatus'                 → ('Sitona', None, 'lineatus', None)
-              'Sitona (Sitona) lineatus'        → ('Sitona', 'Sitona', 'lineatus', None)
-              'Sitona lineatus lineatus'        → ('Sitona', None, 'lineatus', 'lineatus')
-              'Sitona (Sitona) lineatus allii'  → ('Sitona', 'Sitona', 'lineatus', 'allii')
-    """
-    parts = name.split()
-    if len(parts) == 1:
-        return parts[0], None, None, None
-    genus = parts[0]
-    if len(parts) >= 3 and parts[1].startswith("("):
-        subgenus = parts[1].strip("()")
-        specific = parts[2]
-        infra = parts[3] if len(parts) > 3 else None
-        return genus, subgenus, specific, infra
-    specific = parts[1]
-    infra = parts[2] if len(parts) > 2 else None
-    return genus, None, specific, infra
-
-
 def _co_to_det_label(co: CollectionObject) -> lbl.DeterminationLabel | None:
     det = next((d for d in co.determinations if d.is_current), None)
     if not det or not det.taxon:
         return None
     t = det.taxon
-    genus, subgenus, specific, infra = _parse_sci_name(t.scientific_name or "")
+    genus, subgenus, specific, infra = taxa_svc.parse_scientific_name(t.scientific_name or "")
     return lbl.DeterminationLabel(
         genus                 = genus,
         subgenus              = subgenus,

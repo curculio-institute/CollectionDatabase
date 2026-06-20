@@ -3,7 +3,10 @@ import pytest
 from app.models import Taxon, CollectingEvent, CollectionObject, TaxonDetermination
 from app.models.person import Person
 from app.models.base import _utcnow
-from app.services.taxa import format_scientific_name, search_taxa, TaxonOption
+from app.services.taxa import (
+    format_scientific_name, search_taxa, TaxonOption,
+    parse_scientific_name, rank_from_parse, build_manual_taxon_prefill,
+)
 from app.services.events import format_event_summary, search_collecting_events, create_collecting_event
 from app.services.specimens import (
     save_specimen_entry, recent_specimens, update_collection_object,
@@ -36,7 +39,6 @@ def _taxon(session, genus="Carabus", species="coriaceus", authorship="Linnaeus, 
     t = Taxon(
         scientific_name=sci_name,
         taxon_rank=rank,
-        taxonomic_status="accepted",
         scientific_name_authorship=authorship,
         created_at=_utcnow(), updated_at=_utcnow(),
     )
@@ -64,33 +66,116 @@ def _event(session, country="Germany", state="Bavaria", locality="Berchtesgaden"
 
 def test_format_scientific_name_full():
     t = Taxon(scientific_name="Carabus coriaceus", taxon_rank="species",
-              taxonomic_status="accepted",
               scientific_name_authorship="Linnaeus, 1758")
     assert format_scientific_name(t) == "Carabus coriaceus Linnaeus, 1758"
 
 
 def test_format_scientific_name_no_authorship():
-    t = Taxon(scientific_name="Dytiscus marginalis", taxon_rank="species",
-              taxonomic_status="accepted")
+    t = Taxon(scientific_name="Dytiscus marginalis", taxon_rank="species")
     assert format_scientific_name(t) == "Dytiscus marginalis"
 
 
 def test_format_scientific_name_with_subgenus():
-    t = Taxon(scientific_name="Amara (Amara) aenea", taxon_rank="species",
-              taxonomic_status="accepted")
+    t = Taxon(scientific_name="Amara (Amara) aenea", taxon_rank="species")
     assert format_scientific_name(t) == "Amara (Amara) aenea"
 
 
 def test_format_scientific_name_no_name():
-    t = Taxon(id=99, scientific_name="", taxon_rank="species",
-              taxonomic_status="accepted")
+    t = Taxon(id=99, scientific_name="", taxon_rank="species")
     assert format_scientific_name(t) == "taxon #99"
 
 
 def test_format_scientific_name_genus_only():
-    t = Taxon(scientific_name="Ceutorhynchus", taxon_rank="genus",
-              taxonomic_status="accepted")
+    t = Taxon(scientific_name="Ceutorhynchus", taxon_rank="genus")
     assert format_scientific_name(t) == "Ceutorhynchus"
+
+
+# ---------------------------------------------------------------------------
+# parse_scientific_name / rank_from_parse
+# ---------------------------------------------------------------------------
+
+def test_parse_scientific_name_variants():
+    assert parse_scientific_name("Sitona") == ("Sitona", None, None, None)
+    assert parse_scientific_name("Sitona lineatus") == ("Sitona", None, "lineatus", None)
+    assert parse_scientific_name("Sitona (Sitona) lineatus") == ("Sitona", "Sitona", "lineatus", None)
+    assert parse_scientific_name("Sitona lineatus allii") == ("Sitona", None, "lineatus", "allii")
+    assert parse_scientific_name("Sitona (Sitona) lineatus allii") == ("Sitona", "Sitona", "lineatus", "allii")
+    assert parse_scientific_name("") == ("", None, None, None)
+
+
+def test_rank_from_parse():
+    assert rank_from_parse(None, None) == "genus"
+    assert rank_from_parse("lineatus", None) == "species"
+    assert rank_from_parse("lineatus", "allii") == "subspecies"
+
+
+# ---------------------------------------------------------------------------
+# build_manual_taxon_prefill
+# ---------------------------------------------------------------------------
+
+def test_prefill_resolves_genus_parent(session):
+    genus = _taxon(session, "Otiorhynchus", species=None)
+    pf = build_manual_taxon_prefill(
+        session, {"scientificName": "Otiorhynchus norici", "scientificNameAuthorship": "Reitter, 1912"}
+    )
+    assert pf["scientific_name"] == "Otiorhynchus norici"
+    assert pf["taxon_rank"] == "species"
+    assert pf["scientific_name_authorship"] == "Reitter, 1912"
+    assert pf["parent_name_usage_id"] == genus.id
+    assert pf["accepted_name_usage_id"] is None
+
+
+def test_prefill_prefers_subgenus_over_genus(session):
+    genus = _taxon(session, "Otiorhynchus", species=None)
+    subg = Taxon(scientific_name="Magnanotius", taxon_rank="subgenus",
+                 parent_name_usage_id=genus.id, nomenclatural_code="ICZN",
+                 created_at=_utcnow(), updated_at=_utcnow())
+    session.add(subg); session.flush()
+    pf = build_manual_taxon_prefill(
+        session, {"scientificName": "Otiorhynchus (Magnanotius) norici"}
+    )
+    assert pf["scientific_name"] == "Otiorhynchus (Magnanotius) norici"
+    assert pf["parent_name_usage_id"] == subg.id
+
+
+def test_prefill_no_parent_when_genus_absent(session):
+    pf = build_manual_taxon_prefill(session, {"scientificName": "Unknownus novus"})
+    assert pf["parent_name_usage_id"] is None
+    assert pf["taxon_rank"] == "species"
+
+
+def test_prefill_strips_leaked_authorship_from_name(session):
+    # Authorship accidentally left in the scientificName must not become an epithet.
+    pf = build_manual_taxon_prefill(session, {"scientificName": "Otiorhynchus norici Reitter"})
+    assert pf["scientific_name"] == "Otiorhynchus norici"
+    assert pf["taxon_rank"] == "species"
+
+
+def test_manual_create_inherits_parent_code(session):
+    # Issue #9: a manually-added species must inherit its parent's nomenclatural
+    # code, not land NULL. The Import & Assign path is prefill → create_taxon_direct
+    # with the code derived from the resolved parent (as the editor does it).
+    from app.services.taxa import create_taxon_direct
+    genus = _taxon(session, "Otiorhynchus", species=None)
+    genus.nomenclatural_code = "ICZN"
+    session.flush()
+
+    pf = build_manual_taxon_prefill(session, {"scientificName": "Otiorhynchus norici"})
+    assert pf["parent_name_usage_id"] == genus.id
+
+    # The UI inherits the code from the chosen parent before saving.
+    parent = session.get(Taxon, pf["parent_name_usage_id"])
+    new = create_taxon_direct(
+        session,
+        scientific_name=pf["scientific_name"],
+        taxon_rank=pf["taxon_rank"],
+        scientific_name_authorship=pf["scientific_name_authorship"],
+        parent_name_usage_id=pf["parent_name_usage_id"],
+        accepted_name_usage_id=pf["accepted_name_usage_id"],
+        nomenclatural_code=parent.nomenclatural_code,
+    )
+    assert new.nomenclatural_code == "ICZN"
+    assert new.parent_name_usage_id == genus.id
 
 
 # ---------------------------------------------------------------------------

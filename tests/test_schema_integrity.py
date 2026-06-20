@@ -141,8 +141,26 @@ def test_unique_constraints_present(engine, table):
     assert not missing, f"{table} lost UNIQUE constraint(s) on column-set(s): {missing}"
 
 
-def test_taxon_status_check_present(engine):
-    # Unnamed inline CHECK from migration 0012; guard it by substring.
+def test_taxon_status_column_dropped(engine):
+    # taxonomicStatus was dropped in migration 0030: synonymy is derived from
+    # acceptedNameUsageID, never stored. Guard against accidental re-introduction
+    # (a derived column that can drift is exactly what 0030 removed). STRICT and
+    # the self-FK ON DELETE actions are covered by the generic tests above.
     sql = _table_sql(engine, "taxon")
-    assert "taxonomicStatus" in sql and "'accepted'" in sql and "'synonym'" in sql, \
-        "taxon lost its taxonomicStatus CHECK"
+    assert "taxonomicStatus" not in sql, \
+        "taxon re-introduced the derived taxonomicStatus column (see migration 0030 / CLAUDE.md §4)"
+
+
+def test_synonym_integrity_triggers_present(engine):
+    # migration 0031; a taxon table rebuild silently drops triggers — re-create them.
+    expected = {
+        "trg_taxon_synonym_parent_matches_accepted_ins",
+        "trg_taxon_synonym_parent_matches_accepted_upd",
+        "trg_taxon_accepted_is_terminal_ins",
+        "trg_taxon_accepted_is_terminal_upd",
+    }
+    with engine.connect() as conn:
+        live = {r[0] for r in conn.exec_driver_sql(
+            "SELECT name FROM sqlite_master WHERE type='trigger' AND tbl_name='taxon'")}
+    missing = expected - live
+    assert not missing, f"taxon lost synonym-integrity trigger(s): {sorted(missing)}"

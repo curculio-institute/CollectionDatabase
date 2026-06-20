@@ -27,7 +27,6 @@ def _taxon(session, name="Carabus coriaceus") -> Taxon:
     t = Taxon(
         scientific_name=sci_name,
         taxon_rank=rank,
-        taxonomic_status="accepted",
         created_at=_utcnow(), updated_at=_utcnow(),
     )
     session.add(t)
@@ -108,7 +107,7 @@ def test_fk_collection_object_rejects_missing_event(session):
 
 
 def test_synonymization_link(session):
-    """Synonymising a taxon: set taxonomicStatus + acceptedNameUsageID."""
+    """Synonymising a taxon: set acceptedNameUsageID (the sole synonymy marker)."""
     accepted = _taxon(session, "Curtonotus aeneus")
     synonym  = _taxon(session, "Amara aenea")
     synonym.accepted_name_usage_id = accepted.id
@@ -129,7 +128,6 @@ def test_fk_restrict_blocks_deleting_accepted_taxon(session):
     """Cannot delete an accepted taxon while a synonym still points to it."""
     accepted = _taxon(session, "Curtonotus aeneus")
     synonym  = _taxon(session, "Amara aenea")
-    synonym.taxonomic_status = "synonym"
     synonym.accepted_name_usage_id = accepted.id
     session.flush()
     session.delete(accepted)
