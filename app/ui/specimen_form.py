@@ -19,9 +19,9 @@ thing that differs between modes:
                DB values stay empty — no create-defaults applied).
 
 The builder is UI-only: it renders fields and exposes the widgets plus helpers
-(``get_identity``, ``refresh_codes``, ``reset``).  Saving — code assignment,
-print-queue enqueue, DB writes — stays in the calling tab, because the modes
-have genuinely different save paths.
+(``get_identifier_fields``, ``refresh_codes``, ``reset``).  Saving — code
+assignment, print-queue enqueue, DB writes — stays in the calling tab, because
+the modes have genuinely different save paths.
 """
 from __future__ import annotations
 
@@ -47,7 +47,7 @@ def build_specimen_form(
 
     initial:        edit-mode snapshot with keys individual_count, preparations,
                     life_stage, disposition, basis_of_record, occurrence_remarks,
-                    and (for get_identity) catalog_number, collection_code.
+                    and collection_code (seeds the editable collectionCode input).
     identity_label: edit-mode read-only header text, e.g. "#12  Jilg ab12".
 
     Handle keys:
@@ -58,9 +58,10 @@ def build_specimen_form(
                         In edit mode cat_num/inst_code_disp/coll_code_disp are None.
                         In standard mode inst/coll are read-only config displays;
                         in visiting mode they are editable free-text inputs.
-      get_identity()   — {catalog_number, collection_code, institution_code} for
-                         the save path (config-backed in standard, typed in
-                         visiting, snapshot in edit).
+      get_identifier_fields()
+                       — {catalog_number, collection_code, institution_code} to
+                         store on a NEW specimen (config-backed in standard, typed
+                         in visiting). RAISES in edit mode — see the function.
       refresh_codes()  — re-query reserved-code options into cat_num (standard only)
       reset()          — clear to create-mode defaults (standard/visiting)
     """
@@ -178,24 +179,30 @@ def build_specimen_form(
                 coll_code_disp.value = cfg.collection_code
             ui.timer(2.0, _refresh_identity_display)
 
-    def get_identity() -> dict:
-        """Identity triplet for the save path: catalog_number / collection_code /
-        institution_code.  Config-backed in standard, typed in visiting, snapshot
-        in edit."""
+    def get_identifier_fields() -> dict:
+        """The identifier triplet to STORE on a new specimen: catalog_number /
+        collection_code / institution_code (config-backed in standard, typed in
+        visiting).
+
+        This is the specimen *identifier* (catalog number), not its identification
+        (taxon determination), and it is a value to write — never a row locator.
+
+        Edit mode has no triplet: an existing row is located by its primary key,
+        catalog_number is immutable, and institution_code is not edited. Asking
+        here is a programming error, so it RAISES rather than returning a blank
+        institution_code that a caller could silently save (a loud failure beats a
+        silent wrong value — CLAUDE.md §2).
+        """
+        if is_edit:
+            raise RuntimeError(
+                "edit mode has no identifier triplet — the row is saved by id, "
+                "catalog_number is immutable; read coll_code_disp directly instead."
+            )
         if is_visiting:
             return {
                 "catalog_number":   (cat_num.value or "").strip(),
                 "collection_code":  (coll_code_disp.value or "").strip(),
                 "institution_code": (inst_code_disp.value or "").strip(),
-            }
-        if is_edit:
-            return {
-                "catalog_number":   init.get("catalog_number") or "",
-                # collection_code is editable in edit mode (gifting); read live.
-                "collection_code":  (coll_code_disp.value or "").strip()
-                                    if coll_code_disp is not None
-                                    else (init.get("collection_code") or ""),
-                "institution_code": "",
             }
         cfg = get_config()  # standard
         return {
@@ -233,7 +240,7 @@ def build_specimen_form(
         "inst_code_disp": inst_code_disp,
         "coll_code_disp": coll_code_disp,
         "rem_in":         rem_in,
-        "get_identity":   get_identity,
+        "get_identifier_fields": get_identifier_fields,
         "refresh_codes":  refresh_codes,
         "reset":          reset,
     }
