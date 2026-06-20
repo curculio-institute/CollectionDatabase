@@ -1,8 +1,13 @@
-"""Controlled-vocabulary option lists for UI dropdowns — single source of truth.
+"""Controlled vocabulary — single source of truth for both UI and services.
+
+Lives at app/vocab.py (not under app/ui/) on purpose: these lists and their
+display mappings are shared by UI dropdowns AND service-layer rendering
+(labels.py builds determination-label PDFs), and services must never import the
+UI layer. A layer-neutral home lets both sides import the same constants.
 
 These were previously duplicated across main.py, records_tab.py, import_assign.py,
-mounting_session.py, identification_list.py and specimen_form.py (audit bug m-5).
-Edit a list here and every dropdown picks it up.
+mounting_session.py, identification_list.py, specimen_form.py and labels.py
+(audit bug m-5). Edit a list here and every consumer picks it up.
 
 Convention: the empty-string sentinel ("") is always **last** so the blank option
 renders at the bottom of every ui.select (see CLAUDE.md → UI conventions).
@@ -13,7 +18,14 @@ IntegrityError. Keep them in sync if a future migration changes the allowed valu
 """
 from __future__ import annotations
 
-SEX_OPTIONS = ["male", "female", "undetermined", ""]
+# sex is free-text in the DB (no CHECK), so this list can grow without a
+# migration. Keep SEX_OPTIONS and SEX_SYMBOLS in step: every value that has a
+# typographic glyph belongs in both. "undetermined"/"" have no glyph by design.
+SEX_OPTIONS = ["male", "female", "gynandromorph", "undetermined", ""]
+
+# Stored sex value → typographic symbol, for compact display on labels (PDF) and
+# in the determination list. A value absent here simply renders no glyph.
+SEX_SYMBOLS = {"male": "♂", "female": "♀", "gynandromorph": "⚥"}
 
 LIFE_STAGE_OPTIONS = ["adult", "larva", "pupa", "egg", ""]
 

@@ -26,8 +26,8 @@ from app.ui.taxon_editor import open_new_taxon_dialog
 from app.ui.date_input import attach_date_validation
 from app.ui.person_field import build_person_field
 from app.ui.type_status_field import build_type_status_field
-# Controlled vocabularies — single source of truth (app/ui/vocab.py).
-from app.ui.vocab import SEX_OPTIONS, LIFE_STAGE_OPTIONS
+# Controlled vocabularies — single source of truth (app/vocab.py).
+from app.vocab import SEX_OPTIONS, LIFE_STAGE_OPTIONS, NEW_SPECIMEN_DEFAULTS
 
 # ---------------------------------------------------------------------------
 # Example CSV — downloadable from the upload card
@@ -513,7 +513,7 @@ def build_import_assign_tab(session_factory, refreshers: dict) -> None:
                                 "individual_count":  int(count_in.value or 1),
                                 "preparations":      preps_in.value,
                                 "life_stage":        stage_sel.value,
-                                "basis_of_record":   "PreservedSpecimen",
+                                "basis_of_record":   NEW_SPECIMEN_DEFAULTS["basis_of_record"],
                                 "occurrence_remarks":rem_in.value,
                             },
                             determination_fields={

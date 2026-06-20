@@ -16,9 +16,9 @@ from app.ui.date_input import attach_date_validation
 from app.ui.person_field import build_person_field
 from app.ui.specimen_form import build_specimen_form
 from app.ui.event_reuse import build_event_share_banner
-# Controlled vocabularies live in app/ui/vocab.py (single source of truth).
+# Controlled vocabularies live in app/vocab.py (single source of truth).
 # Only samplingProtocol is still referenced in this file (event form).
-from app.ui.vocab import SAMPLING_PROTOCOLS as _SAMPLING_PROTOCOLS
+from app.vocab import SAMPLING_PROTOCOLS as _SAMPLING_PROTOCOLS
 
 _FLOAT_ATTRS = frozenset({
     "decimal_latitude", "decimal_longitude",

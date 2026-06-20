@@ -29,7 +29,7 @@ from nicegui import ui
 
 from app.config import get_config
 import app.services.identifiers as id_svc
-from app.ui.vocab import (
+from app.vocab import (
     LIFE_STAGE_OPTIONS, BASIS_OPTIONS, DISPOSITION_OPTIONS, NEW_SPECIMEN_DEFAULTS,
 )
 

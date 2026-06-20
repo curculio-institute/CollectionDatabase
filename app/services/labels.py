@@ -33,6 +33,7 @@ from weasyprint import HTML
 from weasyprint.formatting_structure.boxes import LineBox as _LineBox
 
 from app.services.label_text import abbreviate_name, format_coords, format_country
+from app.vocab import SEX_SYMBOLS
 
 
 def _e(v: str | None) -> str:
@@ -183,9 +184,6 @@ def data_sheet(rows: list[DataLabel]) -> bytes:
 #   Line 2:  species authorship  [italic]
 #   Line 3:  det. Determiner  Year
 
-_SEX_SYMBOL: dict[str, str] = {"male": "♂", "female": "♀"}
-
-
 @dataclass
 class DeterminationLabel:
     genus: Optional[str]                  = None
@@ -226,7 +224,7 @@ def _det_line2(lbl: DeterminationLabel) -> str:
     if lbl.authorship:
         parts.append(_e(lbl.authorship))
     if lbl.sex:
-        sym = _SEX_SYMBOL.get(lbl.sex.lower())
+        sym = SEX_SYMBOLS.get(lbl.sex.lower())
         if sym:
             parts.append(sym)
     return " ".join(parts)
