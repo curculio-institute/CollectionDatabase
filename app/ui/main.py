@@ -42,7 +42,7 @@ from app.ui.records_tab import build_records_tab
 from app.ui.mounting_session import build_mounting_session_section
 from app.ui.specimen_form import build_specimen_form
 from app.ui.event_reuse import build_event_share_banner
-from app.ui.vocab import SAMPLING_PROTOCOLS
+from app.vocab import SAMPLING_PROTOCOLS
 from app.services.biological import (
     sync_biological_relationships,
     get_relationship_options,
@@ -52,7 +52,7 @@ from app.services.validation import validate_event_fields
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
-# Controlled-vocabulary lists live in app/ui/vocab.py (single source of truth).
+# Controlled-vocabulary lists live in app/vocab.py (single source of truth).
 # main.py only references SAMPLING_PROTOCOLS (imported above).
 
 TABLE_COLS = [
