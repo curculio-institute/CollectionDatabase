@@ -266,8 +266,11 @@ def build_import_assign_tab(session_factory, refreshers: dict) -> None:
                 _field_row("Country",    ev["country"])
                 _field_row("State",      ev["state_province"])
                 _field_row("County",     ev["county"])
-                _field_row("Locality",   ev["locality"] or ev["verbatim_locality"])
-                _field_row("Date",       ev["event_date"] or ev["verbatim_event_date"])
+                _field_row("Island",     ev["island"])
+                _field_row("Locality",         ev["locality"])
+                _field_row("Verbatim locality", ev["verbatim_locality"])
+                _field_row("Date",          ev["event_date"])
+                _field_row("Verbatim date", ev["verbatim_event_date"])
                 _field_row("Collector",  ev["recorded_by"])
                 lat = ev["decimal_latitude"]
                 lon = ev["decimal_longitude"]
