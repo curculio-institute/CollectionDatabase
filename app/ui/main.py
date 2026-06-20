@@ -1495,7 +1495,7 @@ def index():
 
                 def _collect_specimen_fields() -> dict:
                     active = _active_spec[0]
-                    ident = active["get_identity"]()
+                    ident = active["get_identifier_fields"]()
                     return {
                         "catalog_number":    ident["catalog_number"],
                         "collection_code":   ident["collection_code"],
@@ -1510,7 +1510,7 @@ def index():
 
                 def _validate() -> str | None:
                     active = _active_spec[0]
-                    ident = active["get_identity"]()
+                    ident = active["get_identifier_fields"]()
                     if active["policy"] == "visiting":
                         if not ident["catalog_number"]:
                             return "Enter the specimen's catalogNumber (host number)."
@@ -1559,7 +1559,7 @@ def index():
                         dets = det_state["get_dets"]()
                         cur_det  = next((d for d in dets if d["is_current"]), dets[0])
                         rest_det = [d for d in dets if d is not cur_det]
-                        code = active["get_identity"]()["catalog_number"]
+                        code = active["get_identifier_fields"]()["catalog_number"]
                         with _sf() as session:
                             with session.begin():
                                 recby_id = recby_state["commit"](session)
