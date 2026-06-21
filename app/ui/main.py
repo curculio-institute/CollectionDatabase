@@ -928,6 +928,7 @@ def index():
                                         "date_identified":          cur_det["date_identified"],
                                         "identification_qualifier": cur_det["identification_qualifier"],
                                         "identification_remarks":   cur_det["identification_remarks"],
+                                        "verbatim_identification":  cur_det.get("verbatim_identification"),
                                     },
                                 )
                                 for d in rest_det:
@@ -941,6 +942,7 @@ def index():
                                         date_identified=d["date_identified"],
                                         identification_qualifier=d["identification_qualifier"],
                                         identification_remarks=d["identification_remarks"],
+                                        verbatim_identification=d.get("verbatim_identification"),
                                         is_current=0,
                                     )
                                 saved_id = co.id

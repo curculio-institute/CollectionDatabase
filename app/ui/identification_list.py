@@ -26,7 +26,11 @@ from app.vocab import SEX_OPTIONS as _SEX_OPTIONS, SEX_SYMBOLS as _SEX_SYMBOL
 _TYPE_STATUS_OPTIONS = [
     "Holotype", "Paratype", "Lectotype", "Paralectotype", "Neotype", "Syntype",
 ]
-from app.services.taxa import format_scientific_name
+from app.services.taxa import (
+    compose_scientific_name,
+    format_scientific_name,
+    render_identification,
+)
 from app.ui.taxon_search import build_taxon_search, _local_item_html
 from app.ui.date_input import AUTO_CHANGED_CSS, attach_date_validation, append_year_pin
 from app.ui.person_field import build_person_field
@@ -64,19 +68,25 @@ def build_identification_list(
         with session_factory() as s:
             for d in sp_svc.get_determination_history(s, co_id):
                 t = d.taxon
+                # The determination name is FROZEN at save time (verbatim); fall
+                # back to the live composed name only for legacy rows with none.
+                verbatim = d.verbatim_identification or (
+                    compose_scientific_name(s, t) if t else ""
+                )
+                t_label = render_identification(verbatim, d.identification_qualifier)
                 if t:
                     is_syn = t.accepted_name_usage_id is not None
                     acc_label = None
                     if is_syn and t.accepted_name_usage_id:
                         acc = s.get(Taxon, t.accepted_name_usage_id)
                         acc_label = format_scientific_name(acc) if acc else None
-                    t_label = format_scientific_name(t)
                 else:
-                    is_syn, acc_label, t_label = False, None, "?"
+                    is_syn, acc_label = False, None
                 result.append({
                     "id":                       d.id,
                     "taxon_id":                 d.taxon_id,
                     "taxon_label":              t_label,
+                    "verbatim_identification":  verbatim,
                     "is_synonym":               is_syn,
                     "accepted_label":           acc_label,
                     "sex":                      d.sex,
@@ -159,13 +169,14 @@ def build_identification_list(
             d["taxon_label"], is_synonym=d["is_synonym"], accepted=d["accepted_label"],
         )
         sex_sym = _SEX_SYMBOL.get((d.get("sex") or "").lower())
+        # The qualifier is rendered inline in the determination name (after the
+        # genus-group), so it is intentionally not repeated in the meta line.
         meta_parts = [
             p for p in [
                 d.get("type_status"),
                 sex_sym,
                 f"det. {d['identified_by']}" if d["identified_by"] else None,
                 d["date_identified"],
-                d["identification_qualifier"],
             ] if p
         ]
 
@@ -322,6 +333,11 @@ def build_identification_list(
                             "identification_qualifier": ql.value or None,
                             "identification_remarks":   rm.value or None,
                         })
+                        # Re-render the name: the qualifier is shown inline. (Live
+                        # mode re-renders automatically via _reload_from_db.)
+                        _dets[ix]["taxon_label"] = render_identification(
+                            _dets[ix].get("verbatim_identification") or "", ql.value or None
+                        )
                     _refresh()
 
                 def _do_delete(_=None, det=d, ix=idx):
@@ -383,6 +399,9 @@ def build_identification_list(
                 with session_factory() as s:
                     with s.begin():
                         idby_id = add_idby_state["commit"](s)
+                        # Freeze the determination name at save time.
+                        new_t = s.get(Taxon, new_tid)
+                        verbatim = compose_scientific_name(s, new_t) if new_t else None
                         sp_svc.create_determination(
                             s,
                             collection_object_id=co_id,
@@ -393,6 +412,7 @@ def build_identification_list(
                             date_identified=add_dtid.value or None,
                             identification_qualifier=add_qual.value or None,
                             identification_remarks=add_rem.value or None,
+                            verbatim_identification=verbatim,
                             is_current=0,
                         )
                 _dets[:] = _reload_from_db()
@@ -412,9 +432,10 @@ def build_identification_list(
                     if is_syn and t.accepted_name_usage_id:
                         acc = s.get(Taxon, t.accepted_name_usage_id)
                         acc_label = format_scientific_name(acc) if acc else None
-                    t_label = format_scientific_name(t)
+                    verbatim = compose_scientific_name(s, t)  # frozen at add time
                 else:
-                    is_syn, acc_label, t_label = False, None, f"taxon #{new_tid}"
+                    is_syn, acc_label, verbatim = False, None, f"taxon #{new_tid}"
+            t_label = render_identification(verbatim, add_qual.value or None)
 
             with session_factory() as s:
                 with s.begin():
@@ -424,6 +445,7 @@ def build_identification_list(
                 "id":                       None,
                 "taxon_id":                 new_tid,
                 "taxon_label":              t_label,
+                "verbatim_identification":  verbatim,
                 "is_synonym":               is_syn,
                 "accepted_label":           acc_label,
                 "sex":                      add_sex.value or None,

@@ -55,6 +55,44 @@ def format_scientific_name(taxon: Taxon) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Determination rendering (Epic #30, Phase 5)
+# ---------------------------------------------------------------------------
+# A determination freezes dwc:verbatimIdentification = the composed name at save
+# time (qualifier-free); the open-nomenclature qualifier (cf./aff./sp./…) lives
+# separately in dwc:identificationQualifier. Rendering follows ONE rule — the
+# qualifier always sits right after the genus-group — so there is no per-qualifier
+# logic and no `sp.` special case (an "sp." determination simply points at a genus
+# row, whose composed name is the bare genus, leaving an empty rest).
+
+def split_genus_group(name: str) -> tuple[str, str]:
+    """Split a composed bare name into ``(genus_group, rest)`` where genus_group
+    is the genus plus its ``(Subgenus)`` if present.
+
+        'Otiorhynchus forticollis'         → ('Otiorhynchus', 'forticollis')
+        'Otiorhynchus (Nihus) forticollis' → ('Otiorhynchus (Nihus)', 'forticollis')
+        'Otiorhynchus'                     → ('Otiorhynchus', '')
+        'Otiorhynchus (Nihus)'             → ('Otiorhynchus (Nihus)', '')
+    """
+    parts = (name or "").split()
+    if not parts:
+        return "", ""
+    if len(parts) >= 2 and parts[1].startswith("("):
+        return f"{parts[0]} {parts[1]}", " ".join(parts[2:])
+    return parts[0], " ".join(parts[1:])
+
+
+def render_identification(name: str, qualifier: str | None = None) -> str:
+    """Render a frozen determination name with its qualifier inserted right after
+    the genus-group: ``Otiorhynchus cf. forticollis``, ``Otiorhynchus (Nihus) aff.
+    forticollis``, ``Otiorhynchus sp.`` (genus row → empty rest), ``Otiorhynchus
+    cf.`` (rare, no rest). Empty parts are dropped; no per-qualifier special-casing.
+    """
+    genus_group, rest = split_genus_group(name or "")
+    parts = [p for p in (genus_group, (qualifier or "").strip(), rest) if p]
+    return " ".join(parts)
+
+
+# ---------------------------------------------------------------------------
 # Name composition (atomic model — Epic #30)
 # ---------------------------------------------------------------------------
 # name_element is the atomic source of truth (this rank's own epithet/uninomial).

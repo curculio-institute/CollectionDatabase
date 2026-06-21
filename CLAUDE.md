@@ -177,6 +177,15 @@ local-master with no automated push.
   later synonymised is valid scientific practice. `taxon_determination.taxon_id` may point
   to any `taxon` row, accepted or synonym. The DwC export resolves to the accepted name
   for upload; the verbatim determination name is preserved in `verbatim_identification`.
+- **Determinations freeze the name as used (Epic #30, Phase 5).** Every ID point saves
+  `dwc:verbatimIdentification` = the *composed* name of the chosen taxon **at save time**
+  (qualifier-free); the open-nomenclature qualifier lives separately in
+  `dwc:identificationQualifier`. Re-classifying the taxon later never rewrites a saved
+  determination's name, yet `taxon_id` still drives search / grouping / export. Display
+  goes through **`render_identification(verbatim, qualifier)`** in `taxa.py`, which inserts
+  the qualifier **right after the genus-group** by one rule — `Otiorhynchus cf. forticollis`,
+  `Otiorhynchus (Nihus) aff. forticollis`, `Otiorhynchus sp.` (a genus-row determination →
+  empty rest). No per-qualifier logic, no `sp.` special case.
 
 ---
 

@@ -28,6 +28,8 @@ from app.ui.date_input import attach_date_validation, append_year_pin
 from app.ui.person_field import build_person_field
 from app.ui.taxon_search import build_taxon_search
 from app.ui.type_status_field import build_type_status_field
+from app.services.taxa import compose_scientific_name
+from app.models import Taxon
 # Controlled vocabularies — single source of truth (app/vocab.py).
 from app.vocab import (
     LIFE_STAGE_OPTIONS as _LIFE_STAGE_OPTIONS,
@@ -355,6 +357,9 @@ def build_mounting_session_section(
                     event_id: int | None = None
                     for row, code in zip(rows, codes):
                         det = row["det"]
+                        # Freeze the determination name at save time.
+                        _det_taxon = s.get(Taxon, det["taxon_id"])
+                        verbatim = compose_scientific_name(s, _det_taxon) if _det_taxon else None
                         co = svc.save_specimen_entry(
                             s,
                             taxon_id=det["taxon_id"],
@@ -377,6 +382,7 @@ def build_mounting_session_section(
                                 "date_identified":          det["date_identified"],
                                 "identification_qualifier": det["qualifier"],
                                 "identification_remarks":   det["remarks"],
+                                "verbatim_identification":  verbatim,
                             },
                         )
                         if event_id is None:

@@ -9,7 +9,11 @@ from app.models import CollectionObject, CollectingEvent, TaxonDetermination, Ta
 import app.services.specimens as sp_svc
 import app.services.events as ev_svc
 import app.services.biological as bio_svc
-from app.services.taxa import format_scientific_name
+from app.services.taxa import (
+    compose_scientific_name,
+    format_scientific_name,
+    render_identification,
+)
 from app.ui.taxon_search import build_taxon_search, _local_item_html
 from app.ui.identification_list import build_identification_list
 from app.ui.collecting_event_form import build_collecting_event_form
@@ -139,18 +143,22 @@ def build_records_tab(session_factory, *, on_saved: callable | None = None) -> N
             det_snaps: list[dict] = []
             for d in sp_svc.get_determination_history(s, co_id):
                 t = d.taxon
+                verbatim = d.verbatim_identification or (
+                    compose_scientific_name(s, t) if t else ""
+                )
+                t_label = render_identification(verbatim, d.identification_qualifier)
                 if t:
                     is_syn = t.accepted_name_usage_id is not None
                     acc_label = None
                     if is_syn and t.accepted_name_usage_id:
                         acc = s.get(Taxon, t.accepted_name_usage_id)
                         acc_label = format_scientific_name(acc) if acc else None
-                    t_label = format_scientific_name(t)
                 else:
-                    is_syn, acc_label, t_label = False, None, "?"
+                    is_syn, acc_label = False, None
                 det_snaps.append({
                     "id":                       d.id,
                     "taxon_label":              t_label,
+                    "verbatim_identification":  verbatim,
                     "is_synonym":               is_syn,
                     "accepted_label":           acc_label,
                     "sex":                      d.sex,
