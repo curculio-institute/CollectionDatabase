@@ -299,6 +299,11 @@ def build_records_tab(session_factory, *, on_saved: callable | None = None) -> N
                     )
             ui.separator().classes("mb-3")
 
+            # A shared event (n>1) opens read-only ("view"); the event is only
+            # written on Save once the user deliberately unlocks it ("Edit all").
+            # A single-specimen event is editable directly — no one else is affected.
+            _ev_editable = [ev_n <= 1]
+
             if ev_n > 1 and ev_id:
                 def _detach():
                     try:
@@ -313,10 +318,19 @@ def build_records_tab(session_factory, *, on_saved: callable | None = None) -> N
                     except Exception as exc:
                         ui.notify(f"Failed: {exc}", type="negative")
 
+                def _unlock_shared(e):
+                    if ev_ce:
+                        ev_ce["set_readonly"](False)
+                    _ev_editable[0] = True
+                    e.sender.disable()
+
                 build_event_share_banner(
-                    message=f"Editing these fields affects all {ev_n} specimens at this event.",
-                    button_label="Detach & copy event",
-                    on_detach=_detach,
+                    message=f"This event is shared by {ev_n} specimens — editing changes all of them.",
+                    actions=[
+                        {"label": f"Edit all {ev_n}", "icon": "edit_note", "on_click": _unlock_shared},
+                        {"label": "Detach & copy event", "icon": "fork_right",
+                         "on_click": _detach, "primary": True},
+                    ],
                 )
 
             if ev_id is None:
@@ -327,6 +341,8 @@ def build_records_tab(session_factory, *, on_saved: callable | None = None) -> N
                 # Shared widget (same form as Digitize); seeded from the snapshot.
                 ev_ce = build_collecting_event_form(session_factory, default_recby_fn=_default_recby)
                 ev_ce["load"](ev_snap)
+                if ev_n > 1:
+                    ev_ce["set_readonly"](True)   # view-only until "Edit all" unlocks
 
         # ── Biological Associations card ───────────────────────────────────
         with ui.card().classes("w-full shadow-sm"):
@@ -447,7 +463,10 @@ def build_records_tab(session_factory, *, on_saved: callable | None = None) -> N
                     with s.begin():
                         sp_svc.update_collection_object(s, co_id, **_collect_co_fields())
                         ev_fields = _collect_ev_fields()
-                        if ev_fields and ev_id:
+                        # Only write the shared event if the user unlocked it; in
+                        # view mode this is a specimen-only save (the event — and
+                        # every other specimen on it — is left untouched).
+                        if ev_fields and ev_id and _ev_editable[0]:
                             recby_id = ev_ce["commit"](s)
                             ev_svc.update_collecting_event(
                                 s, ev_id,
@@ -467,12 +486,19 @@ def build_records_tab(session_factory, *, on_saved: callable | None = None) -> N
 
     # ── Event form ─────────────────────────────────────────────────────────────
     def _build_event_form(ev_id, n, cos, ev_snap):
+        # A shared event (n>1) opens read-only ("view"); the user must click
+        # "Edit all" to unlock editing + the Save button, since saving here
+        # rewrites the event for every linked specimen.
+        shared = n > 1
 
         with ui.card().classes("w-full shadow-sm"):
             with ui.row().classes("items-center gap-2 mb-1"):
                 ui.label("Collecting Event").classes("section-label")
                 ui.label(f"#{ev_id} — {n} specimen{'s' if n != 1 else ''}") \
-                    .classes("text-sm").style("color:var(--tp-base-soft)")
+                    .classes("text-sm").style(
+                        "color:var(--tp-warning, #f59e0b)" if shared
+                        else "color:var(--tp-base-soft)"
+                    )
             ui.separator().classes("mb-3")
 
             if cos:
@@ -484,9 +510,23 @@ def build_records_tab(session_factory, *, on_saved: callable | None = None) -> N
                         ui.label(f"… and {n - len(cos)} more") \
                             .classes("text-xs italic").style("color:var(--tp-base-soft)")
 
+            if shared:
+                def _unlock(e):
+                    ev_ce["set_readonly"](False)
+                    save_btn.set_enabled(True)
+                    e.sender.disable()
+
+                build_event_share_banner(
+                    message=f"This event is shared by {n} specimens — saving changes all of them.",
+                    actions=[{"label": f"Edit all {n}", "icon": "edit_note",
+                              "on_click": _unlock, "primary": True}],
+                )
+
             # Shared widget (same form as Digitize); seeded from the snapshot.
             ev_ce = build_collecting_event_form(session_factory, default_recby_fn=_default_recby)
             ev_ce["load"](ev_snap)
+            if shared:
+                ev_ce["set_readonly"](True)   # view-only until "Edit all" unlocks
 
         def _save_event():
             try:
@@ -506,4 +546,6 @@ def build_records_tab(session_factory, *, on_saved: callable | None = None) -> N
 
         with ui.row().classes("w-full items-center gap-4 px-1 mt-2"):
             ui.space()
-            ui.button("Save event", icon="save", on_click=_save_event).classes("btn-save")
+            save_btn = ui.button("Save event", icon="save", on_click=_save_event).classes("btn-save")
+            if shared:
+                save_btn.set_enabled(False)   # enabled by the "Edit all" unlock

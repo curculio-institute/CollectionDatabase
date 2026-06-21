@@ -839,8 +839,12 @@ def index():
                     with event_banner:
                         build_event_share_banner(
                             message=msg,
-                            button_label="Detach & copy to edit",
-                            on_detach=_detach_to_edit,
+                            actions=[{
+                                "label": "Detach & copy to edit",
+                                "icon": "fork_right",
+                                "on_click": _detach_to_edit,
+                                "primary": True,
+                            }],
                         )
 
                 def _collect_specimen_fields() -> dict:

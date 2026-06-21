@@ -11,20 +11,24 @@ from __future__ import annotations
 from nicegui import ui
 
 
-def build_event_share_banner(*, message: str, button_label: str, on_detach,
-                             icon: str = "fork_right"):
-    """Render an orange warning row + a prominent Detach-&-copy button.
+def build_event_share_banner(*, message: str, actions=()):
+    """Render an orange 'this event is shared' warning row + action buttons.
 
-    Returns the row element so the caller can show/hide or clear it.
+    ``actions`` is an iterable of dicts ``{"label", "on_click", "icon"?,
+    "primary"?}``. A ``primary`` action is rendered solid/prominent, the rest
+    flat. Pass ``()`` for a bare notice with no buttons. Returns the row element
+    so the caller can show/hide or clear it.
+
+    A handler may take the click event and call ``e.sender.disable()`` to retire
+    its own button (e.g. an "Edit all" unlock that should only fire once).
     """
     with ui.row().classes("items-center gap-3 mb-3 w-full") as row:
         ui.icon("warning", size="sm").style("color:var(--tp-warning, #f59e0b)")
         ui.label(message).classes("text-sm").style("color:var(--tp-warning, #f59e0b)")
         ui.space()
-        (
-            ui.button(button_label, icon=icon, on_click=on_detach)
-            # Solid, default size — deliberately larger/more prominent than the
-            # old flat size=sm button (the affordance should stand out).
-            .props("no-caps unelevated color=warning")
-        )
+        for a in actions:
+            btn = ui.button(a["label"], icon=a.get("icon", "fork_right"),
+                            on_click=a["on_click"])
+            btn.props("no-caps color=warning "
+                      + ("unelevated" if a.get("primary") else "flat"))
     return row
