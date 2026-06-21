@@ -130,6 +130,7 @@
 erDiagram
     taxon {
         INTEGER id PK
+        TEXT name_element
         TEXT scientificName
         TEXT taxonRank
         TEXT scientificNameAuthorship
@@ -256,7 +257,10 @@ erDiagram
   <div class="desc">Local taxon / OTU. DwC parent-link model (GBIF checklist best practices).
     Hierarchy encoded via <code>dwc:parentNameUsageID</code> (FK to self) — no denormalised rank columns.
     Each ancestor rank (genus, family, order, …) has its own row linked upward by the same FK.
-    <code>dwc:scientificName</code> stores the bare name without authorship.
+    <code>name_element</code> is the atomic source of truth (this rank's own epithet/uninomial,
+    e.g. <code>crypticus</code>); <code>dwc:scientificName</code> stores the <em>composed</em> full
+    name without authorship (e.g. <code>Otiorhynchus crypticus</code>), maintained from
+    <code>name_element</code> + the parent chain (migration 0032, Epic #30).
     Synonymy is encoded <em>solely</em> by <code>dwc:acceptedNameUsageID</code>: NULL = accepted,
     set = synonym pointing to its accepted taxon (the DwC <code>taxonomicStatus</code> term is
     derived at export, not stored — dropped in migration 0030). A synonym shares its accepted
@@ -266,7 +270,8 @@ erDiagram
     <thead><tr><th>Type</th><th>Column</th><th>Notes</th></tr></thead>
     <tbody>
       <tr><td><span class="badge badge-INTEGER">INTEGER</span></td><td class="col-local">id</td><td><span class="tag tag-PK">PK</span></td></tr>
-      <tr><td><span class="badge badge-TEXT">TEXT</span></td><td class="col-dwc"><a href="https://dwc.tdwg.org/list/#dwc_scientificName">dwc:scientificName</a></td><td><span class="tag tag-NN">NN</span> bare name without authorship</td></tr>
+      <tr><td><span class="badge badge-TEXT">TEXT</span></td><td class="col-local">name_element</td><td>atomic source of truth — this rank's own epithet/uninomial (TaxonWorks <code>name</code>); composes <code>dwc:scientificName</code></td></tr>
+      <tr><td><span class="badge badge-TEXT">TEXT</span></td><td class="col-dwc"><a href="https://dwc.tdwg.org/list/#dwc_scientificName">dwc:scientificName</a></td><td><span class="tag tag-NN">NN</span> <em>composed</em> full name without authorship (from name_element + parent chain)</td></tr>
       <tr><td><span class="badge badge-TEXT">TEXT</span></td><td class="col-dwc"><a href="https://dwc.tdwg.org/list/#dwc_taxonRank">dwc:taxonRank</a></td><td><span class="tag tag-NN">NN</span> e.g. "species", "genus", "family"</td></tr>
       <tr><td><span class="badge badge-TEXT">TEXT</span></td><td class="col-dwc"><a href="https://dwc.tdwg.org/list/#dwc_scientificNameAuthorship">dwc:scientificNameAuthorship</a></td><td></td></tr>
       <tr><td><span class="badge badge-INTEGER">INTEGER</span></td><td class="col-dwc"><a href="https://dwc.tdwg.org/list/#dwc_parentNameUsageID">dwc:parentNameUsageID</a></td><td><span class="tag tag-FK">FK</span> → taxon (self); encodes hierarchy; RESTRICT delete; a synonym's value must equal its accepted name's (trigger)</td></tr>

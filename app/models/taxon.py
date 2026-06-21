@@ -26,6 +26,16 @@ class Taxon(Base, TimestampMixin):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
 
+    # Atomic source of truth: this rank's own epithet/uninomial (TaxonWorks'
+    # `name`). dwc:scientificName below is the *composed* full name (without
+    # authorship), maintained from name_element + the parent chain by
+    # compose_scientific_name() in app/services/taxa.py. Nullable at the DB
+    # level only because it is backfilled by import; the service layer treats
+    # it as required (a row's name cannot be rendered without it).
+    name_element: Mapped[Optional[str]] = mapped_column(
+        "name_element", String, nullable=True
+    )
+
     scientific_name: Mapped[str] = mapped_column(
         "dwc:scientificName", String, nullable=False
     )

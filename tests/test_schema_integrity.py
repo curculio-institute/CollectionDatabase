@@ -151,6 +151,20 @@ def test_taxon_status_column_dropped(engine):
         "taxon re-introduced the derived taxonomicStatus column (see migration 0030 / CLAUDE.md §4)"
 
 
+def test_taxon_name_element_present(engine):
+    # migration 0032: name_element is the atomic source of truth (the rank's own
+    # epithet/uninomial); dwc:scientificName is the composed full name. Declared
+    # TEXT so it satisfies STRICT. See Epic #30.
+    sql = _table_sql(engine, "taxon")
+    assert "name_element" in sql, "taxon lost the name_element column (migration 0032)"
+    with engine.connect() as conn:
+        col = next(
+            r for r in conn.exec_driver_sql("PRAGMA table_info(taxon)")
+            if r[1] == "name_element"
+        )
+    assert col[2].upper() == "TEXT", f"name_element must be TEXT for STRICT, got {col[2]!r}"
+
+
 def test_synonym_integrity_triggers_present(engine):
     # migration 0031; a taxon table rebuild silently drops triggers — re-create them.
     expected = {
