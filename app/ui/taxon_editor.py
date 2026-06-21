@@ -5,6 +5,7 @@ from nicegui import ui
 
 from app.services.taxa import (
     TAXON_RANKS,
+    TAXON_RANKS_BY_USE,
     create_taxon_direct,
     delete_taxon,
     search_taxa,
@@ -65,7 +66,7 @@ def _build_taxon_form(
         ).classes("w-full")
 
         rank_sel = ui.select(
-            TAXON_RANKS,
+            TAXON_RANKS_BY_USE,
             label="Rank *",
             value=taxon.taxon_rank if taxon else pf.get("taxon_rank"),
         ).classes("w-full")

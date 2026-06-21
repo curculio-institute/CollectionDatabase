@@ -16,6 +16,21 @@ TAXON_RANKS: list[str] = [
     "genus", "subgenus", "species", "subspecies", "variety", "form",
 ]
 
+# Display order for rank-selection dropdowns: the ranks used daily for beetle
+# work go on top (finest first), then the rarer higher categories descend the
+# tree. This is a UI-ordering concern only — TAXON_RANKS stays in semantic
+# high→low order because hierarchy validation relies on TAXON_RANKS.index().
+TAXON_RANKS_BY_USE: list[str] = [
+    "subspecies", "species", "subgenus", "genus",
+    "variety", "form",
+    "subtribe", "tribe", "supertribe",
+    "subfamily", "family", "superfamily",
+    "suborder", "order", "superorder",
+    "subclass", "class", "subphylum", "phylum", "kingdom",
+]
+# Guard against drift: both lists must cover exactly the same ranks.
+assert set(TAXON_RANKS_BY_USE) == set(TAXON_RANKS)
+
 
 @dataclass(frozen=True)
 class TaxonOption:
@@ -26,9 +41,24 @@ class TaxonOption:
 
 
 def format_scientific_name(taxon: Taxon) -> str:
-    """Return display name: scientificName + authorship (if present)."""
+    """Return display name: scientificName + authorship (if present).
+
+    A standalone subgenus row stores only the bare subgenus name (e.g.
+    "Otiorhynchus"), which is indistinguishable from the genus of the same
+    name. Render it as ``Genus (Subgenus) Authorship`` instead, deriving the
+    genus from the parent so it adjusts automatically if the parent changes.
+    Species/subspecies already carry the subgenus in their stored name and are
+    left untouched.
+    """
     name = taxon.scientific_name or ""
     auth = taxon.scientific_name_authorship or ""
+    if taxon.taxon_rank == "subgenus" and name and "(" not in name:
+        try:
+            parent = taxon.parent
+        except Exception:
+            parent = None  # detached instance — degrade to the bare name
+        if parent is not None and parent.scientific_name:
+            name = f"{parent.scientific_name} ({name})"
     if name and auth:
         return f"{name} {auth}"
     return name or f"taxon #{taxon.id}"
