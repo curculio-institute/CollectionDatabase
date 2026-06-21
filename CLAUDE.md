@@ -266,34 +266,40 @@ updates the row. Push-pin `default_fn` closures in UI files open their own sessi
 
 ### Synonym integrity (acceptedNameUsageID is the single source)
 
-A taxon is a synonym **iff** it links to an accepted name. Two invariants hold, enforced by
-loud `BEFORE` triggers (migration 0031) that `RAISE` on any violating write — from raw SQL
-too — and re-declared on any future `taxon` rebuild (DB-1 discipline;
-`test_schema_integrity.py::test_synonym_integrity_triggers_present` guards them):
+A taxon is a synonym **iff** it links to an accepted name. **Status lives *only* in
+`acceptedNameUsageID`; the name carries its own lineage.** In the atomic-name model (Epic #30)
+every name is parented under its *own* genus — a synonym sits under its own genus, independent
+of its accepted name (so *Curculio forticollis*, a synonym of *Otiorhynchus fortis*, stays
+parented under *Curculio* and composes to "Curculio forticollis"). This is what makes name
+composition uniform for valid names and synonyms, and makes a status flip (synonym ↔ valid) a
+pure **one-field toggle with no name rewrite and no re-parenting**. The tree still groups
+synonyms under their accepted name via `acceptedNameUsageID`, so display is unaffected.
 
-- **`trg_taxon_synonym_parent_matches_accepted`** — a synonym shares its accepted name's
-  `parentNameUsageID`. In this model the classification lives on the *concept*: a name and
-  its synonyms sit under the same genus, even across original-combination genera (so
-  *Curculio rubidus* as a synonym of *Otiorhynchus norici* is parented under *Otiorhynchus*).
-  This is **stricter than GBIF**, which lets a synonym have no parent at all.
+One invariant remains, enforced by a loud `BEFORE` trigger (migration 0031) that `RAISE`s on
+any violating write — from raw SQL too — and re-declared on any future `taxon` rebuild (DB-1
+discipline; `test_schema_integrity.py::test_synonym_integrity_triggers_present` guards it):
+
 - **`trg_taxon_accepted_is_terminal`** — `acceptedNameUsageID` must reference an accepted
   (terminal) name, never another synonym. This is GBIF's *chained synonym* rule.
 
+> **Retired (migration 0033):** `trg_taxon_synonym_parent_matches_accepted` — the project's
+> former stricter rule that a synonym shared its accepted name's `parentNameUsageID`. It was
+> dropped when the model moved to own-lineage parenting. Do **not** re-introduce it.
+
 **Single writers (chokepoint).** Every parent / accepted-link mutation on an *existing* taxon
-goes through `app/services/taxa.py`: `synonymize()` (resolve target to terminal, copy its
-parent, flatten the name's own synonyms onto it), `make_accepted()`, `reparent()` (re-home an
-accepted name and cascade the new parent to its synonyms — the one drift the write-time
-triggers can't catch). `create_taxon_direct`/`update_taxon` and the TW/POWO import paths all
-derive a synonym's parent from its accepted name. A static test
+goes through `app/services/taxa.py`: `synonymize()` (resolve target to terminal, flatten the
+name's own synonyms onto it — parent and name untouched), `make_accepted()` (clear the link
+only), `reparent()` (re-home an accepted name; synonyms are *not* touched, they carry their
+own lineage). A static test
 (`test_synonym_integrity.py::test_parent_and_accepted_writes_are_centralised`) fails if any
 code outside `taxa.py` assigns these columns directly. **No fallback defaults** — required
 links are inherited or the op fails loudly, never guessed.
 
 **Manual audit, not automatic.** `verify_taxon_consistency(session)` is a read-only check
-(Taxonomy-tab "Check consistency" button) that reports drift the triggers structurally cannot
-catch at write time (e.g. a raw-SQL re-parent leaving a synonym stale). Issue names follow
-GBIF's `NameUsageIssue` vocabulary (`CHAINED_SYNONYM`, `PARENT_NAME_USAGE_ID_INVALID`, …);
-`SYNONYM_PARENT_MISMATCH` is this project's stricter rule. It is **not** run at startup.
+(Taxonomy-tab "Check consistency" button) that reports drift the trigger structurally cannot
+catch at write time (e.g. a raw-SQL edit that chains a synonym after the fact). Issue names
+follow GBIF's `NameUsageIssue` vocabulary (`CHAINED_SYNONYM`, `PARENT_NAME_USAGE_ID_INVALID`,
+`ACCEPTED_NAME_USAGE_ID_INVALID`). It is **not** run at startup.
 
 ### Parent-rank taxon rows
 

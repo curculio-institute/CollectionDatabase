@@ -618,9 +618,9 @@ def update_taxon(
     t.taxonworks_otu_id = taxonworks_otu_id
     t.updated_at = _utcnow()
     session.flush()
-    # Synonymy + parent are derived/cascaded, never set independently here:
-    # making it a synonym copies the accepted name's parent (and flattens any
-    # chain); making it accepted re-parents it and cascades to its synonyms.
+    # Synonymy and parent are routed through the chokepoint ops. Making it a
+    # synonym only sets the accepted link (own lineage + name untouched);
+    # making it accepted clears the link and re-homes its own parent.
     if accepted_name_usage_id is not None:
         synonymize(session, name_id=taxon_id, accepted_id=accepted_name_usage_id)
     else:
@@ -651,12 +651,15 @@ def delete_taxon(session: Session, taxon_id: int) -> None:
 # ---------------------------------------------------------------------------
 # Synonym integrity
 #
-# Synonymy is encoded solely by acceptedNameUsageID; a synonym shares its
-# accepted name's parent (the classification lives on the concept). Two BEFORE
-# triggers (migration 0031) make the synonym-side bad state unreachable from any
-# write path. These service ops are the single writers that do the multi-row
-# work keeping it true across edits — every parent / accepted-link mutation on an
-# existing taxon goes through synonymize / make_accepted / reparent.
+# Synonymy is encoded solely by acceptedNameUsageID. In the atomic-name model
+# (Epic #30) a name is parented under its OWN lineage — a synonym sits under its
+# own genus (e.g. Curculio forticollis under Curculio), independent of its
+# accepted name. So status is a one-field toggle: synonymize / make_accepted
+# never touch parentNameUsageID and never rewrite the name. The only surviving
+# write-time guard is trg_taxon_accepted_is_terminal (no chained synonyms,
+# GBIF's rule); the strict synonym-parent-match trigger was retired in migration
+# 0033. Every parent / accepted-link mutation on an existing taxon still routes
+# through synonymize / make_accepted / reparent (chokepoint discipline).
 # ---------------------------------------------------------------------------
 
 def _terminal_accepted(session: Session, taxon: "Taxon") -> "Taxon":
@@ -674,9 +677,11 @@ def synonymize(session: Session, *, name_id: int, accepted_id: int) -> "Taxon":
     """Make ``name_id`` a synonym of ``accepted_id``.
 
     Resolves the target to its terminal accepted name (GBIF "chained synonym"
-    rule — never a synonym of a synonym), copies that name's parent onto the
-    synonym, and re-points the name's own existing synonyms onto the same
-    accepted name so no chain forms. Atomic; caller wraps in a transaction.
+    rule — never a synonym of a synonym) and re-points the name's own existing
+    synonyms onto the same accepted name so no chain forms. The name keeps its
+    OWN parentNameUsageID and its own scientific_name — in the atomic model a
+    synonym is parented under its own lineage, so status is a pure one-field
+    toggle with no name rewrite. Atomic; caller wraps in a transaction.
     """
     name = session.get(Taxon, name_id)
     target = session.get(Taxon, accepted_id)
@@ -698,13 +703,13 @@ def synonymize(session: Session, *, name_id: int, accepted_id: int) -> "Taxon":
     )
     if has_children:
         raise ValueError("cannot synonymize a name that has subordinate taxa")
-    # The name itself plus its current synonyms all move onto `terminal`.
+    # The name itself plus its current synonyms all re-point onto `terminal`.
+    # Each keeps its own parentNameUsageID (own lineage) — only the link moves.
     movers = [name] + (
         session.query(Taxon).filter(Taxon.accepted_name_usage_id == name.id).all()
     )
     for m in movers:
         m.accepted_name_usage_id = terminal.id
-        m.parent_name_usage_id = terminal.parent_name_usage_id
         m.updated_at = _utcnow()
     session.flush()
     return name
@@ -723,11 +728,11 @@ def make_accepted(session: Session, taxon_id: int) -> "Taxon":
 
 
 def reparent(session: Session, *, taxon_id: int, new_parent_id: int | None) -> "Taxon":
-    """Re-parent an accepted name, cascading the new parent to its synonyms.
+    """Re-parent an accepted name. Synonyms are NOT touched.
 
-    Synonyms share their accepted name's parent, so re-homing an accepted name
-    must move its synonyms too — the one drift vector the write-time triggers
-    cannot catch (re-parenting never touches the synonym rows).
+    In the atomic model each name carries its own lineage, so a synonym's parent
+    is independent of its accepted name — re-homing an accepted name leaves its
+    synonyms exactly where they are.
     """
     t = session.get(Taxon, taxon_id)
     if t is None:
@@ -736,10 +741,6 @@ def reparent(session: Session, *, taxon_id: int, new_parent_id: int | None) -> "
         raise ValueError("cannot reparent a synonym directly — reparent its accepted name")
     t.parent_name_usage_id = new_parent_id
     t.updated_at = _utcnow()
-    session.flush()  # accepted row first, so the synonym writes satisfy the trigger
-    for syn in session.query(Taxon).filter(Taxon.accepted_name_usage_id == taxon_id).all():
-        syn.parent_name_usage_id = new_parent_id
-        syn.updated_at = _utcnow()
     session.flush()
     return t
 
@@ -748,10 +749,11 @@ def verify_taxon_consistency(session: Session) -> list[dict]:
     """Audit taxon hierarchy/synonymy invariants; return a list of violations.
 
     Read-only — run manually (Taxonomy-tab button / tests), not at startup. It
-    catches the drift the write-time triggers structurally cannot (chiefly a
-    synonym whose stored parent no longer matches its accepted name's, e.g. from
-    a raw-SQL re-parent). Issue names follow GBIF's NameUsageIssue vocabulary
-    where they map; SYNONYM_PARENT_MISMATCH is this project's stricter rule.
+    catches drift the write-time trigger structurally cannot, chiefly a dangling
+    parentNameUsageID / acceptedNameUsageID or a chained synonym (an accepted
+    name that is itself a synonym). Issue names follow GBIF's NameUsageIssue
+    vocabulary. The atomic model parents synonyms under their own lineage, so
+    there is no synonym-parent-match rule to audit (retired in migration 0033).
     """
     issues: list[dict] = []
     taxa = session.query(Taxon).all()
@@ -773,10 +775,6 @@ def verify_taxon_consistency(session: Session) -> list[dict]:
             issues.append({"issue": "CHAINED_SYNONYM", "taxon_id": t.id,
                            "name": t.scientific_name,
                            "detail": f"accepted name '{acc.scientific_name}' is itself a synonym"})
-        if t.parent_name_usage_id != acc.parent_name_usage_id:
-            issues.append({"issue": "SYNONYM_PARENT_MISMATCH", "taxon_id": t.id,
-                           "name": t.scientific_name,
-                           "detail": f"parent differs from accepted name '{acc.scientific_name}'"})
     return issues
 
 

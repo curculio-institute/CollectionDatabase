@@ -263,9 +263,12 @@ erDiagram
     <code>name_element</code> + the parent chain (migration 0032, Epic #30).
     Synonymy is encoded <em>solely</em> by <code>dwc:acceptedNameUsageID</code>: NULL = accepted,
     set = synonym pointing to its accepted taxon (the DwC <code>taxonomicStatus</code> term is
-    derived at export, not stored — dropped in migration 0030). A synonym shares its accepted
-    name's <code>parentNameUsageID</code> and that name must be accepted, not another synonym —
-    both enforced by BEFORE triggers (migration 0031); see Integrity Constraints → Triggers.</div>
+    derived at export, not stored — dropped in migration 0030). Each name carries its
+    <em>own</em> lineage, so a synonym keeps its own <code>parentNameUsageID</code> (its own
+    genus) independent of its accepted name (Epic #30). The one surviving rule: the accepted
+    name must itself be accepted, not another synonym — a BEFORE trigger (migration 0031); the
+    former synonym-parent-match trigger was retired in migration 0033. See Integrity
+    Constraints → Triggers.</div>
   <table>
     <thead><tr><th>Type</th><th>Column</th><th>Notes</th></tr></thead>
     <tbody>
@@ -274,7 +277,7 @@ erDiagram
       <tr><td><span class="badge badge-TEXT">TEXT</span></td><td class="col-dwc"><a href="https://dwc.tdwg.org/list/#dwc_scientificName">dwc:scientificName</a></td><td><span class="tag tag-NN">NN</span> <em>composed</em> full name without authorship (from name_element + parent chain)</td></tr>
       <tr><td><span class="badge badge-TEXT">TEXT</span></td><td class="col-dwc"><a href="https://dwc.tdwg.org/list/#dwc_taxonRank">dwc:taxonRank</a></td><td><span class="tag tag-NN">NN</span> e.g. "species", "genus", "family"</td></tr>
       <tr><td><span class="badge badge-TEXT">TEXT</span></td><td class="col-dwc"><a href="https://dwc.tdwg.org/list/#dwc_scientificNameAuthorship">dwc:scientificNameAuthorship</a></td><td></td></tr>
-      <tr><td><span class="badge badge-INTEGER">INTEGER</span></td><td class="col-dwc"><a href="https://dwc.tdwg.org/list/#dwc_parentNameUsageID">dwc:parentNameUsageID</a></td><td><span class="tag tag-FK">FK</span> → taxon (self); encodes hierarchy; RESTRICT delete; a synonym's value must equal its accepted name's (trigger)</td></tr>
+      <tr><td><span class="badge badge-INTEGER">INTEGER</span></td><td class="col-dwc"><a href="https://dwc.tdwg.org/list/#dwc_parentNameUsageID">dwc:parentNameUsageID</a></td><td><span class="tag tag-FK">FK</span> → taxon (self); encodes hierarchy; RESTRICT delete; each name (incl. synonyms) carries its own lineage</td></tr>
       <tr><td><span class="badge badge-INTEGER">INTEGER</span></td><td class="col-dwc"><a href="https://dwc.tdwg.org/list/#dwc_acceptedNameUsageID">dwc:acceptedNameUsageID</a></td><td><span class="tag tag-FK">FK</span> → taxon (self); NULL = accepted, set = synonym (must point to an accepted, non-synonym row — trigger); RESTRICT delete</td></tr>
       <tr><td><span class="badge badge-TEXT">TEXT</span></td><td class="col-dwc"><a href="https://dwc.tdwg.org/list/#dwc_nomenclaturalCode">dwc:nomenclaturalCode</a></td><td>uppercased ("ICZN"/"ICN"/…); inherited from parent</td></tr>
       <tr><td><span class="badge badge-INTEGER">INTEGER</span></td><td class="col-local">taxonworksOtuID</td><td>TW OTU ID; nullable until linked</td></tr>
@@ -479,17 +482,17 @@ erDiagram
   <h2>Triggers</h2>
   <div class="desc">Cross-row rules a <code>CHECK</code> cannot express (it sees only one row).
     These <code>BEFORE</code> triggers <code>RAISE(ABORT)</code> on any violating write — raw SQL
-    included — making the synonym-side bad state unreachable. Added in migration 0031.
+    included. Added in migration 0031; the synonym-parent-match trigger was retired in
+    migration 0033 when the model moved to own-lineage parenting (Epic #30).
     <strong>A <code>taxon</code> table rebuild silently drops triggers</strong> (like it drops
     CHECKs/FKs — see STRICT note); any rebuild migration must re-create them, and
     <code>tests/test_schema_integrity.py::test_synonym_integrity_triggers_present</code> guards it.
-    The remaining drift a write-time trigger cannot catch (re-parenting an accepted name leaves
-    its synonyms stale) is handled by the <code>reparent()</code> service op and surfaced by the
-    manual <code>verify_taxon_consistency()</code> audit (Taxonomy-tab "Check consistency").</div>
+    The drift a write-time trigger cannot catch (e.g. a raw-SQL edit that chains a synonym after
+    the fact) is surfaced by the manual <code>verify_taxon_consistency()</code> audit
+    (Taxonomy-tab "Check consistency").</div>
   <table>
     <thead><tr><th>Trigger</th><th>Table</th><th>Rule</th></tr></thead>
     <tbody>
-      <tr><td class="col-local">trg_taxon_synonym_parent_matches_accepted</td><td class="col-local">taxon</td><td>a synonym's <code>parentNameUsageID</code> must equal its accepted name's (INSERT + UPDATE)</td></tr>
       <tr><td class="col-local">trg_taxon_accepted_is_terminal</td><td class="col-local">taxon</td><td><code>acceptedNameUsageID</code> must reference an accepted (terminal) name, never another synonym — GBIF "chained synonym" rule (INSERT + UPDATE)</td></tr>
     </tbody>
   </table>

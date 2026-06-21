@@ -166,15 +166,25 @@ def test_taxon_name_element_present(engine):
 
 
 def test_synonym_integrity_triggers_present(engine):
-    # migration 0031; a taxon table rebuild silently drops triggers — re-create them.
+    # migration 0031 created four triggers; migration 0033 retired the two
+    # synonym-parent-match ones (atomic model parents synonyms under their own
+    # lineage). The terminal (chained-synonym) triggers remain in force, and a
+    # taxon table rebuild silently drops triggers — re-create them.
     expected = {
-        "trg_taxon_synonym_parent_matches_accepted_ins",
-        "trg_taxon_synonym_parent_matches_accepted_upd",
         "trg_taxon_accepted_is_terminal_ins",
         "trg_taxon_accepted_is_terminal_upd",
+    }
+    retired = {
+        "trg_taxon_synonym_parent_matches_accepted_ins",
+        "trg_taxon_synonym_parent_matches_accepted_upd",
     }
     with engine.connect() as conn:
         live = {r[0] for r in conn.exec_driver_sql(
             "SELECT name FROM sqlite_master WHERE type='trigger' AND tbl_name='taxon'")}
     missing = expected - live
     assert not missing, f"taxon lost synonym-integrity trigger(s): {sorted(missing)}"
+    still_present = retired & live
+    assert not still_present, (
+        f"retired synonym-parent-match trigger(s) still present: {sorted(still_present)} "
+        "(migration 0033 should have dropped them)"
+    )
