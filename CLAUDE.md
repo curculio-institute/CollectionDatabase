@@ -26,12 +26,19 @@ find the same thing described in both, that is a bug to fix, not a precedence to
 
 ---
 
-## To do:
-- Workflows: getting printing of locality labels in order, get print queue in order
-- Workflows
-  - import whole dataset: will need some work on things like having taxon names that are not linked to parentNameUsageID
-  - data analysis tools, map of the collection
-  - data security: what happens if program crashes unexpectedly? warning when closing page?
+## Roadmap / open tasks
+
+Tracked as **GitHub issues** (per the ownership rule below — tasks live in the
+tracker, not this file), `gh issue list`:
+
+- [#37](https://github.com/curculio-institute/CollectionDatabase/issues/37) — Print queue: edit labels before printing (+ batch-edit identical labels)
+- [#38](https://github.com/curculio-institute/CollectionDatabase/issues/38) — Workflow: printing locality labels
+- [#39](https://github.com/curculio-institute/CollectionDatabase/issues/39) — Workflow: bulk-import the existing dataset (unlinked taxon names)
+- [#40](https://github.com/curculio-institute/CollectionDatabase/issues/40) — Collection map view + data analysis tools
+- [#41](https://github.com/curculio-institute/CollectionDatabase/issues/41) — Data safety: crash recovery + unsaved-changes warning
+
+Epic #30 (atomic taxon names) phases #33–#36 also remain open until the
+`refactor/atomic-taxon-names` branch is merged.
 
 ---
 
