@@ -64,6 +64,91 @@ def format_scientific_name(taxon: Taxon) -> str:
     return name or f"taxon #{taxon.id}"
 
 
+# ---------------------------------------------------------------------------
+# Name composition (atomic model — Epic #30)
+# ---------------------------------------------------------------------------
+# name_element is the atomic source of truth (this rank's own epithet/uninomial).
+# compose_scientific_name() builds the bare dwc:scientificName (no authorship)
+# from name_element + the parent chain, uniformly for valid names AND synonyms
+# (parentNameUsageID is the name's own lineage, so a synonym composes under its
+# own genus). recompose_subtree() re-runs it down the tree after a rename or
+# reparent. Wiring into the write paths + retiring format_scientific_name's
+# subgenus fallback happens in Phase 3.
+
+# Infraspecific connectors: ICN (botany/mycology) uses connecting terms; ICZN
+# (zoology) writes a bare trinomial with no connector.
+_ICN_INFRA_CONNECTOR = {"subspecies": "subsp.", "variety": "var.", "form": "f."}
+
+
+def _infra_connector(rank: str, nomenclatural_code: str | None) -> str:
+    if (nomenclatural_code or "").upper() == "ICN":
+        return _ICN_INFRA_CONNECTOR.get(rank, "")
+    return ""  # ICZN: bare trinomial
+
+
+def compose_scientific_name(session: Session, taxon: Taxon) -> str:
+    """Compose the bare full name (no authorship) from name_element + the parent
+    chain. Uniform for valid names and synonyms.
+
+    Falls back to the already-stored scientific_name when name_element is not yet
+    populated, so it is safe to call on rows imported before the atomic backfill.
+    """
+    element = (taxon.name_element or "").strip()
+    if not element:
+        return taxon.scientific_name or ""
+
+    rank = (taxon.taxon_rank or "").lower()
+
+    # Walk ancestors (by FK, via the passed session) collecting the nearest
+    # genus / subgenus / species elements needed to build the name.
+    genus = subgenus = species_epithet = None
+    seen: set[int] = {taxon.id}
+    cur_id = taxon.parent_name_usage_id
+    while cur_id and cur_id not in seen:
+        seen.add(cur_id)
+        cur = session.get(Taxon, cur_id)
+        if cur is None:
+            break
+        crank = (cur.taxon_rank or "").lower()
+        cur_el = cur.name_element or cur.scientific_name or ""
+        if crank == "genus" and genus is None:
+            genus = cur_el
+        elif crank == "subgenus" and subgenus is None:
+            subgenus = cur_el
+        elif crank == "species" and species_epithet is None:
+            species_epithet = cur_el
+        cur_id = cur.parent_name_usage_id
+
+    sub = f" ({subgenus})" if subgenus else ""
+
+    if rank == "subgenus":
+        return f"{genus} ({element})".strip() if genus else f"({element})"
+
+    if rank == "species":
+        return f"{genus}{sub} {element}".strip() if genus else element
+
+    if rank in ("subspecies", "variety", "form"):
+        head = f"{genus}{sub} {species_epithet}".strip() if genus else (species_epithet or "")
+        connector = _infra_connector(rank, taxon.nomenclatural_code)
+        parts = [p for p in (head, connector, element) if p]
+        return " ".join(parts)
+
+    # Uninomial ranks (kingdom … family … genus): the element is the name.
+    return element
+
+
+def recompose_subtree(session: Session, taxon: Taxon) -> None:
+    """Recompute scientific_name for `taxon` and all descendants (cascade after a
+    rename or reparent)."""
+    taxon.scientific_name = compose_scientific_name(session, taxon)
+    taxon.updated_at = _utcnow()
+    session.flush()
+    for child in session.query(Taxon).filter(
+        Taxon.parent_name_usage_id == taxon.id
+    ).all():
+        recompose_subtree(session, child)
+
+
 def parse_scientific_name(
     name: str,
 ) -> tuple[str, str | None, str | None, str | None]:
