@@ -177,9 +177,9 @@ def index():
     }, true);
     </script>""")
 
-    # ── SVG favicon (vector, sharp at any size; ICO kept as fallback) ────
+    # ── SVG favicon (vector, sharp at any size) ──────────────────────────
     ui.add_head_html(
-        '<link rel="icon" type="image/svg+xml" href="/static/favicon.svg">'
+        '<link rel="icon" type="image/svg+xml" href="/static/beetle_blue.svg">'
     )
 
     # ── Notification hover-pause ─────────────────────────────────────────

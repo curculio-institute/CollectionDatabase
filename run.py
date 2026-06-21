@@ -12,5 +12,5 @@ ui.run(
     port=8080,
     reload=False,
     show=False,
-    favicon=Path(__file__).parent / "favicon.ico",
+    favicon=Path(__file__).parent / "app" / "static" / "collection_icon.png",
 )
