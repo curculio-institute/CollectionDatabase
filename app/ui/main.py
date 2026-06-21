@@ -1391,7 +1391,7 @@ def index():
                         id_status = ui.label("").classes("text-sm").style("color:var(--tp-base-soft)")
 
                     with ui.row().classes("mt-4 gap-3 items-end"):
-                        gen_btn = ui.button("Generate & download", icon="download")
+                        gen_btn = ui.button("Generate", icon="queue")
 
                     def _refresh_batch_sel():
                         batches = _with_session(id_svc.batches_with_reserved)
@@ -1417,10 +1417,10 @@ def index():
                                         print_group_id=group_id,
                                         source=pq_svc.SOURCE_IDENTIFIERS,
                                     )
-                        pdf = lbl_svc.identifier_sheet(codes)
-                        ui.download(pdf, filename=f"identifiers_{codes[0]}-{codes[-1]}.pdf",
-                                    media_type="application/pdf")
-                        id_status.set_text(f"✓ {n} codes reserved and downloaded")
+                        # Queue-only: printing happens solely via the Print queue
+                        # tab. Emitting a PDF here too risked a double print (print
+                        # now + print the queue later = duplicate identifier labels).
+                        id_status.set_text(f"✓ {n} codes reserved and added to the print queue")
                         _refresh_batch_stats()
                         _refresh_queue()
 
