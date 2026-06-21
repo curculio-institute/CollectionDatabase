@@ -543,7 +543,7 @@ def index():
                 return [
                     {
                         "id":      str(r.collection_object_id),
-                        "catalog": f"{r.collection_code} {r.catalog_number}",
+                        "catalog": id_svc.format_catalog_display(r.collection_code, r.catalog_number),
                         "species": r.scientific_name,
                         "sex":     r.sex or "",
                         "n":       str(r.individual_count if r.individual_count is not None else ""),

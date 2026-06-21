@@ -8,6 +8,7 @@ import app.services.person_defaults as pd_svc
 from app.models import CollectionObject, CollectingEvent, TaxonDetermination, Taxon
 import app.services.specimens as sp_svc
 import app.services.events as ev_svc
+import app.services.identifiers as id_svc
 import app.services.biological as bio_svc
 from app.services.taxa import (
     compose_scientific_name,
@@ -56,7 +57,7 @@ def build_records_tab(session_factory, *, on_saved: callable | None = None) -> N
             return {
                 r.collection_object_id: (
                     f"#{r.collection_object_id}  "
-                    f"{r.collection_code} {r.catalog_number}  "
+                    f"{id_svc.format_catalog_display(r.collection_code, r.catalog_number)}  "
                     f"{r.scientific_name or '—'}"
                 )
                 for r in rows
@@ -477,7 +478,8 @@ def build_records_tab(session_factory, *, on_saved: callable | None = None) -> N
             if cos:
                 with ui.expansion(f"Linked specimens ({n})").classes("w-full mb-3"):
                     for c_id, ns, cn in cos:
-                        ui.label(f"#{c_id}  {ns} {cn}").classes("text-xs font-mono")
+                        ui.label(f"#{c_id}  {id_svc.format_catalog_display(ns, cn)}") \
+                            .classes("text-xs font-mono")
                     if n > len(cos):
                         ui.label(f"… and {n - len(cos)} more") \
                             .classes("text-xs italic").style("color:var(--tp-base-soft)")
