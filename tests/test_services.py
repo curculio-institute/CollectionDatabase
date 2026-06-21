@@ -118,7 +118,7 @@ def test_prefill_resolves_genus_parent(session):
     pf = build_manual_taxon_prefill(
         session, {"scientificName": "Otiorhynchus norici", "scientificNameAuthorship": "Reitter, 1912"}
     )
-    assert pf["scientific_name"] == "Otiorhynchus norici"
+    assert pf["name_element"] == "norici"
     assert pf["taxon_rank"] == "species"
     assert pf["scientific_name_authorship"] == "Reitter, 1912"
     assert pf["parent_name_usage_id"] == genus.id
@@ -127,14 +127,16 @@ def test_prefill_resolves_genus_parent(session):
 
 def test_prefill_prefers_subgenus_over_genus(session):
     genus = _taxon(session, "Otiorhynchus", species=None)
-    subg = Taxon(scientific_name="Magnanotius", taxon_rank="subgenus",
+    # Subgenus rows store the composed "Genus (Subgenus)" form.
+    subg = Taxon(scientific_name="Otiorhynchus (Magnanotius)", name_element="Magnanotius",
+                 taxon_rank="subgenus",
                  parent_name_usage_id=genus.id, nomenclatural_code="ICZN",
                  created_at=_utcnow(), updated_at=_utcnow())
     session.add(subg); session.flush()
     pf = build_manual_taxon_prefill(
         session, {"scientificName": "Otiorhynchus (Magnanotius) norici"}
     )
-    assert pf["scientific_name"] == "Otiorhynchus (Magnanotius) norici"
+    assert pf["name_element"] == "norici"
     assert pf["parent_name_usage_id"] == subg.id
 
 
@@ -147,7 +149,7 @@ def test_prefill_no_parent_when_genus_absent(session):
 def test_prefill_strips_leaked_authorship_from_name(session):
     # Authorship accidentally left in the scientificName must not become an epithet.
     pf = build_manual_taxon_prefill(session, {"scientificName": "Otiorhynchus norici Reitter"})
-    assert pf["scientific_name"] == "Otiorhynchus norici"
+    assert pf["name_element"] == "norici"
     assert pf["taxon_rank"] == "species"
 
 
@@ -167,7 +169,7 @@ def test_manual_create_inherits_parent_code(session):
     parent = session.get(Taxon, pf["parent_name_usage_id"])
     new = create_taxon_direct(
         session,
-        scientific_name=pf["scientific_name"],
+        name_element=pf["name_element"],
         taxon_rank=pf["taxon_rank"],
         scientific_name_authorship=pf["scientific_name_authorship"],
         parent_name_usage_id=pf["parent_name_usage_id"],

@@ -5,8 +5,11 @@ from nicegui import ui
 
 from app.services.taxa import (
     TAXON_RANKS,
+    TAXON_RANKS_BY_USE,
+    _compose_transient,
     create_taxon_direct,
     delete_taxon,
+    element_from_name,
     search_taxa,
     update_taxon,
 )
@@ -29,9 +32,13 @@ def _build_taxon_form(
     taxon set with parent_name_usage_id set   → editing non-root → parent required.
 
     prefill (new-taxon mode only) seeds the fields from a parsed DwC row:
-    scientific_name / taxon_rank / scientific_name_authorship / parent_name_usage_id /
+    name_element / taxon_rank / scientific_name_authorship / parent_name_usage_id /
     accepted_name_usage_id. Every value is a starting point the user can change; the
     nomenclatural code is still inherited from whichever parent is chosen.
+
+    The name field holds the atomic *element* only (this rank's own epithet or
+    uninomial, e.g. ``crypticus`` or ``Otiorhynchus``); the full scientific name
+    is composed from that element + the parent chain and shown in a live preview.
     """
     editing_root = taxon is not None and taxon.parent_name_usage_id is None
     pf = prefill or {}
@@ -58,14 +65,24 @@ def _build_taxon_form(
     # by a different code than its lineage). Look it up from the loaded taxa.
     code_by_id = {tid: code for tid, _, _, code in _all_taxa}
 
+    if taxon:
+        init_name = taxon.name_element or element_from_name(
+            taxon.scientific_name or "", taxon.taxon_rank or ""
+        )
+    else:
+        init_name = pf.get("name_element", "")
+
     with container:
         name_in = ui.input(
-            "Scientific name (without authorship) *",
-            value=taxon.scientific_name if taxon else pf.get("scientific_name", ""),
+            "Name element — this rank's own epithet / uninomial *",
+            value=init_name,
+            placeholder="e.g. crypticus  ·  Otiorhynchus  ·  Curculionidae",
         ).classes("w-full")
+        # Live preview of the full composed name (element + parent chain).
+        preview_lbl = ui.label("").classes("text-sm text-secondary italic -mt-1")
 
         rank_sel = ui.select(
-            TAXON_RANKS,
+            TAXON_RANKS_BY_USE,
             label="Rank *",
             value=taxon.taxon_rank if taxon else pf.get("taxon_rank"),
         ).classes("w-full")
@@ -125,7 +142,27 @@ def _build_taxon_form(
         parent_sel.options = new_opts
         parent_sel.update()
 
-    rank_sel.on_value_change(lambda _: _refresh_parent_opts())
+    def _update_preview():
+        element = (name_in.value or "").strip()
+        rank = rank_sel.value or ""
+        parent_id = parent_sel.value or None
+        if not element or not rank:
+            preview_lbl.set_text("")
+            return
+        nomen_code = code_by_id.get(parent_id) if parent_id else (
+            taxon.nomenclatural_code if taxon else None
+        )
+        with session_factory() as s:
+            composed = _compose_transient(
+                s, name_element=element, taxon_rank=rank,
+                parent_id=parent_id, nomenclatural_code=nomen_code,
+            )
+        preview_lbl.set_text(f"→  {composed}" if composed else "")
+
+    rank_sel.on_value_change(lambda _: (_refresh_parent_opts(), _update_preview()))
+    name_in.on_value_change(lambda _: _update_preview())
+    parent_sel.on_value_change(lambda _: _update_preview())
+    _update_preview()  # seed for edit mode / prefill
 
     def get_fields() -> dict:
         try:
@@ -141,7 +178,7 @@ def _build_taxon_form(
             # No parent → editing a seeded root; preserve its existing code.
             nomen_code = taxon.nomenclatural_code if taxon else None
         return {
-            "scientific_name": (name_in.value or "").strip(),
+            "name_element": (name_in.value or "").strip(),
             "taxon_rank": rank_sel.value or "",
             "scientific_name_authorship": (auth_in.value or "").strip() or None,
             "parent_name_usage_id": parent_id,
@@ -151,8 +188,8 @@ def _build_taxon_form(
         }
 
     def validate(fields: dict) -> str | None:
-        if not fields["scientific_name"]:
-            return "Scientific name is required."
+        if not fields["name_element"]:
+            return "Name element is required."
         if not fields["taxon_rank"]:
             return "Rank is required."
         if not editing_root and not fields["parent_name_usage_id"]:

@@ -156,6 +156,31 @@ def _next_sequential_number(session: Session, collection_code: str) -> int:
     return (max_num or 0) + 1
 
 
+def format_catalog_display(collection_code: str | None, catalog_number: str | None) -> str:
+    """Render a specimen identifier for display without doubling the collection code.
+
+    ``catalog_number`` embeds the collection-code prefix (``JJPRC-00001``) and is
+    immutable — it travels with the specimen, so after a transfer the current
+    holder (``collection_code``) can differ from that prefix. Display rule:
+
+      * still in its home collection (catalog starts with collection_code) →
+        show the catalog number alone (``JJPRC-00001``); the prefix already names
+        the origin, so repeating it as ``JJPRC JJPRC-00001`` is redundant.
+      * transferred (foreign collection_code) → show both, current holder first
+        (``ABC  JJPRC-00001``), which is genuinely informative.
+
+    Display-only; never mutates the stored fields (catalog_number must keep its
+    prefix for TaxonWorks matching).
+    """
+    cc = (collection_code or "").strip()
+    cn = (catalog_number or "").strip()
+    if not cn:
+        return cc
+    if cc and (cn == cc or cn.startswith(f"{cc}-") or cn.startswith(f"{cc} ")):
+        return cn
+    return f"{cc} {cn}".strip()
+
+
 def reserve_sequential_codes(
     session: Session, collection_code: str, count: int
 ) -> tuple[int, list[str]]:

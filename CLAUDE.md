@@ -26,12 +26,19 @@ find the same thing described in both, that is a bug to fix, not a precedence to
 
 ---
 
-## To do:
-- Workflows: getting printing of locality labels in order, get print queue in order
-- Workflows
-  - import whole dataset: will need some work on things like having taxon names that are not linked to parentNameUsageID
-  - data analysis tools, map of the collection
-  - data security: what happens if program crashes unexpectedly? warning when closing page?
+## Roadmap / open tasks
+
+Tracked as **GitHub issues** (per the ownership rule below — tasks live in the
+tracker, not this file), `gh issue list`:
+
+- [#37](https://github.com/curculio-institute/CollectionDatabase/issues/37) — Print queue: edit labels before printing (+ batch-edit identical labels)
+- [#38](https://github.com/curculio-institute/CollectionDatabase/issues/38) — Workflow: printing locality labels
+- [#39](https://github.com/curculio-institute/CollectionDatabase/issues/39) — Workflow: bulk-import the existing dataset (unlinked taxon names)
+- [#40](https://github.com/curculio-institute/CollectionDatabase/issues/40) — Collection map view + data analysis tools
+- [#41](https://github.com/curculio-institute/CollectionDatabase/issues/41) — Data safety: crash recovery + unsaved-changes warning
+
+Epic #30 (atomic taxon names) phases #33–#36 also remain open until the
+`refactor/atomic-taxon-names` branch is merged.
 
 ---
 
@@ -177,6 +184,15 @@ local-master with no automated push.
   later synonymised is valid scientific practice. `taxon_determination.taxon_id` may point
   to any `taxon` row, accepted or synonym. The DwC export resolves to the accepted name
   for upload; the verbatim determination name is preserved in `verbatim_identification`.
+- **Determinations freeze the name as used (Epic #30, Phase 5).** Every ID point saves
+  `dwc:verbatimIdentification` = the *composed* name of the chosen taxon **at save time**
+  (qualifier-free); the open-nomenclature qualifier lives separately in
+  `dwc:identificationQualifier`. Re-classifying the taxon later never rewrites a saved
+  determination's name, yet `taxon_id` still drives search / grouping / export. Display
+  goes through **`render_identification(verbatim, qualifier)`** in `taxa.py`, which inserts
+  the qualifier **right after the genus-group** by one rule — `Otiorhynchus cf. forticollis`,
+  `Otiorhynchus (Nihus) aff. forticollis`, `Otiorhynchus sp.` (a genus-row determination →
+  empty rest). No per-qualifier logic, no `sp.` special case.
 
 ---
 
@@ -213,7 +229,7 @@ attributes. Mermaid diagrams use plain camelCase. Do not deviate from this patte
 |-------|---------|
 | `collection_object` | One physical specimen or lot. `catalog_number` (NOT NULL) is the stable sync join key. `dwc:basisOfRecord`, `dwc:sex`, `dwc:preparations`, `dwc:typeStatus`, etc. |
 | `collecting_event` | Where/when collected; shared by many specimens. Full DwC locality + coordinate block. `dwc:eventDate` supports ISO 8601 intervals (`2024-06-15/2024-06-20`). `dwc:recordedBy` FK → `person(full_name)`. |
-| `taxon` | Local OTU analogue. DwC parent-link model (GBIF best practices). Columns: `dwc:scientificName` (bare name without authorship), `dwc:taxonRank`, `dwc:scientificNameAuthorship`, `dwc:parentNameUsageID` (self-FK, encodes hierarchy), `dwc:acceptedNameUsageID` (self-FK, marks synonyms — its presence *is* synonym status; `taxonomicStatus` is derived at export, not stored, see below), `taxonworksOtuID`. No denormalised rank columns. |
+| `taxon` | Local OTU analogue. DwC parent-link model (GBIF best practices). Columns: `name_element` (atomic source of truth — this rank's own epithet/uninomial, e.g. `crypticus`; migration 0032, Epic #30), `dwc:scientificName` (the *composed* full name without authorship, e.g. `Otiorhynchus crypticus`, maintained from `name_element` + the parent chain), `dwc:taxonRank`, `dwc:scientificNameAuthorship`, `dwc:parentNameUsageID` (self-FK, encodes hierarchy), `dwc:acceptedNameUsageID` (self-FK, marks synonyms — its presence *is* synonym status; `taxonomicStatus` is derived at export, not stored, see below), `taxonworksOtuID`. No denormalised rank columns. |
 | `taxon_determination` | `collection_object` → `taxon` link. `is_current` flag. `taxon_id` may reference a synonym row (deliberate design). `dwc:identifiedBy` FK → `person(full_name)`. |
 | `biological_relationship` | Kind of association (`collected_on`, `feeds_on`, …). |
 | `biological_association` | Exclusive-arc pattern: (`subject_collection_object_id` XOR `subject_taxon_id`) and (`object_collection_object_id` XOR `object_taxon_id`). CHECK enforces exactly-one-non-null per role. |
@@ -266,41 +282,52 @@ updates the row. Push-pin `default_fn` closures in UI files open their own sessi
 
 ### Synonym integrity (acceptedNameUsageID is the single source)
 
-A taxon is a synonym **iff** it links to an accepted name. Two invariants hold, enforced by
-loud `BEFORE` triggers (migration 0031) that `RAISE` on any violating write — from raw SQL
-too — and re-declared on any future `taxon` rebuild (DB-1 discipline;
-`test_schema_integrity.py::test_synonym_integrity_triggers_present` guards them):
+A taxon is a synonym **iff** it links to an accepted name. **Status lives *only* in
+`acceptedNameUsageID`; the name carries its own lineage.** In the atomic-name model (Epic #30)
+every name is parented under its *own* genus — a synonym sits under its own genus, independent
+of its accepted name (so *Curculio forticollis*, a synonym of *Otiorhynchus fortis*, stays
+parented under *Curculio* and composes to "Curculio forticollis"). This is what makes name
+composition uniform for valid names and synonyms, and makes a status flip (synonym ↔ valid) a
+pure **one-field toggle with no name rewrite and no re-parenting**. The tree still groups
+synonyms under their accepted name via `acceptedNameUsageID`, so display is unaffected.
 
-- **`trg_taxon_synonym_parent_matches_accepted`** — a synonym shares its accepted name's
-  `parentNameUsageID`. In this model the classification lives on the *concept*: a name and
-  its synonyms sit under the same genus, even across original-combination genera (so
-  *Curculio rubidus* as a synonym of *Otiorhynchus norici* is parented under *Otiorhynchus*).
-  This is **stricter than GBIF**, which lets a synonym have no parent at all.
+One invariant remains, enforced by a loud `BEFORE` trigger (migration 0031) that `RAISE`s on
+any violating write — from raw SQL too — and re-declared on any future `taxon` rebuild (DB-1
+discipline; `test_schema_integrity.py::test_synonym_integrity_triggers_present` guards it):
+
 - **`trg_taxon_accepted_is_terminal`** — `acceptedNameUsageID` must reference an accepted
   (terminal) name, never another synonym. This is GBIF's *chained synonym* rule.
 
+> **Retired (migration 0033):** `trg_taxon_synonym_parent_matches_accepted` — the project's
+> former stricter rule that a synonym shared its accepted name's `parentNameUsageID`. It was
+> dropped when the model moved to own-lineage parenting. Do **not** re-introduce it.
+
 **Single writers (chokepoint).** Every parent / accepted-link mutation on an *existing* taxon
-goes through `app/services/taxa.py`: `synonymize()` (resolve target to terminal, copy its
-parent, flatten the name's own synonyms onto it), `make_accepted()`, `reparent()` (re-home an
-accepted name and cascade the new parent to its synonyms — the one drift the write-time
-triggers can't catch). `create_taxon_direct`/`update_taxon` and the TW/POWO import paths all
-derive a synonym's parent from its accepted name. A static test
+goes through `app/services/taxa.py`: `synonymize()` (resolve target to terminal, flatten the
+name's own synonyms onto it — parent and name untouched), `make_accepted()` (clear the link
+only), `reparent()` (re-home an accepted name; synonyms are *not* touched, they carry their
+own lineage). A static test
 (`test_synonym_integrity.py::test_parent_and_accepted_writes_are_centralised`) fails if any
 code outside `taxa.py` assigns these columns directly. **No fallback defaults** — required
 links are inherited or the op fails loudly, never guessed.
 
 **Manual audit, not automatic.** `verify_taxon_consistency(session)` is a read-only check
-(Taxonomy-tab "Check consistency" button) that reports drift the triggers structurally cannot
-catch at write time (e.g. a raw-SQL re-parent leaving a synonym stale). Issue names follow
-GBIF's `NameUsageIssue` vocabulary (`CHAINED_SYNONYM`, `PARENT_NAME_USAGE_ID_INVALID`, …);
-`SYNONYM_PARENT_MISMATCH` is this project's stricter rule. It is **not** run at startup.
+(Taxonomy-tab "Check consistency" button) that reports drift the trigger structurally cannot
+catch at write time (e.g. a raw-SQL edit that chains a synonym after the fact). Issue names
+follow GBIF's `NameUsageIssue` vocabulary (`CHAINED_SYNONYM`, `PARENT_NAME_USAGE_ID_INVALID`,
+`ACCEPTED_NAME_USAGE_ID_INVALID`). It is **not** run at startup.
 
 ### Parent-rank taxon rows
 
 Every TW species import creates dedicated `taxon` rows for each ancestor rank (genus,
 subgenus, tribe, subfamily, family, order) via `_ensure_parent_rows()` in
 `app/services/taxa.py`. Each ancestor row is linked to its own parent via
-`dwc:parentNameUsageID`. Rows are matched by `(dwc:scientificName, dwc:taxonRank)`.
+`dwc:parentNameUsageID`. Every writer (TW, POWO, manual) sets the atomic `name_element`
+and **composes** `dwc:scientificName` from it + the parent chain (`compose_scientific_name`);
+rows are matched by `(composed dwc:scientificName, dwc:taxonRank)` or OTU id. A subgenus
+ancestor is therefore stored composed as `Genus (Subgenus)`, a species ancestor as
+`Genus epithet`. A reparent/rename cascades via `recompose_subtree()`. Synonyms are
+parented under their **own** lineage (own genus), never the accepted name's (Epic #30).
 
 `ensure_higher_taxa()` is a no-op in the DwC parent-link model (backfill not needed).
 
@@ -414,7 +441,7 @@ manually in the TW UI. This constrains the sync direction to insert-only forever
 
 | Module | Responsibility |
 |--------|---------------|
-| `taxa.py` | Taxon search, TW import, parent-row creation, `format_scientific_name()` |
+| `taxa.py` | Taxon search, TW import, parent-row creation, name composition (`compose_scientific_name`/`recompose_subtree`/`element_from_name`), `format_scientific_name()` |
 | `taxonomy.py` | Checklist tree builder, stats, filter options |
 | `taxonworks.py` | All TW API calls (async). Token hardcoded as `TW_TOKEN` at the top of the file. |
 | `events.py` | Collecting event CRUD + search |

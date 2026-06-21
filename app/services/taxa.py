@@ -16,6 +16,21 @@ TAXON_RANKS: list[str] = [
     "genus", "subgenus", "species", "subspecies", "variety", "form",
 ]
 
+# Display order for rank-selection dropdowns: the ranks used daily for beetle
+# work go on top (finest first), then the rarer higher categories descend the
+# tree. This is a UI-ordering concern only — TAXON_RANKS stays in semantic
+# high→low order because hierarchy validation relies on TAXON_RANKS.index().
+TAXON_RANKS_BY_USE: list[str] = [
+    "subspecies", "species", "subgenus", "genus",
+    "variety", "form",
+    "subtribe", "tribe", "supertribe",
+    "subfamily", "family", "superfamily",
+    "suborder", "order", "superorder",
+    "subclass", "class", "subphylum", "phylum", "kingdom",
+]
+# Guard against drift: both lists must cover exactly the same ranks.
+assert set(TAXON_RANKS_BY_USE) == set(TAXON_RANKS)
+
 
 @dataclass(frozen=True)
 class TaxonOption:
@@ -26,12 +41,164 @@ class TaxonOption:
 
 
 def format_scientific_name(taxon: Taxon) -> str:
-    """Return display name: scientificName + authorship (if present)."""
+    """Return display name: scientificName + authorship (if present).
+
+    In the atomic-name model (Epic #30) ``scientific_name`` is the fully composed
+    name maintained by compose_scientific_name() — a subgenus row already stores
+    ``Genus (Subgenus)``, so no rank-specific reconstruction is needed here.
+    """
     name = taxon.scientific_name or ""
     auth = taxon.scientific_name_authorship or ""
     if name and auth:
         return f"{name} {auth}"
     return name or f"taxon #{taxon.id}"
+
+
+# ---------------------------------------------------------------------------
+# Determination rendering (Epic #30, Phase 5)
+# ---------------------------------------------------------------------------
+# A determination freezes dwc:verbatimIdentification = the composed name at save
+# time (qualifier-free); the open-nomenclature qualifier (cf./aff./sp./…) lives
+# separately in dwc:identificationQualifier. Rendering follows ONE rule — the
+# qualifier always sits right after the genus-group — so there is no per-qualifier
+# logic and no `sp.` special case (an "sp." determination simply points at a genus
+# row, whose composed name is the bare genus, leaving an empty rest).
+
+def split_genus_group(name: str) -> tuple[str, str]:
+    """Split a composed bare name into ``(genus_group, rest)`` where genus_group
+    is the genus plus its ``(Subgenus)`` if present.
+
+        'Otiorhynchus forticollis'         → ('Otiorhynchus', 'forticollis')
+        'Otiorhynchus (Nihus) forticollis' → ('Otiorhynchus (Nihus)', 'forticollis')
+        'Otiorhynchus'                     → ('Otiorhynchus', '')
+        'Otiorhynchus (Nihus)'             → ('Otiorhynchus (Nihus)', '')
+    """
+    parts = (name or "").split()
+    if not parts:
+        return "", ""
+    if len(parts) >= 2 and parts[1].startswith("("):
+        return f"{parts[0]} {parts[1]}", " ".join(parts[2:])
+    return parts[0], " ".join(parts[1:])
+
+
+def render_identification(name: str, qualifier: str | None = None) -> str:
+    """Render a frozen determination name with its qualifier inserted right after
+    the genus-group: ``Otiorhynchus cf. forticollis``, ``Otiorhynchus (Nihus) aff.
+    forticollis``, ``Otiorhynchus sp.`` (genus row → empty rest), ``Otiorhynchus
+    cf.`` (rare, no rest). Empty parts are dropped; no per-qualifier special-casing.
+    """
+    genus_group, rest = split_genus_group(name or "")
+    parts = [p for p in (genus_group, (qualifier or "").strip(), rest) if p]
+    return " ".join(parts)
+
+
+# ---------------------------------------------------------------------------
+# Name composition (atomic model — Epic #30)
+# ---------------------------------------------------------------------------
+# name_element is the atomic source of truth (this rank's own epithet/uninomial).
+# compose_scientific_name() builds the bare dwc:scientificName (no authorship)
+# from name_element + the parent chain, uniformly for valid names AND synonyms
+# (parentNameUsageID is the name's own lineage, so a synonym composes under its
+# own genus). recompose_subtree() re-runs it down the tree after a rename or
+# reparent. Wiring into the write paths + retiring format_scientific_name's
+# subgenus fallback happens in Phase 3.
+
+# Infraspecific connectors: ICN (botany/mycology) uses connecting terms; ICZN
+# (zoology) writes a bare trinomial with no connector.
+_ICN_INFRA_CONNECTOR = {"subspecies": "subsp.", "variety": "var.", "form": "f."}
+
+
+def _infra_connector(rank: str, nomenclatural_code: str | None) -> str:
+    if (nomenclatural_code or "").upper() == "ICN":
+        return _ICN_INFRA_CONNECTOR.get(rank, "")
+    return ""  # ICZN: bare trinomial
+
+
+def compose_scientific_name(session: Session, taxon: Taxon) -> str:
+    """Compose the bare full name (no authorship) from name_element + the parent
+    chain. Uniform for valid names and synonyms.
+
+    Falls back to the already-stored scientific_name when name_element is not yet
+    populated, so it is safe to call on rows imported before the atomic backfill.
+    """
+    element = (taxon.name_element or "").strip()
+    if not element:
+        return taxon.scientific_name or ""
+
+    rank = (taxon.taxon_rank or "").lower()
+
+    # Walk ancestors (by FK, via the passed session) collecting the nearest
+    # genus / subgenus / species elements needed to build the name.
+    genus = subgenus = species_epithet = None
+    seen: set[int] = {taxon.id}
+    cur_id = taxon.parent_name_usage_id
+    while cur_id and cur_id not in seen:
+        seen.add(cur_id)
+        cur = session.get(Taxon, cur_id)
+        if cur is None:
+            break
+        crank = (cur.taxon_rank or "").lower()
+        cur_el = cur.name_element or cur.scientific_name or ""
+        if crank == "genus" and genus is None:
+            genus = cur_el
+        elif crank == "subgenus" and subgenus is None:
+            subgenus = cur_el
+        elif crank == "species" and species_epithet is None:
+            species_epithet = cur_el
+        cur_id = cur.parent_name_usage_id
+
+    sub = f" ({subgenus})" if subgenus else ""
+
+    if rank == "subgenus":
+        return f"{genus} ({element})".strip() if genus else f"({element})"
+
+    if rank == "species":
+        return f"{genus}{sub} {element}".strip() if genus else element
+
+    if rank in ("subspecies", "variety", "form"):
+        head = f"{genus}{sub} {species_epithet}".strip() if genus else (species_epithet or "")
+        connector = _infra_connector(rank, taxon.nomenclatural_code)
+        parts = [p for p in (head, connector, element) if p]
+        return " ".join(parts)
+
+    # Uninomial ranks (kingdom … family … genus): the element is the name.
+    return element
+
+
+def recompose_subtree(session: Session, taxon: Taxon) -> None:
+    """Recompute scientific_name for `taxon` and all descendants (cascade after a
+    rename or reparent)."""
+    taxon.scientific_name = compose_scientific_name(session, taxon)
+    taxon.updated_at = _utcnow()
+    session.flush()
+    for child in session.query(Taxon).filter(
+        Taxon.parent_name_usage_id == taxon.id
+    ).all():
+        recompose_subtree(session, child)
+
+
+def _compose_transient(
+    session: Session,
+    *,
+    name_element: str,
+    taxon_rank: str,
+    parent_id: int | None,
+    nomenclatural_code: str | None = None,
+) -> str:
+    """Compose the full bare name for a row that does not exist yet.
+
+    Used by the import/create paths to derive (and match on) the composed
+    scientific_name *before* the row is inserted: build a throw-away Taxon with
+    the element + parent and run the normal composer. The probe is never added
+    to the session — compose only reads ancestors by FK id.
+    """
+    probe = Taxon(
+        name_element=name_element,
+        taxon_rank=taxon_rank,
+        parent_name_usage_id=parent_id,
+        nomenclatural_code=nomenclatural_code,
+    )
+    return compose_scientific_name(session, probe)
 
 
 def parse_scientific_name(
@@ -62,6 +229,34 @@ def parse_scientific_name(
     specific = parts[1]
     infra = parts[2] if len(parts) > 2 else None
     return genus, None, specific, infra
+
+
+def element_from_name(scientific_name: str, taxon_rank: str) -> str:
+    """Extract the atomic name element (this rank's own epithet/uninomial) from a
+    full bare scientific name — the inverse of compose_scientific_name for
+    well-formed input. Used when a writer is handed a full name but no explicit
+    name_element (manual create with a typed full name, POWO's full `name`).
+
+        'Achillea millefolium' / species     → 'millefolium'
+        'Otiorhynchus (Nihus) crypticus' / species → 'crypticus'
+        'Achillea millefolium alpina' / subspecies → 'alpina'
+        'Otiorhynchus (Nihus)' / subgenus    → 'Nihus'
+        'Asteraceae' / family                → 'Asteraceae'
+    """
+    name = (scientific_name or "").strip()
+    rank = (taxon_rank or "").lower()
+    if not name:
+        return ""
+    if rank in ("species", "subspecies", "variety", "form"):
+        return name.split()[-1]
+    if rank == "subgenus":
+        # Stored as "Genus (Subgenus)" or bare "Subgenus"; the element is the
+        # parenthetical when present (parse_scientific_name only sees a subgenus
+        # token alongside a following epithet, so handle the bare form here).
+        if "(" in name and ")" in name:
+            return name[name.index("(") + 1: name.index(")")].strip()
+        return name
+    return name  # uninomial (genus, family, tribe, order, …): the whole name
 
 
 def rank_from_parse(specific: str | None, infraspecific: str | None) -> str:
@@ -148,7 +343,8 @@ def build_manual_taxon_prefill(session: Session, row: dict) -> dict:
             sp_name = f"{genus} ({subgenus}) {specific}" if subgenus else f"{genus} {specific}"
             candidates.append((sp_name, "species"))
         if subgenus:
-            candidates.append((subgenus, "subgenus"))
+            # Subgenus rows store the composed "Genus (Subgenus)" form.
+            candidates.append((f"{genus} ({subgenus})", "subgenus"))
         candidates.append((genus, "genus"))
         for cname, crank in candidates:
             match = (
@@ -167,9 +363,10 @@ def build_manual_taxon_prefill(session: Session, row: dict) -> dict:
         if acc:
             accepted_id = acc.id
 
+    rank = rank_from_parse(specific, infra)
     return {
-        "scientific_name": bare,
-        "taxon_rank": rank_from_parse(specific, infra),
+        "name_element": element_from_name(bare, rank),
+        "taxon_rank": rank,
         "scientific_name_authorship": (row.get("scientificNameAuthorship") or "").strip() or None,
         "parent_name_usage_id": parent_id,
         "accepted_name_usage_id": accepted_id,
@@ -268,40 +465,14 @@ def search_taxa(session: Session, query: str, limit: int = 1000) -> list[TaxonOp
 # TaxonWorks integration
 # ---------------------------------------------------------------------------
 
-def _scientific_name_from_tw(tw: dict, ancestor_fields: dict) -> str:
-    """Build the bare scientificName (without authorship) from a TW record."""
-    rank = (tw.get("rank") or "").lower()
-    name = tw.get("name") or ""
-    genus = ancestor_fields.get("genus", "")
-    subgenus = ancestor_fields.get("subgenus", "")
-
-    if rank == "species":
-        if subgenus:
-            return f"{genus} ({subgenus}) {name}".strip()
-        return f"{genus} {name}".strip()
-
-    if rank in ("subspecies", "variety", "form"):
-        specific_epithet = ancestor_fields.get("specific_epithet", "")
-        if specific_epithet:
-            if subgenus:
-                return f"{genus} ({subgenus}) {specific_epithet} {name}".strip()
-            return f"{genus} {specific_epithet} {name}".strip()
-        # Fallback: strip authorship from TW's cached full name.
-        cached = (tw.get("cached") or "").strip()
-        auth = tw.get("cached_author_year") or tw.get("cached_author") or ""
-        if auth and cached.endswith(auth):
-            return cached[: -len(auth)].strip()
-        return f"{genus} {name}".strip() if genus else name
-
-    # Uninomials: genus, subgenus, family, subfamily, tribe, subtribe, order …
-    return name
-
-
 def _fields_from_tw(tw: dict) -> dict:
     """Extract Taxon field values from an augmented TW taxon_names record.
 
-    Returns a dict containing:
-      scientific_name, taxon_rank, scientific_name_authorship
+    In the atomic-name model TW's ``name`` is already the rank's own element
+    (epithet for species/infraspecific, uninomial otherwise), so it maps
+    directly to ``name_element``; the composed ``scientific_name`` is derived
+    later (once the parent chain is known) by the caller. Returns:
+      name_element, taxon_rank, scientific_name_authorship, nomenclatural_code
       + ancestor keys used by _ensure_parent_rows:
         taxon_order, suborder, superfamily, family, subfamily, tribe, subtribe,
         genus, subgenus (each optionally with _authorship and _otu_id suffixes)
@@ -328,14 +499,12 @@ def _fields_from_tw(tw: dict) -> dict:
         if val:
             anc[key] = val
 
-    sci_name = _scientific_name_from_tw(tw, anc)
-
     # nomenclatural_code: TW returns lowercase ("iczn", "icn", …); store uppercase.
     raw_code = tw.get("nomenclatural_code") or ""
     nomen_code = raw_code.upper() or None
 
     return {
-        "scientific_name": sci_name,
+        "name_element": tw.get("name") or "",
         "taxon_rank": rank,
         "scientific_name_authorship": auth,
         "nomenclatural_code": nomen_code,
@@ -378,9 +547,14 @@ def _ensure_parent_rows(
     Lookup priority to avoid creating duplicates when TW's rank for an ancestor
     differs from what is already in the DB:
       1. OTU ID (authoritative, rank-independent)
-      2. (scientific_name, taxon_rank) exact match
-      3. scientific_name alone — only for order/suborder/superfamily, where
-         homonyms across ranks are essentially impossible.
+      2. (composed scientific_name, taxon_rank) exact match
+      3. composed scientific_name alone — only for order/suborder/superfamily,
+         where homonyms across ranks are essentially impossible.
+
+    Each created/matched row carries its atomic ``name_element``; the row's
+    ``scientific_name`` is composed from that element + its parent chain, so a
+    subgenus ancestor is stored as ``Genus (Subgenus)`` and a species ancestor
+    as ``Genus epithet``.
 
     Import policy: only fills NULL fields on existing rows.  If a non-NULL
     field differs from the import value, a message is appended to mismatches
@@ -398,6 +572,19 @@ def _ensure_parent_rows(
         if not name:
             continue
 
+        # The atomic element: for the species ancestor it is the bare epithet
+        # (TW supplies specific_epithet; otherwise the last token of the
+        # "Genus epithet" field). Every other rank in the chain is a uninomial,
+        # so the field value is itself the element.
+        if rank_name == "species":
+            element = fields.get("specific_epithet") or name.split()[-1]
+        else:
+            element = name
+        sci = _compose_transient(
+            session, name_element=element, taxon_rank=rank_name,
+            parent_id=parent_id, nomenclatural_code=nomen_code,
+        )
+
         auth = fields.get(auth_key)
         otu_id = fields.get(f"{field_key}_otu_id")
 
@@ -407,15 +594,16 @@ def _ensure_parent_rows(
         if existing is None:
             existing = (
                 session.query(Taxon)
-                .filter(Taxon.scientific_name == name, Taxon.taxon_rank == rank_name)
+                .filter(Taxon.scientific_name == sci, Taxon.taxon_rank == rank_name)
                 .first()
             )
         if existing is None and rank_name in ("order", "suborder", "superfamily"):
-            existing = session.query(Taxon).filter(Taxon.scientific_name == name).first()
+            existing = session.query(Taxon).filter(Taxon.scientific_name == sci).first()
 
         if not existing:
             existing = Taxon(
-                scientific_name=name,
+                name_element=element,
+                scientific_name=sci,
                 taxon_rank=rank_name,
                 scientific_name_authorship=auth or None,
                 parent_name_usage_id=parent_id,
@@ -428,9 +616,12 @@ def _ensure_parent_rows(
             session.flush()
         else:
             dirty = False
+            if not existing.name_element:
+                existing.name_element = element
+                dirty = True
             if existing.taxon_rank != rank_name and mismatches is not None:
                 mismatches.append(
-                    f"{name}: rank is {existing.taxon_rank!r} locally, "
+                    f"{sci}: rank is {existing.taxon_rank!r} locally, "
                     f"import says {rank_name!r}"
                 )
             if parent_id is not None:
@@ -485,32 +676,38 @@ def update_taxon(
     session: Session,
     taxon_id: int,
     *,
-    scientific_name: str,
     taxon_rank: str,
     scientific_name_authorship: str | None,
     parent_name_usage_id: int | None,
     accepted_name_usage_id: int | None,
     nomenclatural_code: str | None,
     taxonworks_otu_id: int | None,
+    name_element: str | None = None,
+    scientific_name: str | None = None,
 ) -> "Taxon":
     t = session.get(Taxon, taxon_id)
     if t is None:
         raise ValueError(f"Taxon {taxon_id} not found")
-    t.scientific_name = scientific_name
+    if name_element is None:
+        name_element = element_from_name(scientific_name or "", taxon_rank)
+    t.name_element = name_element
     t.taxon_rank = taxon_rank
     t.scientific_name_authorship = scientific_name_authorship or None
     t.nomenclatural_code = nomenclatural_code or None
     t.taxonworks_otu_id = taxonworks_otu_id
     t.updated_at = _utcnow()
     session.flush()
-    # Synonymy + parent are derived/cascaded, never set independently here:
-    # making it a synonym copies the accepted name's parent (and flattens any
-    # chain); making it accepted re-parents it and cascades to its synonyms.
+    # Synonymy and parent are routed through the chokepoint ops. Making it a
+    # synonym only sets the accepted link (own lineage + name untouched);
+    # making it accepted clears the link and re-homes its own parent (reparent
+    # recomposes the subtree). The final recompose catches an element/rank edit
+    # on the synonym path, where neither op touches the name.
     if accepted_name_usage_id is not None:
         synonymize(session, name_id=taxon_id, accepted_id=accepted_name_usage_id)
     else:
         make_accepted(session, taxon_id)
         reparent(session, taxon_id=taxon_id, new_parent_id=parent_name_usage_id)
+    recompose_subtree(session, t)
     return t
 
 
@@ -536,12 +733,15 @@ def delete_taxon(session: Session, taxon_id: int) -> None:
 # ---------------------------------------------------------------------------
 # Synonym integrity
 #
-# Synonymy is encoded solely by acceptedNameUsageID; a synonym shares its
-# accepted name's parent (the classification lives on the concept). Two BEFORE
-# triggers (migration 0031) make the synonym-side bad state unreachable from any
-# write path. These service ops are the single writers that do the multi-row
-# work keeping it true across edits — every parent / accepted-link mutation on an
-# existing taxon goes through synonymize / make_accepted / reparent.
+# Synonymy is encoded solely by acceptedNameUsageID. In the atomic-name model
+# (Epic #30) a name is parented under its OWN lineage — a synonym sits under its
+# own genus (e.g. Curculio forticollis under Curculio), independent of its
+# accepted name. So status is a one-field toggle: synonymize / make_accepted
+# never touch parentNameUsageID and never rewrite the name. The only surviving
+# write-time guard is trg_taxon_accepted_is_terminal (no chained synonyms,
+# GBIF's rule); the strict synonym-parent-match trigger was retired in migration
+# 0033. Every parent / accepted-link mutation on an existing taxon still routes
+# through synonymize / make_accepted / reparent (chokepoint discipline).
 # ---------------------------------------------------------------------------
 
 def _terminal_accepted(session: Session, taxon: "Taxon") -> "Taxon":
@@ -559,9 +759,11 @@ def synonymize(session: Session, *, name_id: int, accepted_id: int) -> "Taxon":
     """Make ``name_id`` a synonym of ``accepted_id``.
 
     Resolves the target to its terminal accepted name (GBIF "chained synonym"
-    rule — never a synonym of a synonym), copies that name's parent onto the
-    synonym, and re-points the name's own existing synonyms onto the same
-    accepted name so no chain forms. Atomic; caller wraps in a transaction.
+    rule — never a synonym of a synonym) and re-points the name's own existing
+    synonyms onto the same accepted name so no chain forms. The name keeps its
+    OWN parentNameUsageID and its own scientific_name — in the atomic model a
+    synonym is parented under its own lineage, so status is a pure one-field
+    toggle with no name rewrite. Atomic; caller wraps in a transaction.
     """
     name = session.get(Taxon, name_id)
     target = session.get(Taxon, accepted_id)
@@ -583,13 +785,13 @@ def synonymize(session: Session, *, name_id: int, accepted_id: int) -> "Taxon":
     )
     if has_children:
         raise ValueError("cannot synonymize a name that has subordinate taxa")
-    # The name itself plus its current synonyms all move onto `terminal`.
+    # The name itself plus its current synonyms all re-point onto `terminal`.
+    # Each keeps its own parentNameUsageID (own lineage) — only the link moves.
     movers = [name] + (
         session.query(Taxon).filter(Taxon.accepted_name_usage_id == name.id).all()
     )
     for m in movers:
         m.accepted_name_usage_id = terminal.id
-        m.parent_name_usage_id = terminal.parent_name_usage_id
         m.updated_at = _utcnow()
     session.flush()
     return name
@@ -608,11 +810,11 @@ def make_accepted(session: Session, taxon_id: int) -> "Taxon":
 
 
 def reparent(session: Session, *, taxon_id: int, new_parent_id: int | None) -> "Taxon":
-    """Re-parent an accepted name, cascading the new parent to its synonyms.
+    """Re-parent an accepted name. Synonyms are NOT touched.
 
-    Synonyms share their accepted name's parent, so re-homing an accepted name
-    must move its synonyms too — the one drift vector the write-time triggers
-    cannot catch (re-parenting never touches the synonym rows).
+    In the atomic model each name carries its own lineage, so a synonym's parent
+    is independent of its accepted name — re-homing an accepted name leaves its
+    synonyms exactly where they are.
     """
     t = session.get(Taxon, taxon_id)
     if t is None:
@@ -621,11 +823,9 @@ def reparent(session: Session, *, taxon_id: int, new_parent_id: int | None) -> "
         raise ValueError("cannot reparent a synonym directly — reparent its accepted name")
     t.parent_name_usage_id = new_parent_id
     t.updated_at = _utcnow()
-    session.flush()  # accepted row first, so the synonym writes satisfy the trigger
-    for syn in session.query(Taxon).filter(Taxon.accepted_name_usage_id == taxon_id).all():
-        syn.parent_name_usage_id = new_parent_id
-        syn.updated_at = _utcnow()
     session.flush()
+    # The new parent changes this row's composed name and every descendant's.
+    recompose_subtree(session, t)
     return t
 
 
@@ -633,10 +833,11 @@ def verify_taxon_consistency(session: Session) -> list[dict]:
     """Audit taxon hierarchy/synonymy invariants; return a list of violations.
 
     Read-only — run manually (Taxonomy-tab button / tests), not at startup. It
-    catches the drift the write-time triggers structurally cannot (chiefly a
-    synonym whose stored parent no longer matches its accepted name's, e.g. from
-    a raw-SQL re-parent). Issue names follow GBIF's NameUsageIssue vocabulary
-    where they map; SYNONYM_PARENT_MISMATCH is this project's stricter rule.
+    catches drift the write-time trigger structurally cannot, chiefly a dangling
+    parentNameUsageID / acceptedNameUsageID or a chained synonym (an accepted
+    name that is itself a synonym). Issue names follow GBIF's NameUsageIssue
+    vocabulary. The atomic model parents synonyms under their own lineage, so
+    there is no synonym-parent-match rule to audit (retired in migration 0033).
     """
     issues: list[dict] = []
     taxa = session.query(Taxon).all()
@@ -658,17 +859,14 @@ def verify_taxon_consistency(session: Session) -> list[dict]:
             issues.append({"issue": "CHAINED_SYNONYM", "taxon_id": t.id,
                            "name": t.scientific_name,
                            "detail": f"accepted name '{acc.scientific_name}' is itself a synonym"})
-        if t.parent_name_usage_id != acc.parent_name_usage_id:
-            issues.append({"issue": "SYNONYM_PARENT_MISMATCH", "taxon_id": t.id,
-                           "name": t.scientific_name,
-                           "detail": f"parent differs from accepted name '{acc.scientific_name}'"})
     return issues
 
 
 def create_taxon_direct(
     session: Session,
     *,
-    scientific_name: str,
+    name_element: str | None = None,
+    scientific_name: str | None = None,
     taxon_rank: str,
     scientific_name_authorship: str | None = None,
     parent_name_usage_id: int | None = None,
@@ -676,21 +874,25 @@ def create_taxon_direct(
     nomenclatural_code: str | None = None,
     taxonworks_otu_id: int | None = None,
 ) -> "Taxon":
-    """Create a taxon row directly from fully specified fields (no parent inference).
+    """Create a taxon row from fully specified fields (no parent inference).
 
-    When an accepted name is given the row is a synonym, so its parent is taken
-    from the (terminal) accepted name rather than the passed value — synonyms
-    share their accepted name's parent.
+    Provide ``name_element`` (the atomic epithet/uninomial — preferred); the
+    composed ``scientific_name`` is derived from it + the parent chain. For
+    backward-compatibility a full ``scientific_name`` may be passed instead, from
+    which the element is extracted. In the atomic model a synonym keeps its OWN
+    parent (it is parented under its own lineage), so the passed parent is used
+    as-is; only the accepted link is resolved to its terminal name.
     """
+    if name_element is None:
+        name_element = element_from_name(scientific_name or "", taxon_rank)
     if accepted_name_usage_id is not None:
         acc = session.get(Taxon, accepted_name_usage_id)
         if acc is None:
             raise ValueError("accepted taxon not found")
-        terminal = _terminal_accepted(session, acc)
-        accepted_name_usage_id = terminal.id
-        parent_name_usage_id = terminal.parent_name_usage_id
+        accepted_name_usage_id = _terminal_accepted(session, acc).id
     t = Taxon(
-        scientific_name=scientific_name,
+        name_element=name_element,
+        scientific_name=scientific_name or name_element,  # placeholder; recomposed below
         taxon_rank=taxon_rank,
         scientific_name_authorship=scientific_name_authorship or None,
         parent_name_usage_id=parent_name_usage_id,
@@ -701,6 +903,8 @@ def create_taxon_direct(
         updated_at=_utcnow(),
     )
     session.add(t)
+    session.flush()
+    t.scientific_name = compose_scientific_name(session, t)
     session.flush()
     return t
 
@@ -726,6 +930,7 @@ def seed_root_taxa(session: Session) -> None:
         )
         if not exists:
             session.add(Taxon(
+                name_element=sci_name,   # uninomial root: element == scientific_name
                 scientific_name=sci_name,
                 taxon_rank=rank,
                 nomenclatural_code=code,
@@ -759,30 +964,35 @@ def get_or_create_from_tw_data(
     Synonym handling: if fetch_full_classification detected the name is invalid
     (cached_is_valid=False), tw contains '_valid_tw_data' and '_valid_otu_id'.
     The valid taxon is imported first; the synonym row gets accepted_name_usage_id
-    set to point at it.
+    set to point at it. In the atomic model the synonym keeps its OWN-lineage
+    parent (TW supplies its original genus), independent of its accepted name.
 
     Import policy: only fills NULL fields on existing rows.  Conflicts with
     non-NULL local values are appended to mismatches (if provided).
     """
     # If this is a synonym, ensure the valid (accepted) taxon exists first.
     accepted_id: int | None = None
-    acc_parent_id: int | None = None   # a synonym shares its accepted name's parent
     valid_tw = tw.get("_valid_tw_data")
     if valid_tw:
         valid_taxon = get_or_create_from_tw_data(
             session, valid_tw, otu_id=tw.get("_valid_otu_id"), mismatches=mismatches
         )
         accepted_id = valid_taxon.id
-        acc_parent_id = valid_taxon.parent_name_usage_id
 
     fields = _fields_from_tw(tw)
-    sci_name = fields["scientific_name"]
+    element = fields["name_element"]
     rank = fields["taxon_rank"]
     nomen_code = fields.get("nomenclatural_code")
 
-    # Ensure all ancestor rows exist; get the immediate parent ID.
+    # Ensure all ancestor rows exist; get the immediate (own-lineage) parent ID.
     parent_id = _ensure_parent_rows(
         session, fields, nomenclatural_code=nomen_code, mismatches=mismatches
+    )
+
+    # Compose the full name now that the parent chain exists.
+    sci_name = _compose_transient(
+        session, name_element=element, taxon_rank=rank,
+        parent_id=parent_id, nomenclatural_code=nomen_code,
     )
 
     existing = None
@@ -796,6 +1006,9 @@ def get_or_create_from_tw_data(
         )
     if existing:
         dirty = False
+        if not existing.name_element:
+            existing.name_element = element
+            dirty = True
         if existing.taxon_rank != rank and mismatches is not None:
             mismatches.append(
                 f"{sci_name}: rank is {existing.taxon_rank!r} locally, "
@@ -807,7 +1020,6 @@ def get_or_create_from_tw_data(
         if accepted_id:
             if not existing.accepted_name_usage_id:
                 existing.accepted_name_usage_id = accepted_id
-                existing.parent_name_usage_id = acc_parent_id   # Inv1: share accepted's parent
                 dirty = True
             elif existing.accepted_name_usage_id != accepted_id and mismatches is not None:
                 local_acc = session.get(Taxon, existing.accepted_name_usage_id)
@@ -817,9 +1029,9 @@ def get_or_create_from_tw_data(
                 mismatches.append(
                     f"{sci_name}: accepted name is {lname!r} locally, import says {iname!r}"
                 )
-        # Parent backfill applies to accepted names only; a synonym's parent is
-        # taken from its accepted name above.
-        if parent_id is not None and not accepted_id:
+        # Own-lineage parent backfill (applies to accepted names and synonyms
+        # alike — a synonym carries its own parent now).
+        if parent_id is not None:
             if existing.parent_name_usage_id is None:
                 existing.parent_name_usage_id = parent_id
                 dirty = True
@@ -840,10 +1052,11 @@ def get_or_create_from_tw_data(
         return existing
 
     t = Taxon(
+        name_element=element,
         scientific_name=sci_name,
         taxon_rank=rank,
         scientific_name_authorship=fields.get("scientific_name_authorship"),
-        parent_name_usage_id=(acc_parent_id if accepted_id else parent_id),
+        parent_name_usage_id=parent_id,
         accepted_name_usage_id=accepted_id,
         taxonworks_otu_id=otu_id,
         nomenclatural_code=nomen_code,
@@ -876,27 +1089,30 @@ def get_or_create_from_powo_data(
     is provided, the accepted name is created first and the synonym row is
     linked to it via accepted_name_usage_id.
 
-    Matching key: (scientific_name, taxon_rank) — same as TW imports.
+    Matching key: (composed scientific_name, taxon_rank) — same as TW imports.
 
     Import policy: only fills NULL fields on existing rows.  Conflicts with
     non-NULL local values are appended to mismatches (if provided).
     """
-    sci_name   = powo_fields["scientific_name"]
+    sci_name   = powo_fields["scientific_name"]   # POWO's full name (input only)
     rank       = (powo_fields.get("taxon_rank") or "species").lower()
     auth       = powo_fields.get("scientific_name_authorship")
     nomen_code = powo_fields.get("nomenclatural_code")
     family     = powo_fields.get("family")
     genus      = powo_fields.get("genus")
     is_synonym = powo_fields.get("is_synonym", False)
+    # Atomic element: POWO's `name` is the full string, so split it (no subgenus
+    # for plants). The composed scientific_name is rebuilt below from the chain.
+    element = powo_fields.get("name_element") or element_from_name(sci_name, rank)
 
-    # Create the accepted name first so the synonym can link to it.
+    # Create the accepted name first so the synonym can link to it. In the atomic
+    # model the synonym keeps its OWN-lineage parent, independent of the accepted
+    # name (its genus is one of its own ancestors).
     accepted_taxon: Taxon | None = None
-    acc_parent_id: int | None = None   # a synonym shares its accepted name's parent
     if is_synonym and accepted_fields:
         accepted_taxon = get_or_create_from_powo_data(
             session, accepted_fields, mismatches=mismatches
         )
-        acc_parent_id = accepted_taxon.parent_name_usage_id
 
     # POWO gives family → genus → species (no subfamily/tribe available).
     ancestor_fields: dict = {"taxon_rank": rank, "nomenclatural_code": nomen_code}
@@ -929,13 +1145,23 @@ def get_or_create_from_powo_data(
         session, ancestor_fields, nomenclatural_code=nomen_code, mismatches=mismatches
     )
 
+    # Compose the full name from the element + parent chain (matches the atomic
+    # model and the stored form used by every other writer).
+    composed_sci = _compose_transient(
+        session, name_element=element, taxon_rank=rank,
+        parent_id=parent_id, nomenclatural_code=nomen_code,
+    )
+
     existing = (
         session.query(Taxon)
-        .filter(Taxon.scientific_name == sci_name, Taxon.taxon_rank == rank)
+        .filter(Taxon.scientific_name == composed_sci, Taxon.taxon_rank == rank)
         .first()
     )
     if existing:
         dirty = False
+        if not existing.name_element:
+            existing.name_element = element
+            dirty = True
         if auth:
             if not existing.scientific_name_authorship:
                 existing.scientific_name_authorship = auth
@@ -945,9 +1171,8 @@ def get_or_create_from_powo_data(
                     f"{sci_name}: authorship is {existing.scientific_name_authorship!r} locally, "
                     f"import says {auth!r}"
                 )
-        # Parent backfill applies to accepted names only; a synonym's parent is
-        # taken from its accepted name below.
-        if parent_id is not None and not accepted_taxon:
+        # Own-lineage parent backfill (accepted names and synonyms alike).
+        if parent_id is not None:
             if existing.parent_name_usage_id is None:
                 existing.parent_name_usage_id = parent_id
                 dirty = True
@@ -965,7 +1190,6 @@ def get_or_create_from_powo_data(
         if accepted_taxon:
             if not existing.accepted_name_usage_id:
                 existing.accepted_name_usage_id = accepted_taxon.id
-                existing.parent_name_usage_id = acc_parent_id   # Inv1: share accepted's parent
                 dirty = True
             elif existing.accepted_name_usage_id != accepted_taxon.id and mismatches is not None:
                 local_acc = session.get(Taxon, existing.accepted_name_usage_id)
@@ -980,10 +1204,11 @@ def get_or_create_from_powo_data(
         return existing
 
     t = Taxon(
-        scientific_name=sci_name,
+        name_element=element,
+        scientific_name=composed_sci,
         taxon_rank=rank,
         scientific_name_authorship=auth,
-        parent_name_usage_id=(acc_parent_id if accepted_taxon else parent_id),
+        parent_name_usage_id=parent_id,
         accepted_name_usage_id=accepted_taxon.id if accepted_taxon else None,
         nomenclatural_code=nomen_code,
         created_at=_utcnow(),
