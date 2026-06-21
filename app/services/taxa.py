@@ -892,6 +892,7 @@ def seed_root_taxa(session: Session) -> None:
         )
         if not exists:
             session.add(Taxon(
+                name_element=sci_name,   # uninomial root: element == scientific_name
                 scientific_name=sci_name,
                 taxon_rank=rank,
                 nomenclatural_code=code,
