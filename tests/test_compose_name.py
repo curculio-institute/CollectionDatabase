@@ -101,3 +101,17 @@ def test_recompose_subtree_cascades_on_genus_rename(session, tree):
     assert tree["ssp"].scientific_name == "Xanthorhynchus crypticus alpinus"
     # the Curculio side is untouched
     assert tree["cross"].scientific_name in ("forticollis", "Curculio forticollis")
+
+
+def test_reparent_recomposes_subtree(session, tree):
+    # Moving a species to another genus (via the reparent service op) must
+    # recompose its name and its descendants'.
+    from app.services.taxa import reparent
+    # seed composed names so the assertion below is meaningful
+    recompose_subtree(session, tree["genus"])
+    assert tree["sp_plain"].scientific_name == "Otiorhynchus crypticus"
+    assert tree["ssp"].scientific_name == "Otiorhynchus crypticus alpinus"
+    reparent(session, taxon_id=tree["sp_plain"].id, new_parent_id=tree["curculio"].id)
+    session.refresh(tree["sp_plain"]); session.refresh(tree["ssp"])
+    assert tree["sp_plain"].scientific_name == "Curculio crypticus"
+    assert tree["ssp"].scientific_name == "Curculio crypticus alpinus"

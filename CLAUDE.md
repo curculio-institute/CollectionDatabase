@@ -306,7 +306,12 @@ follow GBIF's `NameUsageIssue` vocabulary (`CHAINED_SYNONYM`, `PARENT_NAME_USAGE
 Every TW species import creates dedicated `taxon` rows for each ancestor rank (genus,
 subgenus, tribe, subfamily, family, order) via `_ensure_parent_rows()` in
 `app/services/taxa.py`. Each ancestor row is linked to its own parent via
-`dwc:parentNameUsageID`. Rows are matched by `(dwc:scientificName, dwc:taxonRank)`.
+`dwc:parentNameUsageID`. Every writer (TW, POWO, manual) sets the atomic `name_element`
+and **composes** `dwc:scientificName` from it + the parent chain (`compose_scientific_name`);
+rows are matched by `(composed dwc:scientificName, dwc:taxonRank)` or OTU id. A subgenus
+ancestor is therefore stored composed as `Genus (Subgenus)`, a species ancestor as
+`Genus epithet`. A reparent/rename cascades via `recompose_subtree()`. Synonyms are
+parented under their **own** lineage (own genus), never the accepted name's (Epic #30).
 
 `ensure_higher_taxa()` is a no-op in the DwC parent-link model (backfill not needed).
 
@@ -420,7 +425,7 @@ manually in the TW UI. This constrains the sync direction to insert-only forever
 
 | Module | Responsibility |
 |--------|---------------|
-| `taxa.py` | Taxon search, TW import, parent-row creation, `format_scientific_name()` |
+| `taxa.py` | Taxon search, TW import, parent-row creation, name composition (`compose_scientific_name`/`recompose_subtree`/`element_from_name`), `format_scientific_name()` |
 | `taxonomy.py` | Checklist tree builder, stats, filter options |
 | `taxonworks.py` | All TW API calls (async). Token hardcoded as `TW_TOKEN` at the top of the file. |
 | `events.py` | Collecting event CRUD + search |

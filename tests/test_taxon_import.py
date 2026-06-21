@@ -291,9 +291,10 @@ def test_tw_import_synonym_both_new(session):
     assert synonym.accepted_name_usage_id == accepted.id
 
 
-def test_tw_import_cross_genus_synonym_shares_accepted_parent(session):
-    """A cross-genus synonym must take its accepted name's parent (Inv1), not its
-    own genus — otherwise the synonym-integrity trigger would reject the import."""
+def test_tw_import_cross_genus_synonym_keeps_own_genus(session):
+    """Atomic model (Epic #30): a cross-genus synonym keeps its OWN-lineage parent
+    (its original genus, which TW supplies) and composes to its own name; only the
+    accepted link points at the valid name in the other genus."""
     valid_tw, _ = _tw_species(
         epithet="norici", genus="Otiorhynchus", family="Curculionidae",
         order="Coleoptera", authorship="Reitter", otu_id=5001, nomenclatural_code="iczn",
@@ -303,12 +304,14 @@ def test_tw_import_cross_genus_synonym_shares_accepted_parent(session):
         valid_tw_dict=valid_tw, valid_otu_id=5001, otu_id=5002,
     )
     syn_tw["nomenclatural_code"] = "iczn"
-    synonym = get_or_create_from_tw_data(session, syn_tw, otu_id=syn_otu)   # must not raise
+    synonym = get_or_create_from_tw_data(session, syn_tw, otu_id=syn_otu)
     accepted = session.query(Taxon).filter_by(scientific_name="Otiorhynchus norici").first()
-    assert synonym.accepted_name_usage_id == accepted.id
-    assert synonym.parent_name_usage_id == accepted.parent_name_usage_id   # shares accepted's parent
     curculio = session.query(Taxon).filter_by(scientific_name="Curculio", taxon_rank="genus").first()
-    assert curculio is None or synonym.parent_name_usage_id != curculio.id
+    assert synonym.accepted_name_usage_id == accepted.id
+    assert curculio is not None
+    assert synonym.parent_name_usage_id == curculio.id        # own genus, not accepted's
+    assert synonym.scientific_name == "Curculio rubidus"
+    assert synonym.name_element == "rubidus"
 
 
 def test_tw_import_preserves_tribe_parent_chain(plant_tree, session):
@@ -346,6 +349,82 @@ def test_tw_mismatch_reports_rank_conflict(session):
 
     assert wrong.taxon_rank == "subgenus"  # NOT changed
     assert any("Achillea" in m and "genus" in m for m in mismatches)
+
+
+# ---------------------------------------------------------------------------
+# Atomic name_element population (Epic #30, Phase 3)
+# ---------------------------------------------------------------------------
+
+def test_tw_import_populates_name_element(plant_tree, session):
+    """Species → name_element = epithet; ancestor genus → its uninomial; the
+    composed scientific_name is rebuilt from the chain."""
+    tw, otu = _tw_species(
+        epithet="ptarmica", genus="Achillea", family="Asteraceae",
+        tribe="Anthemideae", otu_id=7001,
+    )
+    sp = get_or_create_from_tw_data(session, tw, otu_id=otu)
+    assert sp.name_element == "ptarmica"
+    assert sp.scientific_name == "Achillea ptarmica"
+    genus = session.query(Taxon).filter_by(scientific_name="Achillea", taxon_rank="genus").first()
+    assert genus.name_element == "Achillea"
+
+
+def test_tw_import_species_with_subgenus_composes(session):
+    """A species under a subgenus composes to 'Genus (Subgenus) epithet', and the
+    subgenus ancestor row is stored fully composed as 'Genus (Subgenus)'."""
+    tw = {
+        "rank": "species", "name": "crypticus", "nomenclatural_code": "iczn",
+        "cached_author_year": "Reitter",
+        "genus": "Otiorhynchus", "subgenus": "Nihus",
+        "family": "Curculionidae", "taxon_order": "Coleoptera",
+    }
+    sp = get_or_create_from_tw_data(session, tw, otu_id=8001)
+    assert sp.name_element == "crypticus"
+    assert sp.scientific_name == "Otiorhynchus (Nihus) crypticus"
+    subg = session.query(Taxon).filter_by(taxon_rank="subgenus").first()
+    assert subg.name_element == "Nihus"
+    assert subg.scientific_name == "Otiorhynchus (Nihus)"
+
+
+def test_tw_import_subspecies_composes(session):
+    """A subspecies composes to a bare ICZN trinomial; its species parent row is
+    created with the epithet as its element."""
+    tw = {
+        "rank": "subspecies", "name": "alpina", "nomenclatural_code": "iczn",
+        "genus": "Achillea", "specific_epithet": "millefolium",
+        "species_name": "Achillea millefolium", "family": "Asteraceae",
+    }
+    ssp = get_or_create_from_tw_data(session, tw, otu_id=9001)
+    assert ssp.name_element == "alpina"
+    assert ssp.scientific_name == "Achillea millefolium alpina"
+    sp = session.query(Taxon).filter_by(taxon_rank="species").first()
+    assert sp.name_element == "millefolium"
+    assert sp.scientific_name == "Achillea millefolium"
+
+
+def test_create_taxon_direct_derives_element_from_full_name(session):
+    genus = create_taxon_direct(
+        session, scientific_name="Achillea", taxon_rank="genus", nomenclatural_code="ICN",
+    )
+    sp = create_taxon_direct(
+        session, scientific_name="Achillea nobilis", taxon_rank="species",
+        nomenclatural_code="ICN", parent_name_usage_id=genus.id,
+    )
+    assert genus.name_element == "Achillea"
+    assert sp.name_element == "nobilis"
+    assert sp.scientific_name == "Achillea nobilis"
+
+
+def test_create_taxon_direct_accepts_explicit_element(session):
+    genus = create_taxon_direct(
+        session, name_element="Otiorhynchus", taxon_rank="genus", nomenclatural_code="ICZN",
+    )
+    sp = create_taxon_direct(
+        session, name_element="crypticus", taxon_rank="species",
+        nomenclatural_code="ICZN", parent_name_usage_id=genus.id,
+    )
+    assert sp.name_element == "crypticus"
+    assert sp.scientific_name == "Otiorhynchus crypticus"
 
 
 # ---------------------------------------------------------------------------
@@ -477,6 +556,17 @@ def test_powo_import_synonym_linked_to_existing_accepted(plant_tree, session):
     assert after == before + 1  # only the synonym row is new
     assert synonym.accepted_name_usage_id is not None
     assert synonym.accepted_name_usage_id == plant_tree["species"].id
+
+
+def test_powo_import_sets_name_element(session):
+    """POWO's full `name` is split into the atomic element; composition rebuilds
+    the same full string."""
+    powo = _powo_species(
+        "Achillea distans", genus="Achillea", family="Asteraceae", authorship="Waldst. & Kit.",
+    )
+    sp = get_or_create_from_powo_data(session, powo)
+    assert sp.name_element == "distans"
+    assert sp.scientific_name == "Achillea distans"
 
 
 def test_powo_import_synonym_both_new(session):
