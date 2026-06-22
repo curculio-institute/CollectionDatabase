@@ -33,12 +33,27 @@ def set_defaults(
     identified_by_id: int | None,
     recorded_by_id: int | None,
 ) -> None:
-    """Overwrite the single person_defaults row.  Call inside an open transaction."""
-    session.execute(
-        text(
-            "UPDATE person_defaults "
-            "SET default_identified_by_id = :ib, default_recorded_by_id = :rb"
-        ),
-        {"ib": identified_by_id, "rb": recorded_by_id},
-    )
+    """Set the single person_defaults row.  Call inside an open transaction.
+
+    Insert-or-update: the table is meant to hold exactly one row (seeded by
+    migration 0022), but if that row is ever missing a plain UPDATE would
+    silently no-op and the default would never persist. So insert when absent."""
+    params = {"ib": identified_by_id, "rb": recorded_by_id}
+    exists = session.execute(text("SELECT 1 FROM person_defaults LIMIT 1")).first()
+    if exists is None:
+        session.execute(
+            text(
+                "INSERT INTO person_defaults "
+                "(default_identified_by_id, default_recorded_by_id) VALUES (:ib, :rb)"
+            ),
+            params,
+        )
+    else:
+        session.execute(
+            text(
+                "UPDATE person_defaults "
+                "SET default_identified_by_id = :ib, default_recorded_by_id = :rb"
+            ),
+            params,
+        )
     session.flush()

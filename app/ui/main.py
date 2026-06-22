@@ -227,15 +227,38 @@ def index():
     # they never trigger this. Python clears the flag at every deliberate reset
     # (save / mode switch) via window.tpClearDirty().
     ui.add_head_html("""
+    <style>
+      #tp-unsaved-banner {
+        display:none; position:fixed; bottom:16px; left:50%;
+        transform:translateX(-50%); z-index:9999;
+        background:#b45309; color:#fff; padding:7px 18px; border-radius:9px;
+        font-size:.82rem; font-weight:600; letter-spacing:.01em;
+        box-shadow:0 2px 10px rgba(0,0,0,.28);
+      }
+    </style>
     <script>
     (function(){
       if (window._tpDirtyInit) return;
       window._tpDirtyInit = true;
       window._tpDirty = false;
-      window.tpClearDirty = function(){ window._tpDirty = false; };
+      function banner(){
+        var b = document.getElementById('tp-unsaved-banner');
+        if(!b){
+          b = document.createElement('div');
+          b.id = 'tp-unsaved-banner';
+          b.textContent = '\\u26A0  Unsaved changes — not yet saved';
+          (document.body || document.documentElement).appendChild(b);
+        }
+        return b;
+      }
+      function setDirty(v){
+        window._tpDirty = v;
+        banner().style.display = v ? 'block' : 'none';
+      }
+      window.tpClearDirty = function(){ setDirty(false); };
       function mark(e){
         var t = e.target;
-        if (t && t.closest && t.closest('.tp-dirty-scope')) window._tpDirty = true;
+        if (t && t.closest && t.closest('.tp-dirty-scope')) setDirty(true);
       }
       document.addEventListener('input',  mark, true);
       document.addEventListener('change', mark, true);
