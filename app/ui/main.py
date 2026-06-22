@@ -240,25 +240,35 @@ def index():
     (function(){
       if (window._tpDirtyInit) return;
       window._tpDirtyInit = true;
+      // Track WHICH areas have unsaved edits (a .tp-dirty-scope panel carries a
+      // data-dirty-label). The banner names them so the user knows where to go.
+      var dirty = new Set();
       window._tpDirty = false;
       function banner(){
         var b = document.getElementById('tp-unsaved-banner');
         if(!b){
           b = document.createElement('div');
           b.id = 'tp-unsaved-banner';
-          b.textContent = '\\u26A0  Unsaved changes — not yet saved';
           (document.body || document.documentElement).appendChild(b);
         }
         return b;
       }
-      function setDirty(v){
-        window._tpDirty = v;
-        banner().style.display = v ? 'block' : 'none';
+      function render(){
+        var b = banner();
+        window._tpDirty = dirty.size > 0;
+        if(dirty.size === 0){ b.style.display = 'none'; return; }
+        b.textContent = '\\u26A0  Unsaved changes in: ' + Array.from(dirty).join(', ');
+        b.style.display = 'block';
       }
-      window.tpClearDirty = function(){ setDirty(false); };
+      // tpClearDirty(label) clears one area; tpClearDirty() clears all.
+      window.tpClearDirty = function(label){
+        if(label){ dirty.delete(label); } else { dirty.clear(); }
+        render();
+      };
       function mark(e){
         var t = e.target;
-        if (t && t.closest && t.closest('.tp-dirty-scope')) setDirty(true);
+        var scope = t && t.closest && t.closest('.tp-dirty-scope');
+        if(scope){ dirty.add(scope.getAttribute('data-dirty-label') || 'this form'); render(); }
       }
       document.addEventListener('input',  mark, true);
       document.addEventListener('change', mark, true);
@@ -654,11 +664,15 @@ def index():
     # Cross-tab refresh registry — populated as tabs build, called by earlier tabs.
     _refreshers: dict[str, callable] = {}
 
-    def _mark_form_clean():
-        """Clear the client-side unsaved-changes flag (see the beforeunload
-        guard). Called after every deliberate reset — successful save, mode
-        switch — so the close-warning only fires on genuinely unsaved edits."""
-        ui.run_javascript("window.tpClearDirty && window.tpClearDirty()")
+    import json as _json
+
+    def _mark_form_clean(scope: str | None = None):
+        """Clear the client-side unsaved-changes flag for one area (or all when
+        scope is None). Called after every deliberate reset — successful save,
+        mode switch — so the banner / close-warning only flag genuinely unsaved
+        edits. `scope` must match a panel's data-dirty-label."""
+        arg = _json.dumps(scope) if scope else ""
+        ui.run_javascript(f"window.tpClearDirty && window.tpClearDirty({arg})")
 
     # ── tab panels ───────────────────────────────────────────────────────
     with ui.tab_panels(main_tabs, value="digitize").classes("w-full"):
@@ -666,7 +680,8 @@ def index():
         # ================================================================
         # TAB: SPECIMEN DIGITIZATION
         # ================================================================
-        with ui.tab_panel("digitize").classes("tp-dirty-scope"):
+        with ui.tab_panel("digitize").classes("tp-dirty-scope") \
+                .props('data-dirty-label="Specimen Digitization"'):
             # ── per-connection state ─────────────────────────────────────
             state = {"event_id": None, "populating": False}
             bio_state: dict = {
@@ -1169,7 +1184,7 @@ def index():
                         return
                     _refresh_table()
                     _clear_after_save()
-                    _mark_form_clean()
+                    _mark_form_clean("Specimen Digitization")
                     for fn in _refreshers.values():
                         fn()
 
@@ -1182,7 +1197,7 @@ def index():
                 def _ms_on_saved():
                     event_sel.set_options(_event_opts())
                     _refresh_table()
-                    _mark_form_clean()
+                    _mark_form_clean("Specimen Digitization")
                     for fn in _refreshers.values():
                         fn()
 
@@ -1216,7 +1231,7 @@ def index():
                     _hide_reuse_banner()
                     ce["reset"]()
                     ms_state["wipe"]()
-                    _mark_form_clean()
+                    _mark_form_clean("Specimen Digitization")
 
                 _mode_state["handler"] = _on_mode_toggle
                 _mode_state["has_content"] = _has_any_content
@@ -1225,10 +1240,11 @@ def index():
         # ================================================================
         # TAB: RECORDS
         # ================================================================
-        with ui.tab_panel("records").classes("tp-dirty-scope"):
+        with ui.tab_panel("records").classes("tp-dirty-scope") \
+                .props('data-dirty-label="Records"'):
             with ui.column().classes("w-full max-w-5xl mx-auto px-4 pt-6 pb-16 gap-4"):
                 def _records_saved():
-                    _mark_form_clean()
+                    _mark_form_clean("Records")
                     for fn in _refreshers.values():
                         fn()
                 _records_handle = build_records_tab(_sf, on_saved=_records_saved)
@@ -1236,8 +1252,12 @@ def index():
         # ================================================================
         # TAB: IMPORT & ASSIGN
         # ================================================================
-        with ui.tab_panel("import").classes("tp-dirty-scope"):
-            build_import_assign_tab(_sf, _refreshers, on_saved=_mark_form_clean)
+        with ui.tab_panel("import").classes("tp-dirty-scope") \
+                .props('data-dirty-label="Import & Assign"'):
+            build_import_assign_tab(
+                _sf, _refreshers,
+                on_saved=lambda: _mark_form_clean("Import & Assign"),
+            )
 
         # ================================================================
         # TAB: TAXONOMY
