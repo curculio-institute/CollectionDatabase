@@ -199,9 +199,18 @@ def index():
                         background:var(--tp-base-foreground); overflow-wrap:anywhere; }
       .pq-prev-id     { font-family:monospace; color:var(--tp-base-lighter); }
       .pq-prev-det    { font-style:italic; }
-      .pq-prev-label[data-ident] { cursor:default; transition:background .1s, outline .1s; }
+      .pq-prev-label[data-ident] { cursor:text; transition:background .1s, outline .1s; }
       .pq-ident-hl    { outline:2px solid var(--tp-secondary);
                         background:rgba(3,105,161,.10) !important; }
+      .pq-prev-edited { background:#fff7ed; border-color:#f59e0b; }
+      .dark .pq-prev-edited { background:rgba(245,158,11,.12); }
+      /* the inline editor sits flush inside the label box */
+      .pq-prev-label .q-field__control { min-height:0; padding:0; }
+      .pq-prev-label .q-field__control:before,
+      .pq-prev-label .q-field__control:after { display:none; }
+      .pq-prev-label .q-textarea .q-field__native { padding:0; line-height:1.3; resize:none; }
+      .pq-prev-ctl    { justify-content:flex-end; opacity:.55; }
+      .pq-prev-ctl:hover { opacity:1; }
       .pq-prev-empty  { font-size:.85rem; font-style:italic; color:var(--tp-base-soft); }
     </style>
     <script>
@@ -1475,42 +1484,73 @@ def index():
                         clear_btn  = ui.button("Clear", icon="delete_sweep").props("flat dense")
                         print_btn  = ui.button("Print all", icon="print").props("color=secondary")
 
-                    preview_col = ui.column().classes("w-full gap-1")
+                    # Interactive sheet preview (#37) — the PRIMARY surface. Shows
+                    # how the printed sheet groups/lays out; data & determination
+                    # labels are edited INLINE (a print-only override). Editing one
+                    # label edits ALL identical labels (same auto text = same event
+                    # + biological associations). Hovering highlights identical
+                    # labels. Identifier labels are read-only (immutable code).
+                    preview_box = ui.column().classes("w-full mt-1")
 
-                    # Sheet preview (#37): how the printed sheet lays out; hover a
-                    # data label to highlight identical ones (same event + bio).
-                    with ui.expansion("Sheet preview", icon="preview") \
-                            .classes("w-full mt-3").props("dense"):
-                        sheet_preview = ui.html("").classes("w-full")
+                    def _open_in_records(co_id):
+                        if _records_handle and co_id:
+                            _records_handle["open_specimen"](co_id)
+                        main_tabs.set_value("records")
 
-                    TYPE_ICON  = {"data": "place", "determination": "science", "identifier": "label"}
-                    TYPE_COLOR = {"data": "blue-grey", "determination": "teal", "identifier": "secondary"}
+                    def _edit_label(qid, value, auto):
+                        # Blank or == auto clears the override (back to auto); else
+                        # apply to every identical label (same auto text).
+                        new = None if (not value.strip() or value.strip() == (auto or "").strip()) else value
+                        with _sf() as session:
+                            with session.begin():
+                                n = pq_svc.set_override_for_identical(session, qid, new)
+                        verb = "Reset to auto" if new is None else "Applied edit"
+                        ui.notify(f"{verb} on {n} identical label{'s' if n != 1 else ''}.", type="info")
+                        _refresh_queue()
 
-                    def _preview_html() -> str:
-                        import html as _h
-                        model = _with_session(pq_svc.preview_model)
-                        if not model:
-                            return '<div class="pq-prev-empty">Nothing queued.</div>'
-                        out = ['<div class="pq-prev">']
-                        for g in model:
-                            out.append('<div class="pq-prev-group">')
-                            out.append(f'<div class="pq-prev-src">{_h.escape(g["source"] or "Queued labels")}</div>')
-                            out.append('<div class="pq-prev-cols">')
-                            for sp in g["specimens"]:
-                                out.append('<div class="pq-prev-col">')
-                                if sp["data"] is not None:
-                                    ident = _h.escape(sp["data_identity"] or "")
-                                    txt = _h.escape(sp["data"]).replace("\n", "<br>")
-                                    out.append(f'<div class="pq-prev-label pq-prev-data" data-ident="{ident}">{txt}</div>')
-                                if sp["id_code"]:
-                                    out.append(f'<div class="pq-prev-label pq-prev-id">{_h.escape(sp["id_code"])}</div>')
-                                if sp["det"] is not None:
-                                    txt = _h.escape(sp["det"]).replace("\n", "<br>")
-                                    out.append(f'<div class="pq-prev-label pq-prev-det">{txt}</div>')
-                                out.append('</div>')
-                            out.append('</div></div>')
-                        out.append('</div>')
-                        return "".join(out)
+                    def _delete_column(sp):
+                        with _sf() as session:
+                            with session.begin():
+                                for qid in (sp.get("data_qid"), sp.get("det_qid"), sp.get("id_qid")):
+                                    if qid:
+                                        pq_svc.remove_item(session, qid)
+                        _refresh_queue()
+
+                    def _editable_box(kind, sp):
+                        text  = sp["data"]       if kind == "data" else sp["det"]
+                        auto  = sp["data_auto"]  if kind == "data" else sp["det_auto"]
+                        qid   = sp["data_qid"]   if kind == "data" else sp["det_qid"]
+                        ident = sp["data_ident"] if kind == "data" else sp["det_ident"]
+                        cls = f"pq-prev-label pq-prev-{kind}"
+                        if (text or "") != (auto or ""):
+                            cls += " pq-prev-edited"
+                        with ui.element("div").classes(cls).props(f"data-ident={ident}"):
+                            ta = (ui.textarea(value=text or "")
+                                  .props("borderless dense autogrow")
+                                  .classes("w-full").style("font-size:.72rem")
+                                  .tooltip("Edit for print fit (abbreviate / add). Applies to "
+                                           "all identical labels; does not change the record."))
+                            ta.on("blur", lambda _, q=qid, a=auto or "", w=ta: _edit_label(q, w.value, a))
+
+                    def _render_column(sp):
+                        with ui.element("div").classes("pq-prev-col"):
+                            if sp["data_qid"] is not None:
+                                _editable_box("data", sp)
+                            if sp["id_code"]:
+                                with ui.element("div").classes("pq-prev-label pq-prev-id"):
+                                    ui.label(sp["id_code"])
+                            if sp["det_qid"] is not None:
+                                _editable_box("det", sp)
+                            with ui.row().classes("pq-prev-ctl items-center gap-0 w-full"):
+                                if sp["co_id"]:
+                                    ui.button("", icon="open_in_new") \
+                                        .props("flat dense round size=xs") \
+                                        .tooltip("Open this specimen in Records (substantial edits)") \
+                                        .on_click(lambda _, c=sp["co_id"]: _open_in_records(c))
+                                ui.button("", icon="close") \
+                                    .props("flat dense round size=xs") \
+                                    .tooltip("Remove these labels from the queue") \
+                                    .on_click(lambda _, s=sp: _delete_column(s))
 
                     def _refresh_queue():
                         summary = _with_session(pq_svc.queue_summary)
@@ -1521,23 +1561,21 @@ def index():
                             f"{summary.n_identifier} id)"
                             if summary.total else "empty"
                         )
-                        sheet_preview.set_content(_preview_html())
-                        items = _with_session(pq_svc.queue_preview_items)
-                        preview_col.clear()
-                        with preview_col:
-                            if not items:
+                        model = _with_session(pq_svc.preview_model)
+                        preview_box.clear()
+                        with preview_box:
+                            if not model:
                                 ui.label("Nothing queued yet — labels are added automatically "
                                          "when you save specimens or generate identifier codes.") \
                                   .classes("text-sm italic").style("color:var(--tp-base-soft)")
-                            else:
-                                for item in items:
-                                    _render_queue_row(item)
-
-                    def _remove_item(queue_id: int):
-                        with _sf() as session:
-                            with session.begin():
-                                pq_svc.remove_item(session, queue_id)
-                        _refresh_queue()
+                                return
+                            with ui.element("div").classes("pq-prev"):
+                                for g in model:
+                                    with ui.element("div").classes("pq-prev-group"):
+                                        ui.label(g["source"] or "Queued labels").classes("pq-prev-src")
+                                        with ui.element("div").classes("pq-prev-cols"):
+                                            for sp in g["specimens"]:
+                                                _render_column(sp)
 
                     def _print_all():
                         summary = _with_session(pq_svc.queue_summary)
@@ -1568,59 +1606,6 @@ def index():
                             with session.begin():
                                 pq_svc.clear_queue(session)
                         _refresh_queue()
-
-                    # ── Per-row rendering (#37) ──────────────────────────────
-                    # Data/determination rows are editable for PRINT FIT ONLY: the
-                    # text is a print-only override (persisted on the row) that
-                    # abbreviates / extends the auto-composed label without touching
-                    # the record. Substantial data fixes go to Records via the
-                    # "open in Records" link. Identifier rows are read-only (the
-                    # immutable catalog number).
-
-                    def _open_in_records(co_id: int):
-                        if _records_handle:
-                            _records_handle["open_specimen"](co_id)
-                        main_tabs.set_value("records")
-
-                    def _save_override(queue_id: int, value: str, auto_text: str):
-                        # Store only a genuine deviation; blank or == auto clears it.
-                        new = None if (not value.strip() or value.strip() == auto_text.strip()) else value
-                        with _sf() as session:
-                            with session.begin():
-                                pq_svc.set_text_override(session, queue_id, new)
-
-                    def _render_queue_row(item: dict):
-                        with ui.row().classes("items-start gap-2 w-full"):
-                            ui.icon(TYPE_ICON[item["type"]], size="xs") \
-                                .style("color:var(--tp-secondary); opacity:.7; margin-top:6px")
-                            if item["type"] == "identifier":
-                                ui.label(item["text"] or "—").classes("text-sm flex-1") \
-                                    .style("margin-top:4px")
-                            else:
-                                edited = item.get("text_override") is not None
-                                ta = (
-                                    ui.textarea(value=item["text"] or "")
-                                    .props("dense autogrow outlined")
-                                    .classes("flex-1")
-                                    .style("font-size:0.78rem")
-                                    .tooltip("Print-only — abbreviate or add text to fit the "
-                                             "label. Does not change the record.")
-                                )
-                                if edited:
-                                    ta.props('bg-color=amber-1')
-                                ta.on(
-                                    "blur",
-                                    lambda _, qid=item["id"], auto=item["auto_text"], w=ta:
-                                        _save_override(qid, w.value, auto) or _refresh_queue(),
-                                )
-                                ui.button("", icon="open_in_new") \
-                                    .props("flat dense round size=xs") \
-                                    .tooltip("Open this specimen in Records (for substantial edits)") \
-                                    .on_click(lambda _, cid=item["co_id"]: _open_in_records(cid))
-                            ui.button("", icon="close") \
-                                .props("flat dense round size=xs") \
-                                .style("margin-top:2px") \
-                                .on_click(lambda _, qid=item["id"]: _remove_item(qid))
 
                     print_btn.on_click(_print_all)
                     clear_btn.on_click(_clear_queue)

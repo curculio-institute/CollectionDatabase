@@ -10,6 +10,7 @@ Three label types:
 """
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass
 
 from sqlalchemy.orm import Session
@@ -99,65 +100,6 @@ def queue_summary(session: Session) -> QueueSummary:
         n_determination = sum(1 for r in rows if r.label_type == "determination"),
         n_identifier    = sum(1 for r in rows if r.label_type == "identifier"),
     )
-
-
-def queue_preview_items(session: Session) -> list[dict]:
-    """Per-row summary for the print-queue UI.
-
-    Each data/determination item carries:
-      auto_text      — the label as auto-composed from the record (multi-line),
-      text_override  — the user's print-only edit, or None,
-      text           — what prints now (override if set, else auto_text),
-      co_id          — to open the specimen in Records,
-      event_id       — (data only) the collecting event.
-    Identifier items are read-only: just the code (the immutable catalog number).
-    """
-    items = []
-    for row in session.query(PrintQueue).order_by(PrintQueue.created_at).all():
-        if row.label_type == "data" and row.collection_object:
-            co = row.collection_object
-            ev = co.collecting_event
-            auto_text = lbl.label_plaintext(_co_to_data_label(co))
-            items.append({
-                "type": "data",
-                "auto_text": auto_text,
-                "text_override": row.text_override,
-                "text": row.text_override if row.text_override is not None else auto_text,
-                "id": row.id,
-                "co_id": co.id,
-                "event_id": ev.id if ev else None,
-            })
-
-        elif row.label_type == "determination" and row.collection_object:
-            dl = _co_to_det_label(row.collection_object)
-            auto_text = lbl.label_plaintext(dl) if dl else "—"
-            items.append({
-                "type": "determination",
-                "auto_text": auto_text,
-                "text_override": row.text_override,
-                "text": row.text_override if row.text_override is not None else auto_text,
-                "id": row.id,
-                "co_id": row.collection_object.id,
-            })
-
-        elif row.label_type == "identifier" and row.label_code:
-            code = row.label_code.code
-            items.append({"type": "identifier", "text": code, "id": row.id})
-
-    return items
-
-
-def set_text_override(session: Session, queue_id: int, text: str | None) -> None:
-    """Set (or clear, with None/empty) a queue row's print-only label override.
-    Only meaningful for data/determination rows; identifier rows are never edited."""
-    row = session.get(PrintQueue, queue_id)
-    if row is None:
-        return
-    if row.label_type == "identifier":
-        return
-    row.text_override = (text or None)  # empty string clears -> back to auto
-    row.updated_at = _utcnow()
-    session.flush()
 
 
 # ---------------------------------------------------------------------------
@@ -253,29 +195,37 @@ def queued_groups(session: Session) -> list[lbl.LabelGroup]:
     ]
 
 
-def _data_identity(co: CollectionObject) -> str:
-    """Identity key for a specimen's *data label*: same key ⇒ identical printed
-    data label. A data label is composed from the collecting event AND the
-    biological associations, so identity = (event id, sorted associated taxa) —
-    not the event alone (#37). Drives the preview's hover-highlight of identical
-    labels."""
-    ev = co.collecting_event
-    assoc = sorted(
-        ba.object_taxon.scientific_name
-        for ba in co.subject_associations
-        if ba.object_taxon
-    )
-    return f"ev{ev.id if ev else 'none'}|" + "|".join(assoc)
+def _ident(text: str | None) -> str:
+    """Stable short identity key from a label's text. Two labels are 'identical'
+    iff their auto-composed text matches — for a data label that means same
+    collecting event AND same biological associations (the label is composed from
+    both), independent of which event *row* or batch produced it (#37)."""
+    return hashlib.md5((text or "").encode("utf-8")).hexdigest()[:12]
+
+
+def _row_auto_identity(row: PrintQueue) -> str | None:
+    """Identity of a data/determination row's AUTO label text (override-independent),
+    so identical labels group together for hover-highlight and batch edit. None for
+    identifier rows / rows with no renderable label."""
+    if row.label_type == "data" and row.collection_object:
+        return _ident(lbl.label_plaintext(_co_to_data_label(row.collection_object)))
+    if row.label_type == "determination" and row.collection_object:
+        dl = _co_to_det_label(row.collection_object)
+        return _ident(lbl.label_plaintext(dl)) if dl else None
+    return None
 
 
 def preview_model(session: Session) -> list[dict]:
-    """Structured preview of the queued sheet for the UI (mirrors queued_groups'
-    grouping/column layout, but as plain text + identity for hover-highlight):
+    """Structured, editable preview of the queued sheet for the UI. Groups → per-
+    specimen columns; each column carries, per label type, the queue row id, the
+    printed text (override if set else auto), the auto text, and an identity key
+    (identical labels share it). Shape per specimen column::
 
-      [{source, specimens: [{data, det, id_code, data_identity, co_id}]}]
-
-    `data`/`det` are the text that will print (override if set, else auto).
-    `data_identity` keys identical data labels (see _data_identity)."""
+        {co_id,
+         data, data_auto, data_qid, data_ident,
+         det,  det_auto,  det_qid,  det_ident,
+         id_code}
+    """
     rows = session.query(PrintQueue).order_by(PrintQueue.created_at, PrintQueue.id).all()
     buckets: "dict[object, dict]" = {}
     for row in rows:
@@ -284,31 +234,63 @@ def preview_model(session: Session) -> list[dict]:
 
         def _col(key):
             return cols.setdefault(key, {
-                "data": None, "det": None, "id_code": None,
-                "data_identity": None, "co_id": None,
+                "co_id": None,
+                "data": None, "data_auto": None, "data_qid": None, "data_ident": None,
+                "det": None,  "det_auto": None,  "det_qid": None,  "det_ident": None,
+                "id_code": None, "id_qid": None,
             })
 
         if row.label_type == "data" and row.collection_object:
             co = row.collection_object
             col = _col(("co", row.collection_object_id))
-            col["data"] = lbl.label_plaintext(_co_to_data_label(co, row.text_override))
-            col["data_identity"] = _data_identity(co)
+            auto = lbl.label_plaintext(_co_to_data_label(co))
+            col["data_auto"] = auto
+            col["data"] = row.text_override if row.text_override is not None else auto
+            col["data_qid"] = row.id
+            col["data_ident"] = _ident(auto)
             col["co_id"] = co.id
         elif row.label_type == "determination" and row.collection_object:
             co = row.collection_object
             col = _col(("co", row.collection_object_id))
-            dl = _co_to_det_label(co, row.text_override)
-            col["det"] = lbl.label_plaintext(dl) if dl else None
+            dl = _co_to_det_label(co)
+            auto = lbl.label_plaintext(dl) if dl else "—"
+            col["det_auto"] = auto
+            col["det"] = row.text_override if row.text_override is not None else auto
+            col["det_qid"] = row.id
+            col["det_ident"] = _ident(auto)
             col["co_id"] = co.id
         elif row.label_type == "identifier" and row.label_code:
             lc = row.label_code
             col = _col(("co", lc.collection_object_id) if lc.collection_object_id else ("code", lc.id))
             col["id_code"] = lc.code
+            col["id_qid"] = row.id
 
     return [
         {"source": b["source"], "specimens": list(b["columns"].values())}
         for b in buckets.values()
     ]
+
+
+def set_override_for_identical(session: Session, queue_id: int, text: str | None) -> int:
+    """Set a print-only override on the given row AND every other queued label
+    that is identical to it (same type + same auto text — see _row_auto_identity).
+    Editing one identical label thus edits them all. Empty/None clears (→ auto).
+    Returns how many rows were updated."""
+    row = session.get(PrintQueue, queue_id)
+    if row is None or row.label_type == "identifier":
+        return 0
+    target = _row_auto_identity(row)
+    if target is None:
+        return 0
+    value = text or None
+    n = 0
+    for r in session.query(PrintQueue).filter(PrintQueue.label_type == row.label_type).all():
+        if _row_auto_identity(r) == target:
+            r.text_override = value
+            r.updated_at = _utcnow()
+            n += 1
+    session.flush()
+    return n
 
 
 def build_pdf(session: Session, printed_at: str | None = None) -> bytes:
