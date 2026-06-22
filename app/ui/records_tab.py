@@ -250,6 +250,13 @@ def build_records_tab(session_factory, *, on_saved: callable | None = None) -> N
         lambda e: _load_event(e.value) if e.value else detail.clear()
     )
 
+    # Programmatic open (used by the Print queue "open in Records" link, #37):
+    # switch to specimen mode and select the specimen, which loads its detail
+    # (event + determinations) for substantial edits — the record is master.
+    def _open_specimen(co_id: int) -> None:
+        _set_mode_specimen()
+        spec_select.value = co_id
+
     # ── Specimen form ─────────────────────────────────────────────────────────
     def _build_specimen_form(
         co_id, ev_id, ev_n, co_snap, det_snaps, ev_snap, assocs
@@ -549,3 +556,5 @@ def build_records_tab(session_factory, *, on_saved: callable | None = None) -> N
             save_btn = ui.button("Save event", icon="save", on_click=_save_event).classes("btn-save")
             if shared:
                 save_btn.set_enabled(False)   # enabled by the "Edit all" unlock
+
+    return {"open_specimen": _open_specimen}

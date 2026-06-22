@@ -19,7 +19,6 @@ from sqlalchemy import func
 from app.models import PrintQueue, CollectionObject, TaxonDetermination, LabelCode
 from app.models.base import _utcnow
 from app.services import taxa as taxa_svc
-from app.services.label_text import format_locality_label
 import app.services.labels as lbl
 
 
@@ -103,36 +102,40 @@ def queue_summary(session: Session) -> QueueSummary:
 
 
 def queue_preview_items(session: Session) -> list[dict]:
-    """Return a human-readable summary list for the UI preview.
+    """Per-row summary for the print-queue UI.
 
-    Data/determination items carry ``co_id`` (and data also ``event_id``) so the
-    UI can open the underlying record's editor — labels are derived from the
-    record, so a label is corrected by editing the record (#37)."""
+    Each data/determination item carries:
+      auto_text      — the label as auto-composed from the record (multi-line),
+      text_override  — the user's print-only edit, or None,
+      text           — what prints now (override if set, else auto_text),
+      co_id          — to open the specimen in Records,
+      event_id       — (data only) the collecting event.
+    Identifier items are read-only: just the code (the immutable catalog number).
+    """
     items = []
     for row in session.query(PrintQueue).order_by(PrintQueue.created_at).all():
         if row.label_type == "data" and row.collection_object:
             co = row.collection_object
             ev = co.collecting_event
-            assoc_names = [
-                ba.object_taxon.scientific_name
-                for ba in co.subject_associations
-                if ba.object_taxon
-            ]
-            label_text = format_locality_label(ev, assoc_names or None, html=False)
+            auto_text = lbl.label_plaintext(_co_to_data_label(co))
             items.append({
                 "type": "data",
-                "text": label_text,
+                "auto_text": auto_text,
+                "text_override": row.text_override,
+                "text": row.text_override if row.text_override is not None else auto_text,
                 "id": row.id,
                 "co_id": co.id,
                 "event_id": ev.id if ev else None,
             })
 
         elif row.label_type == "determination" and row.collection_object:
-            det = next((d for d in row.collection_object.determinations if d.is_current), None)
-            name = taxa_svc.format_scientific_name(det.taxon) if det and det.taxon else "—"
+            dl = _co_to_det_label(row.collection_object)
+            auto_text = lbl.label_plaintext(dl) if dl else "—"
             items.append({
                 "type": "determination",
-                "text": name,
+                "auto_text": auto_text,
+                "text_override": row.text_override,
+                "text": row.text_override if row.text_override is not None else auto_text,
                 "id": row.id,
                 "co_id": row.collection_object.id,
             })
@@ -144,11 +147,24 @@ def queue_preview_items(session: Session) -> list[dict]:
     return items
 
 
+def set_text_override(session: Session, queue_id: int, text: str | None) -> None:
+    """Set (or clear, with None/empty) a queue row's print-only label override.
+    Only meaningful for data/determination rows; identifier rows are never edited."""
+    row = session.get(PrintQueue, queue_id)
+    if row is None:
+        return
+    if row.label_type == "identifier":
+        return
+    row.text_override = (text or None)  # empty string clears -> back to auto
+    row.updated_at = _utcnow()
+    session.flush()
+
+
 # ---------------------------------------------------------------------------
 # PDF generation
 # ---------------------------------------------------------------------------
 
-def _co_to_data_label(co: CollectionObject) -> lbl.DataLabel:
+def _co_to_data_label(co: CollectionObject, text_override: str | None = None) -> lbl.DataLabel:
     ev = co.collecting_event
     assoc_names = [
         ba.object_taxon.scientific_name
@@ -156,6 +172,7 @@ def _co_to_data_label(co: CollectionObject) -> lbl.DataLabel:
         if ba.object_taxon
     ]
     return lbl.DataLabel(
+        text_override            = text_override,
         country                  = ev.country                         if ev else None,
         country_code             = ev.country_code                    if ev else None,
         state_province           = ev.state_province                  if ev else None,
@@ -175,13 +192,14 @@ def _co_to_data_label(co: CollectionObject) -> lbl.DataLabel:
     )
 
 
-def _co_to_det_label(co: CollectionObject) -> lbl.DeterminationLabel | None:
+def _co_to_det_label(co: CollectionObject, text_override: str | None = None) -> lbl.DeterminationLabel | None:
     det = next((d for d in co.determinations if d.is_current), None)
     if not det or not det.taxon:
         return None
     t = det.taxon
     genus, subgenus, specific, infra = taxa_svc.parse_scientific_name(t.scientific_name or "")
     return lbl.DeterminationLabel(
+        text_override         = text_override,
         genus                 = genus,
         subgenus              = subgenus,
         specific_epithet      = specific,
@@ -201,8 +219,8 @@ def queued_groups(session: Session) -> list[lbl.LabelGroup]:
     data/determination row joins its column by `collection_object_id`; an
     identifier row joins by its label code's `collection_object_id` (set at assign
     time), or stands alone if the code is reserved-but-unassigned (a pre-print
-    batch). Labels are derived from the live records — edit the record to change a
-    label (#37).
+    batch). Labels are derived from the live records; a row's ``text_override``
+    (a print-only edit typed in the queue, #37) replaces the rendered text.
     """
     rows = session.query(PrintQueue).order_by(PrintQueue.created_at, PrintQueue.id).all()
 
@@ -216,11 +234,11 @@ def queued_groups(session: Session) -> list[lbl.LabelGroup]:
         if row.label_type == "data" and row.collection_object:
             ckey = ("co", row.collection_object_id)
             col = columns.setdefault(ckey, lbl.SpecimenLabels())
-            col.data = _co_to_data_label(row.collection_object)
+            col.data = _co_to_data_label(row.collection_object, row.text_override)
         elif row.label_type == "determination" and row.collection_object:
             ckey = ("co", row.collection_object_id)
             col = columns.setdefault(ckey, lbl.SpecimenLabels())
-            col.determination = _co_to_det_label(row.collection_object)
+            col.determination = _co_to_det_label(row.collection_object, row.text_override)
         elif row.label_type == "identifier" and row.label_code:
             lc = row.label_code
             # Align an assigned code under its specimen's data label; an
