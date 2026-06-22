@@ -56,6 +56,9 @@ def build_mounting_session_section(
     commit_recby,           # (session) -> int | None
     bio_state: dict,        # {"associations": [...]}
     on_saved,               # () -> None
+    event_id_getter=lambda: None,  # () -> int | None: the selected/reused event,
+                                   # so mounting links to it instead of creating a
+                                   # duplicate (None → create one for the session)
 ) -> dict:
     """Render the Mounting Session specimen UI. Returns {"wipe": callable}."""
 
@@ -353,8 +356,10 @@ def build_mounting_session_section(
                     # these specimens together under a "Mounting Session" header.
                     group_id = pq_svc.next_print_group_id(s)
 
-                    # Create specimens; reuse the same collecting event after the first
-                    event_id: int | None = None
+                    # Reuse the event selected in the Collecting Event card if any
+                    # (don't duplicate it); else create one and share it across the
+                    # session's specimens.
+                    event_id: int | None = event_id_getter()
                     for row, code in zip(rows, codes):
                         det = row["det"]
                         # Freeze the determination name at save time.

@@ -121,7 +121,7 @@ def label_plaintext(lbl) -> str:
     one line per ``<div>``, tags stripped, entities unescaped. Used to pre-fill
     the print-queue override editor so the user tweaks the real label text (#37)."""
     inner = _data_inner_html(lbl) if isinstance(lbl, DataLabel) else _det_inner_html(lbl)
-    lines = _re.findall(r"<div>(.*?)</div>", inner, _re.S)
+    lines = _re.findall(r"<div[^>]*>(.*?)</div>", inner, _re.S)
     text = "\n".join(_re.sub(r"<[^>]+>", "", ln) for ln in lines)
     return _html.unescape(text).strip()
 
@@ -213,17 +213,20 @@ class DeterminationLabel:
     determiner: Optional[str]             = None
     year: Optional[str]                   = None
     sex: Optional[str]                    = None
+    type_status: Optional[str]            = None   # e.g. "Holotype", "Paratype"
     # Print-only override typed in the queue (#37) — see DataLabel.text_override.
     text_override: Optional[str]          = None
 
 
 def _det_inner_html(lbl: "DeterminationLabel") -> str:
     """Full determination-label body — the print-only override verbatim if set,
-    else the composed name block + determiner/year line."""
+    else the type-status line (if any) + composed name block + determiner/year."""
     if lbl.text_override is not None:
         return _override_html(lbl.text_override)
+    ts = (f'<div style="text-transform:uppercase;letter-spacing:.04em">'
+          f'{_e(lbl.type_status)}</div>') if lbl.type_status else ""
     det = _det_line3(lbl)
-    return _det_name_html(lbl) + (f"<div>{det}</div>" if det else "")
+    return ts + _det_name_html(lbl) + (f"<div>{det}</div>" if det else "")
 
 
 def _bi(text: str) -> str:

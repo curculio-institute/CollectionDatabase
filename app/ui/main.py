@@ -966,6 +966,7 @@ def index():
                         commit_recby=lambda s: ce["commit"](s),
                         bio_state=bio_state,
                         on_saved=lambda: _ms_on_saved(),
+                        event_id_getter=lambda: state["event_id"],
                     )
                 ms_section.set_visibility(False)
 
@@ -1790,6 +1791,13 @@ def index():
             refresh_persons = _refreshers.get("person_opts")
             if refresh_persons:
                 refresh_persons()
+        elif e.value == "labels":
+            # Rebuild the print-queue preview now that the panel is visible, so the
+            # autogrow label editors size to their content (they can't measure
+            # while the tab is hidden — they render collapsed until interacted).
+            refresh_queue = _refreshers.get("queue")
+            if refresh_queue:
+                refresh_queue()
 
     main_tabs.on_value_change(_on_tab_change)
 
