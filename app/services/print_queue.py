@@ -103,17 +103,16 @@ def queue_summary(session: Session) -> QueueSummary:
 
 
 def queue_preview_items(session: Session) -> list[dict]:
-    """Return a human-readable summary list for the UI preview."""
+    """Return a human-readable summary list for the UI preview.
+
+    Data/determination items carry ``co_id`` (and data also ``event_id``) so the
+    UI can open the underlying record's editor — labels are derived from the
+    record, so a label is corrected by editing the record (#37)."""
     items = []
     for row in session.query(PrintQueue).order_by(PrintQueue.created_at).all():
         if row.label_type == "data" and row.collection_object:
             co = row.collection_object
             ev = co.collecting_event
-            loc = ", ".join(p for p in [
-                ev.country if ev else None,
-                ev.state_province if ev else None,
-                ev.locality if ev else None,
-            ] if p) or "—"
             assoc_names = [
                 ba.object_taxon.scientific_name
                 for ba in co.subject_associations
@@ -122,19 +121,25 @@ def queue_preview_items(session: Session) -> list[dict]:
             label_text = format_locality_label(ev, assoc_names or None, html=False)
             items.append({
                 "type": "data",
-                "text": loc,
-                "label_text": label_text,
+                "text": label_text,
                 "id": row.id,
+                "co_id": co.id,
+                "event_id": ev.id if ev else None,
             })
 
         elif row.label_type == "determination" and row.collection_object:
             det = next((d for d in row.collection_object.determinations if d.is_current), None)
             name = taxa_svc.format_scientific_name(det.taxon) if det and det.taxon else "—"
-            items.append({"type": "determination", "text": name, "label_text": name, "id": row.id})
+            items.append({
+                "type": "determination",
+                "text": name,
+                "id": row.id,
+                "co_id": row.collection_object.id,
+            })
 
         elif row.label_type == "identifier" and row.label_code:
             code = row.label_code.code
-            items.append({"type": "identifier", "text": code, "label_text": code, "id": row.id})
+            items.append({"type": "identifier", "text": code, "id": row.id})
 
     return items
 
@@ -143,10 +148,7 @@ def queue_preview_items(session: Session) -> list[dict]:
 # PDF generation
 # ---------------------------------------------------------------------------
 
-def _co_to_data_label(
-    co: CollectionObject,
-    text_override: str | None = None,
-) -> lbl.DataLabel:
+def _co_to_data_label(co: CollectionObject) -> lbl.DataLabel:
     ev = co.collecting_event
     assoc_names = [
         ba.object_taxon.scientific_name
@@ -170,7 +172,6 @@ def _co_to_data_label(
         recorded_by              = ev.recorded_by_person.full_name if (ev and ev.recorded_by_person) else None,
         habitat                  = ev.habitat                         if ev else None,
         associated_species       = assoc_names or None,
-        text_override            = text_override,
     )
 
 
@@ -192,10 +193,7 @@ def _co_to_det_label(co: CollectionObject) -> lbl.DeterminationLabel | None:
     )
 
 
-def queued_groups(
-    session: Session,
-    text_overrides: dict[int, str] | None = None,
-) -> list[lbl.LabelGroup]:
+def queued_groups(session: Session) -> list[lbl.LabelGroup]:
     """Reconstruct the queue into print groups (one per queue addition).
 
     Rows are bucketed by `print_group_id` in enqueue order; within a bucket they
@@ -203,10 +201,10 @@ def queued_groups(
     data/determination row joins its column by `collection_object_id`; an
     identifier row joins by its label code's `collection_object_id` (set at assign
     time), or stands alone if the code is reserved-but-unassigned (a pre-print
-    batch). `text_overrides` maps print_queue.id → edited data-label text.
+    batch). Labels are derived from the live records — edit the record to change a
+    label (#37).
     """
     rows = session.query(PrintQueue).order_by(PrintQueue.created_at, PrintQueue.id).all()
-    overrides = text_overrides or {}
 
     # Bucket rows by group, preserving first-seen (enqueue) order.
     buckets: "dict[object, dict]" = {}
@@ -218,7 +216,7 @@ def queued_groups(
         if row.label_type == "data" and row.collection_object:
             ckey = ("co", row.collection_object_id)
             col = columns.setdefault(ckey, lbl.SpecimenLabels())
-            col.data = _co_to_data_label(row.collection_object, overrides.get(row.id))
+            col.data = _co_to_data_label(row.collection_object)
         elif row.label_type == "determination" and row.collection_object:
             ckey = ("co", row.collection_object_id)
             col = columns.setdefault(ckey, lbl.SpecimenLabels())
@@ -237,13 +235,9 @@ def queued_groups(
     ]
 
 
-def build_pdf(
-    session: Session,
-    text_overrides: dict[int, str] | None = None,
-    printed_at: str | None = None,
-) -> bytes:
+def build_pdf(session: Session, printed_at: str | None = None) -> bytes:
     """Render all queued labels into a single grouped PDF (see `queued_groups`)."""
-    groups = queued_groups(session, text_overrides)
+    groups = queued_groups(session)
     return lbl.grouped_sheet(groups, printed_at or _utcnow())
 
 

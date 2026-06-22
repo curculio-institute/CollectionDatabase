@@ -63,6 +63,40 @@ def get_event(session: Session, event_id: int) -> CollectingEvent | None:
     return session.get(CollectingEvent, event_id)
 
 
+def event_form_snapshot(session: Session, event_id: int) -> dict | None:
+    """Snapshot an event into the dict shape build_collecting_event_form.load()
+    expects (keys = the form's field names + recorded_by full_name).
+
+    Built inside the session so the lazy recorded_by_person relationship resolves
+    before the event detaches (avoids DetachedInstanceError). Returns None if the
+    event is missing."""
+    ev = session.get(CollectingEvent, event_id)
+    if ev is None:
+        return None
+    return {
+        "country":                          ev.country,
+        "country_code":                     ev.country_code,
+        "state_province":                   ev.state_province,
+        "county":                           ev.county,
+        "municipality":                     ev.municipality,
+        "island":                           ev.island,
+        "locality":                         ev.locality,
+        "verbatim_locality":                ev.verbatim_locality,
+        "event_date":                       ev.event_date,
+        "verbatim_event_date":              ev.verbatim_event_date,
+        "decimal_latitude":                 ev.decimal_latitude,
+        "decimal_longitude":                ev.decimal_longitude,
+        "coordinate_uncertainty_in_meters": ev.coordinate_uncertainty_in_meters,
+        "minimum_elevation_in_meters":      ev.minimum_elevation_in_meters,
+        "maximum_elevation_in_meters":      ev.maximum_elevation_in_meters,
+        "habitat":                          ev.habitat,
+        "sampling_protocol":                ev.sampling_protocol,
+        "field_number":                     ev.field_number,
+        "verbatim_label":                   ev.verbatim_label,
+        "recorded_by": ev.recorded_by_person.full_name if ev.recorded_by_person else None,
+    }
+
+
 def update_collecting_event(session: Session, event_id: int, **fields) -> CollectingEvent:
     """Update fields on an existing CollectingEvent. Empty string → None."""
     ev = session.get(CollectingEvent, event_id)

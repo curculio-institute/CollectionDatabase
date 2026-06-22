@@ -126,6 +126,27 @@ per-specimen columns, archival, the planned reprint path) is a UI/layout concern
 specified in `docs/design.md` → "Grouped print sheet layout". This table is the authoritative
 *policy* (which mode queues what); design.md is authoritative for *layout*.
 
+### Editing labels before printing (decided, #37)
+
+Queue rows store **no label text** — a label is *derived* at render time from the linked
+records (`_co_to_data_label` / `_co_to_det_label` in `print_queue.py`). So "edit a label
+before printing" means **edit the underlying record**, never a print-only override (a label
+typo is a data typo — single source of truth). In the Print queue tab:
+
+- A **data** row's Edit button opens the shared collecting-event editor
+  (`build_collecting_event_form`) loaded with that event; saving calls
+  `update_collecting_event` and every label derived from it re-renders. Because one event
+  feeds every specimen on it, this **is** the batch-edit for identical data labels — a
+  "shared by N specimens — saving updates all N" banner makes the blast radius explicit.
+- A **determination** row's Edit button opens the determination editor
+  (`build_identification_list(co_id=…)`, live-DB mode — edits persist immediately).
+- **Identifier** rows are **read-only** (the immutable catalog number is the sync join key);
+  no edit affordance.
+
+The earlier transient freeform `text_override` / `text_overrides` plumbing (a per-row
+print-only text patch) was **removed** — it was a second source of truth that could diverge
+from the record. Do not re-introduce it; edit the record instead.
+
 ## Open issues → GitHub
 
 Bugs and tasks are tracked as **GitHub issues** on

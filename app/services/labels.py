@@ -104,14 +104,9 @@ class DataLabel:
     recorded_by: Optional[str]              = None
     habitat: Optional[str]                  = None
     associated_species: Optional[list[str]] = None
-    # When set, bypasses computed formatting and renders this plain text directly.
-    text_override: Optional[str]            = None
 
 
 def _data_line1(lbl: DataLabel) -> str:
-    if lbl.text_override is not None:
-        return _e(lbl.text_override)
-
     country_str = format_country(lbl.country, lbl.country_code, html=True)
 
     parts: list[str] = []
@@ -144,8 +139,6 @@ def _data_line1(lbl: DataLabel) -> str:
 
 
 def _data_line2(lbl: DataLabel) -> str:
-    if lbl.text_override is not None:
-        return ""
     date = _e(lbl.event_date) if lbl.event_date else ""
 
     def _build(name: str | None) -> str:

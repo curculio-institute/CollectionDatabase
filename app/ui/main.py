@@ -1255,8 +1255,6 @@ def index():
                         print_btn  = ui.button("Print all", icon="print").props("color=secondary")
 
                     preview_col = ui.column().classes("w-full gap-1")
-                    # Plain-text edits keyed by print_queue.id; passed to build_pdf on print.
-                    _label_overrides: dict[int, str] = {}
 
                     TYPE_ICON  = {"data": "place", "determination": "science", "identifier": "label"}
                     TYPE_COLOR = {"data": "blue-grey", "determination": "teal", "identifier": "secondary"}
@@ -1282,30 +1280,29 @@ def index():
                                     with ui.row().classes("items-center gap-2 w-full"):
                                         ui.icon(TYPE_ICON[item["type"]], size="xs") \
                                           .style("color:var(--tp-secondary); opacity:.7")
-                                        if item["type"] == "data":
-                                            # Editable field — persists user corrections
-                                            # across refreshes via _label_overrides.
-                                            init_val = _label_overrides.get(
-                                                item["id"], item.get("label_text", item["text"])
-                                            )
-                                            inp = (
-                                                ui.input(value=init_val)
-                                                .classes("flex-1")
-                                                .props("dense outlined")
-                                                .style("font-size:0.75rem")
-                                            )
-                                            inp.on_value_change(
-                                                lambda e, qid=item["id"]:
-                                                    _label_overrides.__setitem__(qid, e.value)
-                                            )
-                                        else:
-                                            ui.label(item["text"]).classes("text-sm flex-1")
+                                        ui.label(item["text"] or "—").classes("text-sm flex-1")
+                                        # Data / determination labels are derived from the
+                                        # record, so "edit the label" opens the record's
+                                        # editor (#37). Identifier labels carry the immutable
+                                        # catalog number — read-only, no edit affordance.
+                                        if item["type"] == "data" and item.get("event_id"):
+                                            ui.button("", icon="edit") \
+                                              .props("flat dense round size=xs") \
+                                              .tooltip("Edit the collecting event (updates every "
+                                                       "specimen sharing it)") \
+                                              .on_click(lambda _, ev=item["event_id"]:
+                                                        _open_event_edit(ev))
+                                        elif item["type"] == "determination":
+                                            ui.button("", icon="edit") \
+                                              .props("flat dense round size=xs") \
+                                              .tooltip("Edit this specimen's determination") \
+                                              .on_click(lambda _, cid=item["co_id"]:
+                                                        _open_det_edit(cid))
                                         ui.button("", icon="close") \
                                           .props("flat dense round size=xs") \
                                           .on_click(lambda _, qid=item["id"]: _remove_item(qid))
 
                     def _remove_item(queue_id: int):
-                        _label_overrides.pop(queue_id, None)
                         with _sf() as session:
                             with session.begin():
                                 pq_svc.remove_item(session, queue_id)
@@ -1320,7 +1317,7 @@ def index():
                         stamp_human = now.strftime("%Y-%m-%d %H:%M")
                         stamp_file  = now.strftime("%Y%m%d-%H%M%S")
                         pdf = _with_session(
-                            lambda s: pq_svc.build_pdf(s, dict(_label_overrides), stamp_human)
+                            lambda s: pq_svc.build_pdf(s, stamp_human)
                         )
                         # Archive every printed sheet to disk for reprint/audit
                         # before clearing the queue.
@@ -1331,7 +1328,6 @@ def index():
                         with _sf() as session:
                             with session.begin():
                                 pq_svc.clear_queue(session)
-                        _label_overrides.clear()
                         _refresh_queue()
                         ui.notify(f"Labels downloaded — queue cleared. Saved {archive.name}",
                                   type="positive")
@@ -1341,6 +1337,84 @@ def index():
                             with session.begin():
                                 pq_svc.clear_queue(session)
                         _refresh_queue()
+
+                    # ── Edit-before-print dialogs (#37) ──────────────────────
+                    # Labels are derived from the record, so editing a queued
+                    # label means editing the underlying event / determination.
+                    # The same correction flows to every label derived from it —
+                    # which is the batch-edit for identical data labels: one
+                    # shared event drives all its specimens' data labels.
+
+                    def _on_edit_dialog_closed(dlg, e):
+                        # Fired on every open/close; act only on close (value False):
+                        # refresh the queue (labels re-derive from the now-edited
+                        # record) and delete the dialog to avoid a timer leak.
+                        if e.value:
+                            return
+                        dlg.delete()
+                        _refresh_queue()
+                        for fn in _refreshers.values():
+                            fn()
+
+                    def _open_event_edit(event_id: int):
+                        with _sf() as s:
+                            snap = ev_svc.event_form_snapshot(s, event_id)
+                            n = ev_svc.count_co_at_event(s, event_id)
+                        if snap is None:
+                            ui.notify("Event no longer exists.", type="warning")
+                            _refresh_queue()
+                            return
+                        dlg = ui.dialog()
+                        dlg.on_value_change(lambda e: _on_edit_dialog_closed(dlg, e))
+                        with dlg, ui.card().classes("w-full").style("max-width:880px"):
+                            with ui.row().classes("items-center gap-2 w-full"):
+                                ui.label("Edit collecting event").classes("text-lg font-medium")
+                                ui.label(f"#{event_id}").classes("text-sm font-mono") \
+                                    .style("color:var(--tp-base-soft)")
+                            if n > 1:
+                                build_event_share_banner(
+                                    message=f"Shared by {n} specimens — saving updates the "
+                                            f"data label of all {n}.",
+                                )
+                            ce_edit = build_collecting_event_form(_sf, default_recby_fn=_default_recby)
+                            ce_edit["load"](snap)
+
+                            def _save_event():
+                                try:
+                                    with _sf() as s:
+                                        with s.begin():
+                                            recby_id = ce_edit["commit"](s)
+                                            ev_svc.update_collecting_event(
+                                                s, event_id,
+                                                recorded_by_id=recby_id,
+                                                **ce_edit["collect_fields"](),
+                                            )
+                                except Exception as exc:
+                                    ui.notify(f"Save failed: {exc}", type="negative")
+                                    return
+                                ui.notify("Event updated — labels refreshed.", type="positive")
+                                dlg.close()   # close → _on_edit_dialog_closed refreshes
+
+                            with ui.row().classes("w-full justify-end gap-2 mt-2"):
+                                ui.button("Cancel", on_click=dlg.close).props("flat")
+                                ui.button("Save", icon="save", on_click=_save_event).classes("btn-save")
+                        dlg.open()
+
+                    def _open_det_edit(co_id: int):
+                        dlg = ui.dialog()
+                        dlg.on_value_change(lambda e: _on_edit_dialog_closed(dlg, e))
+                        with dlg, ui.card().classes("w-full").style("max-width:880px"):
+                            ui.label("Edit determination").classes("text-lg font-medium")
+                            ui.label(
+                                "Changes save immediately. The current determination drives "
+                                "the printed label."
+                            ).classes("text-sm").style("color:var(--tp-base-soft)")
+                            ui.separator().classes("my-2")
+                            # Live-DB mode: each add / edit / set-current persists at once.
+                            build_identification_list(_sf, co_id=co_id)
+                            with ui.row().classes("w-full justify-end mt-2"):
+                                ui.button("Done", on_click=dlg.close).props("flat")
+                        dlg.open()
 
                     print_btn.on_click(_print_all)
                     clear_btn.on_click(_clear_queue)
