@@ -1177,7 +1177,7 @@ def index():
         # TAB: IMPORT & ASSIGN
         # ================================================================
         with ui.tab_panel("import").classes("tp-dirty-scope"):
-            build_import_assign_tab(_sf, _refreshers)
+            build_import_assign_tab(_sf, _refreshers, on_saved=_mark_form_clean)
 
         # ================================================================
         # TAB: TAXONOMY
