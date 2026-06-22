@@ -25,6 +25,7 @@ import app.services.print_queue as pq_svc
 from app.config import get_config, save_config, printed_pdf_dir
 import app.services.person_defaults as pd_svc
 import app.services.events as ev_svc
+import app.services.db_safety as db_safety
 from app.services.label_text import format_event_preview_html
 from app.models import CollectionObject, CollectingEvent, TaxonDetermination, LabelCode
 from app.ui.taxon_search import build_taxon_search
@@ -181,6 +182,31 @@ def index():
     ui.add_head_html(
         '<link rel="icon" type="image/svg+xml" href="/static/beetle_blue.svg">'
     )
+
+    # ── Unsaved-changes guard (beforeunload) ─────────────────────────────
+    # Marks a dirty flag on any edit inside a data-entry tab panel
+    # (.tp-dirty-scope) and warns before a real page close/reload while it is
+    # set. In-app tab switches keep the SPA alive (form state survives them) so
+    # they never trigger this. Python clears the flag at every deliberate reset
+    # (save / mode switch) via window.tpClearDirty().
+    ui.add_head_html("""
+    <script>
+    (function(){
+      if (window._tpDirtyInit) return;
+      window._tpDirtyInit = true;
+      window._tpDirty = false;
+      window.tpClearDirty = function(){ window._tpDirty = false; };
+      function mark(e){
+        var t = e.target;
+        if (t && t.closest && t.closest('.tp-dirty-scope')) window._tpDirty = true;
+      }
+      document.addEventListener('input',  mark, true);
+      document.addEventListener('change', mark, true);
+      window.addEventListener('beforeunload', function(e){
+        if (window._tpDirty){ e.preventDefault(); e.returnValue = ''; return ''; }
+      });
+    })();
+    </script>""")
 
     # ── Notification hover-pause ─────────────────────────────────────────
     # Global window.setTimeout wrapper: when a 1-30 s timer fires (notification
@@ -476,7 +502,9 @@ def index():
             ("mounting", "Mounting Session",          "grid_view", "var(--mode-mounting)"),
             ("visiting", "Digitize other Collection", "museum",    "var(--mode-visiting)"),
         ]
-        _mode_state = {"value": "standard", "handler": None}
+        # has_content: aggregate "does the Digitize form hold unsaved data?",
+        # set after the tab content is built (see _mode_state["has_content"] = …).
+        _mode_state = {"value": "standard", "handler": None, "has_content": None}
         _seg_btns: dict[str, object] = {}
 
         def _set_mode(val: str) -> None:
@@ -488,6 +516,30 @@ def index():
             if _mode_state["handler"]:
                 _mode_state["handler"](val)
 
+        async def _request_mode(val: str) -> None:
+            """Switch Digitize mode, confirming first if the form holds unsaved
+            data. A mode switch wipes every card (see _on_mode_toggle), so the
+            discard must be explicit — but only when there is something to lose."""
+            if val == _mode_state["value"]:
+                return
+            hc = _mode_state["has_content"]
+            if hc and hc():
+                with ui.dialog() as dlg, ui.card():
+                    ui.label("Discard unsaved data?").classes("text-lg font-medium")
+                    ui.label(
+                        "Switching mode clears the current form. Anything you have "
+                        "entered and not saved will be lost."
+                    ).classes("text-sm").style("color:var(--tp-base-soft)")
+                    with ui.row().classes("w-full justify-end gap-2 mt-2"):
+                        ui.button("Cancel", on_click=lambda: dlg.submit(False)).props("flat")
+                        ui.button("Discard & switch", on_click=lambda: dlg.submit(True)) \
+                            .props("color=negative")
+                proceed = await dlg
+                dlg.delete()   # per-action dialog — delete to avoid a timer leak
+                if not proceed:
+                    return
+            _set_mode(val)
+
         with ui.row().classes("app-mode-row w-full max-w-5xl mx-auto") as _mode_row:
             with ui.element("div").classes("seg-toggle"):
                 for _val, _label, _icon, _color in _mode_defs:
@@ -495,13 +547,36 @@ def index():
                         ui.element("div")
                         .classes("seg-btn" + (" active" if _val == "standard" else ""))
                         .style(f"--seg-color:{_color}")
-                        .on("click", lambda _e, v=_val: _set_mode(v))
+                        .on("click", lambda _e, v=_val: _request_mode(v))
                     )
                     with _b:
                         ui.icon(_icon).classes("seg-ico")
                         ui.label(_label)
                     _seg_btns[_val] = _b
         _mode_row.bind_visibility_from(main_tabs, "value", lambda v: v == "digitize")
+
+    # ── DB integrity banner ──────────────────────────────────────────────
+    # Surfaced loudly when the startup PRAGMA integrity_check (run in run.py
+    # before serving) reported a damaged file. Refuse to let the user keep
+    # working quietly on a corrupt DB (CLAUDE.md §2: loud failure > silent
+    # wrong value). Committed data is otherwise WAL-durable; this is the rare
+    # file-corruption case the launch snapshot exists to recover from.
+    _dbsafe = db_safety.LAST_RESULT
+    if not _dbsafe.ok:
+        with ui.element("div").classes("w-full").style(
+            "background:#7f1d1d; color:#fff; padding:.6rem 1.5rem;"
+        ):
+            with ui.row().classes("items-center gap-3 w-full max-w-5xl mx-auto"):
+                ui.icon("error", size="sm")
+                _snap = (
+                    f" A snapshot from before this launch is in data/snapshots/"
+                    f" ({_dbsafe.snapshot_path.name})." if _dbsafe.snapshot_path else ""
+                )
+                ui.label(
+                    "Database integrity check FAILED — do not keep working on this "
+                    "file. Restore from a backup snapshot before continuing."
+                    + _snap
+                ).classes("text-sm font-medium")
 
     ui.timer(0.1, _init_theme, once=True)
 
@@ -519,13 +594,19 @@ def index():
     # Cross-tab refresh registry — populated as tabs build, called by earlier tabs.
     _refreshers: dict[str, callable] = {}
 
+    def _mark_form_clean():
+        """Clear the client-side unsaved-changes flag (see the beforeunload
+        guard). Called after every deliberate reset — successful save, mode
+        switch — so the close-warning only fires on genuinely unsaved edits."""
+        ui.run_javascript("window.tpClearDirty && window.tpClearDirty()")
+
     # ── tab panels ───────────────────────────────────────────────────────
     with ui.tab_panels(main_tabs, value="digitize").classes("w-full"):
 
         # ================================================================
         # TAB: SPECIMEN DIGITIZATION
         # ================================================================
-        with ui.tab_panel("digitize"):
+        with ui.tab_panel("digitize").classes("tp-dirty-scope"):
             # ── per-connection state ─────────────────────────────────────
             state = {"event_id": None, "populating": False}
             bio_state: dict = {
@@ -575,15 +656,26 @@ def index():
 
                 # ── IDENTIFICATION ────────────────────────────────────────
                 with ui.card().classes("w-full shadow-sm") as identification_card:
-                    ui.label("Identifications").classes("section-label")
+                    with ui.row().classes("items-center gap-2 mb-1 w-full"):
+                        ui.label("Identifications").classes("section-label")
+                        ui.space()
+                        ui.button("Clear", icon="clear",
+                                  on_click=lambda: det_state["clear"]()) \
+                            .props("flat dense no-caps size=sm color=grey") \
+                            .tooltip("Clear unsaved identifications")
                     ui.separator().classes("mb-3")
                     det_state = build_identification_list(_sf)
 
                 # ── COLLECTING EVENT ─────────────────────────────────────
                 with ui.card().classes("w-full shadow-sm"):
-                    with ui.row().classes("items-center gap-3 mb-1"):
+                    with ui.row().classes("items-center gap-3 mb-1 w-full"):
                         ui.label("Collecting Event").classes("section-label")
                         event_status = ui.html("· new event").classes("event-new")
+                        ui.space()
+                        ui.button("Clear", icon="clear",
+                                  on_click=lambda: _clear_event_card()) \
+                            .props("flat dense no-caps size=sm color=grey") \
+                            .tooltip("Clear the event selection and fields")
 
                     ui.separator().classes("mb-3")
 
@@ -676,7 +768,13 @@ def index():
 
                 # ── BIOLOGICAL ASSOCIATIONS ───────────────────────────────
                 with ui.card().classes("w-full shadow-sm"):
-                    ui.label("Biological Associations").classes("section-label")
+                    with ui.row().classes("items-center gap-2 mb-1 w-full"):
+                        ui.label("Biological Associations").classes("section-label")
+                        ui.space()
+                        ui.button("Clear", icon="clear",
+                                  on_click=lambda: _clear_bio_card()) \
+                            .props("flat dense no-caps size=sm color=grey") \
+                            .tooltip("Clear staged associations")
                     ui.separator().classes("mb-3")
 
                     # Relationship selector
@@ -901,6 +999,44 @@ def index():
                     if not keep_det.value:
                         det_state["clear"]()
 
+                # Per-card "Clear" handlers (header buttons). Each resets only its
+                # own card's uncommitted fields — used to discard a typo or a
+                # wrong pick without touching the other cards or saving.
+                def _clear_event_card():
+                    event_sel.value = None
+                    state["event_id"] = None
+                    event_status.set_content("· new event")
+                    event_status.classes(remove="event-linked", add="event-new")
+                    ce["set_readonly"](False)
+                    _hide_reuse_banner()
+                    ce["reset"]()
+
+                def _clear_bio_card():
+                    bio_state["associations"].clear()
+                    bio_obj_state["clear"]()
+                    rel_sel.value = None
+                    _refresh_assoc_list()
+
+                def _has_any_content() -> bool:
+                    """Aggregate: does the Digitize form hold unsaved data in any
+                    card? Drives the mode-switch confirm. Checks the active mode's
+                    specimen surface (standard/visiting card or the mounting table)
+                    plus the shared identification, event and bio cards."""
+                    mode = _mode_state["value"]
+                    if mode == "mounting":
+                        spec_dirty = ms_state["has_content"]()
+                    else:
+                        spec_dirty = _active_spec[0]["has_content"]()
+                    return (
+                        spec_dirty
+                        or det_state["has_content"]()
+                        or ce["has_content"]()
+                        or state.get("event_id") is not None
+                        or bool(bio_state["associations"])
+                        or bool(rel_sel.value)
+                        or bool(bio_obj_state["taxon_id"])
+                    )
+
                 def _on_save():
                     err = _validate()
                     if err:
@@ -973,6 +1109,7 @@ def index():
                         return
                     _refresh_table()
                     _clear_after_save()
+                    _mark_form_clean()
                     for fn in _refreshers.values():
                         fn()
 
@@ -985,6 +1122,7 @@ def index():
                 def _ms_on_saved():
                     event_sel.set_options(_event_opts())
                     _refresh_table()
+                    _mark_form_clean()
                     for fn in _refreshers.values():
                         fn()
 
@@ -1018,24 +1156,27 @@ def index():
                     _hide_reuse_banner()
                     ce["reset"]()
                     ms_state["wipe"]()
+                    _mark_form_clean()
 
                 _mode_state["handler"] = _on_mode_toggle
+                _mode_state["has_content"] = _has_any_content
 
 
         # ================================================================
         # TAB: RECORDS
         # ================================================================
-        with ui.tab_panel("records"):
+        with ui.tab_panel("records").classes("tp-dirty-scope"):
             with ui.column().classes("w-full max-w-5xl mx-auto px-4 pt-6 pb-16 gap-4"):
-                build_records_tab(
-                    _sf,
-                    on_saved=lambda: [fn() for fn in _refreshers.values()],
-                )
+                def _records_saved():
+                    _mark_form_clean()
+                    for fn in _refreshers.values():
+                        fn()
+                build_records_tab(_sf, on_saved=_records_saved)
 
         # ================================================================
         # TAB: IMPORT & ASSIGN
         # ================================================================
-        with ui.tab_panel("import"):
+        with ui.tab_panel("import").classes("tp-dirty-scope"):
             build_import_assign_tab(_sf, _refreshers)
 
         # ================================================================

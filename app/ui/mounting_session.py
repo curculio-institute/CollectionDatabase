@@ -432,4 +432,16 @@ def build_mounting_session_section(
         rows.append(_empty_row())
         _rebuild_table()
 
-    return {"wipe": wipe}
+    def has_content() -> bool:
+        """True if the staging table holds more than a single pristine row."""
+        if len(rows) > 1:
+            return True
+        r = rows[0]
+        return (
+            r.get("det") is not None
+            or r.get("n") != NEW_SPECIMEN_DEFAULTS["individual_count"]
+            or (r.get("preparations") or "") != "pinned"
+            or (r.get("life_stage") or None) != NEW_SPECIMEN_DEFAULTS["life_stage"]
+        )
+
+    return {"wipe": wipe, "has_content": has_content}

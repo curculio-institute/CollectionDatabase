@@ -97,7 +97,7 @@ def build_specimen_form(
     cat_num = inst_code_disp = coll_code_disp = None
 
     with ui.card().classes("w-full shadow-sm") as card:
-        with ui.row().classes("items-center gap-2 mb-1"):
+        with ui.row().classes("items-center gap-2 mb-1 w-full"):
             ui.label("Specimen").classes("section-label")
             if is_edit and identity_label:
                 ui.label(identity_label).classes("text-sm font-mono") \
@@ -105,6 +105,13 @@ def build_specimen_form(
             elif is_visiting:
                 ui.label("· visiting — free-form identifier") \
                     .classes("text-sm").style("color:var(--tp-base-soft)")
+            # Clear button: only in create modes (edit mode shows an existing
+            # record — there is no "uncommitted" content to discard).
+            if not is_edit:
+                ui.space()
+                ui.button("Clear", icon="clear", on_click=lambda: reset()) \
+                    .props("flat dense no-caps size=sm color=grey") \
+                    .tooltip("Clear this card's unsaved fields")
         ui.separator().classes("mb-3")
 
         if is_visiting:
@@ -215,6 +222,31 @@ def build_specimen_form(
         if is_standard:
             cat_num.set_options({c: c for c in _reserved_opts()})
 
+    def has_content() -> bool:
+        """True if the user has entered uncommitted data in this card.
+
+        Edit mode never reports content (it mirrors an existing record, not new
+        data). Defaulted dropdowns (lifeStage/disposition/basisOfRecord) are not
+        counted — only fields the user actually fills: identifier, preparations,
+        remarks, a non-default count, and (visiting) the free-text identity codes.
+        """
+        if is_edit:
+            return False
+        if cat_num is not None and (cat_num.value or ""):
+            return True
+        if (preps_in.value or "").strip() or (rem_in.value or "").strip():
+            return True
+        try:
+            if int(count_in.value or 1) != NEW_SPECIMEN_DEFAULTS["individual_count"]:
+                return True
+        except (TypeError, ValueError):
+            pass
+        if is_visiting and (
+            (coll_code_disp.value or "").strip() or (inst_code_disp.value or "").strip()
+        ):
+            return True
+        return False
+
     def reset() -> None:
         if cat_num is not None:
             cat_num.value = "" if is_visiting else None
@@ -243,4 +275,5 @@ def build_specimen_form(
         "get_identifier_fields": get_identifier_fields,
         "refresh_codes":  refresh_codes,
         "reset":          reset,
+        "has_content":    has_content,
     }

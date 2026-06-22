@@ -35,7 +35,8 @@ tracker, not this file), `gh issue list`:
 - [#38](https://github.com/curculio-institute/CollectionDatabase/issues/38) — Workflow: printing locality labels
 - [#39](https://github.com/curculio-institute/CollectionDatabase/issues/39) — Workflow: bulk-import the existing dataset (unlinked taxon names)
 - [#40](https://github.com/curculio-institute/CollectionDatabase/issues/40) — Collection map view + data analysis tools
-- [#41](https://github.com/curculio-institute/CollectionDatabase/issues/41) — Data safety: crash recovery + unsaved-changes warning
+
+(#41 — data safety: crash recovery + unsaved-changes guard — done; see §8 "Data safety".)
 
 Epic #30 (atomic taxon names) phases #33–#36 also remain open until the
 `refactor/atomic-taxon-names` branch is merged.
@@ -522,6 +523,38 @@ experiments, UI tweaks, and small changes — not just large features.
 - Don't add dependencies casually; pin them; don't touch other conda envs.
 - Keep the UI layer thin; logic lives in service/repository functions callable from scripts.
 - `reserve_sequential_codes()` returns `(batch_id, codes_list)` — always unpack both values.
+
+### Data safety (crash recovery + unsaved-changes guard) — decided
+
+The durability guarantee and the three mechanisms that back it (#41):
+
+- **Committed data is durable; in-progress edits are not.** WAL + atomic transactions
+  (`database.py`) mean a crash can never leave half a specimen in the DB — committed Saves
+  survive. What is lost on a crash or page-close is whatever was typed into a form but not
+  yet Saved. This is by design (DB-is-source-of-truth, no half-records), and the guard below
+  covers that gap.
+- **Startup checks (`app/services/db_safety.py`, run from `run.py` before the UI serves).**
+  In order: WAL-checkpoint → **launch snapshot** → thorough `PRAGMA integrity_check`. On
+  anything but `ok` the page shows a blocking red banner ("integrity check FAILED") rather
+  than letting the user keep working on a damaged file (CLAUDE.md §2). The result is cached
+  in `db_safety.LAST_RESULT`; the `@ui.page` handler reads it. `integrity_check` swallows a
+  "disk image is malformed" *exception* into a reported problem so severe corruption still
+  trips the banner. Tested in `tests/test_db_safety.py`.
+- **Snapshots** land in `data/snapshots/collection-<timestamp>.db` (gitignored with `data/`),
+  one per launch, **keep last 10** (`DEFAULT_KEEP`). Checkpoint-first so each copy is
+  self-contained (the WAL caveat above). Pruned by the timestamp embedded in the filename,
+  **not** mtime — `copy2` copies the source's mtime, so mtimes are not creation order.
+- **Unsaved-changes guard (`beforeunload`).** A head-script in `main.py` sets a client dirty
+  flag on any edit inside a data-entry tab panel (`.tp-dirty-scope` on Digitize/Records/
+  Import) and warns on a real page close/reload while it's set. In-app tab switches keep the
+  SPA alive (form state survives), so they never warn. Python clears the flag at every
+  deliberate reset via `window.tpClearDirty()` (`_mark_form_clean()`): after a successful
+  save and after a Digitize mode switch.
+- **Mode-switch confirm + per-card Clear.** Switching Digitize mode wipes the form, so it
+  first asks "Discard unsaved data?" — but only when a card actually holds content
+  (`_has_any_content()` aggregates each card's `has_content()`). Each of the four Digitize
+  cards (Specimen, Identifications, Collecting Event, Biological Associations) has a header
+  **Clear** button to reset just its own uncommitted fields.
 
 ### UI conventions
 
