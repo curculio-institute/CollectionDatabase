@@ -274,6 +274,15 @@ def index():
         if(label){ dirty.delete(label); } else { dirty.clear(); }
         render();
       };
+      // Authoritative, state-based setter pushed from Python (a ui.timer reads
+      // the real field values via has_content), so programmatic fills — map
+      // picker, Tier-2 push-pins, reverse-geocode — are detected too, not just
+      // typed input. Event listeners below remain a belt-and-suspenders catch
+      // for tabs without a Python state check.
+      window.tpSetScope = function(label, on){
+        if(on){ dirty.add(label); } else { dirty.delete(label); }
+        render();
+      };
       function mark(e){
         var t = e.target;
         var scope = t && t.closest && t.closest('.tp-dirty-scope');
@@ -689,8 +698,11 @@ def index():
         # ================================================================
         # TAB: SPECIMEN DIGITIZATION
         # ================================================================
-        with ui.tab_panel("digitize").classes("tp-dirty-scope") \
-                .props('data-dirty-label="Specimen Digitization"'):
+        # No .tp-dirty-scope here: Digitize's unsaved-state is detected from the
+        # actual field VALUES via _has_any_content() pushed by a ui.timer (see
+        # below), so programmatic fills (map picker, push-pins, geocode) count —
+        # event-based detection would miss them.
+        with ui.tab_panel("digitize"):
             # ── per-connection state ─────────────────────────────────────
             state = {"event_id": None, "populating": False}
             bio_state: dict = {
@@ -1245,6 +1257,22 @@ def index():
 
                 _mode_state["handler"] = _on_mode_toggle
                 _mode_state["has_content"] = _has_any_content
+
+                # State-based unsaved-changes detection for Digitize: poll the
+                # real field values (not DOM events) so map/push-pin/geocode fills
+                # are seen too. Push to the banner only when the state flips.
+                _dig_dirty = [False]
+
+                def _sync_dig_dirty():
+                    cur = _has_any_content()
+                    if cur != _dig_dirty[0]:
+                        _dig_dirty[0] = cur
+                        ui.run_javascript(
+                            "window.tpSetScope && window.tpSetScope("
+                            f"'Specimen Digitization', {'true' if cur else 'false'})"
+                        )
+
+                ui.timer(1.0, _sync_dig_dirty)
 
 
         # ================================================================
