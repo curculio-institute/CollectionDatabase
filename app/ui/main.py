@@ -182,6 +182,43 @@ def index():
         '<link rel="icon" type="image/svg+xml" href="/static/beetle_blue.svg">'
     )
 
+    # ── Print-queue sheet preview (#37): styling + hover-highlight ───────
+    # Hovering any data label highlights every data label with the same
+    # identity (same collecting event AND biological associations — see
+    # print_queue._data_identity), so identical labels are visible at a glance.
+    ui.add_head_html("""
+    <style>
+      .pq-prev        { display:flex; flex-direction:column; gap:14px; }
+      .pq-prev-src    { font-size:.7rem; font-weight:700; text-transform:uppercase;
+                        letter-spacing:.08em; color:var(--tp-base-soft); margin-bottom:4px; }
+      .pq-prev-cols   { display:flex; flex-wrap:wrap; gap:10px; }
+      .pq-prev-col    { display:flex; flex-direction:column; gap:3px; width:190px; }
+      .pq-prev-label  { border:1px solid var(--tp-base-border); border-radius:3px;
+                        padding:3px 6px; font-size:.72rem; line-height:1.3;
+                        background:var(--tp-base-foreground); overflow-wrap:anywhere; }
+      .pq-prev-id     { font-family:monospace; color:var(--tp-base-lighter); }
+      .pq-prev-det    { font-style:italic; }
+      .pq-prev-label[data-ident] { cursor:default; transition:background .1s, outline .1s; }
+      .pq-ident-hl    { outline:2px solid var(--tp-secondary);
+                        background:rgba(3,105,161,.10) !important; }
+      .pq-prev-empty  { font-size:.85rem; font-style:italic; color:var(--tp-base-soft); }
+    </style>
+    <script>
+    (function(){
+      if (window._pqPrevHover) return;
+      window._pqPrevHover = true;
+      function hl(e, on){
+        var el = e.target.closest && e.target.closest('.pq-prev-label[data-ident]');
+        if(!el) return;
+        var id = el.getAttribute('data-ident');
+        document.querySelectorAll('.pq-prev-label[data-ident="'+CSS.escape(id)+'"]')
+          .forEach(function(x){ x.classList.toggle('pq-ident-hl', on); });
+      }
+      document.addEventListener('mouseover', function(e){ hl(e, true); });
+      document.addEventListener('mouseout',  function(e){ hl(e, false); });
+    })();
+    </script>""")
+
     # ── Notification hover-pause ─────────────────────────────────────────
     # Global window.setTimeout wrapper: when a 1-30 s timer fires (notification
     # range), check document.querySelector('.q-notification:hover').  If a
@@ -1256,8 +1293,40 @@ def index():
 
                     preview_col = ui.column().classes("w-full gap-1")
 
+                    # Sheet preview (#37): how the printed sheet lays out; hover a
+                    # data label to highlight identical ones (same event + bio).
+                    with ui.expansion("Sheet preview", icon="preview") \
+                            .classes("w-full mt-3").props("dense"):
+                        sheet_preview = ui.html("").classes("w-full")
+
                     TYPE_ICON  = {"data": "place", "determination": "science", "identifier": "label"}
                     TYPE_COLOR = {"data": "blue-grey", "determination": "teal", "identifier": "secondary"}
+
+                    def _preview_html() -> str:
+                        import html as _h
+                        model = _with_session(pq_svc.preview_model)
+                        if not model:
+                            return '<div class="pq-prev-empty">Nothing queued.</div>'
+                        out = ['<div class="pq-prev">']
+                        for g in model:
+                            out.append('<div class="pq-prev-group">')
+                            out.append(f'<div class="pq-prev-src">{_h.escape(g["source"] or "Queued labels")}</div>')
+                            out.append('<div class="pq-prev-cols">')
+                            for sp in g["specimens"]:
+                                out.append('<div class="pq-prev-col">')
+                                if sp["data"] is not None:
+                                    ident = _h.escape(sp["data_identity"] or "")
+                                    txt = _h.escape(sp["data"]).replace("\n", "<br>")
+                                    out.append(f'<div class="pq-prev-label pq-prev-data" data-ident="{ident}">{txt}</div>')
+                                if sp["id_code"]:
+                                    out.append(f'<div class="pq-prev-label pq-prev-id">{_h.escape(sp["id_code"])}</div>')
+                                if sp["det"] is not None:
+                                    txt = _h.escape(sp["det"]).replace("\n", "<br>")
+                                    out.append(f'<div class="pq-prev-label pq-prev-det">{txt}</div>')
+                                out.append('</div>')
+                            out.append('</div></div>')
+                        out.append('</div>')
+                        return "".join(out)
 
                     def _refresh_queue():
                         summary = _with_session(pq_svc.queue_summary)
@@ -1268,6 +1337,7 @@ def index():
                             f"{summary.n_identifier} id)"
                             if summary.total else "empty"
                         )
+                        sheet_preview.set_content(_preview_html())
                         items = _with_session(pq_svc.queue_preview_items)
                         preview_col.clear()
                         with preview_col:

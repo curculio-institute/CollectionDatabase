@@ -253,6 +253,64 @@ def queued_groups(session: Session) -> list[lbl.LabelGroup]:
     ]
 
 
+def _data_identity(co: CollectionObject) -> str:
+    """Identity key for a specimen's *data label*: same key ⇒ identical printed
+    data label. A data label is composed from the collecting event AND the
+    biological associations, so identity = (event id, sorted associated taxa) —
+    not the event alone (#37). Drives the preview's hover-highlight of identical
+    labels."""
+    ev = co.collecting_event
+    assoc = sorted(
+        ba.object_taxon.scientific_name
+        for ba in co.subject_associations
+        if ba.object_taxon
+    )
+    return f"ev{ev.id if ev else 'none'}|" + "|".join(assoc)
+
+
+def preview_model(session: Session) -> list[dict]:
+    """Structured preview of the queued sheet for the UI (mirrors queued_groups'
+    grouping/column layout, but as plain text + identity for hover-highlight):
+
+      [{source, specimens: [{data, det, id_code, data_identity, co_id}]}]
+
+    `data`/`det` are the text that will print (override if set, else auto).
+    `data_identity` keys identical data labels (see _data_identity)."""
+    rows = session.query(PrintQueue).order_by(PrintQueue.created_at, PrintQueue.id).all()
+    buckets: "dict[object, dict]" = {}
+    for row in rows:
+        g = buckets.setdefault(row.print_group_id, {"source": row.source, "columns": {}})
+        cols = g["columns"]
+
+        def _col(key):
+            return cols.setdefault(key, {
+                "data": None, "det": None, "id_code": None,
+                "data_identity": None, "co_id": None,
+            })
+
+        if row.label_type == "data" and row.collection_object:
+            co = row.collection_object
+            col = _col(("co", row.collection_object_id))
+            col["data"] = lbl.label_plaintext(_co_to_data_label(co, row.text_override))
+            col["data_identity"] = _data_identity(co)
+            col["co_id"] = co.id
+        elif row.label_type == "determination" and row.collection_object:
+            co = row.collection_object
+            col = _col(("co", row.collection_object_id))
+            dl = _co_to_det_label(co, row.text_override)
+            col["det"] = lbl.label_plaintext(dl) if dl else None
+            col["co_id"] = co.id
+        elif row.label_type == "identifier" and row.label_code:
+            lc = row.label_code
+            col = _col(("co", lc.collection_object_id) if lc.collection_object_id else ("code", lc.id))
+            col["id_code"] = lc.code
+
+    return [
+        {"source": b["source"], "specimens": list(b["columns"].values())}
+        for b in buckets.values()
+    ]
+
+
 def build_pdf(session: Session, printed_at: str | None = None) -> bytes:
     """Render all queued labels into a single grouped PDF (see `queued_groups`)."""
     groups = queued_groups(session)
