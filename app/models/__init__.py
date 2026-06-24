@@ -9,6 +9,7 @@ from .label_code import LabelCode
 from .print_queue import PrintQueue
 from .person import Person
 from .media import Media, MediaAttachment
+from .external_identifier import ExternalIdentifier
 
 __all__ = [
     "Base",
@@ -25,4 +26,5 @@ __all__ = [
     "Person",
     "Media",
     "MediaAttachment",
+    "ExternalIdentifier",
 ]

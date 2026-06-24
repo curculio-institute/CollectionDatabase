@@ -21,6 +21,7 @@ from app.ui.collecting_event_form import build_collecting_event_form
 from app.ui.specimen_form import build_specimen_form
 from app.ui.event_reuse import build_event_share_banner
 from app.ui.media_panel import build_media_button
+from app.ui.external_id_panel import build_external_id_button
 
 _FLOAT_ATTRS = frozenset({
     "decimal_latitude", "decimal_longitude",
@@ -34,6 +35,14 @@ def _media_btn(session_factory, *, target_kind, target_id, tooltip="Media"):
     badge indicates how many files are attached (progressive disclosure — the gallery is
     behind the click)."""
     return build_media_button(
+        session_factory, target_kind=target_kind,
+        target_id_getter=lambda: target_id, tooltip=tooltip,
+    )["button"]
+
+
+def _ext_btn(session_factory, *, target_kind, target_id, tooltip="Resource identifiers"):
+    """A compact external-resource-identifier icon+popup button (bound mode)."""
+    return build_external_id_button(
         session_factory, target_kind=target_kind,
         target_id_getter=lambda: target_id, tooltip=tooltip,
     )["button"]
@@ -283,9 +292,12 @@ def build_records_tab(session_factory, *, on_saved: callable | None = None) -> N
             identifier_policy="edit",
             initial=co_snap,
             identity_label=f"#{co_id}  {co_snap['catalog_number']}",
-            footer_slot=lambda: _media_btn(
-                session_factory, target_kind="collection_object",
-                target_id=co_id, tooltip="Specimen media"),
+            footer_slot=lambda: (
+                _ext_btn(session_factory, target_kind="collection_object",
+                         target_id=co_id, tooltip="Specimen resource identifiers"),
+                _media_btn(session_factory, target_kind="collection_object",
+                           target_id=co_id, tooltip="Specimen media"),
+            ),
         )
         count_in     = spec["count_in"]
         preps_in     = spec["preps_in"]
@@ -391,6 +403,9 @@ def build_records_tab(session_factory, *, on_saved: callable | None = None) -> N
                             ui.icon("link", size="xs") \
                                 .style("color:var(--tp-secondary); opacity:.7")
                             ui.label(f"{a.rel_name} — {a.object_label}").classes("text-sm flex-1")
+                            _ext_btn(session_factory,
+                                     target_kind="biological_association",
+                                     target_id=a.id, tooltip="Other party (resource identifier)")
                             _media_btn(session_factory,
                                        target_kind="biological_association",
                                        target_id=a.id, tooltip="Association media")

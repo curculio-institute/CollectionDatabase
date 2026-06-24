@@ -910,10 +910,28 @@ session so the gallery renders after the session closes (no DetachedInstanceErro
 
 **Placement:** Records — a specimen-media button (specimen form), an event-media button (in
 the Collecting Event card header, both the specimen view and the standalone Event form), and
-a per-association button on each association row. Digitize — a staged specimen-media button
-(standard/visiting; hidden in mounting). Files are served via
+a per-association button on each association row. Digitize — staged specimen, event, and
+per-association media buttons (hidden in mounting). Files are served via
 `app.add_media_files("/media", media_dir())` (registered in `main.py`), range-request aware
 for audio/video.
+
+## External resource identifier button + popup (external_id_panel.py)
+
+`build_external_id_button(session_factory, *, target_kind, target_id_getter=None,
+staged=False, staged_store=None, on_change=None, tooltip)` mirrors the media button: a
+link-icon button with a count badge opens a popup. `target_kind` ∈ `{"collection_object",
+"biological_association"}`. Returns `{button, refresh, has_content, commit, clear,
+staged_items}`; bound + staged modes work exactly as the media button.
+
+- **Deliberately minimal:** the popup lists existing identifiers (each the URI as a
+  clickable link + delete) and a **single "Resource identifier (URI)" input**. No source
+  dropdown, no label field — the user pastes only the URI. `source` is left unset (nullable
+  column kept for future flexibility).
+- **Modal buttons** follow the app convention: **Abort** (flat) + **Save & close**
+  (secondary, adds the entered URI then closes). Deletes apply immediately.
+- **Placement:** Records — a button at the lower-right of the specimen card (beside the
+  media button) and on each association row. Digitize — staged specimen + per-association
+  buttons, committed on Save (per-association via `finalize_specimen`'s returned ids).
 
 ## CatalogNumber and printing workflow
 
