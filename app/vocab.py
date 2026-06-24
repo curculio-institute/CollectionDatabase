@@ -48,6 +48,14 @@ SAMPLING_PROTOCOLS = [
     "yellow pan trap", "window trap", "observation", "",
 ]
 
+# Media licences (Creative Commons family used by iNaturalist/GBIF, plus the two
+# non-CC extremes). media.license is plain TEXT (no CHECK), so this is a convenience
+# dropdown, not a constrained vocabulary. Blank sentinel last.
+LICENSE_OPTIONS = [
+    "CC0", "CC BY", "CC BY-SA", "CC BY-NC", "CC BY-NC-SA",
+    "CC BY-ND", "CC BY-NC-ND", "All rights reserved", "Public domain", "",
+]
+
 # Seed values for a brand-new specimen (create mode). Single source of truth for
 # the Digitize standard form (specimen_form) and the Mounting Session, so the
 # create contract lives in one place rather than being duplicated as literals.

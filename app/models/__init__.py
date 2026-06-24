@@ -8,6 +8,7 @@ from .label_batch import LabelBatch
 from .label_code import LabelCode
 from .print_queue import PrintQueue
 from .person import Person
+from .media import Media, MediaAttachment
 
 __all__ = [
     "Base",
@@ -22,4 +23,6 @@ __all__ = [
     "LabelCode",
     "PrintQueue",
     "Person",
+    "Media",
+    "MediaAttachment",
 ]

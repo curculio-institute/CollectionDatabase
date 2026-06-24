@@ -135,7 +135,7 @@ def finalize_specimen(
     print_group_id: int | None = None,
     source: str | None = None,
     associations=(),
-) -> None:
+) -> list:
     """Post-create finalization shared by every create path (Digitize standard,
     Visiting, Mounting): bind the reserved identifier code, optionally queue its
     labels, and persist biological associations. Caller owns the transaction.
@@ -161,7 +161,9 @@ def finalize_specimen(
     once per batch via ``print_queue.next_print_group_id``).
 
     `associations` is an iterable of ``{"rel_id", "taxon_id"}`` dicts — the
-    specimen is the subject, the taxon the object.
+    specimen is the subject, the taxon the object. Returns the created
+    BiologicalAssociation rows in input order (so callers can attach per-association
+    extras such as staged media to the new ids); empty list when none.
     """
     if code is not None:
         lc = assign_code(session, code, collection_object_id)
@@ -172,13 +174,16 @@ def finalize_specimen(
                          print_group_id=print_group_id, source=source)
             enqueue_determination(session, collection_object_id,
                                   print_group_id=print_group_id, source=source)
+    created = []
     for assoc in associations:
-        save_biological_association(
+        ba = save_biological_association(
             session,
             collection_object_id=collection_object_id,
             biological_relationship_id=assoc["rel_id"],
             object_taxon_id=assoc["taxon_id"],
         )
+        created.append(ba)
+    return created
 
 
 def update_collection_object(session: Session, co_id: int, **fields) -> CollectionObject:

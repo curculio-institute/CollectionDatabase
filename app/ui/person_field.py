@@ -181,14 +181,19 @@ def build_person_field(
             .style("display:none")
         )
 
-    pin_btn = None
-    if default_fn is not None:
-        pin_btn = (
-            ui.button("", icon="push_pin")
-            .props("flat dense round size=xs")
-            .tooltip("Insert default name")
-            .on_click(lambda: _do_default())
-        )
+        # Tier-2 push_pin sits *inside* the field (right edge). It is only shown
+        # while the field is empty (selected state hides it), so it never collides
+        # with the clearable ✕ (which appears only once there is text).
+        pin_btn = None
+        if default_fn is not None:
+            pin_btn = (
+                ui.button("", icon="push_pin")
+                .props("flat dense round size=xs")
+                .tooltip("Insert default name")
+                .on_click(lambda: _do_default())
+                .style("position:absolute; right:6px; top:50%; "
+                       "transform:translateY(-50%); z-index:1")
+            )
 
     # ── state transitions ─────────────────────────────────────────────────────
 

@@ -25,6 +25,7 @@ STRICT_TABLES = sorted({
     "taxon", "collecting_event", "collection_object", "taxon_determination",
     "biological_association", "biological_relationship",
     "label_code", "label_batch", "print_queue",
+    "media", "media_attachment",  # 0035
 })
 
 # Tables whose constraints were dropped + restored — checked in extra detail below.

@@ -870,6 +870,51 @@ Add `"commit": callable` only if the widget creates DB rows on save (person fiel
 
 ---
 
+## Media button + popup (media_panel.py)
+
+`build_media_button(session_factory, *, target_kind, target_id_getter=None, staged=False,
+on_change=None, icon, tooltip)` renders a compact **icon button with a count badge** that
+opens a popup gallery — the progressive-disclosure entry point for the infrequently-used
+media feature (the gallery is one click away; the badge shows the attachment count).
+`target_kind` ∈ `{"collection_object", "collecting_event", "biological_association"}`.
+Returns `{button, refresh, has_content, commit, clear, staged_items}`.
+
+**Two modes:**
+- **Bound** (`staged=False`, Records): every mutation writes straight to the DB via
+  `media_svc` (add/update/set_primary/delete); the count comes from
+  `media_svc.count_attachments`.
+- **Staged** (`staged=True`, Specimen Digitization): the record doesn't exist yet, so files
+  are written to the content-addressed store immediately (`store_bytes`) and held in an
+  in-memory list; thumbnails still render via `/media/<rel>`. On Save the host calls
+  `commit(session, target_id)` → `media_svc.attach_stored(...)` per item **inside the save
+  transaction** (atomic). The host also wires `has_content()` into its unsaved-changes check
+  and `clear()` into save / mode-switch resets.
+
+**Popup contents:**
+- **Batch upload** — `ui.upload(multiple, auto_upload, on_upload=…)`; `on_upload` fires once
+  per file, covering single and multi-file selection in one action. (Do **not** also wire
+  `on_multi_upload` — both firing double-processes each file.)
+- **Gallery** — flex-wrap of fixed-width cards: images show a `/media/<rel>` thumbnail
+  (click → open full), other kinds an Audubon-category icon + download link. Each card has a
+  category `ui.select`, a primary star, an edit (pencil) button, delete, and caption/licence
+  lines. A category **filter** select narrows the gallery.
+- **Details (pencil → dialog):** **rightsHolder** (a `person_field`, Tier-2 — push_pin
+  *inside* the field inserts `person_defaults.default_rights_holder_id`), **licence**
+  (`vocab.LICENSE_OPTIONS`, Tier-2 — push_pin inserts `config.default_license`), and the
+  caption. No title/creator (deliberately trimmed — rightsHolder suffices). Save commits the
+  person (`commit()` → id) then, bound, `update_media(...)` + `update_attachment(caption)`;
+  staged, it updates the in-memory entry.
+
+**Snapshot-before-render:** attachments + their `media` are read into plain dicts inside a
+session so the gallery renders after the session closes (no DetachedInstanceError).
+
+**Placement:** Records — a specimen-media button (specimen form), an event-media button (in
+the Collecting Event card header, both the specimen view and the standalone Event form), and
+a per-association button on each association row. Digitize — a staged specimen-media button
+(standard/visiting; hidden in mounting). Files are served via
+`app.add_media_files("/media", media_dir())` (registered in `main.py`), range-request aware
+for audio/video.
+
 ## CatalogNumber and printing workflow
 
 CatalogNumber format: `"collectionCode" + "-" + 5-digit zero-padded ascending number`

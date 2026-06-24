@@ -14,7 +14,7 @@ import re
 import sys
 from datetime import datetime
 
-from nicegui import ui
+from nicegui import ui, app
 
 from app.database import get_engine, get_session_factory
 import app.services as svc
@@ -22,7 +22,11 @@ import app.services.taxonomy as tax_svc
 import app.services.identifiers as id_svc
 import app.services.labels as lbl_svc
 import app.services.print_queue as pq_svc
-from app.config import get_config, save_config, printed_pdf_dir
+from app.config import get_config, save_config, printed_pdf_dir, media_dir
+
+# Serve the managed media store so attached images/files render in the browser
+# (range-request aware → also handles audio/video). Registered once at import.
+app.add_media_files("/media", media_dir())
 import app.services.person_defaults as pd_svc
 import app.services.events as ev_svc
 import app.services.db_safety as db_safety
@@ -40,6 +44,8 @@ from app.ui.mounting_session import build_mounting_session_section
 from app.ui.specimen_form import build_specimen_form
 from app.ui.collecting_event_form import build_collecting_event_form
 from app.ui.event_reuse import build_event_share_banner
+from app.ui.media_panel import build_media_button
+import app.services.media as media_svc
 from app.services.biological import (
     sync_biological_relationships,
     get_relationship_options,
@@ -796,18 +802,33 @@ def index():
                 # Normal mode lays these two short cards side-by-side (flex-wrap
                 # → stack when narrow); single-card mode shows only the current
                 # step's card, so the row simply holds one full-width card.
+                # Staged specimen-media controllers (one per specimen card; the bytes
+                # are stored now and committed to the new specimen on Save). Each card
+                # has its own button in its header; a mode switch wipes both.
+                spec_media = {}
+                spec_media_v = {}
+
+                def _mk_spec_media(holder):
+                    holder.update(build_media_button(
+                        _sf, target_kind="collection_object", staged=True,
+                        tooltip="Specimen media (attached on Save)"))
+
                 with ui.row().classes("w-full flex-wrap gap-4 items-start"):
                     # Shared specimen-field block (see app/ui/specimen_form.py).
                     # Widgets are unpacked into locals so the save/validate/wipe
                     # paths below reference them unchanged.
-                    spec = build_specimen_form(_sf, identifier_policy="standard")
+                    spec = build_specimen_form(
+                        _sf, identifier_policy="standard",
+                        footer_slot=lambda: _mk_spec_media(spec_media))
                     specimen_card = spec["card"]
                     specimen_card.classes(remove="w-full", add="flex-1 min-w-[360px]")
                     # Visiting-collection variant: free-text identity, pure data
                     # capture (no reserved code, no print queue). Hidden until the
                     # mode toggle selects it; occupies the same slot as the standard
                     # card (only one of the two is ever visible).
-                    spec_visiting = build_specimen_form(_sf, identifier_policy="visiting")
+                    spec_visiting = build_specimen_form(
+                        _sf, identifier_policy="visiting",
+                        footer_slot=lambda: _mk_spec_media(spec_media_v))
                     spec_visiting["card"].set_visibility(False)
                     spec_visiting["card"].classes(remove="w-full",
                                                   add="flex-1 min-w-[360px]")
@@ -826,6 +847,10 @@ def index():
                                 .tooltip("Clear unsaved identifications")
                         ui.separator().classes("mb-3")
                         det_state = build_identification_list(_sf)
+
+                def _active_media() -> dict:
+                    """The staged media controller for the active specimen card."""
+                    return spec_media_v if _active_spec[0] is spec_visiting else spec_media
 
                 # ── COLLECTING EVENT ─────────────────────────────────────
                 with ui.card().classes("w-full shadow-sm") as event_card:
@@ -927,6 +952,12 @@ def index():
 
                     event_sel.on_value_change(_on_event_selected)
 
+                    # Event media (staged; committed to the event on Save)
+                    with ui.row().classes("w-full justify-end mt-2"):
+                        event_media = build_media_button(
+                            _sf, target_kind="collecting_event", staged=True,
+                            tooltip="Event media (attached on Save)")
+
                 # ── BIOLOGICAL ASSOCIATIONS ───────────────────────────────
                 with ui.card().classes("w-full shadow-sm") as bio_card:
                     with ui.row().classes("items-center gap-2 mb-1 w-full"):
@@ -995,6 +1026,10 @@ def index():
                                 "rel_name":    rel_name,
                                 "taxon_id":    taxon_id,
                                 "taxon_label": bio_obj_state["label"],
+                                # Per-association staged media; persists across list
+                                # re-renders (passed as build_media_button staged_store).
+                                # Committed to the new association id on Save.
+                                "media_items": [],
                             })
                             bio_obj_state["clear"]()
                             rel_sel.value = None
@@ -1020,6 +1055,12 @@ def index():
                                         .style("color:var(--tp-secondary); opacity:.7")
                                     ui.label(f"{a['rel_name']} — {a['taxon_label']}") \
                                         .classes("text-sm flex-1")
+                                    # Per-association staged media (committed on Save).
+                                    a.setdefault("media_items", [])
+                                    build_media_button(
+                                        _sf, target_kind="biological_association",
+                                        staged=True, staged_store=a["media_items"],
+                                        tooltip="Association media (attached on Save)")
                                     (
                                         ui.button("", icon="close")
                                         .props("flat dense round size=xs")
@@ -1209,6 +1250,9 @@ def index():
                         or bool(bio_state["associations"])
                         or bool(rel_sel.value)
                         or bool(bio_obj_state["taxon_id"])
+                        or _active_media()["has_content"]()
+                        or event_media["has_content"]()
+                        or any(a.get("media_items") for a in bio_state["associations"])
                     )
 
                 def _on_save():
@@ -1267,13 +1311,32 @@ def index():
                                 # labels. Visiting passes code=None (foreign
                                 # catalogNumber, no reserved code). Both still
                                 # persist any bio associations atomically.
-                                svc.finalize_specimen(
+                                created_assocs = svc.finalize_specimen(
                                     session,
                                     collection_object_id=co.id,
                                     code=None if is_visiting else code,
                                     queue_labels=False,
                                     associations=bio_state["associations"],
                                 )
+                                # Attach any media staged during digitize, in the same
+                                # transaction → atomic with the save: specimen media to
+                                # the new specimen, event media to its event, and each
+                                # association's media to its freshly-created row.
+                                _active_media()["commit"](session, co.id)
+                                if co.collecting_event_id:
+                                    event_media["commit"](session, co.collecting_event_id)
+                                for _assoc, _ba in zip(bio_state["associations"], created_assocs):
+                                    for _it in _assoc.get("media_items", []):
+                                        media_svc.attach_stored(
+                                            session,
+                                            target_kind="biological_association",
+                                            target_id=_ba.id, meta=_it["meta"],
+                                            caption=_it["caption"] or None,
+                                            category=_it["category"],
+                                            license=_it["license"] or None,
+                                            rights_holder_id=_it["rights_holder_id"],
+                                            is_primary=_it["is_primary"],
+                                        )
                         event_sel.set_options(_event_opts())
                         spec["refresh_codes"]()
                         ui.notify(f"Saved — specimen #{saved_id}  [{code}]", type="positive")
@@ -1281,6 +1344,8 @@ def index():
                     except Exception as exc:
                         ui.notify(f"Save failed: {exc}", type="negative")
                         return
+                    spec_media["clear"](); spec_media_v["clear"]()   # staged media committed
+                    event_media["clear"]()
                     _refresh_table()
                     _clear_after_save()
                     # In single-card mode, return to the first step for the next
@@ -1322,6 +1387,7 @@ def index():
                     bio_obj_state["clear"]()
                     rel_sel.value = None
                     _refresh_assoc_list()
+                    spec_media["clear"](); spec_media_v["clear"](); event_media["clear"]()
                     event_sel.value = None
                     state["event_id"] = None
                     event_status.set_content("· new event")
@@ -2071,11 +2137,12 @@ def index():
             # ── Default names ─────────────────────────────────────────────
             ui.label("Default names").classes("text-sm font-medium mb-1")
             ui.label(
-                "Inserted with one click in identifiedBy / recordedBy fields."
+                "Inserted with one click in identifiedBy / recordedBy / media "
+                "rightsHolder fields."
             ).classes("text-xs mb-2").style("color:var(--tp-base-soft)")
 
             with _sf() as _s_init:
-                _idby_init, _recby_init = pd_svc.get_defaults(_s_init)
+                _idby_init, _recby_init, _rights_init = pd_svc.get_defaults(_s_init)
             idby_state = build_person_field(
                 _sf, "Default identifiedBy",
                 initial_value=_idby_init,
@@ -2086,6 +2153,24 @@ def index():
                 initial_value=_recby_init,
                 classes="w-full mt-1",
             )
+            rights_state_cfg = build_person_field(
+                _sf, "Default media rightsHolder",
+                initial_value=_rights_init,
+                classes="w-full mt-1",
+            )
+
+            ui.separator().classes("my-3")
+
+            # ── Media default licence (Tier-2 default for the media editor) ──
+            ui.label("Default media licence").classes("text-sm font-medium mb-1")
+            ui.label(
+                "Inserted with one click in a media file's licence field."
+            ).classes("text-xs mb-2").style("color:var(--tp-base-soft)")
+            from app.vocab import LICENSE_OPTIONS as _LICENSE_OPTIONS
+            default_license_sel = ui.select(
+                _LICENSE_OPTIONS, value=get_config().default_license or "",
+                label="Default licence",
+            ).classes("w-full mt-1")
 
             ui.separator().classes("my-3")
 
@@ -2116,14 +2201,17 @@ def index():
                 cfg.collection_code       = collection_code_in.value.strip()
                 cfg.map_default_layer     = map_layer_sel.value or "street"
                 cfg.digitize_layout       = digitize_layout_toggle.value or "normal"
+                cfg.default_license       = default_license_sel.value or ""
                 with _sf() as _s:
                     with _s.begin():
                         idby_id = idby_state["commit"](_s)
                         recby_id = recby_state_cfg["commit"](_s)
+                        rights_id = rights_state_cfg["commit"](_s)
                         pd_svc.set_defaults(
                             _s,
                             identified_by_id=idby_id,
                             recorded_by_id=recby_id,
+                            rights_holder_id=rights_id,
                         )
                 cfg.bio_assoc_default_codes = selected
                 save_config(cfg)
@@ -2150,10 +2238,12 @@ def index():
         collection_code_in.value  = cfg.collection_code
         map_layer_sel.value     = cfg.map_default_layer or "street"
         digitize_layout_toggle.value = cfg.digitize_layout or "normal"
+        default_license_sel.value = cfg.default_license or ""
         with _sf() as _s:
-            _idby, _recby = pd_svc.get_defaults(_s)
+            _idby, _recby, _rights = pd_svc.get_defaults(_s)
         idby_state["set_value"](_idby)
         recby_state_cfg["set_value"](_recby)
+        rights_state_cfg["set_value"](_rights)
         for code, cb in _code_cbs.items():
             cb.value = code in cfg.bio_assoc_default_codes
         settings_dialog.open()

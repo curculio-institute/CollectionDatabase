@@ -20,12 +20,23 @@ from app.ui.identification_list import build_identification_list
 from app.ui.collecting_event_form import build_collecting_event_form
 from app.ui.specimen_form import build_specimen_form
 from app.ui.event_reuse import build_event_share_banner
+from app.ui.media_panel import build_media_button
 
 _FLOAT_ATTRS = frozenset({
     "decimal_latitude", "decimal_longitude",
     "coordinate_uncertainty_in_meters", "coordinate_precision",
     "minimum_elevation_in_meters", "maximum_elevation_in_meters",
 })
+
+
+def _media_btn(session_factory, *, target_kind, target_id, tooltip="Media"):
+    """A compact media icon+popup button (bound mode) for one saved record. The button
+    badge indicates how many files are attached (progressive disclosure — the gallery is
+    behind the click)."""
+    return build_media_button(
+        session_factory, target_kind=target_kind,
+        target_id_getter=lambda: target_id, tooltip=tooltip,
+    )["button"]
 
 
 def build_records_tab(session_factory, *, on_saved: callable | None = None) -> None:
@@ -272,6 +283,9 @@ def build_records_tab(session_factory, *, on_saved: callable | None = None) -> N
             identifier_policy="edit",
             initial=co_snap,
             identity_label=f"#{co_id}  {co_snap['catalog_number']}",
+            footer_slot=lambda: _media_btn(
+                session_factory, target_kind="collection_object",
+                target_id=co_id, tooltip="Specimen media"),
         )
         count_in     = spec["count_in"]
         preps_in     = spec["preps_in"]
@@ -351,6 +365,11 @@ def build_records_tab(session_factory, *, on_saved: callable | None = None) -> N
                 if ev_n > 1:
                     ev_ce["set_readonly"](True)   # view-only until "Edit all" unlocks
 
+            if ev_id:
+                with ui.row().classes("w-full justify-end mt-2"):
+                    _media_btn(session_factory, target_kind="collecting_event",
+                               target_id=ev_id, tooltip="Event media")
+
         # ── Biological Associations card ───────────────────────────────────
         with ui.card().classes("w-full shadow-sm"):
             ui.label("Biological Associations").classes("section-label mb-2")
@@ -372,6 +391,9 @@ def build_records_tab(session_factory, *, on_saved: callable | None = None) -> N
                             ui.icon("link", size="xs") \
                                 .style("color:var(--tp-secondary); opacity:.7")
                             ui.label(f"{a.rel_name} — {a.object_label}").classes("text-sm flex-1")
+                            _media_btn(session_factory,
+                                       target_kind="biological_association",
+                                       target_id=a.id, tooltip="Association media")
                             (
                                 ui.button("", icon="close")
                                 .props("flat dense round size=xs")
@@ -534,6 +556,9 @@ def build_records_tab(session_factory, *, on_saved: callable | None = None) -> N
             ev_ce["load"](ev_snap)
             if shared:
                 ev_ce["set_readonly"](True)   # view-only until "Edit all" unlocks
+            with ui.row().classes("w-full justify-end mt-2"):
+                _media_btn(session_factory, target_kind="collecting_event",
+                           target_id=ev_id, tooltip="Event media")
 
         def _save_event():
             try:

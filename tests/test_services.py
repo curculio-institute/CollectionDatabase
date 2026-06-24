@@ -547,3 +547,23 @@ def test_finalize_specimen_saves_biological_associations(session):
         subject_collection_object_id=co.id).one()
     assert ba.object_taxon_id == host.id
     assert ba.biological_relationship_id == rel.id
+
+
+def test_finalize_specimen_returns_created_associations_in_order(session):
+    """finalize_specimen returns the new BiologicalAssociation rows (with ids) in input
+    order, so callers can attach per-association media to them (#48)."""
+    co, _ = _saved_co_with_code(session)
+    oak = _taxon(session, "Quercus", "robur", authorship="L.")
+    pine = _taxon(session, "Pinus", "sylvestris", authorship="L.")
+    rel = BiologicalRelationship(name="collected_on",
+                                 created_at=_utcnow(), updated_at=_utcnow())
+    session.add(rel); session.flush()
+
+    created = finalize_specimen(
+        session, collection_object_id=co.id, code=None,
+        associations=[{"rel_id": rel.id, "taxon_id": oak.id},
+                      {"rel_id": rel.id, "taxon_id": pine.id}],
+    )
+    session.flush()
+    assert [c.object_taxon_id for c in created] == [oak.id, pine.id]
+    assert all(c.id is not None for c in created)

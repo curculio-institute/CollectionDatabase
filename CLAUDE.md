@@ -270,7 +270,47 @@ attributes. Mermaid diagrams use plain camelCase. Do not deviate from this patte
 | `label_code` | 4-char alphanumeric specimen identifiers (`[0-9a-z]{4}`, ~1.7 M possibilities). Tied to a `label_batch`. Once used on a specimen they are immutable. |
 | `label_batch` | Groups of `label_code` rows with a `created_at` timestamp. Batches can be reprinted only if no code in the batch has been used yet. |
 | `print_queue` | Staged label jobs (`label_type` ∈ {data, determination, identifier}) pending a single print run. Items removed after printing. (The `data` label carries locality/date/collector — there is no separate "locality" type.) |
-| `person_defaults` | Single-row table holding the two push-pin defaults: `default_identified_by` and `default_recorded_by`. Both columns are `TEXT REFERENCES person(full_name) ON DELETE RESTRICT`. See rationale below. |
+| `person_defaults` | Single-row table holding the push-pin person defaults: `default_identified_by_id`, `default_recorded_by_id`, and `default_rights_holder_id` (media rightsHolder; migration 0036). All are `INTEGER REFERENCES person(id) ON DELETE RESTRICT`. See rationale below. |
+| `media` | One row per stored file (the bytes live content-addressed on disk; see "Media" below). `sha256` UNIQUE (de-dup). `category` (CHECK ∈ {Image, Sound, Video, Document, Sequence, Other}) is the filter key. Audubon-Core-style metadata; `rights_holder_id` is a **person FK** (ON DELETE RESTRICT), `license` is free text. Migration 0035. |
+| `media_attachment` | Links a `media` row to exactly one of a `collection_object`, `collecting_event`, or `biological_association` (exclusive-arc CHECK; all FKs ON DELETE CASCADE). Per-attachment `caption` / `is_primary` / `sort_order` (mirrors TaxonWorks' Image↔Depiction split). Migration 0035. |
+
+### Media storage (decided, #48)
+
+Files attached to a specimen / event / association are **copied into a managed,
+content-addressed store** (`data/media/<xx>/<sha256>.<ext>`, configured by
+`config.media_dir`; served at `/media`). This is deliberate, for *safe & persistent*
+storage:
+
+- **Copy-in, never reference-in-place** — the original can move or be deleted without
+  breaking us.
+- **Content-addressed by SHA-256** — automatic de-duplication (identical bytes → one
+  file, one `media` row) and a built-in integrity check (`media.verify_integrity`
+  re-hashes and compares).
+- **`category`** (Image / Sound / Video / Document / **Sequence** / Other) is a
+  first-class, CHECK-constrained field so media is **filterable by kind**; "Sequence"
+  covers genetic data (FASTA etc.), which Audubon Core has no native category for.
+- **Attachment is a separate row** (`media_attachment`, exclusive-arc to one record) with
+  per-attachment caption / primary, mirroring TaxonWorks' Image↔Depiction split but using
+  the project's FK-safe exclusive-arc instead of a polymorphic association.
+- **`rightsHolder` is a controlled person**, not free text — `media.rights_holder_id` FK →
+  `person` (ON DELETE RESTRICT), so delete/merge integrity applies (the same reason person
+  defaults live in the DB; `merge_persons` re-points it automatically). Both `rightsHolder`
+  and `license` are **Tier-2** fields in the media editor (a push_pin inserts the configured
+  default): the rightsHolder default is `person_defaults.default_rights_holder_id` (a person,
+  in the DB) and the licence default is `config.default_license` (a plain string).
+- Deleting the last attachment of a media asset removes the orphaned `media` row **and**
+  its on-disk bytes (`media.delete_attachment`); shared content is kept while still
+  referenced. Snapshots cover the `.db` only — `data/media/` is backed up separately, and
+  a rolled-back upload can leave an orphan file (bytes are written before the row commits);
+  an orphan-sweep is a planned maintenance action.
+- **UI is an icon + popup** (`app/ui/media_panel.py` → `build_media_button`): a compact
+  button with a **count badge** opens a popup with **batch upload** (many files at once),
+  a category filter, and per-item category / primary / delete / details (rightsHolder,
+  licence, caption). It runs in two modes: **bound** (Records — writes straight to the DB,
+  on the specimen, event, and per-association) and **staged** (Specimen Digitization — the
+  record doesn't exist yet, so files are stored and committed to the new specimen on Save;
+  `commit(session, target_id)`). Service: `app/services/media.py`. (Digitize staging
+  currently covers the **specimen**; event/association media are added in Records.)
 
 ### Why person defaults live in the DB, not config.json
 
@@ -507,6 +547,7 @@ arrow-key event, chip styling) is design.md's concern → "Digitize layout modes
 | `labels.py` | WeasyPrint HTML → PDF for data (locality/date/collector), determination, and identifier labels |
 | `print_queue.py` | Stage + retrieve + clear print-queue items |
 | `dwc_import.py` | Parse DwC CSV, field aliasing, row-to-form-field mapping |
+| `media.py` | Content-addressed media store (store/dedup/verify/delete) + attachment CRUD (attach to specimen/event/association) |
 
 ### Taxon search widget (`app/ui/taxon_search.py`)
 

@@ -40,6 +40,7 @@ def build_specimen_form(
     identifier_policy: str = "standard",
     initial: dict | None = None,
     identity_label: str | None = None,
+    footer_slot=None,
 ) -> dict:
     """Render the Specimen card. Returns a handle dict.
 
@@ -176,6 +177,12 @@ def build_specimen_form(
                                  "another collection (gifting). catalogNumber is fixed.")
                     )
             rem_in = ui.input("materialEntityRemarks", value=v_rem).classes("w-full mt-3")
+
+        # Caller-supplied footer widget (e.g. the specimen media button), bottom-right
+        # of the card — away from the header Clear button.
+        if footer_slot is not None:
+            with ui.row().classes("w-full justify-end mt-2"):
+                footer_slot()
 
         if is_standard:
             def _refresh_identity_display():
