@@ -269,7 +269,7 @@ attributes. Mermaid diagrams use plain camelCase. Do not deviate from this patte
 | `biological_association` | Exclusive-arc pattern: (`subject_collection_object_id` XOR `subject_taxon_id`) and (`object_collection_object_id` XOR `object_taxon_id`). CHECK enforces exactly-one-non-null per role. |
 | `label_code` | 4-char alphanumeric specimen identifiers (`[0-9a-z]{4}`, ~1.7 M possibilities). Tied to a `label_batch`. Once used on a specimen they are immutable. |
 | `label_batch` | Groups of `label_code` rows with a `created_at` timestamp. Batches can be reprinted only if no code in the batch has been used yet. |
-| `print_queue` | Staged label jobs (identifier, locality, identification types) pending a single print run. Items removed after printing. |
+| `print_queue` | Staged label jobs (`label_type` ∈ {data, determination, identifier}) pending a single print run. Items removed after printing. (The `data` label carries locality/date/collector — there is no separate "locality" type.) |
 | `person_defaults` | Single-row table holding the two push-pin defaults: `default_identified_by` and `default_recorded_by`. Both columns are `TEXT REFERENCES person(full_name) ON DELETE RESTRICT`. See rationale below. |
 
 ### Why person defaults live in the DB, not config.json
@@ -481,7 +481,7 @@ manually in the TW UI. This constrains the sync direction to insert-only forever
 | `events.py` | Collecting event CRUD + search |
 | `specimens.py` | `CollectionObject` + `TaxonDetermination` creation |
 | `identifiers.py` | `reserve_sequential_codes(coll_code, n)` → `(batch_id, codes_list)` — always unpack the tuple |
-| `labels.py` | WeasyPrint HTML → PDF for identifier, locality, identification labels |
+| `labels.py` | WeasyPrint HTML → PDF for data (locality/date/collector), determination, and identifier labels |
 | `print_queue.py` | Stage + retrieve + clear print-queue items |
 | `dwc_import.py` | Parse DwC CSV, field aliasing, row-to-form-field mapping |
 
