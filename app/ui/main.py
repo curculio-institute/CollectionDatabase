@@ -2075,11 +2075,12 @@ def index():
             # ── Default names ─────────────────────────────────────────────
             ui.label("Default names").classes("text-sm font-medium mb-1")
             ui.label(
-                "Inserted with one click in identifiedBy / recordedBy fields."
+                "Inserted with one click in identifiedBy / recordedBy / media "
+                "rightsHolder fields."
             ).classes("text-xs mb-2").style("color:var(--tp-base-soft)")
 
             with _sf() as _s_init:
-                _idby_init, _recby_init = pd_svc.get_defaults(_s_init)
+                _idby_init, _recby_init, _rights_init = pd_svc.get_defaults(_s_init)
             idby_state = build_person_field(
                 _sf, "Default identifiedBy",
                 initial_value=_idby_init,
@@ -2090,6 +2091,24 @@ def index():
                 initial_value=_recby_init,
                 classes="w-full mt-1",
             )
+            rights_state_cfg = build_person_field(
+                _sf, "Default media rightsHolder",
+                initial_value=_rights_init,
+                classes="w-full mt-1",
+            )
+
+            ui.separator().classes("my-3")
+
+            # ── Media default licence (Tier-2 default for the media editor) ──
+            ui.label("Default media licence").classes("text-sm font-medium mb-1")
+            ui.label(
+                "Inserted with one click in a media file's licence field."
+            ).classes("text-xs mb-2").style("color:var(--tp-base-soft)")
+            from app.vocab import LICENSE_OPTIONS as _LICENSE_OPTIONS
+            default_license_sel = ui.select(
+                _LICENSE_OPTIONS, value=get_config().default_license or "",
+                label="Default licence",
+            ).classes("w-full mt-1")
 
             ui.separator().classes("my-3")
 
@@ -2120,14 +2139,17 @@ def index():
                 cfg.collection_code       = collection_code_in.value.strip()
                 cfg.map_default_layer     = map_layer_sel.value or "street"
                 cfg.digitize_layout       = digitize_layout_toggle.value or "normal"
+                cfg.default_license       = default_license_sel.value or ""
                 with _sf() as _s:
                     with _s.begin():
                         idby_id = idby_state["commit"](_s)
                         recby_id = recby_state_cfg["commit"](_s)
+                        rights_id = rights_state_cfg["commit"](_s)
                         pd_svc.set_defaults(
                             _s,
                             identified_by_id=idby_id,
                             recorded_by_id=recby_id,
+                            rights_holder_id=rights_id,
                         )
                 cfg.bio_assoc_default_codes = selected
                 save_config(cfg)
@@ -2154,10 +2176,12 @@ def index():
         collection_code_in.value  = cfg.collection_code
         map_layer_sel.value     = cfg.map_default_layer or "street"
         digitize_layout_toggle.value = cfg.digitize_layout or "normal"
+        default_license_sel.value = cfg.default_license or ""
         with _sf() as _s:
-            _idby, _recby = pd_svc.get_defaults(_s)
+            _idby, _recby, _rights = pd_svc.get_defaults(_s)
         idby_state["set_value"](_idby)
         recby_state_cfg["set_value"](_recby)
+        rights_state_cfg["set_value"](_rights)
         for code, cb in _code_cbs.items():
             cb.value = code in cfg.bio_assoc_default_codes
         settings_dialog.open()

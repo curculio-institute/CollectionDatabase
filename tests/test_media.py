@@ -64,6 +64,30 @@ def test_attach_list_and_delete_cleans_up(media_env):
     assert not media_svc.abs_path(rel).is_file()
 
 
+def test_update_media_rights_holder_and_license(media_env):
+    s, _ = media_env
+    import app.services.person_defaults as pd_svc
+    from app.models import Person, Media
+
+    p = Person(full_name="Jane Photographer"); s.add(p); s.flush()
+    ev = CollectingEvent(country="Germany"); s.add(ev); s.flush()
+    att = media_svc.add_attachment(
+        s, target_kind="collecting_event", target_id=ev.id,
+        data=b"img-bytes", filename="x.jpg",
+    )
+    s.flush()
+    media_svc.update_media(s, att.media_id, license="CC BY", rights_holder_id=p.id)
+    s.flush()
+    m = s.get(Media, att.media_id)
+    assert m.license == "CC BY"
+    assert m.rights_holder_id == p.id
+
+    # person_defaults now carries a third (rightsHolder) default, resolved by name
+    pd_svc.set_defaults(s, identified_by_id=None, recorded_by_id=None, rights_holder_id=p.id)
+    s.flush()
+    assert pd_svc.get_defaults(s) == (None, None, "Jane Photographer")
+
+
 def test_shared_media_not_deleted_while_referenced(media_env):
     s, _ = media_env
     e1 = CollectingEvent(country="Germany"); e2 = CollectingEvent(country="Austria")

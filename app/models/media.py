@@ -36,7 +36,10 @@ class Media(Base, TimestampMixin):
     creator: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     capture_date: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     license: Mapped[Optional[str]] = mapped_column(String, nullable=True)
-    rights_holder: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    # rightsHolder is a controlled person (FK), not free text, so person delete/merge
+    # integrity applies (ON DELETE RESTRICT + merge_persons re-points it automatically).
+    rights_holder_id: Mapped[Optional[int]] = mapped_column(
+        Integer, ForeignKey("person.id", ondelete="RESTRICT"), nullable=True)
     source: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     remarks: Mapped[Optional[str]] = mapped_column(String, nullable=True)
 

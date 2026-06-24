@@ -15,6 +15,11 @@ from typing import Callable, Optional
 from nicegui import ui
 
 import app.services.media as media_svc
+import app.services.person_defaults as pd_svc
+from app.config import get_config
+from app.vocab import LICENSE_OPTIONS
+from app.ui.person_field import build_person_field
+from app.models import Person
 
 # Category → Material icon (for non-image previews) and filter order.
 _CAT_ICON = {
@@ -92,6 +97,54 @@ def build_media_panel(
         if on_change:
             on_change()
 
+    def _default_rights_holder() -> Optional[str]:
+        with session_factory() as s:
+            return pd_svc.get_defaults(s)[2]
+
+    def _open_metadata(it: dict):
+        """Per-asset metadata editor — title, creator, rightsHolder (person, Tier-2),
+        licence (Tier-2), and the per-attachment caption."""
+        with ui.dialog() as dlg, ui.card().classes("min-w-[460px] gap-2"):
+            ui.label(f"Media details — {it['name']}").classes("text-base font-medium")
+            title_in = ui.input("Title", value=it["title"]).classes("w-full")
+            creator_in = ui.input("Creator", value=it["creator"]).classes("w-full")
+            # rightsHolder — person field with a Tier-2 push_pin (default person).
+            rights_field = build_person_field(
+                session_factory, "rightsHolder",
+                default_fn=_default_rights_holder,
+                initial_value=it["rights_name"] or None,
+                classes="w-full",
+            )
+            # licence — select + Tier-2 push_pin inserting the configured default.
+            with ui.row().classes("items-center gap-1 w-full"):
+                lic_sel = ui.select(LICENSE_OPTIONS, value=it["license"], label="Licence") \
+                    .classes("flex-1")
+                ui.button(icon="push_pin",
+                          on_click=lambda: lic_sel.set_value(get_config().default_license or "")) \
+                    .props("flat dense round size=sm").tooltip("Insert default licence")
+            cap_in = ui.input("Caption", value=it["caption"]).classes("w-full")
+
+            def _save_meta():
+                with session_factory() as s:
+                    with s.begin():
+                        rid = rights_field["commit"](s)
+                        media_svc.update_media(
+                            s, it["media_id"],
+                            title=title_in.value or None,
+                            creator=creator_in.value or None,
+                            license=lic_sel.value or None,
+                            rights_holder_id=rid,
+                        )
+                        media_svc.update_attachment(s, it["att_id"], caption=cap_in.value or "")
+                dlg.close()
+                refresh()
+
+            with ui.row().classes("w-full justify-end gap-2 mt-1"):
+                ui.button("Cancel", on_click=dlg.close).props("flat")
+                ui.button("Save", on_click=_save_meta).props("color=secondary")
+        dlg.on_value_change(lambda e: dlg.delete() if not e.value else None)
+        dlg.open()
+
     def _snapshot() -> list[dict]:
         """Read attachments + their media into plain dicts inside a session, so the UI can
         render after the session closes (no DetachedInstanceError)."""
@@ -102,10 +155,16 @@ def build_media_panel(
         with session_factory() as s:
             for a in media_svc.list_attachments(s, target_kind=target_kind, target_id=tid):
                 m = a.media
+                rights_name = None
+                if m.rights_holder_id is not None:
+                    p = s.get(Person, m.rights_holder_id)
+                    rights_name = p.full_name if p else None
                 out.append({
                     "att_id": a.id, "caption": a.caption or "", "is_primary": bool(a.is_primary),
                     "media_id": m.id, "category": m.category, "rel": m.relative_path,
                     "name": m.original_filename or m.relative_path, "format": m.format,
+                    "title": m.title or "", "creator": m.creator or "",
+                    "license": m.license or "", "rights_name": rights_name or "",
                 })
         return out
 
@@ -153,11 +212,18 @@ def build_media_panel(
                 ).props("flat dense round size=sm").tooltip("Mark as primary")
                 if it["is_primary"]:
                     star.props("color=amber")
+                ui.button(icon="edit", on_click=lambda d=it: _open_metadata(d)) \
+                    .props("flat dense round size=sm color=grey") \
+                    .tooltip("Details — title, creator, rightsHolder, licence")
                 ui.button(icon="delete", on_click=lambda a=it["att_id"]: _delete(a)) \
                     .props("flat dense round size=sm color=grey").tooltip("Remove")
             cap = ui.input(placeholder="caption", value=it["caption"]) \
                 .props("dense borderless").classes("w-full text-xs")
             cap.on("blur", lambda e, a=it["att_id"], el=cap: _set_caption(a, el.value))
+            if it["license"] or it["rights_name"]:
+                meta = " · ".join(x for x in (it["license"], it["rights_name"]) if x)
+                ui.label(meta).classes("text-xs truncate w-full") \
+                    .style("color:var(--tp-base-soft)")
 
     filter_sel.on_value_change(lambda e: (state.update(filter=e.value), refresh()))
 

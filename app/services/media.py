@@ -223,7 +223,7 @@ def update_media(session: Session, media_id: int, **fields) -> None:
     if media is None:
         return
     allowed = {"category", "title", "creator", "capture_date",
-               "license", "rights_holder", "source", "remarks"}
+               "license", "rights_holder_id", "source", "remarks"}
     for k, v in fields.items():
         if k in allowed:
             setattr(media, k, v)

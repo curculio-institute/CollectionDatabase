@@ -48,6 +48,11 @@ class AppConfig:
     # SHA-256. Relative paths resolve against the project data/ dir; "" → data/media.
     media_dir: str = ""
 
+    # Tier-2 one-click default for a media file's licence (the push_pin in the media
+    # metadata editor inserts this). "" → no default. The rightsHolder default is a
+    # person and lives in the DB (person_defaults.default_rights_holder_id), not here.
+    default_license: str = ""
+
 
 def printed_pdf_dir() -> Path:
     """Resolved archival folder for printed label PDFs (created if missing)."""

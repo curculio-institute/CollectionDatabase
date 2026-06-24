@@ -464,7 +464,8 @@ erDiagram
       <tr><td><span class="badge badge-TEXT">TEXT</span></td><td class="col-local">format</td><td>mime type</td></tr>
       <tr><td><span class="badge badge-TEXT">TEXT</span></td><td class="col-local">original_filename</td><td></td></tr>
       <tr><td><span class="badge badge-INTEGER">INTEGER</span></td><td class="col-local">byte_size / width / height</td><td>width/height best-effort for images</td></tr>
-      <tr><td><span class="badge badge-TEXT">TEXT</span></td><td class="col-local">title / creator / capture_date / license / rights_holder / source / remarks</td><td>Audubon-Core-style metadata</td></tr>
+      <tr><td><span class="badge badge-TEXT">TEXT</span></td><td class="col-local">title / creator / capture_date / license / source / remarks</td><td>Audubon-Core-style metadata (license is free text, dropdown-assisted)</td></tr>
+      <tr><td><span class="badge badge-INTEGER">INTEGER</span></td><td class="col-local">rights_holder_id</td><td><span class="tag tag-FK">FK</span> → person ON DELETE RESTRICT (controlled, not free text)</td></tr>
       <tr><td><span class="badge badge-TEXT">TEXT</span></td><td class="col-local">created_at / updated_at</td><td></td></tr>
     </tbody>
   </table>
@@ -545,7 +546,9 @@ erDiagram
       <tr><td><span class="tag tag-FK">FK</span></td><td class="col-local">taxon_determination</td><td><code>collection_object_id</code> → collection_object ON DELETE CASCADE; <code>taxon_id</code> → taxon ON DELETE RESTRICT</td></tr>
       <tr><td><span class="tag tag-FK">FK</span></td><td class="col-local">person references</td><td>all <code>person</code> FKs (recordedBy, identifiedBy, defaults) are ON DELETE RESTRICT</td></tr>
       <tr><td><span class="tag tag-UQ">UQ</span></td><td class="col-local">media</td><td>UNIQUE (<code>sha256</code>) — content-addressed de-duplication key</td></tr>
+      <tr><td><span class="tag tag-FK">FK</span></td><td class="col-local">media</td><td><code>rights_holder_id</code> → person ON DELETE RESTRICT (delete-safe; re-pointed by merge_persons)</td></tr>
       <tr><td><span class="tag tag-FK">FK</span></td><td class="col-local">media_attachment</td><td><code>media_id</code> → media, and each arc FK (<code>collection_object_id</code> / <code>collecting_event_id</code> / <code>biological_association_id</code>) → its table, all ON DELETE CASCADE</td></tr>
+      <tr><td><span class="tag tag-FK">FK</span></td><td class="col-local">person_defaults</td><td><code>default_rights_holder_id</code> → person ON DELETE RESTRICT (Tier-2 default for media rightsHolder; migration 0036)</td></tr>
     </tbody>
   </table>
 </div>

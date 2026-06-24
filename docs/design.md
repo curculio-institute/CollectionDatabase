@@ -883,8 +883,15 @@ renders the media attached to one record and returns `{"container", "refresh"}`
   hint instead.
 - **Render:** a flex-wrap of fixed-width cards — images show a `/media/<rel>` thumbnail
   (click → open full); non-images show a category icon + a download link. Each card has a
-  category `ui.select` (re-classify), a primary star, a delete button, and a caption
-  input (committed on blur).
+  category `ui.select` (re-classify), a primary star, an **edit (pencil)** button, a delete
+  button, and a caption input (committed on blur); licence + rightsHolder show as a small
+  caption line when set.
+- **Metadata editor (pencil → dialog):** title, creator, **rightsHolder** and **licence**,
+  plus the caption. rightsHolder is a `person_field` and licence a `ui.select`
+  (`vocab.LICENSE_OPTIONS`); **both are Tier-2** — a push_pin inserts the configured default
+  (`person_defaults.default_rights_holder_id` for rightsHolder via the field's `default_fn`;
+  `config.default_license` for licence). Save commits the person (`commit()` → id) and
+  `media_svc.update_media(...)` + `update_attachment(caption=...)`.
 - **Filter by kind:** a "Filter" select listing the categories actually present; the
   gallery shows only the selected category.
 - **Snapshot-before-render:** attachments + their `media` are read into plain dicts inside

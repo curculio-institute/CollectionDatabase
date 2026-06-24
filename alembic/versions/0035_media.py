@@ -43,7 +43,7 @@ def upgrade() -> None:
             creator           TEXT,
             capture_date      TEXT,
             license           TEXT,
-            rights_holder     TEXT,
+            rights_holder_id  INTEGER REFERENCES person(id) ON DELETE RESTRICT,
             source            TEXT,
             remarks           TEXT,
             created_at        TEXT    NOT NULL,
