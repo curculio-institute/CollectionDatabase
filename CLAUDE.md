@@ -300,9 +300,17 @@ storage:
   in the DB) and the licence default is `config.default_license` (a plain string).
 - Deleting the last attachment of a media asset removes the orphaned `media` row **and**
   its on-disk bytes (`media.delete_attachment`); shared content is kept while still
-  referenced. Service: `app/services/media.py`; reusable UI: `app/ui/media_panel.py`
-  (collapsed expansion per the progressive-disclosure convention). Snapshots cover the
-  `.db` only — `data/media/` is backed up separately.
+  referenced. Snapshots cover the `.db` only — `data/media/` is backed up separately, and
+  a rolled-back upload can leave an orphan file (bytes are written before the row commits);
+  an orphan-sweep is a planned maintenance action.
+- **UI is an icon + popup** (`app/ui/media_panel.py` → `build_media_button`): a compact
+  button with a **count badge** opens a popup with **batch upload** (many files at once),
+  a category filter, and per-item category / primary / delete / details (rightsHolder,
+  licence, caption). It runs in two modes: **bound** (Records — writes straight to the DB,
+  on the specimen, event, and per-association) and **staged** (Specimen Digitization — the
+  record doesn't exist yet, so files are stored and committed to the new specimen on Save;
+  `commit(session, target_id)`). Service: `app/services/media.py`. (Digitize staging
+  currently covers the **specimen**; event/association media are added in Records.)
 
 ### Why person defaults live in the DB, not config.json
 

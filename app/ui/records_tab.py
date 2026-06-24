@@ -20,7 +20,7 @@ from app.ui.identification_list import build_identification_list
 from app.ui.collecting_event_form import build_collecting_event_form
 from app.ui.specimen_form import build_specimen_form
 from app.ui.event_reuse import build_event_share_banner
-from app.ui.media_panel import build_media_panel
+from app.ui.media_panel import build_media_button
 
 _FLOAT_ATTRS = frozenset({
     "decimal_latitude", "decimal_longitude",
@@ -29,18 +29,14 @@ _FLOAT_ATTRS = frozenset({
 })
 
 
-def _media_expansion(session_factory, *, target_kind, target_id, label="Media"):
-    """A collapsed Media panel (progressive disclosure) for one record — auto-expanded
-    only when attachments already exist (see feedback_progressive_disclosure)."""
-    exp = ui.expansion(label, icon="collections").classes("w-full")
-    with exp:
-        panel = build_media_panel(
-            session_factory, target_kind=target_kind,
-            target_id_getter=lambda: target_id,
-        )
-    if panel["refresh"]() > 0:
-        exp.set_value(True)
-    return exp
+def _media_btn(session_factory, *, target_kind, target_id, tooltip="Media"):
+    """A compact media icon+popup button (bound mode) for one saved record. The button
+    badge indicates how many files are attached (progressive disclosure — the gallery is
+    behind the click)."""
+    return build_media_button(
+        session_factory, target_kind=target_kind,
+        target_id_getter=lambda: target_id, tooltip=tooltip,
+    )["button"]
 
 
 def build_records_tab(session_factory, *, on_saved: callable | None = None) -> None:
@@ -296,6 +292,12 @@ def build_records_tab(session_factory, *, on_saved: callable | None = None) -> N
         rem_in       = spec["rem_in"]
         coll_code_in = spec["coll_code_disp"]
 
+        # Specimen media (icon + popup; badge shows attachment count)
+        with ui.row().classes("items-center gap-2 px-1"):
+            ui.label("Specimen media").classes("text-sm").style("color:var(--tp-base-soft)")
+            _media_btn(session_factory, target_kind="collection_object",
+                       target_id=co_id, tooltip="Specimen media")
+
         # ── Identifications card ──────────────────────────────────────────
         with ui.card().classes("w-full shadow-sm"):
             ui.label("Identifications").classes("section-label mb-2")
@@ -319,6 +321,9 @@ def build_records_tab(session_factory, *, on_saved: callable | None = None) -> N
                         "color:var(--tp-warning, #f59e0b)" if ev_n > 1
                         else "color:var(--tp-base-soft)"
                     )
+                    ui.space()
+                    _media_btn(session_factory, target_kind="collecting_event",
+                               target_id=ev_id, tooltip="Event media")
             ui.separator().classes("mb-3")
 
             # A shared event (n>1) opens read-only ("view"); the event is only
@@ -387,31 +392,14 @@ def build_records_tab(session_factory, *, on_saved: callable | None = None) -> N
                             ui.icon("link", size="xs") \
                                 .style("color:var(--tp-secondary); opacity:.7")
                             ui.label(f"{a.rel_name} — {a.object_label}").classes("text-sm flex-1")
-                            (
-                                ui.button("", icon="collections")
-                                .props("flat dense round size=xs")
-                                .tooltip("Media for this association")
-                                .on_click(lambda _, ba_id=a.id, lbl=a.object_label:
-                                          _open_assoc_media(ba_id, lbl))
-                            )
+                            _media_btn(session_factory,
+                                       target_kind="biological_association",
+                                       target_id=a.id, tooltip="Association media")
                             (
                                 ui.button("", icon="close")
                                 .props("flat dense round size=xs")
                                 .on_click(lambda _, ba_id=a.id: _remove_assoc(ba_id))
                             )
-
-            def _open_assoc_media(ba_id: int, label: str):
-                with ui.dialog() as dlg, ui.card().classes("min-w-[480px]"):
-                    ui.label(f"Media — {label}").classes("text-base font-medium mb-1")
-                    build_media_panel(
-                        session_factory,
-                        target_kind="biological_association",
-                        target_id_getter=lambda: ba_id,
-                    )
-                    with ui.row().classes("w-full justify-end mt-2"):
-                        ui.button("Close", on_click=dlg.close).props("flat")
-                dlg.on_value_change(lambda e: dlg.delete() if not e.value else None)
-                dlg.open()
 
             def _remove_assoc(ba_id: int):
                 try:
@@ -478,13 +466,6 @@ def build_records_tab(session_factory, *, on_saved: callable | None = None) -> N
                 ui.button("Save association", icon="add", on_click=_add_assoc) \
                     .props("flat no-caps color=secondary")
 
-        # ── Media (collapsed; progressive disclosure) ─────────────────────────
-        with ui.card().classes("w-full shadow-sm"):
-            _media_expansion(
-                session_factory,
-                target_kind="collection_object", target_id=co_id,
-            )
-
         # ── Save bar ─────────────────────────────────────────────────────────
         def _collect_co_fields() -> dict:
             return {
@@ -548,6 +529,9 @@ def build_records_tab(session_factory, *, on_saved: callable | None = None) -> N
                         "color:var(--tp-warning, #f59e0b)" if shared
                         else "color:var(--tp-base-soft)"
                     )
+                ui.space()
+                _media_btn(session_factory, target_kind="collecting_event",
+                           target_id=ev_id, tooltip="Event media")
             ui.separator().classes("mb-3")
 
             if cos:
@@ -576,13 +560,7 @@ def build_records_tab(session_factory, *, on_saved: callable | None = None) -> N
             ev_ce["load"](ev_snap)
             if shared:
                 ev_ce["set_readonly"](True)   # view-only until "Edit all" unlocks
-
-        # ── Media (collapsed; progressive disclosure) ─────────────────────────
-        with ui.card().classes("w-full shadow-sm"):
-            _media_expansion(
-                session_factory,
-                target_kind="collecting_event", target_id=ev_id,
-            )
+            # (event media lives behind the icon in the card header above)
 
         def _save_event():
             try:

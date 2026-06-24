@@ -44,6 +44,7 @@ from app.ui.mounting_session import build_mounting_session_section
 from app.ui.specimen_form import build_specimen_form
 from app.ui.collecting_event_form import build_collecting_event_form
 from app.ui.event_reuse import build_event_share_banner
+from app.ui.media_panel import build_media_button
 from app.services.biological import (
     sync_biological_relationships,
     get_relationship_options,
@@ -831,6 +832,17 @@ def index():
                         ui.separator().classes("mb-3")
                         det_state = build_identification_list(_sf)
 
+                # Specimen media — staged during digitize (no record yet), committed
+                # to the new collection_object on Save. Standard/visiting only; the
+                # row is hidden in mounting (multi-specimen, ambiguous target).
+                with ui.row().classes("items-center gap-2 px-1") as spec_media_row:
+                    ui.label("Specimen media").classes("text-sm") \
+                        .style("color:var(--tp-base-soft)")
+                    spec_media = build_media_button(
+                        _sf, target_kind="collection_object", staged=True,
+                        tooltip="Specimen media (attached on Save)",
+                    )
+
                 # ── COLLECTING EVENT ─────────────────────────────────────
                 with ui.card().classes("w-full shadow-sm") as event_card:
                     with ui.row().classes("items-center gap-3 mb-1 w-full"):
@@ -1213,6 +1225,7 @@ def index():
                         or bool(bio_state["associations"])
                         or bool(rel_sel.value)
                         or bool(bio_obj_state["taxon_id"])
+                        or spec_media["has_content"]()
                     )
 
                 def _on_save():
@@ -1278,6 +1291,9 @@ def index():
                                     queue_labels=False,
                                     associations=bio_state["associations"],
                                 )
+                                # Attach any media staged during digitize to the new
+                                # specimen (same transaction → atomic with the save).
+                                spec_media["commit"](session, co.id)
                         event_sel.set_options(_event_opts())
                         spec["refresh_codes"]()
                         ui.notify(f"Saved — specimen #{saved_id}  [{code}]", type="positive")
@@ -1285,6 +1301,7 @@ def index():
                     except Exception as exc:
                         ui.notify(f"Save failed: {exc}", type="negative")
                         return
+                    spec_media["clear"]()   # staged media now committed
                     _refresh_table()
                     _clear_after_save()
                     # In single-card mode, return to the first step for the next
@@ -1326,6 +1343,7 @@ def index():
                     bio_obj_state["clear"]()
                     rel_sel.value = None
                     _refresh_assoc_list()
+                    spec_media["clear"]()
                     event_sel.value = None
                     state["event_id"] = None
                     event_status.set_content("· new event")
@@ -1384,6 +1402,11 @@ def index():
                     }
                     for card, vis in base.items():
                         card.set_visibility(vis and (not single or card is cur_card))
+                    # Specimen media row follows the specimen card: hidden in mounting,
+                    # and (in single-card mode) only shown on the specimen step.
+                    spec_media_row.set_visibility(
+                        (not is_ms) and (not single or cur_card in
+                                         (specimen_card, spec_visiting["card"])))
                     ms_section.set_visibility(is_ms)
                     last = _step_idx[0] == len(cards) - 1
                     step_header_row.set_visibility(single)

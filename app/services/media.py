@@ -198,6 +198,42 @@ def add_attachment(
     return att
 
 
+def attach_stored(
+    session: Session,
+    *,
+    target_kind: str,
+    target_id: int,
+    meta: dict,
+    caption: Optional[str] = None,
+    category: Optional[str] = None,
+    license: Optional[str] = None,
+    rights_holder_id: Optional[int] = None,
+    is_primary: int = 0,
+) -> MediaAttachment:
+    """Attach a file that is **already in the store** (its bytes were written earlier,
+    e.g. staged during Digitize before the record existed). ``meta`` is the dict returned
+    by store_bytes/store_file. Creates the media row if absent and applies metadata."""
+    if target_kind not in TARGET_FK:
+        raise ValueError(f"unknown target_kind {target_kind!r}")
+    media = _get_or_create_media(session, meta)
+    if category:
+        media.category = category
+    if license is not None:
+        media.license = license
+    if rights_holder_id is not None:
+        media.rights_holder_id = rights_holder_id
+    att = MediaAttachment(media_id=media.id, caption=caption, is_primary=is_primary)
+    setattr(att, TARGET_FK[target_kind], target_id)
+    session.add(att)
+    session.flush()
+    return att
+
+
+def count_attachments(session: Session, *, target_kind: str, target_id: int) -> int:
+    col = getattr(MediaAttachment, TARGET_FK[target_kind])
+    return session.query(MediaAttachment).filter(col == target_id).count()
+
+
 def list_attachments(session: Session, *, target_kind: str, target_id: int) -> list[MediaAttachment]:
     """All media_attachment rows (with their Media loaded) for one record, primary first."""
     col = getattr(MediaAttachment, TARGET_FK[target_kind])

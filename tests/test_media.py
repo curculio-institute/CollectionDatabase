@@ -88,6 +88,29 @@ def test_update_media_rights_holder_and_license(media_env):
     assert pd_svc.get_defaults(s) == (None, None, "Jane Photographer")
 
 
+def test_attach_stored_staged_commit(media_env):
+    """Simulates the Digitize staged flow: bytes stored before the record exists, then
+    committed onto the saved specimen via attach_stored (carrying metadata)."""
+    s, _ = media_env
+    from app.models import Person, CollectionObject
+    p = Person(full_name="Cam Photographer"); s.add(p); s.flush()
+    co = CollectionObject(catalog_number="JJPC-99999", collection_code="JJPC")
+    s.add(co); s.flush()
+
+    meta = media_svc.store_bytes(b"\x89PNG staged", "field.png")  # stored while "staging"
+    assert media_svc.count_attachments(s, target_kind="collection_object", target_id=co.id) == 0
+    media_svc.attach_stored(
+        s, target_kind="collection_object", target_id=co.id, meta=meta,
+        caption="in the field", license="CC BY", rights_holder_id=p.id, is_primary=1,
+    )
+    s.flush()
+    rows = media_svc.list_attachments(s, target_kind="collection_object", target_id=co.id)
+    assert len(rows) == 1
+    assert rows[0].caption == "in the field" and rows[0].is_primary == 1
+    assert rows[0].media.license == "CC BY" and rows[0].media.rights_holder_id == p.id
+    assert media_svc.count_attachments(s, target_kind="collection_object", target_id=co.id) == 1
+
+
 def test_shared_media_not_deleted_while_referenced(media_env):
     s, _ = media_env
     e1 = CollectingEvent(country="Germany"); e2 = CollectingEvent(country="Austria")
