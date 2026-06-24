@@ -178,6 +178,52 @@ def index():
     }, true);
     </script>""")
 
+    # ── Digitize single-card stepper: chip styling + arrow-key nav ───────
+    # The stepper header (.tp-stepper-bar) is shown only in single-card mode;
+    # ←/→ move between cards, but only when the bar is visible and the user is
+    # not typing in a field (so arrow keys still work inside inputs/selects).
+    ui.add_head_html("""
+    <style>
+      .tp-step-chip {
+        display:flex; align-items:center; gap:6px; cursor:pointer;
+        padding:5px 12px; border-radius:999px; font-size:.85rem; font-weight:600;
+        color:var(--tp-base-soft); background:var(--tp-base-foreground);
+        border:1px solid var(--tp-base-border); user-select:none;
+        transition:background .12s, color .12s, border-color .12s;
+      }
+      .tp-step-chip:hover { border-color:var(--tp-secondary);
+                            color:var(--tp-base-content); }
+      .tp-step-chip.active { background:var(--tp-secondary); color:#fff;
+                             border-color:var(--tp-secondary); }
+      .tp-step-num {
+        display:inline-flex; align-items:center; justify-content:center;
+        min-width:18px; height:18px; padding:0 2px; border-radius:50%;
+        font-size:.72rem; background:rgba(0,0,0,.10);
+      }
+      .tp-step-chip.active .tp-step-num { background:rgba(255,255,255,.25); }
+      .tp-step-sep { color:var(--tp-base-soft); opacity:.45; padding:0 2px; }
+    </style>
+    <script>
+    document.addEventListener('keydown', function(e){
+      if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
+      var a = document.activeElement;
+      if (a) {
+        var tag = (a.tagName || '').toLowerCase();
+        if (tag === 'input' || tag === 'textarea' || tag === 'select'
+            || a.isContentEditable) return;
+        if (a.closest && a.closest('.q-field, .q-select, .q-editor, .q-menu')) return;
+      }
+      var bar = document.querySelector('.tp-stepper-bar');
+      if (!bar) return;
+      var st = window.getComputedStyle(bar);
+      if (st.display === 'none' || st.visibility === 'hidden') return;
+      if (window.emitEvent) {
+        e.preventDefault();
+        emitEvent('tp-step-nav', e.key === 'ArrowRight' ? 1 : -1);
+      }
+    }, true);
+    </script>""")
+
     # ── SVG favicon (vector, sharp at any size) ──────────────────────────
     ui.add_head_html(
         '<link rel="icon" type="image/svg+xml" href="/static/beetle_blue.svg">'
@@ -733,37 +779,56 @@ def index():
                     for r in rows
                 ]
 
-            with ui.column().classes("w-full max-w-5xl mx-auto px-4 pt-6 pb-16 gap-4"):
+            # max-w is set by _apply_digitize_layout (max-w-7xl normal /
+            # max-w-4xl single-card); never hard-coded here.
+            with ui.column().classes("w-full mx-auto px-4 pt-6 pb-16 gap-4") \
+                    as dig_container:
 
-                # ── SPECIMEN ─────────────────────────────────────────────
-                # Shared specimen-field block (see app/ui/specimen_form.py).
-                # Widgets are unpacked into locals so the save/validate/wipe
-                # paths below reference them unchanged.
-                spec = build_specimen_form(_sf, identifier_policy="standard")
-                specimen_card  = spec["card"]
-                # Visiting-collection variant: free-text identity, pure data
-                # capture (no reserved code, no print queue). Hidden until the
-                # mode toggle selects it; occupies the same slot as the standard
-                # card (only one of the two is ever visible).
-                spec_visiting = build_specimen_form(_sf, identifier_policy="visiting")
-                spec_visiting["card"].set_visibility(False)
-                # The save/validate/clear paths read from whichever form is active.
-                _active_spec = [spec]
+                # ── STEP HEADER (single-card mode only) ──────────────────
+                # Clickable step chips; built + highlighted by the layout logic
+                # block below. Hidden entirely in normal multi-card layout.
+                step_header_row = ui.row().classes(
+                    "tp-stepper-bar w-full items-center gap-1 mb-1"
+                )
+                step_header_row.set_visibility(False)
 
-                # ── IDENTIFICATION ────────────────────────────────────────
-                with ui.card().classes("w-full shadow-sm") as identification_card:
-                    with ui.row().classes("items-center gap-2 mb-1 w-full"):
-                        ui.label("Identifications").classes("section-label")
-                        ui.space()
-                        ui.button("Clear", icon="clear",
-                                  on_click=lambda: det_state["clear"]()) \
-                            .props("flat dense no-caps size=sm color=grey") \
-                            .tooltip("Clear unsaved identifications")
-                    ui.separator().classes("mb-3")
-                    det_state = build_identification_list(_sf)
+                # ── SPECIMEN + IDENTIFICATION (paired in normal mode) ─────
+                # Normal mode lays these two short cards side-by-side (flex-wrap
+                # → stack when narrow); single-card mode shows only the current
+                # step's card, so the row simply holds one full-width card.
+                with ui.row().classes("w-full flex-wrap gap-4 items-start"):
+                    # Shared specimen-field block (see app/ui/specimen_form.py).
+                    # Widgets are unpacked into locals so the save/validate/wipe
+                    # paths below reference them unchanged.
+                    spec = build_specimen_form(_sf, identifier_policy="standard")
+                    specimen_card = spec["card"]
+                    specimen_card.classes(remove="w-full", add="flex-1 min-w-[360px]")
+                    # Visiting-collection variant: free-text identity, pure data
+                    # capture (no reserved code, no print queue). Hidden until the
+                    # mode toggle selects it; occupies the same slot as the standard
+                    # card (only one of the two is ever visible).
+                    spec_visiting = build_specimen_form(_sf, identifier_policy="visiting")
+                    spec_visiting["card"].set_visibility(False)
+                    spec_visiting["card"].classes(remove="w-full",
+                                                  add="flex-1 min-w-[360px]")
+                    # The save/validate/clear paths read from whichever form is active.
+                    _active_spec = [spec]
+
+                    # ── IDENTIFICATION ────────────────────────────────────
+                    with ui.card().classes("shadow-sm flex-1 min-w-[360px]") \
+                            as identification_card:
+                        with ui.row().classes("items-center gap-2 mb-1 w-full"):
+                            ui.label("Identifications").classes("section-label")
+                            ui.space()
+                            ui.button("Clear", icon="clear",
+                                      on_click=lambda: det_state["clear"]()) \
+                                .props("flat dense no-caps size=sm color=grey") \
+                                .tooltip("Clear unsaved identifications")
+                        ui.separator().classes("mb-3")
+                        det_state = build_identification_list(_sf)
 
                 # ── COLLECTING EVENT ─────────────────────────────────────
-                with ui.card().classes("w-full shadow-sm"):
+                with ui.card().classes("w-full shadow-sm") as event_card:
                     with ui.row().classes("items-center gap-3 mb-1 w-full"):
                         ui.label("Collecting Event").classes("section-label")
                         event_status = ui.html("· new event").classes("event-new")
@@ -863,7 +928,7 @@ def index():
                     event_sel.on_value_change(_on_event_selected)
 
                 # ── BIOLOGICAL ASSOCIATIONS ───────────────────────────────
-                with ui.card().classes("w-full shadow-sm"):
+                with ui.card().classes("w-full shadow-sm") as bio_card:
                     with ui.row().classes("items-center gap-2 mb-1 w-full"):
                         ui.label("Biological Associations").classes("section-label")
                         ui.space()
@@ -989,6 +1054,18 @@ def index():
                     ui.space()
                     status_lbl = ui.label("").classes("text-sm italic").style("color:var(--tp-base-soft)")
                     save_btn   = ui.button("Save specimen", icon="save").classes("btn-save")
+
+                # ── STEP NAV (single-card mode, non-final steps) ─────────
+                # Back / Next between cards; shown only in single-card mode and
+                # only before the last step (the last step shows the save bar
+                # above, whose Save performs the single real commit). Buttons are
+                # wired in the layout-logic block below.
+                with ui.row().classes("w-full items-center gap-3 px-1") as step_nav_row:
+                    back_btn = ui.button("Back", icon="chevron_left").props("flat")
+                    ui.space()
+                    next_btn = ui.button("Next") \
+                        .props("icon-right=chevron_right").classes("btn-save")
+                step_nav_row.set_visibility(False)
 
                 # ── RECENT SPECIMENS ──────────────────────────────────────
                 with ui.card().classes("w-full shadow-sm"):
@@ -1206,6 +1283,10 @@ def index():
                         return
                     _refresh_table()
                     _clear_after_save()
+                    # In single-card mode, return to the first step for the next
+                    # specimen (no-op in normal mode).
+                    _step_idx[0] = 0
+                    _refresh_card_visibility()
                     _mark_form_clean("Specimen Digitization")
                     for fn in _refreshers.values():
                         fn()
@@ -1224,19 +1305,15 @@ def index():
                         fn()
 
                 def _on_mode_toggle(mode):
-                    is_ms       = mode == "mounting"
                     is_visiting = mode == "visiting"
-                    is_standard = mode == "standard"
                     # Standard and Visiting share the identification card, event
                     # card, bio card and save bar; only the specimen card swaps.
                     # Mounting replaces the specimen + identification section with
-                    # its own row table.
-                    specimen_card.set_visibility(is_standard)
-                    spec_visiting["card"].set_visibility(is_visiting)
-                    identification_card.set_visibility(not is_ms)
-                    ms_section.set_visibility(is_ms)
-                    std_save_row.set_visibility(not is_ms)
+                    # its own row table. Card visibility (and the single-card
+                    # stepper) is computed in one place — _refresh_card_visibility.
                     _active_spec[0] = spec_visiting if is_visiting else spec
+                    _step_idx[0] = 0
+                    _apply_digitize_layout()
                     # Full wipe on every toggle to avoid unsaved state leaking
                     spec["reset"]()
                     spec_visiting["reset"]()
@@ -1254,6 +1331,89 @@ def index():
                     ce["reset"]()
                     ms_state["wipe"]()
                     _mark_form_clean("Specimen Digitization")
+
+                # ── Layout: normal multi-card vs single-card stepper ──────
+                # One specimen = one Save; the stepper never commits per card,
+                # it only changes which card is visible (the real Save stays on
+                # the last step). Mounting keeps its own staging layout and
+                # ignores the stepper regardless of the config setting.
+                _step_idx = [0]
+                _STEP_LABELS = ["Specimen", "Identifications",
+                                "Collecting Event", "Biological Associations"]
+
+                def _step_cards():
+                    first = (spec_visiting["card"]
+                             if _mode_state["value"] == "visiting" else specimen_card)
+                    return [first, identification_card, event_card, bio_card]
+
+                # Build the step chips once; _refresh_step_chips toggles `active`.
+                _step_chip_els: list = []
+                with step_header_row:
+                    for _i, _lbl in enumerate(_STEP_LABELS):
+                        if _i:
+                            ui.label("›").classes("tp-step-sep")
+                        _chip = ui.element("div").classes("tp-step-chip") \
+                            .on("click", lambda _e, idx=_i: _go_to_step(idx))
+                        with _chip:
+                            ui.label(str(_i + 1)).classes("tp-step-num")
+                            ui.label(_lbl)
+                        _step_chip_els.append(_chip)
+
+                def _refresh_card_visibility():
+                    mode = _mode_state["value"]
+                    is_ms       = mode == "mounting"
+                    is_standard = mode == "standard"
+                    is_visiting = mode == "visiting"
+                    single = (get_config().digitize_layout == "single_card"
+                              and not is_ms)
+                    cards = _step_cards()
+                    _step_idx[0] = max(0, min(_step_idx[0], len(cards) - 1))
+                    cur_card = cards[_step_idx[0]]
+                    # Base visibility from create mode; in single-card mode a base-
+                    # visible card is only shown when it is the current step.
+                    base = {
+                        specimen_card:          is_standard,
+                        spec_visiting["card"]:  is_visiting,
+                        identification_card:    not is_ms,
+                        event_card:             True,
+                        bio_card:               True,
+                    }
+                    for card, vis in base.items():
+                        card.set_visibility(vis and (not single or card is cur_card))
+                    ms_section.set_visibility(is_ms)
+                    last = _step_idx[0] == len(cards) - 1
+                    step_header_row.set_visibility(single)
+                    step_nav_row.set_visibility(single and not last)
+                    std_save_row.set_visibility((not is_ms) and (not single or last))
+                    for i, chip in enumerate(_step_chip_els):
+                        (chip.classes(add="active") if i == _step_idx[0]
+                         else chip.classes(remove="active"))
+                    back_btn.set_enabled(_step_idx[0] > 0)
+
+                def _apply_digitize_layout():
+                    single = (get_config().digitize_layout == "single_card"
+                              and _mode_state["value"] != "mounting")
+                    dig_container.classes(remove="max-w-7xl max-w-4xl")
+                    dig_container.classes(add="max-w-4xl" if single else "max-w-7xl")
+                    _refresh_card_visibility()
+
+                def _go_to_step(i: int):
+                    _step_idx[0] = max(0, min(i, len(_step_cards()) - 1))
+                    _refresh_card_visibility()
+
+                def _step_nav(delta: int):
+                    if (get_config().digitize_layout != "single_card"
+                            or _mode_state["value"] == "mounting"):
+                        return
+                    _go_to_step(_step_idx[0] + delta)
+
+                back_btn.on_click(lambda: _step_nav(-1))
+                next_btn.on_click(lambda: _step_nav(1))
+                ui.on("tp-step-nav", lambda e: _step_nav(int(e.args)))
+
+                # Apply the configured layout now (also re-applied on mode switch
+                # and after saving the Settings dialog).
+                _apply_digitize_layout()
 
                 _mode_state["handler"] = _on_mode_toggle
                 _mode_state["has_content"] = _has_any_content
@@ -1895,6 +2055,19 @@ def index():
 
             ui.separator().classes("my-3")
 
+            # ── Digitize layout ───────────────────────────────────────────
+            ui.label("Digitize layout").classes("text-sm font-medium mb-1")
+            ui.label(
+                "Multi-card shows all cards on one wide page. Single card shows "
+                "one card at a time as a guided stepper (←/→ to move between cards)."
+            ).classes("text-xs mb-2").style("color:var(--tp-base-soft)")
+            digitize_layout_toggle = ui.toggle(
+                {"normal": "Multi-card", "single_card": "Single card"},
+                value=get_config().digitize_layout,
+            ).props("no-caps")
+
+            ui.separator().classes("my-3")
+
             # ── Default names ─────────────────────────────────────────────
             ui.label("Default names").classes("text-sm font-medium mb-1")
             ui.label(
@@ -1942,6 +2115,7 @@ def index():
                 cfg.institution_code      = institution_code_in.value.strip()
                 cfg.collection_code       = collection_code_in.value.strip()
                 cfg.map_default_layer     = map_layer_sel.value or "street"
+                cfg.digitize_layout       = digitize_layout_toggle.value or "normal"
                 with _sf() as _s:
                     with _s.begin():
                         idby_id = idby_state["commit"](_s)
@@ -1956,6 +2130,10 @@ def index():
                 # Propagate to active bio_codes filter in place
                 bio_codes.clear()
                 bio_codes.extend(selected)
+                # Apply the Digitize layout live (no page reload, so any unsaved
+                # form entry survives the settings change).
+                _step_idx[0] = 0
+                _apply_digitize_layout()
                 settings_dialog.close()
                 ui.notify("Settings saved.", type="positive")
 
@@ -1971,6 +2149,7 @@ def index():
         institution_code_in.value = cfg.institution_code
         collection_code_in.value  = cfg.collection_code
         map_layer_sel.value     = cfg.map_default_layer or "street"
+        digitize_layout_toggle.value = cfg.digitize_layout or "normal"
         with _sf() as _s:
             _idby, _recby = pd_svc.get_defaults(_s)
         idby_state["set_value"](_idby)

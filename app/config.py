@@ -39,6 +39,11 @@ class AppConfig:
     # Relative paths resolve against the project data/ dir; "" → data/printed_labels.
     printed_pdf_dir: str = ""
 
+    # Digitize-tab layout. "normal" → wide multi-card page (Specimen | Identifications
+    # paired, Event + Bio full-width below). "single_card" → guided stepper showing one
+    # card at a time, advancing card-to-card with the real Save on the last step.
+    digitize_layout: str = "normal"
+
 
 def printed_pdf_dir() -> Path:
     """Resolved archival folder for printed label PDFs (created if missing)."""
