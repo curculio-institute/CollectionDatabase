@@ -44,11 +44,26 @@ class AppConfig:
     # card at a time, advancing card-to-card with the real Save on the last step.
     digitize_layout: str = "normal"
 
+    # Managed media store: every attached file is copied here, content-addressed by
+    # SHA-256. Relative paths resolve against the project data/ dir; "" → data/media.
+    media_dir: str = ""
+
 
 def printed_pdf_dir() -> Path:
     """Resolved archival folder for printed label PDFs (created if missing)."""
     raw = get_config().printed_pdf_dir
     path = Path(raw) if raw else (_DATA_DIR / "printed_labels")
+    if not path.is_absolute():
+        path = _DATA_DIR / path
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def media_dir() -> Path:
+    """Resolved managed media store (created if missing). Files live content-addressed
+    under here as <xx>/<sha256>.<ext>."""
+    raw = get_config().media_dir
+    path = Path(raw) if raw else (_DATA_DIR / "media")
     if not path.is_absolute():
         path = _DATA_DIR / path
     path.mkdir(parents=True, exist_ok=True)

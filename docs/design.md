@@ -870,6 +870,33 @@ Add `"commit": callable` only if the widget creates DB rows on save (person fiel
 
 ---
 
+## Media panel widget (media_panel.py)
+
+`build_media_panel(session_factory, *, target_kind, target_id_getter, on_change=None)`
+renders the media attached to one record and returns `{"container", "refresh"}`
+(`refresh()` returns the current attachment count). `target_kind` ∈
+`{"collection_object", "collecting_event", "biological_association"}`.
+
+- **Upload:** `ui.upload(multiple, auto_upload)`; each file's bytes go to
+  `media_svc.add_attachment(...)` (content-addressed store) then `refresh()`. If the
+  target record isn't saved yet (`target_id_getter()` is None) it shows a "save first"
+  hint instead.
+- **Render:** a flex-wrap of fixed-width cards — images show a `/media/<rel>` thumbnail
+  (click → open full); non-images show a category icon + a download link. Each card has a
+  category `ui.select` (re-classify), a primary star, a delete button, and a caption
+  input (committed on blur).
+- **Filter by kind:** a "Filter" select listing the categories actually present; the
+  gallery shows only the selected category.
+- **Snapshot-before-render:** attachments + their `media` are read into plain dicts inside
+  the session, so the gallery renders after the session closes (no DetachedInstanceError)
+  — the standard pattern for DB-backed lists here.
+- **Placement / progressive disclosure:** embed inside a collapsed `ui.expansion`
+  ("Media") that auto-opens only when attachments exist (see CLAUDE.md → progressive
+  disclosure). In the Records tab: a Media expansion on the specimen form and the event
+  form, and a per-association Media dialog (opened from a `collections` icon button on
+  each association row). Files are served via `app.add_media_files("/media", media_dir())`
+  (registered in `main.py`), which is range-request aware for audio/video.
+
 ## CatalogNumber and printing workflow
 
 CatalogNumber format: `"collectionCode" + "-" + 5-digit zero-padded ascending number`

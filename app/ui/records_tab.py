@@ -20,12 +20,27 @@ from app.ui.identification_list import build_identification_list
 from app.ui.collecting_event_form import build_collecting_event_form
 from app.ui.specimen_form import build_specimen_form
 from app.ui.event_reuse import build_event_share_banner
+from app.ui.media_panel import build_media_panel
 
 _FLOAT_ATTRS = frozenset({
     "decimal_latitude", "decimal_longitude",
     "coordinate_uncertainty_in_meters", "coordinate_precision",
     "minimum_elevation_in_meters", "maximum_elevation_in_meters",
 })
+
+
+def _media_expansion(session_factory, *, target_kind, target_id, label="Media"):
+    """A collapsed Media panel (progressive disclosure) for one record — auto-expanded
+    only when attachments already exist (see feedback_progressive_disclosure)."""
+    exp = ui.expansion(label, icon="collections").classes("w-full")
+    with exp:
+        panel = build_media_panel(
+            session_factory, target_kind=target_kind,
+            target_id_getter=lambda: target_id,
+        )
+    if panel["refresh"]() > 0:
+        exp.set_value(True)
+    return exp
 
 
 def build_records_tab(session_factory, *, on_saved: callable | None = None) -> None:
@@ -373,10 +388,30 @@ def build_records_tab(session_factory, *, on_saved: callable | None = None) -> N
                                 .style("color:var(--tp-secondary); opacity:.7")
                             ui.label(f"{a.rel_name} — {a.object_label}").classes("text-sm flex-1")
                             (
+                                ui.button("", icon="collections")
+                                .props("flat dense round size=xs")
+                                .tooltip("Media for this association")
+                                .on_click(lambda _, ba_id=a.id, lbl=a.object_label:
+                                          _open_assoc_media(ba_id, lbl))
+                            )
+                            (
                                 ui.button("", icon="close")
                                 .props("flat dense round size=xs")
                                 .on_click(lambda _, ba_id=a.id: _remove_assoc(ba_id))
                             )
+
+            def _open_assoc_media(ba_id: int, label: str):
+                with ui.dialog() as dlg, ui.card().classes("min-w-[480px]"):
+                    ui.label(f"Media — {label}").classes("text-base font-medium mb-1")
+                    build_media_panel(
+                        session_factory,
+                        target_kind="biological_association",
+                        target_id_getter=lambda: ba_id,
+                    )
+                    with ui.row().classes("w-full justify-end mt-2"):
+                        ui.button("Close", on_click=dlg.close).props("flat")
+                dlg.on_value_change(lambda e: dlg.delete() if not e.value else None)
+                dlg.open()
 
             def _remove_assoc(ba_id: int):
                 try:
@@ -442,6 +477,13 @@ def build_records_tab(session_factory, *, on_saved: callable | None = None) -> N
                 ui.space()
                 ui.button("Save association", icon="add", on_click=_add_assoc) \
                     .props("flat no-caps color=secondary")
+
+        # ── Media (collapsed; progressive disclosure) ─────────────────────────
+        with ui.card().classes("w-full shadow-sm"):
+            _media_expansion(
+                session_factory,
+                target_kind="collection_object", target_id=co_id,
+            )
 
         # ── Save bar ─────────────────────────────────────────────────────────
         def _collect_co_fields() -> dict:
@@ -534,6 +576,13 @@ def build_records_tab(session_factory, *, on_saved: callable | None = None) -> N
             ev_ce["load"](ev_snap)
             if shared:
                 ev_ce["set_readonly"](True)   # view-only until "Edit all" unlocks
+
+        # ── Media (collapsed; progressive disclosure) ─────────────────────────
+        with ui.card().classes("w-full shadow-sm"):
+            _media_expansion(
+                session_factory,
+                target_kind="collecting_event", target_id=ev_id,
+            )
 
         def _save_event():
             try:

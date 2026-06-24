@@ -14,7 +14,7 @@ import re
 import sys
 from datetime import datetime
 
-from nicegui import ui
+from nicegui import ui, app
 
 from app.database import get_engine, get_session_factory
 import app.services as svc
@@ -22,7 +22,11 @@ import app.services.taxonomy as tax_svc
 import app.services.identifiers as id_svc
 import app.services.labels as lbl_svc
 import app.services.print_queue as pq_svc
-from app.config import get_config, save_config, printed_pdf_dir
+from app.config import get_config, save_config, printed_pdf_dir, media_dir
+
+# Serve the managed media store so attached images/files render in the browser
+# (range-request aware → also handles audio/video). Registered once at import.
+app.add_media_files("/media", media_dir())
 import app.services.person_defaults as pd_svc
 import app.services.events as ev_svc
 import app.services.db_safety as db_safety

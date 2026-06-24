@@ -271,6 +271,32 @@ attributes. Mermaid diagrams use plain camelCase. Do not deviate from this patte
 | `label_batch` | Groups of `label_code` rows with a `created_at` timestamp. Batches can be reprinted only if no code in the batch has been used yet. |
 | `print_queue` | Staged label jobs (`label_type` ∈ {data, determination, identifier}) pending a single print run. Items removed after printing. (The `data` label carries locality/date/collector — there is no separate "locality" type.) |
 | `person_defaults` | Single-row table holding the two push-pin defaults: `default_identified_by` and `default_recorded_by`. Both columns are `TEXT REFERENCES person(full_name) ON DELETE RESTRICT`. See rationale below. |
+| `media` | One row per stored file (the bytes live content-addressed on disk; see "Media" below). `sha256` UNIQUE (de-dup). `category` (CHECK ∈ {Image, Sound, Video, Document, Sequence, Other}) is the filter key. Audubon-Core-style metadata (title/creator/license/…). Migration 0035. |
+| `media_attachment` | Links a `media` row to exactly one of a `collection_object`, `collecting_event`, or `biological_association` (exclusive-arc CHECK; all FKs ON DELETE CASCADE). Per-attachment `caption` / `is_primary` / `sort_order` (mirrors TaxonWorks' Image↔Depiction split). Migration 0035. |
+
+### Media storage (decided, #48)
+
+Files attached to a specimen / event / association are **copied into a managed,
+content-addressed store** (`data/media/<xx>/<sha256>.<ext>`, configured by
+`config.media_dir`; served at `/media`). This is deliberate, for *safe & persistent*
+storage:
+
+- **Copy-in, never reference-in-place** — the original can move or be deleted without
+  breaking us.
+- **Content-addressed by SHA-256** — automatic de-duplication (identical bytes → one
+  file, one `media` row) and a built-in integrity check (`media.verify_integrity`
+  re-hashes and compares).
+- **`category`** (Image / Sound / Video / Document / **Sequence** / Other) is a
+  first-class, CHECK-constrained field so media is **filterable by kind**; "Sequence"
+  covers genetic data (FASTA etc.), which Audubon Core has no native category for.
+- **Attachment is a separate row** (`media_attachment`, exclusive-arc to one record) with
+  per-attachment caption / primary, mirroring TaxonWorks' Image↔Depiction split but using
+  the project's FK-safe exclusive-arc instead of a polymorphic association.
+- Deleting the last attachment of a media asset removes the orphaned `media` row **and**
+  its on-disk bytes (`media.delete_attachment`); shared content is kept while still
+  referenced. Service: `app/services/media.py`; reusable UI: `app/ui/media_panel.py`
+  (collapsed expansion per the progressive-disclosure convention). Snapshots cover the
+  `.db` only — `data/media/` is backed up separately.
 
 ### Why person defaults live in the DB, not config.json
 
@@ -507,6 +533,7 @@ arrow-key event, chip styling) is design.md's concern → "Digitize layout modes
 | `labels.py` | WeasyPrint HTML → PDF for data (locality/date/collector), determination, and identifier labels |
 | `print_queue.py` | Stage + retrieve + clear print-queue items |
 | `dwc_import.py` | Parse DwC CSV, field aliasing, row-to-form-field mapping |
+| `media.py` | Content-addressed media store (store/dedup/verify/delete) + attachment CRUD (attach to specimen/event/association) |
 
 ### Taxon search widget (`app/ui/taxon_search.py`)
 
