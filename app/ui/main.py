@@ -801,18 +801,33 @@ def index():
                 # Normal mode lays these two short cards side-by-side (flex-wrap
                 # → stack when narrow); single-card mode shows only the current
                 # step's card, so the row simply holds one full-width card.
+                # Staged specimen-media controllers (one per specimen card; the bytes
+                # are stored now and committed to the new specimen on Save). Each card
+                # has its own button in its header; a mode switch wipes both.
+                spec_media = {}
+                spec_media_v = {}
+
+                def _mk_spec_media(holder):
+                    holder.update(build_media_button(
+                        _sf, target_kind="collection_object", staged=True,
+                        tooltip="Specimen media (attached on Save)"))
+
                 with ui.row().classes("w-full flex-wrap gap-4 items-start"):
                     # Shared specimen-field block (see app/ui/specimen_form.py).
                     # Widgets are unpacked into locals so the save/validate/wipe
                     # paths below reference them unchanged.
-                    spec = build_specimen_form(_sf, identifier_policy="standard")
+                    spec = build_specimen_form(
+                        _sf, identifier_policy="standard",
+                        header_slot=lambda: _mk_spec_media(spec_media))
                     specimen_card = spec["card"]
                     specimen_card.classes(remove="w-full", add="flex-1 min-w-[360px]")
                     # Visiting-collection variant: free-text identity, pure data
                     # capture (no reserved code, no print queue). Hidden until the
                     # mode toggle selects it; occupies the same slot as the standard
                     # card (only one of the two is ever visible).
-                    spec_visiting = build_specimen_form(_sf, identifier_policy="visiting")
+                    spec_visiting = build_specimen_form(
+                        _sf, identifier_policy="visiting",
+                        header_slot=lambda: _mk_spec_media(spec_media_v))
                     spec_visiting["card"].set_visibility(False)
                     spec_visiting["card"].classes(remove="w-full",
                                                   add="flex-1 min-w-[360px]")
@@ -832,16 +847,9 @@ def index():
                         ui.separator().classes("mb-3")
                         det_state = build_identification_list(_sf)
 
-                # Specimen media — staged during digitize (no record yet), committed
-                # to the new collection_object on Save. Standard/visiting only; the
-                # row is hidden in mounting (multi-specimen, ambiguous target).
-                with ui.row().classes("items-center gap-2 px-1") as spec_media_row:
-                    ui.label("Specimen media").classes("text-sm") \
-                        .style("color:var(--tp-base-soft)")
-                    spec_media = build_media_button(
-                        _sf, target_kind="collection_object", staged=True,
-                        tooltip="Specimen media (attached on Save)",
-                    )
+                def _active_media() -> dict:
+                    """The staged media controller for the active specimen card."""
+                    return spec_media_v if _active_spec[0] is spec_visiting else spec_media
 
                 # ── COLLECTING EVENT ─────────────────────────────────────
                 with ui.card().classes("w-full shadow-sm") as event_card:
@@ -1225,7 +1233,7 @@ def index():
                         or bool(bio_state["associations"])
                         or bool(rel_sel.value)
                         or bool(bio_obj_state["taxon_id"])
-                        or spec_media["has_content"]()
+                        or _active_media()["has_content"]()
                     )
 
                 def _on_save():
@@ -1293,7 +1301,7 @@ def index():
                                 )
                                 # Attach any media staged during digitize to the new
                                 # specimen (same transaction → atomic with the save).
-                                spec_media["commit"](session, co.id)
+                                _active_media()["commit"](session, co.id)
                         event_sel.set_options(_event_opts())
                         spec["refresh_codes"]()
                         ui.notify(f"Saved — specimen #{saved_id}  [{code}]", type="positive")
@@ -1301,7 +1309,7 @@ def index():
                     except Exception as exc:
                         ui.notify(f"Save failed: {exc}", type="negative")
                         return
-                    spec_media["clear"]()   # staged media now committed
+                    spec_media["clear"](); spec_media_v["clear"]()   # staged media committed
                     _refresh_table()
                     _clear_after_save()
                     # In single-card mode, return to the first step for the next
@@ -1343,7 +1351,7 @@ def index():
                     bio_obj_state["clear"]()
                     rel_sel.value = None
                     _refresh_assoc_list()
-                    spec_media["clear"]()
+                    spec_media["clear"](); spec_media_v["clear"]()
                     event_sel.value = None
                     state["event_id"] = None
                     event_status.set_content("· new event")
@@ -1402,11 +1410,6 @@ def index():
                     }
                     for card, vis in base.items():
                         card.set_visibility(vis and (not single or card is cur_card))
-                    # Specimen media row follows the specimen card: hidden in mounting,
-                    # and (in single-card mode) only shown on the specimen step.
-                    spec_media_row.set_visibility(
-                        (not is_ms) and (not single or cur_card in
-                                         (specimen_card, spec_visiting["card"])))
                     ms_section.set_visibility(is_ms)
                     last = _step_idx[0] == len(cards) - 1
                     step_header_row.set_visibility(single)

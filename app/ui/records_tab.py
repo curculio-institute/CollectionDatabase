@@ -283,6 +283,9 @@ def build_records_tab(session_factory, *, on_saved: callable | None = None) -> N
             identifier_policy="edit",
             initial=co_snap,
             identity_label=f"#{co_id}  {co_snap['catalog_number']}",
+            header_slot=lambda: _media_btn(
+                session_factory, target_kind="collection_object",
+                target_id=co_id, tooltip="Specimen media"),
         )
         count_in     = spec["count_in"]
         preps_in     = spec["preps_in"]
@@ -291,12 +294,6 @@ def build_records_tab(session_factory, *, on_saved: callable | None = None) -> N
         basis_sel    = spec["basis_sel"]
         rem_in       = spec["rem_in"]
         coll_code_in = spec["coll_code_disp"]
-
-        # Specimen media (icon + popup; badge shows attachment count)
-        with ui.row().classes("items-center gap-2 px-1"):
-            ui.label("Specimen media").classes("text-sm").style("color:var(--tp-base-soft)")
-            _media_btn(session_factory, target_kind="collection_object",
-                       target_id=co_id, tooltip="Specimen media")
 
         # ── Identifications card ──────────────────────────────────────────
         with ui.card().classes("w-full shadow-sm"):

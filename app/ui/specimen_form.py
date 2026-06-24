@@ -40,6 +40,7 @@ def build_specimen_form(
     identifier_policy: str = "standard",
     initial: dict | None = None,
     identity_label: str | None = None,
+    header_slot=None,
 ) -> dict:
     """Render the Specimen card. Returns a handle dict.
 
@@ -105,10 +106,14 @@ def build_specimen_form(
             elif is_visiting:
                 ui.label("· visiting — free-form identifier") \
                     .classes("text-sm").style("color:var(--tp-base-soft)")
+            ui.space()
+            # Caller-supplied header widget (e.g. the specimen media button), so it
+            # lives in the card header rather than in a separate row beneath the card.
+            if header_slot is not None:
+                header_slot()
             # Clear button: only in create modes (edit mode shows an existing
             # record — there is no "uncommitted" content to discard).
             if not is_edit:
-                ui.space()
                 ui.button("Clear", icon="clear", on_click=lambda: reset()) \
                     .props("flat dense no-caps size=sm color=grey") \
                     .tooltip("Clear this card's unsaved fields")
