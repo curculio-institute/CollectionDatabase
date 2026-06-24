@@ -10,6 +10,7 @@ Three label types:
 """
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass
 
 from sqlalchemy.orm import Session
@@ -19,7 +20,6 @@ from sqlalchemy import func
 from app.models import PrintQueue, CollectionObject, TaxonDetermination, LabelCode
 from app.models.base import _utcnow
 from app.services import taxa as taxa_svc
-from app.services.label_text import format_locality_label
 import app.services.labels as lbl
 
 
@@ -102,51 +102,11 @@ def queue_summary(session: Session) -> QueueSummary:
     )
 
 
-def queue_preview_items(session: Session) -> list[dict]:
-    """Return a human-readable summary list for the UI preview."""
-    items = []
-    for row in session.query(PrintQueue).order_by(PrintQueue.created_at).all():
-        if row.label_type == "data" and row.collection_object:
-            co = row.collection_object
-            ev = co.collecting_event
-            loc = ", ".join(p for p in [
-                ev.country if ev else None,
-                ev.state_province if ev else None,
-                ev.locality if ev else None,
-            ] if p) or "—"
-            assoc_names = [
-                ba.object_taxon.scientific_name
-                for ba in co.subject_associations
-                if ba.object_taxon
-            ]
-            label_text = format_locality_label(ev, assoc_names or None, html=False)
-            items.append({
-                "type": "data",
-                "text": loc,
-                "label_text": label_text,
-                "id": row.id,
-            })
-
-        elif row.label_type == "determination" and row.collection_object:
-            det = next((d for d in row.collection_object.determinations if d.is_current), None)
-            name = taxa_svc.format_scientific_name(det.taxon) if det and det.taxon else "—"
-            items.append({"type": "determination", "text": name, "label_text": name, "id": row.id})
-
-        elif row.label_type == "identifier" and row.label_code:
-            code = row.label_code.code
-            items.append({"type": "identifier", "text": code, "label_text": code, "id": row.id})
-
-    return items
-
-
 # ---------------------------------------------------------------------------
 # PDF generation
 # ---------------------------------------------------------------------------
 
-def _co_to_data_label(
-    co: CollectionObject,
-    text_override: str | None = None,
-) -> lbl.DataLabel:
+def _co_to_data_label(co: CollectionObject, text_override: str | None = None) -> lbl.DataLabel:
     ev = co.collecting_event
     assoc_names = [
         ba.object_taxon.scientific_name
@@ -154,6 +114,7 @@ def _co_to_data_label(
         if ba.object_taxon
     ]
     return lbl.DataLabel(
+        text_override            = text_override,
         country                  = ev.country                         if ev else None,
         country_code             = ev.country_code                    if ev else None,
         state_province           = ev.state_province                  if ev else None,
@@ -170,32 +131,31 @@ def _co_to_data_label(
         recorded_by              = ev.recorded_by_person.full_name if (ev and ev.recorded_by_person) else None,
         habitat                  = ev.habitat                         if ev else None,
         associated_species       = assoc_names or None,
-        text_override            = text_override,
     )
 
 
-def _co_to_det_label(co: CollectionObject) -> lbl.DeterminationLabel | None:
+def _co_to_det_label(co: CollectionObject, text_override: str | None = None) -> lbl.DeterminationLabel | None:
     det = next((d for d in co.determinations if d.is_current), None)
     if not det or not det.taxon:
         return None
     t = det.taxon
     genus, subgenus, specific, infra = taxa_svc.parse_scientific_name(t.scientific_name or "")
     return lbl.DeterminationLabel(
+        text_override         = text_override,
         genus                 = genus,
         subgenus              = subgenus,
         specific_epithet      = specific,
         infraspecific_epithet = infra,
         authorship            = t.scientific_name_authorship,
+        qualifier             = det.identification_qualifier,   # cf. / aff. / ?
+        type_status           = det.type_status,                # Holotype, …
         determiner            = det.identified_by_person.full_name if det.identified_by_person else None,
         year                  = (det.date_identified or "")[:4] or None,
         sex                   = det.sex,
     )
 
 
-def queued_groups(
-    session: Session,
-    text_overrides: dict[int, str] | None = None,
-) -> list[lbl.LabelGroup]:
+def queued_groups(session: Session) -> list[lbl.LabelGroup]:
     """Reconstruct the queue into print groups (one per queue addition).
 
     Rows are bucketed by `print_group_id` in enqueue order; within a bucket they
@@ -203,10 +163,10 @@ def queued_groups(
     data/determination row joins its column by `collection_object_id`; an
     identifier row joins by its label code's `collection_object_id` (set at assign
     time), or stands alone if the code is reserved-but-unassigned (a pre-print
-    batch). `text_overrides` maps print_queue.id → edited data-label text.
+    batch). Labels are derived from the live records; a row's ``text_override``
+    (a print-only edit typed in the queue, #37) replaces the rendered text.
     """
     rows = session.query(PrintQueue).order_by(PrintQueue.created_at, PrintQueue.id).all()
-    overrides = text_overrides or {}
 
     # Bucket rows by group, preserving first-seen (enqueue) order.
     buckets: "dict[object, dict]" = {}
@@ -218,11 +178,11 @@ def queued_groups(
         if row.label_type == "data" and row.collection_object:
             ckey = ("co", row.collection_object_id)
             col = columns.setdefault(ckey, lbl.SpecimenLabels())
-            col.data = _co_to_data_label(row.collection_object, overrides.get(row.id))
+            col.data = _co_to_data_label(row.collection_object, row.text_override)
         elif row.label_type == "determination" and row.collection_object:
             ckey = ("co", row.collection_object_id)
             col = columns.setdefault(ckey, lbl.SpecimenLabels())
-            col.determination = _co_to_det_label(row.collection_object)
+            col.determination = _co_to_det_label(row.collection_object, row.text_override)
         elif row.label_type == "identifier" and row.label_code:
             lc = row.label_code
             # Align an assigned code under its specimen's data label; an
@@ -237,13 +197,107 @@ def queued_groups(
     ]
 
 
-def build_pdf(
-    session: Session,
-    text_overrides: dict[int, str] | None = None,
-    printed_at: str | None = None,
-) -> bytes:
+def _ident(text: str | None) -> str:
+    """Stable short identity key from a label's text. Two labels are 'identical'
+    iff their auto-composed text matches — for a data label that means same
+    collecting event AND same biological associations (the label is composed from
+    both), independent of which event *row* or batch produced it (#37)."""
+    return hashlib.md5((text or "").encode("utf-8")).hexdigest()[:12]
+
+
+def _row_auto_identity(row: PrintQueue) -> str | None:
+    """Identity of a data/determination row's AUTO label text (override-independent),
+    so identical labels group together for hover-highlight and batch edit. None for
+    identifier rows / rows with no renderable label."""
+    if row.label_type == "data" and row.collection_object:
+        return _ident(lbl.label_plaintext(_co_to_data_label(row.collection_object)))
+    if row.label_type == "determination" and row.collection_object:
+        dl = _co_to_det_label(row.collection_object)
+        return _ident(lbl.label_plaintext(dl)) if dl else None
+    return None
+
+
+def preview_model(session: Session) -> list[dict]:
+    """Structured, editable preview of the queued sheet for the UI. Groups → per-
+    specimen columns; each column carries, per label type, the queue row id, the
+    printed text (override if set else auto), the auto text, and an identity key
+    (identical labels share it). Shape per specimen column::
+
+        {co_id,
+         data, data_auto, data_qid, data_ident,
+         det,  det_auto,  det_qid,  det_ident,
+         id_code}
+    """
+    rows = session.query(PrintQueue).order_by(PrintQueue.created_at, PrintQueue.id).all()
+    buckets: "dict[object, dict]" = {}
+    for row in rows:
+        g = buckets.setdefault(row.print_group_id, {"source": row.source, "columns": {}})
+        cols = g["columns"]
+
+        def _col(key):
+            return cols.setdefault(key, {
+                "co_id": None,
+                "data": None, "data_auto": None, "data_qid": None, "data_ident": None,
+                "det": None,  "det_auto": None,  "det_qid": None,  "det_ident": None,
+                "id_code": None, "id_qid": None,
+            })
+
+        if row.label_type == "data" and row.collection_object:
+            co = row.collection_object
+            col = _col(("co", row.collection_object_id))
+            auto = lbl.label_plaintext(_co_to_data_label(co))
+            col["data_auto"] = auto
+            col["data"] = row.text_override if row.text_override is not None else auto
+            col["data_qid"] = row.id
+            col["data_ident"] = _ident(auto)
+            col["co_id"] = co.id
+        elif row.label_type == "determination" and row.collection_object:
+            co = row.collection_object
+            col = _col(("co", row.collection_object_id))
+            dl = _co_to_det_label(co)
+            auto = lbl.label_plaintext(dl) if dl else "—"
+            col["det_auto"] = auto
+            col["det"] = row.text_override if row.text_override is not None else auto
+            col["det_qid"] = row.id
+            col["det_ident"] = _ident(auto)
+            col["co_id"] = co.id
+        elif row.label_type == "identifier" and row.label_code:
+            lc = row.label_code
+            col = _col(("co", lc.collection_object_id) if lc.collection_object_id else ("code", lc.id))
+            col["id_code"] = lc.code
+            col["id_qid"] = row.id
+
+    return [
+        {"source": b["source"], "specimens": list(b["columns"].values())}
+        for b in buckets.values()
+    ]
+
+
+def set_override_for_identical(session: Session, queue_id: int, text: str | None) -> int:
+    """Set a print-only override on the given row AND every other queued label
+    that is identical to it (same type + same auto text — see _row_auto_identity).
+    Editing one identical label thus edits them all. Empty/None clears (→ auto).
+    Returns how many rows were updated."""
+    row = session.get(PrintQueue, queue_id)
+    if row is None or row.label_type == "identifier":
+        return 0
+    target = _row_auto_identity(row)
+    if target is None:
+        return 0
+    value = text or None
+    n = 0
+    for r in session.query(PrintQueue).filter(PrintQueue.label_type == row.label_type).all():
+        if _row_auto_identity(r) == target:
+            r.text_override = value
+            r.updated_at = _utcnow()
+            n += 1
+    session.flush()
+    return n
+
+
+def build_pdf(session: Session, printed_at: str | None = None) -> bytes:
     """Render all queued labels into a single grouped PDF (see `queued_groups`)."""
-    groups = queued_groups(session, text_overrides)
+    groups = queued_groups(session)
     return lbl.grouped_sheet(groups, printed_at or _utcnow())
 
 

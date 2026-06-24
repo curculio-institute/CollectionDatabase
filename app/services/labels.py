@@ -24,6 +24,7 @@ from __future__ import annotations
 import base64
 import html as _html
 import io
+import re as _re
 from dataclasses import dataclass
 from functools import lru_cache
 from typing import Optional
@@ -104,14 +105,35 @@ class DataLabel:
     recorded_by: Optional[str]              = None
     habitat: Optional[str]                  = None
     associated_species: Optional[list[str]] = None
-    # When set, bypasses computed formatting and renders this plain text directly.
+    # Print-only override typed in the queue (#37): when set, the label prints
+    # this verbatim (one <div> per line) instead of the composed fields. Lets the
+    # user abbreviate/extend for label fit without touching the record.
     text_override: Optional[str]            = None
 
 
-def _data_line1(lbl: DataLabel) -> str:
-    if lbl.text_override is not None:
-        return _e(lbl.text_override)
+def _override_html(text: str) -> str:
+    """Render a print-only override string verbatim — one <div> per line."""
+    return "".join(f"<div>{_e(line)}</div>" for line in text.split("\n"))
 
+
+def label_plaintext(lbl) -> str:
+    """Plain-text rendering of a Data/DeterminationLabel as it will print —
+    one line per ``<div>``, tags stripped, entities unescaped. Used to pre-fill
+    the print-queue override editor so the user tweaks the real label text (#37)."""
+    inner = _data_inner_html(lbl) if isinstance(lbl, DataLabel) else _det_inner_html(lbl)
+    lines = _re.findall(r"<div[^>]*>(.*?)</div>", inner, _re.S)
+    text = "\n".join(_re.sub(r"<[^>]+>", "", ln) for ln in lines)
+    return _html.unescape(text).strip()
+
+
+def _data_inner_html(lbl: DataLabel) -> str:
+    if lbl.text_override is not None:
+        return _override_html(lbl.text_override)
+    return "".join(f"<div>{t}</div>"
+                   for t in [_data_line1(lbl), _data_line2(lbl)] if t)
+
+
+def _data_line1(lbl: DataLabel) -> str:
     country_str = format_country(lbl.country, lbl.country_code, html=True)
 
     parts: list[str] = []
@@ -144,8 +166,6 @@ def _data_line1(lbl: DataLabel) -> str:
 
 
 def _data_line2(lbl: DataLabel) -> str:
-    if lbl.text_override is not None:
-        return ""
     date = _e(lbl.event_date) if lbl.event_date else ""
 
     def _build(name: str | None) -> str:
@@ -167,10 +187,7 @@ def data_sheet(rows: list[DataLabel]) -> bytes:
     """PDF sheet of data/locality labels (18 × 2.5 mm)."""
     items = []
     for lbl in rows:
-        l1 = _data_line1(lbl)
-        l2 = _data_line2(lbl)
-        lines = "".join(f"<div>{t}</div>" for t in [l1, l2] if t)
-        items.append(f'<div class="label">{lines}</div>')
+        items.append(f'<div class="label">{_data_inner_html(lbl)}</div>')
     html = (f"<html><head><style>{_DATA_CSS}</style></head>"
             f'<body><div class="sheet">{"".join(items)}</div></body></html>')
     return HTML(string=html).write_pdf()
@@ -196,6 +213,20 @@ class DeterminationLabel:
     determiner: Optional[str]             = None
     year: Optional[str]                   = None
     sex: Optional[str]                    = None
+    type_status: Optional[str]            = None   # e.g. "Holotype", "Paratype"
+    # Print-only override typed in the queue (#37) — see DataLabel.text_override.
+    text_override: Optional[str]          = None
+
+
+def _det_inner_html(lbl: "DeterminationLabel") -> str:
+    """Full determination-label body — the print-only override verbatim if set,
+    else the type-status line (if any) + composed name block + determiner/year."""
+    if lbl.text_override is not None:
+        return _override_html(lbl.text_override)
+    ts = (f'<div style="text-transform:uppercase;letter-spacing:.04em">'
+          f'{_e(lbl.type_status)}</div>') if lbl.type_status else ""
+    det = _det_line3(lbl)
+    return ts + _det_name_html(lbl) + (f"<div>{det}</div>" if det else "")
 
 
 def _bi(text: str) -> str:
@@ -304,9 +335,7 @@ def determination_sheet(rows: list[DeterminationLabel]) -> bytes:
     """PDF sheet of determination labels (18 × 4.9 mm)."""
     items = []
     for lbl in rows:
-        det = _det_line3(lbl)
-        body = _det_name_html(lbl) + (f"<div>{det}</div>" if det else "")
-        items.append(f'<div class="label">{body}</div>')
+        items.append(f'<div class="label">{_det_inner_html(lbl)}</div>')
     html = (f"<html><head><style>{_DET_CSS}</style></head>"
             f'<body><div class="sheet">{"".join(items)}</div></body></html>')
     return HTML(string=html).write_pdf()
@@ -469,16 +498,13 @@ _GROUPED_CSS = _BASE_CSS + _ID_TEXT_CSS + f"""
 def _data_cell(d: Optional[DataLabel]) -> str:
     if d is None:
         return '<td class="cell"></td>'
-    lines = "".join(f"<div>{t}</div>" for t in [_data_line1(d), _data_line2(d)] if t)
-    return f'<td class="cell"><div class="lbl-data">{lines}</div></td>'
+    return f'<td class="cell"><div class="lbl-data">{_data_inner_html(d)}</div></td>'
 
 
 def _det_cell(d: Optional[DeterminationLabel]) -> str:
     if d is None:
         return '<td class="cell"></td>'
-    det = _det_line3(d)
-    body = _det_name_html(d) + (f"<div>{det}</div>" if det else "")
-    return f'<td class="cell"><div class="lbl-det">{body}</div></td>'
+    return f'<td class="cell"><div class="lbl-det">{_det_inner_html(d)}</div></td>'
 
 
 def _id_cell(code: Optional[str]) -> str:

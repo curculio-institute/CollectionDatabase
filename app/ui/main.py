@@ -25,6 +25,7 @@ import app.services.print_queue as pq_svc
 from app.config import get_config, save_config, printed_pdf_dir
 import app.services.person_defaults as pd_svc
 import app.services.events as ev_svc
+import app.services.db_safety as db_safety
 from app.services.label_text import format_event_preview_html
 from app.models import CollectionObject, CollectingEvent, TaxonDetermination, LabelCode
 from app.ui.taxon_search import build_taxon_search
@@ -181,6 +182,119 @@ def index():
     ui.add_head_html(
         '<link rel="icon" type="image/svg+xml" href="/static/beetle_blue.svg">'
     )
+
+    # ── Print-queue sheet preview (#37): styling + hover-highlight ───────
+    # Hovering any data label highlights every data label with the same
+    # identity (same collecting event AND biological associations — see
+    # print_queue._data_identity), so identical labels are visible at a glance.
+    ui.add_head_html("""
+    <style>
+      .pq-prev        { display:flex; flex-direction:column; gap:14px; }
+      .pq-prev-src    { font-size:.7rem; font-weight:700; text-transform:uppercase;
+                        letter-spacing:.08em; color:var(--tp-base-soft); margin-bottom:4px; }
+      .pq-prev-cols   { display:flex; flex-wrap:wrap; gap:10px; }
+      .pq-prev-col    { display:flex; flex-direction:column; gap:3px; width:190px; }
+      .pq-prev-label  { border:1px solid var(--tp-base-border); border-radius:3px;
+                        padding:3px 6px; font-size:.72rem; line-height:1.3;
+                        background:var(--tp-base-foreground); overflow-wrap:anywhere; }
+      .pq-prev-id     { font-family:monospace; color:var(--tp-base-lighter); }
+      .pq-prev-det    { font-style:italic; }
+      .pq-prev-label[data-ident] { cursor:text; transition:background .1s, outline .1s; }
+      .pq-ident-hl    { outline:2px solid var(--tp-secondary);
+                        background:rgba(3,105,161,.10) !important; }
+      .pq-prev-edited { background:#fff7ed; border-color:#f59e0b; }
+      .dark .pq-prev-edited { background:rgba(245,158,11,.12); }
+      /* the inline editor sits flush inside the label box */
+      .pq-prev-label .q-field__control { min-height:0; padding:0; }
+      .pq-prev-label .q-field__control:before,
+      .pq-prev-label .q-field__control:after { display:none; }
+      .pq-prev-label .q-textarea .q-field__native { padding:0; line-height:1.3; resize:none; }
+      .pq-prev-ctl    { justify-content:flex-end; opacity:.55; }
+      .pq-prev-ctl:hover { opacity:1; }
+      .pq-prev-empty  { font-size:.85rem; font-style:italic; color:var(--tp-base-soft); }
+    </style>
+    <script>
+    (function(){
+      if (window._pqPrevHover) return;
+      window._pqPrevHover = true;
+      function hl(e, on){
+        var el = e.target.closest && e.target.closest('.pq-prev-label[data-ident]');
+        if(!el) return;
+        var id = el.getAttribute('data-ident');
+        document.querySelectorAll('.pq-prev-label[data-ident="'+CSS.escape(id)+'"]')
+          .forEach(function(x){ x.classList.toggle('pq-ident-hl', on); });
+      }
+      document.addEventListener('mouseover', function(e){ hl(e, true); });
+      document.addEventListener('mouseout',  function(e){ hl(e, false); });
+    })();
+    </script>""")
+
+    # ── Unsaved-changes guard (beforeunload) ─────────────────────────────
+    # Marks a dirty flag on any edit inside a data-entry tab panel
+    # (.tp-dirty-scope) and warns before a real page close/reload while it is
+    # set. In-app tab switches keep the SPA alive (form state survives them) so
+    # they never trigger this. Python clears the flag at every deliberate reset
+    # (save / mode switch) via window.tpClearDirty().
+    ui.add_head_html("""
+    <style>
+      #tp-unsaved-banner {
+        display:none; position:fixed; bottom:16px; left:50%;
+        transform:translateX(-50%); z-index:9999;
+        background:#b45309; color:#fff; padding:7px 18px; border-radius:9px;
+        font-size:.82rem; font-weight:600; letter-spacing:.01em;
+        box-shadow:0 2px 10px rgba(0,0,0,.28);
+      }
+    </style>
+    <script>
+    (function(){
+      if (window._tpDirtyInit) return;
+      window._tpDirtyInit = true;
+      // Track WHICH areas have unsaved edits (a .tp-dirty-scope panel carries a
+      // data-dirty-label). The banner names them so the user knows where to go.
+      var dirty = new Set();
+      window._tpDirty = false;
+      function banner(){
+        var b = document.getElementById('tp-unsaved-banner');
+        if(!b){
+          b = document.createElement('div');
+          b.id = 'tp-unsaved-banner';
+          (document.body || document.documentElement).appendChild(b);
+        }
+        return b;
+      }
+      function render(){
+        var b = banner();
+        window._tpDirty = dirty.size > 0;
+        if(dirty.size === 0){ b.style.display = 'none'; return; }
+        b.textContent = '\\u26A0  Unsaved changes in: ' + Array.from(dirty).join(', ');
+        b.style.display = 'block';
+      }
+      // tpClearDirty(label) clears one area; tpClearDirty() clears all.
+      window.tpClearDirty = function(label){
+        if(label){ dirty.delete(label); } else { dirty.clear(); }
+        render();
+      };
+      // Authoritative, state-based setter pushed from Python (a ui.timer reads
+      // the real field values via has_content), so programmatic fills — map
+      // picker, Tier-2 push-pins, reverse-geocode — are detected too, not just
+      // typed input. Event listeners below remain a belt-and-suspenders catch
+      // for tabs without a Python state check.
+      window.tpSetScope = function(label, on){
+        if(on){ dirty.add(label); } else { dirty.delete(label); }
+        render();
+      };
+      function mark(e){
+        var t = e.target;
+        var scope = t && t.closest && t.closest('.tp-dirty-scope');
+        if(scope){ dirty.add(scope.getAttribute('data-dirty-label') || 'this form'); render(); }
+      }
+      document.addEventListener('input',  mark, true);
+      document.addEventListener('change', mark, true);
+      window.addEventListener('beforeunload', function(e){
+        if (window._tpDirty){ e.preventDefault(); e.returnValue = ''; return ''; }
+      });
+    })();
+    </script>""")
 
     # ── Notification hover-pause ─────────────────────────────────────────
     # Global window.setTimeout wrapper: when a 1-30 s timer fires (notification
@@ -476,7 +590,9 @@ def index():
             ("mounting", "Mounting Session",          "grid_view", "var(--mode-mounting)"),
             ("visiting", "Digitize other Collection", "museum",    "var(--mode-visiting)"),
         ]
-        _mode_state = {"value": "standard", "handler": None}
+        # has_content: aggregate "does the Digitize form hold unsaved data?",
+        # set after the tab content is built (see _mode_state["has_content"] = …).
+        _mode_state = {"value": "standard", "handler": None, "has_content": None}
         _seg_btns: dict[str, object] = {}
 
         def _set_mode(val: str) -> None:
@@ -488,6 +604,30 @@ def index():
             if _mode_state["handler"]:
                 _mode_state["handler"](val)
 
+        async def _request_mode(val: str) -> None:
+            """Switch Digitize mode, confirming first if the form holds unsaved
+            data. A mode switch wipes every card (see _on_mode_toggle), so the
+            discard must be explicit — but only when there is something to lose."""
+            if val == _mode_state["value"]:
+                return
+            hc = _mode_state["has_content"]
+            if hc and hc():
+                with ui.dialog() as dlg, ui.card():
+                    ui.label("Discard unsaved data?").classes("text-lg font-medium")
+                    ui.label(
+                        "Switching mode clears the current form. Anything you have "
+                        "entered and not saved will be lost."
+                    ).classes("text-sm").style("color:var(--tp-base-soft)")
+                    with ui.row().classes("w-full justify-end gap-2 mt-2"):
+                        ui.button("Cancel", on_click=lambda: dlg.submit(False)).props("flat")
+                        ui.button("Discard & switch", on_click=lambda: dlg.submit(True)) \
+                            .props("color=negative")
+                proceed = await dlg
+                dlg.delete()   # per-action dialog — delete to avoid a timer leak
+                if not proceed:
+                    return
+            _set_mode(val)
+
         with ui.row().classes("app-mode-row w-full max-w-5xl mx-auto") as _mode_row:
             with ui.element("div").classes("seg-toggle"):
                 for _val, _label, _icon, _color in _mode_defs:
@@ -495,13 +635,36 @@ def index():
                         ui.element("div")
                         .classes("seg-btn" + (" active" if _val == "standard" else ""))
                         .style(f"--seg-color:{_color}")
-                        .on("click", lambda _e, v=_val: _set_mode(v))
+                        .on("click", lambda _e, v=_val: _request_mode(v))
                     )
                     with _b:
                         ui.icon(_icon).classes("seg-ico")
                         ui.label(_label)
                     _seg_btns[_val] = _b
         _mode_row.bind_visibility_from(main_tabs, "value", lambda v: v == "digitize")
+
+    # ── DB integrity banner ──────────────────────────────────────────────
+    # Surfaced loudly when the startup PRAGMA integrity_check (run in run.py
+    # before serving) reported a damaged file. Refuse to let the user keep
+    # working quietly on a corrupt DB (CLAUDE.md §2: loud failure > silent
+    # wrong value). Committed data is otherwise WAL-durable; this is the rare
+    # file-corruption case the launch snapshot exists to recover from.
+    _dbsafe = db_safety.LAST_RESULT
+    if not _dbsafe.ok:
+        with ui.element("div").classes("w-full").style(
+            "background:#7f1d1d; color:#fff; padding:.6rem 1.5rem;"
+        ):
+            with ui.row().classes("items-center gap-3 w-full max-w-5xl mx-auto"):
+                ui.icon("error", size="sm")
+                _snap = (
+                    f" A snapshot from before this launch is in data/snapshots/"
+                    f" ({_dbsafe.snapshot_path.name})." if _dbsafe.snapshot_path else ""
+                )
+                ui.label(
+                    "Database integrity check FAILED — do not keep working on this "
+                    "file. Restore from a backup snapshot before continuing."
+                    + _snap
+                ).classes("text-sm font-medium")
 
     ui.timer(0.1, _init_theme, once=True)
 
@@ -519,12 +682,26 @@ def index():
     # Cross-tab refresh registry — populated as tabs build, called by earlier tabs.
     _refreshers: dict[str, callable] = {}
 
+    import json as _json
+
+    def _mark_form_clean(scope: str | None = None):
+        """Clear the client-side unsaved-changes flag for one area (or all when
+        scope is None). Called after every deliberate reset — successful save,
+        mode switch — so the banner / close-warning only flag genuinely unsaved
+        edits. `scope` must match a panel's data-dirty-label."""
+        arg = _json.dumps(scope) if scope else ""
+        ui.run_javascript(f"window.tpClearDirty && window.tpClearDirty({arg})")
+
     # ── tab panels ───────────────────────────────────────────────────────
     with ui.tab_panels(main_tabs, value="digitize").classes("w-full"):
 
         # ================================================================
         # TAB: SPECIMEN DIGITIZATION
         # ================================================================
+        # No .tp-dirty-scope here: Digitize's unsaved-state is detected from the
+        # actual field VALUES via _has_any_content() pushed by a ui.timer (see
+        # below), so programmatic fills (map picker, push-pins, geocode) count —
+        # event-based detection would miss them.
         with ui.tab_panel("digitize"):
             # ── per-connection state ─────────────────────────────────────
             state = {"event_id": None, "populating": False}
@@ -575,15 +752,26 @@ def index():
 
                 # ── IDENTIFICATION ────────────────────────────────────────
                 with ui.card().classes("w-full shadow-sm") as identification_card:
-                    ui.label("Identifications").classes("section-label")
+                    with ui.row().classes("items-center gap-2 mb-1 w-full"):
+                        ui.label("Identifications").classes("section-label")
+                        ui.space()
+                        ui.button("Clear", icon="clear",
+                                  on_click=lambda: det_state["clear"]()) \
+                            .props("flat dense no-caps size=sm color=grey") \
+                            .tooltip("Clear unsaved identifications")
                     ui.separator().classes("mb-3")
                     det_state = build_identification_list(_sf)
 
                 # ── COLLECTING EVENT ─────────────────────────────────────
                 with ui.card().classes("w-full shadow-sm"):
-                    with ui.row().classes("items-center gap-3 mb-1"):
+                    with ui.row().classes("items-center gap-3 mb-1 w-full"):
                         ui.label("Collecting Event").classes("section-label")
                         event_status = ui.html("· new event").classes("event-new")
+                        ui.space()
+                        ui.button("Clear", icon="clear",
+                                  on_click=lambda: _clear_event_card()) \
+                            .props("flat dense no-caps size=sm color=grey") \
+                            .tooltip("Clear the event selection and fields")
 
                     ui.separator().classes("mb-3")
 
@@ -676,7 +864,13 @@ def index():
 
                 # ── BIOLOGICAL ASSOCIATIONS ───────────────────────────────
                 with ui.card().classes("w-full shadow-sm"):
-                    ui.label("Biological Associations").classes("section-label")
+                    with ui.row().classes("items-center gap-2 mb-1 w-full"):
+                        ui.label("Biological Associations").classes("section-label")
+                        ui.space()
+                        ui.button("Clear", icon="clear",
+                                  on_click=lambda: _clear_bio_card()) \
+                            .props("flat dense no-caps size=sm color=grey") \
+                            .tooltip("Clear staged associations")
                     ui.separator().classes("mb-3")
 
                     # Relationship selector
@@ -784,6 +978,7 @@ def index():
                         commit_recby=lambda s: ce["commit"](s),
                         bio_state=bio_state,
                         on_saved=lambda: _ms_on_saved(),
+                        event_id_getter=lambda: state["event_id"],
                     )
                 ms_section.set_visibility(False)
 
@@ -901,6 +1096,44 @@ def index():
                     if not keep_det.value:
                         det_state["clear"]()
 
+                # Per-card "Clear" handlers (header buttons). Each resets only its
+                # own card's uncommitted fields — used to discard a typo or a
+                # wrong pick without touching the other cards or saving.
+                def _clear_event_card():
+                    event_sel.value = None
+                    state["event_id"] = None
+                    event_status.set_content("· new event")
+                    event_status.classes(remove="event-linked", add="event-new")
+                    ce["set_readonly"](False)
+                    _hide_reuse_banner()
+                    ce["reset"]()
+
+                def _clear_bio_card():
+                    bio_state["associations"].clear()
+                    bio_obj_state["clear"]()
+                    rel_sel.value = None
+                    _refresh_assoc_list()
+
+                def _has_any_content() -> bool:
+                    """Aggregate: does the Digitize form hold unsaved data in any
+                    card? Drives the mode-switch confirm. Checks the active mode's
+                    specimen surface (standard/visiting card or the mounting table)
+                    plus the shared identification, event and bio cards."""
+                    mode = _mode_state["value"]
+                    if mode == "mounting":
+                        spec_dirty = ms_state["has_content"]()
+                    else:
+                        spec_dirty = _active_spec[0]["has_content"]()
+                    return (
+                        spec_dirty
+                        or det_state["has_content"]()
+                        or ce["has_content"]()
+                        or state.get("event_id") is not None
+                        or bool(bio_state["associations"])
+                        or bool(rel_sel.value)
+                        or bool(bio_obj_state["taxon_id"])
+                    )
+
                 def _on_save():
                     err = _validate()
                     if err:
@@ -973,6 +1206,7 @@ def index():
                         return
                     _refresh_table()
                     _clear_after_save()
+                    _mark_form_clean("Specimen Digitization")
                     for fn in _refreshers.values():
                         fn()
 
@@ -985,6 +1219,7 @@ def index():
                 def _ms_on_saved():
                     event_sel.set_options(_event_opts())
                     _refresh_table()
+                    _mark_form_clean("Specimen Digitization")
                     for fn in _refreshers.values():
                         fn()
 
@@ -1018,25 +1253,49 @@ def index():
                     _hide_reuse_banner()
                     ce["reset"]()
                     ms_state["wipe"]()
+                    _mark_form_clean("Specimen Digitization")
 
                 _mode_state["handler"] = _on_mode_toggle
+                _mode_state["has_content"] = _has_any_content
+
+                # State-based unsaved-changes detection for Digitize: poll the
+                # real field values (not DOM events) so map/push-pin/geocode fills
+                # are seen too. Push to the banner only when the state flips.
+                _dig_dirty = [False]
+
+                def _sync_dig_dirty():
+                    cur = _has_any_content()
+                    if cur != _dig_dirty[0]:
+                        _dig_dirty[0] = cur
+                        ui.run_javascript(
+                            "window.tpSetScope && window.tpSetScope("
+                            f"'Specimen Digitization', {'true' if cur else 'false'})"
+                        )
+
+                ui.timer(1.0, _sync_dig_dirty)
 
 
         # ================================================================
         # TAB: RECORDS
         # ================================================================
-        with ui.tab_panel("records"):
+        with ui.tab_panel("records").classes("tp-dirty-scope") \
+                .props('data-dirty-label="Records"'):
             with ui.column().classes("w-full max-w-5xl mx-auto px-4 pt-6 pb-16 gap-4"):
-                build_records_tab(
-                    _sf,
-                    on_saved=lambda: [fn() for fn in _refreshers.values()],
-                )
+                def _records_saved():
+                    _mark_form_clean("Records")
+                    for fn in _refreshers.values():
+                        fn()
+                _records_handle = build_records_tab(_sf, on_saved=_records_saved)
 
         # ================================================================
         # TAB: IMPORT & ASSIGN
         # ================================================================
-        with ui.tab_panel("import"):
-            build_import_assign_tab(_sf, _refreshers)
+        with ui.tab_panel("import").classes("tp-dirty-scope") \
+                .props('data-dirty-label="Import & Assign"'):
+            build_import_assign_tab(
+                _sf, _refreshers,
+                on_saved=lambda: _mark_form_clean("Import & Assign"),
+            )
 
         # ================================================================
         # TAB: TAXONOMY
@@ -1254,12 +1513,73 @@ def index():
                         clear_btn  = ui.button("Clear", icon="delete_sweep").props("flat dense")
                         print_btn  = ui.button("Print all", icon="print").props("color=secondary")
 
-                    preview_col = ui.column().classes("w-full gap-1")
-                    # Plain-text edits keyed by print_queue.id; passed to build_pdf on print.
-                    _label_overrides: dict[int, str] = {}
+                    # Interactive sheet preview (#37) — the PRIMARY surface. Shows
+                    # how the printed sheet groups/lays out; data & determination
+                    # labels are edited INLINE (a print-only override). Editing one
+                    # label edits ALL identical labels (same auto text = same event
+                    # + biological associations). Hovering highlights identical
+                    # labels. Identifier labels are read-only (immutable code).
+                    preview_box = ui.column().classes("w-full mt-1")
 
-                    TYPE_ICON  = {"data": "place", "determination": "science", "identifier": "label"}
-                    TYPE_COLOR = {"data": "blue-grey", "determination": "teal", "identifier": "secondary"}
+                    def _open_in_records(co_id):
+                        if _records_handle and co_id:
+                            _records_handle["open_specimen"](co_id)
+                        main_tabs.set_value("records")
+
+                    def _edit_label(qid, value, auto):
+                        # Blank or == auto clears the override (back to auto); else
+                        # apply to every identical label (same auto text).
+                        new = None if (not value.strip() or value.strip() == (auto or "").strip()) else value
+                        with _sf() as session:
+                            with session.begin():
+                                n = pq_svc.set_override_for_identical(session, qid, new)
+                        verb = "Reset to auto" if new is None else "Applied edit"
+                        ui.notify(f"{verb} on {n} identical label{'s' if n != 1 else ''}.", type="info")
+                        _refresh_queue()
+
+                    def _delete_column(sp):
+                        with _sf() as session:
+                            with session.begin():
+                                for qid in (sp.get("data_qid"), sp.get("det_qid"), sp.get("id_qid")):
+                                    if qid:
+                                        pq_svc.remove_item(session, qid)
+                        _refresh_queue()
+
+                    def _editable_box(kind, sp):
+                        text  = sp["data"]       if kind == "data" else sp["det"]
+                        auto  = sp["data_auto"]  if kind == "data" else sp["det_auto"]
+                        qid   = sp["data_qid"]   if kind == "data" else sp["det_qid"]
+                        ident = sp["data_ident"] if kind == "data" else sp["det_ident"]
+                        cls = f"pq-prev-label pq-prev-{kind}"
+                        if (text or "") != (auto or ""):
+                            cls += " pq-prev-edited"
+                        with ui.element("div").classes(cls).props(f"data-ident={ident}"):
+                            ta = (ui.textarea(value=text or "")
+                                  .props("borderless dense autogrow")
+                                  .classes("w-full").style("font-size:.72rem")
+                                  .tooltip("Edit for print fit (abbreviate / add). Applies to "
+                                           "all identical labels; does not change the record."))
+                            ta.on("blur", lambda _, q=qid, a=auto or "", w=ta: _edit_label(q, w.value, a))
+
+                    def _render_column(sp):
+                        with ui.element("div").classes("pq-prev-col"):
+                            if sp["data_qid"] is not None:
+                                _editable_box("data", sp)
+                            if sp["id_code"]:
+                                with ui.element("div").classes("pq-prev-label pq-prev-id"):
+                                    ui.label(sp["id_code"])
+                            if sp["det_qid"] is not None:
+                                _editable_box("det", sp)
+                            with ui.row().classes("pq-prev-ctl items-center gap-0 w-full"):
+                                if sp["co_id"]:
+                                    ui.button("", icon="open_in_new") \
+                                        .props("flat dense round size=xs") \
+                                        .tooltip("Open this specimen in Records (substantial edits)") \
+                                        .on_click(lambda _, c=sp["co_id"]: _open_in_records(c))
+                                ui.button("", icon="close") \
+                                    .props("flat dense round size=xs") \
+                                    .tooltip("Remove these labels from the queue") \
+                                    .on_click(lambda _, s=sp: _delete_column(s))
 
                     def _refresh_queue():
                         summary = _with_session(pq_svc.queue_summary)
@@ -1270,46 +1590,21 @@ def index():
                             f"{summary.n_identifier} id)"
                             if summary.total else "empty"
                         )
-                        items = _with_session(pq_svc.queue_preview_items)
-                        preview_col.clear()
-                        with preview_col:
-                            if not items:
+                        model = _with_session(pq_svc.preview_model)
+                        preview_box.clear()
+                        with preview_box:
+                            if not model:
                                 ui.label("Nothing queued yet — labels are added automatically "
                                          "when you save specimens or generate identifier codes.") \
                                   .classes("text-sm italic").style("color:var(--tp-base-soft)")
-                            else:
-                                for item in items:
-                                    with ui.row().classes("items-center gap-2 w-full"):
-                                        ui.icon(TYPE_ICON[item["type"]], size="xs") \
-                                          .style("color:var(--tp-secondary); opacity:.7")
-                                        if item["type"] == "data":
-                                            # Editable field — persists user corrections
-                                            # across refreshes via _label_overrides.
-                                            init_val = _label_overrides.get(
-                                                item["id"], item.get("label_text", item["text"])
-                                            )
-                                            inp = (
-                                                ui.input(value=init_val)
-                                                .classes("flex-1")
-                                                .props("dense outlined")
-                                                .style("font-size:0.75rem")
-                                            )
-                                            inp.on_value_change(
-                                                lambda e, qid=item["id"]:
-                                                    _label_overrides.__setitem__(qid, e.value)
-                                            )
-                                        else:
-                                            ui.label(item["text"]).classes("text-sm flex-1")
-                                        ui.button("", icon="close") \
-                                          .props("flat dense round size=xs") \
-                                          .on_click(lambda _, qid=item["id"]: _remove_item(qid))
-
-                    def _remove_item(queue_id: int):
-                        _label_overrides.pop(queue_id, None)
-                        with _sf() as session:
-                            with session.begin():
-                                pq_svc.remove_item(session, queue_id)
-                        _refresh_queue()
+                                return
+                            with ui.element("div").classes("pq-prev"):
+                                for g in model:
+                                    with ui.element("div").classes("pq-prev-group"):
+                                        ui.label(g["source"] or "Queued labels").classes("pq-prev-src")
+                                        with ui.element("div").classes("pq-prev-cols"):
+                                            for sp in g["specimens"]:
+                                                _render_column(sp)
 
                     def _print_all():
                         summary = _with_session(pq_svc.queue_summary)
@@ -1320,7 +1615,7 @@ def index():
                         stamp_human = now.strftime("%Y-%m-%d %H:%M")
                         stamp_file  = now.strftime("%Y%m%d-%H%M%S")
                         pdf = _with_session(
-                            lambda s: pq_svc.build_pdf(s, dict(_label_overrides), stamp_human)
+                            lambda s: pq_svc.build_pdf(s, stamp_human)
                         )
                         # Archive every printed sheet to disk for reprint/audit
                         # before clearing the queue.
@@ -1331,7 +1626,6 @@ def index():
                         with _sf() as session:
                             with session.begin():
                                 pq_svc.clear_queue(session)
-                        _label_overrides.clear()
                         _refresh_queue()
                         ui.notify(f"Labels downloaded — queue cleared. Saved {archive.name}",
                                   type="positive")
@@ -1525,6 +1819,13 @@ def index():
             refresh_persons = _refreshers.get("person_opts")
             if refresh_persons:
                 refresh_persons()
+        elif e.value == "labels":
+            # Rebuild the print-queue preview now that the panel is visible, so the
+            # autogrow label editors size to their content (they can't measure
+            # while the tab is hidden — they render collapsed until interacted).
+            refresh_queue = _refreshers.get("queue")
+            if refresh_queue:
+                refresh_queue()
 
     main_tabs.on_value_change(_on_tab_change)
 

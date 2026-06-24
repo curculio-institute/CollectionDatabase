@@ -17,6 +17,12 @@ class PrintQueue(Base, TimestampMixin):
     print_group_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     source:         Mapped[Optional[str]] = mapped_column(String, nullable=True)
 
+    # Print-only label text the user typed in the queue to fit the tiny label
+    # (abbreviate / add). Overrides the auto-rendered text at print time WITHOUT
+    # touching the record (record stays master — edit it in Records). Applies to
+    # 'data' / 'determination' rows; never set on 'identifier' rows. See mig 0034.
+    text_override: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+
     collection_object_id: Mapped[Optional[int]] = mapped_column(
         Integer, ForeignKey("collection_object.id", ondelete="CASCADE"), nullable=True
     )

@@ -56,6 +56,9 @@ def build_mounting_session_section(
     commit_recby,           # (session) -> int | None
     bio_state: dict,        # {"associations": [...]}
     on_saved,               # () -> None
+    event_id_getter=lambda: None,  # () -> int | None: the selected/reused event,
+                                   # so mounting links to it instead of creating a
+                                   # duplicate (None → create one for the session)
 ) -> dict:
     """Render the Mounting Session specimen UI. Returns {"wipe": callable}."""
 
@@ -353,8 +356,10 @@ def build_mounting_session_section(
                     # these specimens together under a "Mounting Session" header.
                     group_id = pq_svc.next_print_group_id(s)
 
-                    # Create specimens; reuse the same collecting event after the first
-                    event_id: int | None = None
+                    # Reuse the event selected in the Collecting Event card if any
+                    # (don't duplicate it); else create one and share it across the
+                    # session's specimens.
+                    event_id: int | None = event_id_getter()
                     for row, code in zip(rows, codes):
                         det = row["det"]
                         # Freeze the determination name at save time.
@@ -432,4 +437,16 @@ def build_mounting_session_section(
         rows.append(_empty_row())
         _rebuild_table()
 
-    return {"wipe": wipe}
+    def has_content() -> bool:
+        """True if the staging table holds more than a single pristine row."""
+        if len(rows) > 1:
+            return True
+        r = rows[0]
+        return (
+            r.get("det") is not None
+            or r.get("n") != NEW_SPECIMEN_DEFAULTS["individual_count"]
+            or (r.get("preparations") or "") != "pinned"
+            or (r.get("life_stage") or None) != NEW_SPECIMEN_DEFAULTS["life_stage"]
+        )
+
+    return {"wipe": wipe, "has_content": has_content}

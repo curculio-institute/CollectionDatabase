@@ -69,8 +69,11 @@ def _field_row(label: str, value: str) -> None:
 # Main builder
 # ---------------------------------------------------------------------------
 
-def build_import_assign_tab(session_factory, refreshers: dict) -> None:
-    """Build the Import & Assign tab in the current NiceGUI context."""
+def build_import_assign_tab(session_factory, refreshers: dict, on_saved=None) -> None:
+    """Build the Import & Assign tab in the current NiceGUI context.
+
+    on_saved: optional callback fired after a specimen is successfully assigned —
+    used to clear the unsaved-changes guard (see main.py _mark_form_clean)."""
 
     def _with_session(fn):
         with session_factory() as s:
@@ -550,6 +553,8 @@ def build_import_assign_tab(session_factory, refreshers: dict) -> None:
             state["taxon_id"] = None
             assign_card.set_visibility(False)
 
+            if on_saved:
+                on_saved()
             for fn in refreshers.values():
                 fn()
 

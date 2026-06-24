@@ -497,8 +497,19 @@ def build_identification_list(
     def _state_refresh_person_opts() -> None:
         add_idby_state["refresh"]()
 
+    def _state_has_content() -> bool:
+        """True if there are determinations, or the add row holds anything yet —
+        including a staged taxon or a push-pin-filled identifiedBy / dateIdentified
+        (which are set programmatically, not typed, so value inspection is the only
+        reliable signal)."""
+        return bool(_dets) or bool(add_taxon_state["taxon_id"]) \
+            or bool(add_idby_state["get_value"]()) or bool(add_dtid.value) \
+            or bool(add_sex.value) or bool(add_type["get_value"]()) \
+            or bool(add_qual.value) or bool(add_rem.value)
+
     return {
         "get_dets": _state_get_dets,
         "clear": _state_clear,
+        "has_content": _state_has_content,
         "refresh_person_opts": _state_refresh_person_opts,
     }

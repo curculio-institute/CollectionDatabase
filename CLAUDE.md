@@ -35,7 +35,8 @@ tracker, not this file), `gh issue list`:
 - [#38](https://github.com/curculio-institute/CollectionDatabase/issues/38) — Workflow: printing locality labels
 - [#39](https://github.com/curculio-institute/CollectionDatabase/issues/39) — Workflow: bulk-import the existing dataset (unlinked taxon names)
 - [#40](https://github.com/curculio-institute/CollectionDatabase/issues/40) — Collection map view + data analysis tools
-- [#41](https://github.com/curculio-institute/CollectionDatabase/issues/41) — Data safety: crash recovery + unsaved-changes warning
+
+(#41 — data safety: crash recovery + unsaved-changes guard — done; see §8 "Data safety".)
 
 Epic #30 (atomic taxon names) phases #33–#36 also remain open until the
 `refactor/atomic-taxon-names` branch is merged.
@@ -125,6 +126,39 @@ standard and Import & Assign formerly enqueued data + determination labels — r
 per-specimen columns, archival, the planned reprint path) is a UI/layout concern and is
 specified in `docs/design.md` → "Grouped print sheet layout". This table is the authoritative
 *policy* (which mode queues what); design.md is authoritative for *layout*.
+
+### Editing labels before printing (decided, #37)
+
+A label is *derived* from the linked records (`_co_to_data_label` / `_co_to_det_label` in
+`print_queue.py`), but the user can apply a **print-only override** per row to fit the tiny
+physical label — abbreviate text too long, or add what the auto-format omits — **without
+changing the record**. The record stays master: substantial corrections are made in Records
+(every label has an "open in Records" link) and the derived label updates from them.
+
+- **Persistence:** the override is stored on `print_queue.text_override` (nullable TEXT,
+  migration 0034 — added via SQLite `ADD COLUMN`, preserving STRICT/CHECK/FK). Blank or
+  equal-to-auto clears it back to the auto-composed text.
+- **Editable rows:** data + determination. **Identifier** rows are **read-only** (the
+  immutable catalog number is the sync join key).
+- **Primary surface:** the interactive **sheet preview** (groups → per-specimen columns →
+  data / id / determination boxes) is the main UI; data/det labels are edited inline.
+- **Identical labels are linked.** Identity is the rendered *auto* text — for a **data**
+  label that means the collecting **event *and* the biological associations** (the label is
+  composed from both), for a **determination** the name — hashed by `_ident` /
+  `_row_auto_identity`. Editing one label applies the override to **every identical** label
+  (`set_override_for_identical`); hovering highlights them. This works across batches /
+  distinct event rows (identity is content, not the event id).
+- **Determination labels** carry the open-nomenclature qualifier (cf./aff.) and type status.
+
+History: a first cut had the queue edit the *record* directly (`update_collecting_event`,
+live determination editor); that was reversed — a label is a physical artifact with size
+limits, and forcing record edits there mixed concerns. The print-only override was
+deliberately (re-)introduced. **Open follow-ups:** the override stores plain text, so an
+edit drops the name's italics/bold — a formatting-aware editor + source mode is
+[#45](https://github.com/curculio-institute/CollectionDatabase/issues/45); the preview
+should render closer to the real PDF
+[#46](https://github.com/curculio-institute/CollectionDatabase/issues/46). Layout/rendering
+detail is design.md's concern; this section owns the *policy*.
 
 ## Open issues → GitHub
 
@@ -522,6 +556,45 @@ experiments, UI tweaks, and small changes — not just large features.
 - Don't add dependencies casually; pin them; don't touch other conda envs.
 - Keep the UI layer thin; logic lives in service/repository functions callable from scripts.
 - `reserve_sequential_codes()` returns `(batch_id, codes_list)` — always unpack both values.
+
+### Data safety (crash recovery + unsaved-changes guard) — decided
+
+The durability guarantee and the three mechanisms that back it (#41):
+
+- **Committed data is durable; in-progress edits are not.** WAL + atomic transactions
+  (`database.py`) mean a crash can never leave half a specimen in the DB — committed Saves
+  survive. What is lost on a crash or page-close is whatever was typed into a form but not
+  yet Saved. This is by design (DB-is-source-of-truth, no half-records), and the guard below
+  covers that gap.
+- **Startup checks (`app/services/db_safety.py`, run from `run.py` before the UI serves).**
+  In order: WAL-checkpoint → **launch snapshot** → thorough `PRAGMA integrity_check`. On
+  anything but `ok` the page shows a blocking red banner ("integrity check FAILED") rather
+  than letting the user keep working on a damaged file (CLAUDE.md §2). The result is cached
+  in `db_safety.LAST_RESULT`; the `@ui.page` handler reads it. `integrity_check` swallows a
+  "disk image is malformed" *exception* into a reported problem so severe corruption still
+  trips the banner. Tested in `tests/test_db_safety.py`.
+- **Snapshots** land in `data/snapshots/collection-<timestamp>.db` (gitignored with `data/`),
+  one per launch, **keep last 10** (`DEFAULT_KEEP`). Checkpoint-first so each copy is
+  self-contained (the WAL caveat above). Pruned by the timestamp embedded in the filename,
+  **not** mtime — `copy2` copies the source's mtime, so mtimes are not creation order.
+- **Unsaved-changes detection + banner.** A scope-aware bottom banner ("Unsaved changes in:
+  *tab*") plus a `beforeunload` guard fire while a data-entry area has unsaved edits (in-app
+  tab switches keep the SPA alive, so they never warn). Detection is **value-based on
+  Digitize**: a `ui.timer` polls `_has_any_content()` (the real field *values*) and pushes
+  the result to the client via `window.tpSetScope()`. This is deliberate — **event-based
+  detection only catches typed input**, missing programmatic fills (map picker, Tier-2
+  push-pins, reverse-geocode), which would leave values in fields the app is unaware of; it
+  also makes the banner clear when every card is cleared. Records/Import still use the
+  event-based head-script (`.tp-dirty-scope` + `input`/`change` listeners); extending
+  value-based detection to them is
+  [#47](https://github.com/curculio-institute/CollectionDatabase/issues/47). Python clears a
+  scope at every deliberate reset via `window.tpClearDirty(label)` (`_mark_form_clean(scope)`):
+  after a save and after a Digitize mode switch.
+- **Mode-switch confirm + per-card Clear.** Switching Digitize mode wipes the form, so it
+  first asks "Discard unsaved data?" — but only when a card actually holds content
+  (`_has_any_content()` aggregates each card's `has_content()`). Each of the four Digitize
+  cards (Specimen, Identifications, Collecting Event, Biological Associations) has a header
+  **Clear** button to reset just its own uncommitted fields.
 
 ### UI conventions
 

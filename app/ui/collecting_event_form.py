@@ -613,6 +613,12 @@ def build_collecting_event_form(
     def _collect_fields() -> dict:
         return {name: w.value for name, w in _event_widgets.items()}
 
+    def _has_content() -> bool:
+        """True if any event field or the recordedBy person holds a value."""
+        if any(str(w.value or "").strip() for w in _event_widgets.values()):
+            return True
+        return bool(recby_state["get_value"]())
+
     def _reset() -> None:
         for w in _event_widgets.values():
             w.value = ""
@@ -644,6 +650,7 @@ def build_collecting_event_form(
 
     return {
         "collect_fields": _collect_fields,
+        "has_content":    _has_content,
         "commit":         lambda s: recby_state["commit"](s),
         "load":           _load,
         "reset":          _reset,
