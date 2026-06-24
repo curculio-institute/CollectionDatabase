@@ -283,7 +283,7 @@ def build_records_tab(session_factory, *, on_saved: callable | None = None) -> N
             identifier_policy="edit",
             initial=co_snap,
             identity_label=f"#{co_id}  {co_snap['catalog_number']}",
-            header_slot=lambda: _media_btn(
+            footer_slot=lambda: _media_btn(
                 session_factory, target_kind="collection_object",
                 target_id=co_id, tooltip="Specimen media"),
         )
@@ -318,9 +318,6 @@ def build_records_tab(session_factory, *, on_saved: callable | None = None) -> N
                         "color:var(--tp-warning, #f59e0b)" if ev_n > 1
                         else "color:var(--tp-base-soft)"
                     )
-                    ui.space()
-                    _media_btn(session_factory, target_kind="collecting_event",
-                               target_id=ev_id, tooltip="Event media")
             ui.separator().classes("mb-3")
 
             # A shared event (n>1) opens read-only ("view"); the event is only
@@ -367,6 +364,11 @@ def build_records_tab(session_factory, *, on_saved: callable | None = None) -> N
                 ev_ce["load"](ev_snap)
                 if ev_n > 1:
                     ev_ce["set_readonly"](True)   # view-only until "Edit all" unlocks
+
+            if ev_id:
+                with ui.row().classes("w-full justify-end mt-2"):
+                    _media_btn(session_factory, target_kind="collecting_event",
+                               target_id=ev_id, tooltip="Event media")
 
         # ── Biological Associations card ───────────────────────────────────
         with ui.card().classes("w-full shadow-sm"):
@@ -526,9 +528,6 @@ def build_records_tab(session_factory, *, on_saved: callable | None = None) -> N
                         "color:var(--tp-warning, #f59e0b)" if shared
                         else "color:var(--tp-base-soft)"
                     )
-                ui.space()
-                _media_btn(session_factory, target_kind="collecting_event",
-                           target_id=ev_id, tooltip="Event media")
             ui.separator().classes("mb-3")
 
             if cos:
@@ -557,7 +556,9 @@ def build_records_tab(session_factory, *, on_saved: callable | None = None) -> N
             ev_ce["load"](ev_snap)
             if shared:
                 ev_ce["set_readonly"](True)   # view-only until "Edit all" unlocks
-            # (event media lives behind the icon in the card header above)
+            with ui.row().classes("w-full justify-end mt-2"):
+                _media_btn(session_factory, target_kind="collecting_event",
+                           target_id=ev_id, tooltip="Event media")
 
         def _save_event():
             try:

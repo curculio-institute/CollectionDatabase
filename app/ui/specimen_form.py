@@ -40,7 +40,7 @@ def build_specimen_form(
     identifier_policy: str = "standard",
     initial: dict | None = None,
     identity_label: str | None = None,
-    header_slot=None,
+    footer_slot=None,
 ) -> dict:
     """Render the Specimen card. Returns a handle dict.
 
@@ -106,14 +106,10 @@ def build_specimen_form(
             elif is_visiting:
                 ui.label("· visiting — free-form identifier") \
                     .classes("text-sm").style("color:var(--tp-base-soft)")
-            ui.space()
-            # Caller-supplied header widget (e.g. the specimen media button), so it
-            # lives in the card header rather than in a separate row beneath the card.
-            if header_slot is not None:
-                header_slot()
             # Clear button: only in create modes (edit mode shows an existing
             # record — there is no "uncommitted" content to discard).
             if not is_edit:
+                ui.space()
                 ui.button("Clear", icon="clear", on_click=lambda: reset()) \
                     .props("flat dense no-caps size=sm color=grey") \
                     .tooltip("Clear this card's unsaved fields")
@@ -181,6 +177,12 @@ def build_specimen_form(
                                  "another collection (gifting). catalogNumber is fixed.")
                     )
             rem_in = ui.input("materialEntityRemarks", value=v_rem).classes("w-full mt-3")
+
+        # Caller-supplied footer widget (e.g. the specimen media button), bottom-right
+        # of the card — away from the header Clear button.
+        if footer_slot is not None:
+            with ui.row().classes("w-full justify-end mt-2"):
+                footer_slot()
 
         if is_standard:
             def _refresh_identity_display():

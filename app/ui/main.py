@@ -818,7 +818,7 @@ def index():
                     # paths below reference them unchanged.
                     spec = build_specimen_form(
                         _sf, identifier_policy="standard",
-                        header_slot=lambda: _mk_spec_media(spec_media))
+                        footer_slot=lambda: _mk_spec_media(spec_media))
                     specimen_card = spec["card"]
                     specimen_card.classes(remove="w-full", add="flex-1 min-w-[360px]")
                     # Visiting-collection variant: free-text identity, pure data
@@ -827,7 +827,7 @@ def index():
                     # card (only one of the two is ever visible).
                     spec_visiting = build_specimen_form(
                         _sf, identifier_policy="visiting",
-                        header_slot=lambda: _mk_spec_media(spec_media_v))
+                        footer_slot=lambda: _mk_spec_media(spec_media_v))
                     spec_visiting["card"].set_visibility(False)
                     spec_visiting["card"].classes(remove="w-full",
                                                   add="flex-1 min-w-[360px]")
