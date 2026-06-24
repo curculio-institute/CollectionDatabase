@@ -343,6 +343,38 @@ event (see §6).  When selected it stays in the field as-is (`"✚ add <text>"`)
 that the person is a pending new entry.  `get_value()` and `commit()` strip the prefix at
 save time.
 
+### Digitize layout modes (normal / single-card)
+
+The Digitize tab has two layouts, chosen in Settings (`AppConfig.digitize_layout`,
+`"normal"` | `"single_card"`). The *policy/decision* lives in CLAUDE.md → "Digitize
+layout modes"; this is the build detail.
+
+Both layouts use the **same cards** (`specimen_card` / `spec_visiting["card"]`,
+`identification_card`, `event_card`, `bio_card`) built once — the layout only changes the
+container width and which cards are visible. There is no duplicate card tree.
+
+- **Normal:** container is `max-w-7xl`; Specimen and Identifications sit in one
+  `flex flex-wrap` row (each card `flex-1 min-w-[360px]`, so they pair on wide screens and
+  stack when narrow). Collecting Event and Biological Associations are full-width below.
+- **Single-card (stepper):** container is `max-w-4xl`; one card shows at a time. A chip bar
+  (`.tp-stepper-bar` → `.tp-step-chip`, current chip `.active`) and a Back/Next row
+  (`step_nav_row`) appear; on the **last** step the Next row is hidden and the normal Save
+  bar (`std_save_row`) shows instead — the single real Save is unchanged. Mounting mode
+  ignores the stepper (keeps its own staging layout).
+
+**Single source of truth for visibility:** `_refresh_card_visibility()` computes each card's
+visibility as *create-mode-visible* AND (*normal* OR *is current step*). `_on_mode_toggle`,
+the step nav, and the Settings save all funnel through `_apply_digitize_layout()` →
+`_refresh_card_visibility()`. The step list comes from `_step_cards()` (the first card swaps
+standard↔visiting). The stepper **never commits per card**; it only toggles visibility, so
+value-based unsaved-change detection (which polls field *values*, not visibility) keeps
+working for off-screen steps.
+
+**Arrow keys:** a global `keydown` head-script emits a `tp-step-nav` event (handled by
+`ui.on("tp-step-nav", …)` → `_step_nav`) on ←/→, but only when the stepper bar is visible
+and focus is **not** in an input/textarea/select/`.q-field`/`.q-menu` (so arrows still work
+inside fields and dropdowns).
+
 ---
 
 ## 4. Date input widget (date_input.py)

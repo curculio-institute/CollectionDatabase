@@ -465,11 +465,34 @@ manually in the TW UI. This constrains the sync direction to insert-only forever
 
 | Tab | Purpose |
 |-----|---------|
-| **Digitize** | Main specimen entry form: collecting event (search/create), taxon (local-first search + TW fallback), sex, count, preparations, notes. Saves to DB. Standard/Visiting modes queue **no** labels (see "Print-queue policy by create mode"); only Mounting queues a sheet. |
+| **Digitize** | Main specimen entry form: collecting event (search/create), taxon (local-first search + TW fallback), sex, count, preparations, notes. Saves to DB. Standard/Visiting modes queue **no** labels (see "Print-queue policy by create mode"); only Mounting queues a sheet. Two layouts (see "Digitize layout modes"). |
 | **Taxonomy** | Checklist tree (family → synonyms). Filter by rank. Links to TaxonPages. Rebuilds on every tab switch and on every save (via `_refreshers["taxonomy_tree"]`). |
 | **Labels** | Generate identifier label batches (4-char codes). Preview + download PDF. Reprint a whole batch if unused. Staged-codes dashboard. |
 | **Print queue** | Preview and print all staged labels in one grouped PDF (per queue addition; data/identifier/determination column-aligned per specimen). Saves the PDF to `printed_pdf_dir` on print, then clears the queue. |
 | **Import & Assign** | Upload a DwC CSV; live-filter rows; assign taxon + per-specimen fields; save to DB. |
+
+#### Digitize layout modes (decided)
+
+The Digitize tab offers two layouts, selectable in Settings and persisted as
+`AppConfig.digitize_layout` (`"normal"` | `"single_card"`); the toggle applies **live**
+(no page reload, so unsaved form entry survives the switch). Both render the *same* cards —
+the choice only changes width and which cards are visible (one shared card tree, no
+duplicate form):
+
+- **Normal (default):** wide page (`max-w-7xl`) with **Specimen and Identifications paired
+  side-by-side**, Collecting Event + Biological Associations full-width below — fits more on
+  one screen, less scrolling. (Chosen over a full two-column layout, which read as
+  distracting.)
+- **Single card (guided stepper):** one card at a time (Specimen → Identifications →
+  Collecting Event → Biological Associations) with a clickable step bar, Back/Next, and
+  ←/→ arrow keys. **A specimen is still one Save** — the stepper only changes which card is
+  visible and never commits per card; the single real Save lives on the last step. **Mounting
+  mode ignores the stepper** (it keeps its own multi-specimen staging layout).
+
+**Why this is a policy, not an incidental:** a specimen record is atomic (specimen + IDs +
+event + associations save together), so "commit a card and advance" can only mean *advance
+the view*, never a partial DB write. The build detail (single-source visibility function,
+arrow-key event, chip styling) is design.md's concern → "Digitize layout modes".
 
 ### Service layer (`app/services/`)
 
