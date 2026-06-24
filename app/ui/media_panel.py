@@ -35,6 +35,7 @@ def build_media_button(
     target_kind: str,
     target_id_getter: Optional[Callable[[], Optional[int]]] = None,
     staged: bool = False,
+    staged_store: Optional[list] = None,
     on_change: Optional[Callable[[], None]] = None,
     icon: str = "collections",
     tooltip: str = "Media",
@@ -45,11 +46,14 @@ def build_media_button(
       - ``has_content`` () -> bool   (staged: any staged files; bound: any attachments)
       - ``commit``      (session, target_id) -> None   (staged mode only)
       - ``clear``       () -> None   (staged mode: drop staged files)
+      - ``staged_items`` the staged list (so callers can persist it across re-renders)
+
+    ``staged_store`` lets the caller pass in a persistent list to back the staged items —
+    needed when the button is re-created on each render (e.g. a per-association button in a
+    list that rebuilds), so staged files aren't lost. The bytes are already on disk
+    (store_bytes), so thumbnails render via /media/<rel> before the record is saved.
     """
-    # Staged store: each item is a dict {meta, category, license, rights_holder_id,
-    # rights_name, caption, is_primary}. The bytes are already on disk (store_bytes), so
-    # thumbnails render via /media/<rel> even before the record is saved.
-    staged_items: list[dict] = []
+    staged_items: list[dict] = staged_store if staged_store is not None else []
     state = {"filter": None}
 
     def _target_id() -> Optional[int]:

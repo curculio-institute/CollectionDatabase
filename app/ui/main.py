@@ -45,6 +45,7 @@ from app.ui.specimen_form import build_specimen_form
 from app.ui.collecting_event_form import build_collecting_event_form
 from app.ui.event_reuse import build_event_share_banner
 from app.ui.media_panel import build_media_button
+import app.services.media as media_svc
 from app.services.biological import (
     sync_biological_relationships,
     get_relationship_options,
@@ -951,6 +952,12 @@ def index():
 
                     event_sel.on_value_change(_on_event_selected)
 
+                    # Event media (staged; committed to the event on Save)
+                    with ui.row().classes("w-full justify-end mt-2"):
+                        event_media = build_media_button(
+                            _sf, target_kind="collecting_event", staged=True,
+                            tooltip="Event media (attached on Save)")
+
                 # ── BIOLOGICAL ASSOCIATIONS ───────────────────────────────
                 with ui.card().classes("w-full shadow-sm") as bio_card:
                     with ui.row().classes("items-center gap-2 mb-1 w-full"):
@@ -1019,6 +1026,10 @@ def index():
                                 "rel_name":    rel_name,
                                 "taxon_id":    taxon_id,
                                 "taxon_label": bio_obj_state["label"],
+                                # Per-association staged media; persists across list
+                                # re-renders (passed as build_media_button staged_store).
+                                # Committed to the new association id on Save.
+                                "media_items": [],
                             })
                             bio_obj_state["clear"]()
                             rel_sel.value = None
@@ -1044,6 +1055,12 @@ def index():
                                         .style("color:var(--tp-secondary); opacity:.7")
                                     ui.label(f"{a['rel_name']} — {a['taxon_label']}") \
                                         .classes("text-sm flex-1")
+                                    # Per-association staged media (committed on Save).
+                                    a.setdefault("media_items", [])
+                                    build_media_button(
+                                        _sf, target_kind="biological_association",
+                                        staged=True, staged_store=a["media_items"],
+                                        tooltip="Association media (attached on Save)")
                                     (
                                         ui.button("", icon="close")
                                         .props("flat dense round size=xs")
@@ -1234,6 +1251,8 @@ def index():
                         or bool(rel_sel.value)
                         or bool(bio_obj_state["taxon_id"])
                         or _active_media()["has_content"]()
+                        or event_media["has_content"]()
+                        or any(a.get("media_items") for a in bio_state["associations"])
                     )
 
                 def _on_save():
@@ -1292,16 +1311,32 @@ def index():
                                 # labels. Visiting passes code=None (foreign
                                 # catalogNumber, no reserved code). Both still
                                 # persist any bio associations atomically.
-                                svc.finalize_specimen(
+                                created_assocs = svc.finalize_specimen(
                                     session,
                                     collection_object_id=co.id,
                                     code=None if is_visiting else code,
                                     queue_labels=False,
                                     associations=bio_state["associations"],
                                 )
-                                # Attach any media staged during digitize to the new
-                                # specimen (same transaction → atomic with the save).
+                                # Attach any media staged during digitize, in the same
+                                # transaction → atomic with the save: specimen media to
+                                # the new specimen, event media to its event, and each
+                                # association's media to its freshly-created row.
                                 _active_media()["commit"](session, co.id)
+                                if co.collecting_event_id:
+                                    event_media["commit"](session, co.collecting_event_id)
+                                for _assoc, _ba in zip(bio_state["associations"], created_assocs):
+                                    for _it in _assoc.get("media_items", []):
+                                        media_svc.attach_stored(
+                                            session,
+                                            target_kind="biological_association",
+                                            target_id=_ba.id, meta=_it["meta"],
+                                            caption=_it["caption"] or None,
+                                            category=_it["category"],
+                                            license=_it["license"] or None,
+                                            rights_holder_id=_it["rights_holder_id"],
+                                            is_primary=_it["is_primary"],
+                                        )
                         event_sel.set_options(_event_opts())
                         spec["refresh_codes"]()
                         ui.notify(f"Saved — specimen #{saved_id}  [{code}]", type="positive")
@@ -1310,6 +1345,7 @@ def index():
                         ui.notify(f"Save failed: {exc}", type="negative")
                         return
                     spec_media["clear"](); spec_media_v["clear"]()   # staged media committed
+                    event_media["clear"]()
                     _refresh_table()
                     _clear_after_save()
                     # In single-card mode, return to the first step for the next
@@ -1351,7 +1387,7 @@ def index():
                     bio_obj_state["clear"]()
                     rel_sel.value = None
                     _refresh_assoc_list()
-                    spec_media["clear"](); spec_media_v["clear"]()
+                    spec_media["clear"](); spec_media_v["clear"](); event_media["clear"]()
                     event_sel.value = None
                     state["event_id"] = None
                     event_status.set_content("· new event")
