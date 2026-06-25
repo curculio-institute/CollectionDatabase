@@ -179,52 +179,34 @@ def build_media_button(
         with session_factory() as s:
             return pd_svc.get_defaults(s)[2]
 
-    def _open_details(e):
-        """Per-asset details: rightsHolder (person, Tier-2), licence (Tier-2), caption."""
-        with ui.dialog() as dlg, ui.card().classes("min-w-[420px] gap-2"):
-            ui.label(f"Media details — {e['name']}").classes("text-sm font-medium")
-            rights_field = build_person_field(
-                session_factory, "rightsHolder",
-                default_fn=_default_rights_holder,
-                initial_value=e["rights_name"] or None,
-                classes="w-full",
-            )
-            with ui.row().classes("items-center gap-1 w-full"):
-                lic_sel = ui.select(LICENSE_OPTIONS, value=e["license"], label="Licence") \
-                    .classes("flex-1")
-                ui.button(icon="push_pin",
-                          on_click=lambda: lic_sel.set_value(get_config().default_license or "")) \
-                    .props("flat dense round size=sm").tooltip("Insert default licence")
-            cap_in = ui.input("Caption", value=e["caption"]).classes("w-full")
+    def _set_license(e, value):
+        if staged:
+            staged_items[e["key"]]["license"] = value or ""
+        else:
+            with session_factory() as s:
+                with s.begin():
+                    media_svc.update_media(s, e["media_id"], license=value or None)
 
-            def _save():
-                # rightsHolder: commit the person now (persons are an independent
-                # vocab) so we have an id even in staged mode.
-                with session_factory() as s:
-                    with s.begin():
-                        rid = rights_field["commit"](s)
-                        rname = None
-                        if rid is not None:
-                            p = s.get(Person, rid)
-                            rname = p.full_name if p else None
-                if staged:
-                    it = staged_items[e["key"]]
-                    it.update(license=lic_sel.value or "", rights_holder_id=rid,
-                              rights_name=rname or "", caption=cap_in.value or "")
-                else:
-                    with session_factory() as s:
-                        with s.begin():
-                            media_svc.update_media(s, e["media_id"],
-                                                   license=lic_sel.value or None,
-                                                   rights_holder_id=rid)
-                            media_svc.update_attachment(s, e["att_id"], caption=cap_in.value or "")
-                dlg.close()
-                _rebuild()
-            with ui.row().classes("w-full justify-end gap-2 mt-1"):
-                ui.button("Cancel", on_click=dlg.close).props("flat")
-                ui.button("Save", on_click=_save).props("color=secondary")
-        dlg.on_value_change(lambda ev: dlg.delete() if not ev.value else None)
-        dlg.open()
+    def _set_caption_entry(e, value):
+        if staged:
+            staged_items[e["key"]]["caption"] = value or ""
+        else:
+            with session_factory() as s:
+                with s.begin():
+                    media_svc.update_attachment(s, e["att_id"], caption=value or "")
+
+    def _set_rights(e, rights_field):
+        """Commit the chosen rightsHolder person and store its id (works in both modes)."""
+        with session_factory() as s:
+            with s.begin():
+                rid = rights_field["commit"](s)
+                rname = s.get(Person, rid).full_name if rid is not None else ""
+        if staged:
+            staged_items[e["key"]].update(rights_holder_id=rid, rights_name=rname)
+        else:
+            with session_factory() as s:
+                with s.begin():
+                    media_svc.update_media(s, e["media_id"], rights_holder_id=rid)
 
     # ── gallery (inside the popup) ────────────────────────────────────────────────
     gallery = None
@@ -249,7 +231,10 @@ def build_media_button(
                 _render_card(it)
 
     def _render_card(it: dict):
-        with ui.card().classes("p-2 gap-1").style("width:172px"):
+        # Metadata (caption / licence / rightsHolder) lives inline beneath the file so
+        # the important fields are visible and editable without an extra click. Each
+        # commits on change/blur — no Save button.
+        with ui.card().classes("p-2 gap-1").style("width:230px"):
             url = f"/media/{it['rel']}"
             if it["category"] == "Image":
                 ui.image(url).classes("w-full h-32 object-cover rounded") \
@@ -260,6 +245,32 @@ def build_media_button(
                 ).style("background:var(--tp-base-foreground)"):
                     ui.icon(_CAT_ICON.get(it["category"], "insert_drive_file"), size="lg")
                     ui.link(it["name"], url, new_tab=True).classes("text-xs text-center px-1 truncate")
+
+            # caption
+            cap = ui.input(placeholder="caption", value=it["caption"]) \
+                .props("dense").classes("w-full text-xs")
+            cap.on("blur", lambda e, it=it, el=cap: _set_caption_entry(it, el.value))
+
+            # licence (Tier-2: push_pin inserts the configured default)
+            with ui.row().classes("items-center gap-1 w-full"):
+                lic = ui.select(LICENSE_OPTIONS, value=it["license"], label="licence") \
+                    .props("dense").classes("flex-1 text-xs")
+                lic.on_value_change(lambda ev, e=it: _set_license(e, ev.value))
+                ui.button(icon="push_pin",
+                          on_click=lambda el=lic: el.set_value(get_config().default_license or "")) \
+                    .props("flat dense round size=xs").tooltip("Insert default licence")
+
+            # rightsHolder (person field, Tier-2 push_pin inside the field)
+            _rh = {}
+            _rh["field"] = build_person_field(
+                session_factory, "rightsHolder",
+                default_fn=_default_rights_holder,
+                initial_value=it["rights_name"] or None,
+                on_change=lambda e=it: _set_rights(e, _rh["field"]),
+                classes="w-full",
+            )
+
+            # bottom controls: category / primary / delete
             with ui.row().classes("items-center gap-1 w-full"):
                 cat = ui.select(_CATEGORIES, value=it["category"]) \
                     .props("dense borderless").classes("text-xs flex-1")
@@ -269,16 +280,8 @@ def build_media_button(
                     .props("flat dense round size=sm").tooltip("Primary")
                 if it["is_primary"]:
                     star.props("color=amber")
-                ui.button(icon="edit", on_click=lambda e=it: _open_details(e)) \
-                    .props("flat dense round size=sm color=grey") \
-                    .tooltip("Details — rightsHolder, licence, caption")
                 ui.button(icon="delete", on_click=lambda e=it: _delete(e)) \
                     .props("flat dense round size=sm color=grey").tooltip("Remove")
-            if it["caption"]:
-                ui.label(it["caption"]).classes("text-xs w-full truncate")
-            if it["license"] or it["rights_name"]:
-                meta = " · ".join(x for x in (it["license"], it["rights_name"]) if x)
-                ui.label(meta).classes("text-xs truncate w-full").style("color:var(--tp-base-soft)")
 
     def _open():
         nonlocal gallery, filter_sel

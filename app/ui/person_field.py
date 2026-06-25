@@ -224,7 +224,9 @@ def build_person_field(
         if default_fn:
             val = default_fn()
             if val:
-                set_value(val)
+                set_value(val)   # set_value suppresses on_change (notify=False)…
+                if on_change:
+                    on_change()  # …but the push_pin IS a user action — fire it once
 
     # ── dropdown ──────────────────────────────────────────────────────────────
 

@@ -894,16 +894,21 @@ Returns `{button, refresh, has_content, commit, clear, staged_items}`.
 - **Batch upload** — `ui.upload(multiple, auto_upload, on_upload=…)`; `on_upload` fires once
   per file, covering single and multi-file selection in one action. (Do **not** also wire
   `on_multi_upload` — both firing double-processes each file.)
-- **Gallery** — flex-wrap of fixed-width cards: images show a `/media/<rel>` thumbnail
-  (click → open full), other kinds an Audubon-category icon + download link. Each card has a
-  category `ui.select`, a primary star, an edit (pencil) button, delete, and caption/licence
-  lines. A category **filter** select narrows the gallery.
-- **Details (pencil → dialog):** **rightsHolder** (a `person_field`, Tier-2 — push_pin
-  *inside* the field inserts `person_defaults.default_rights_holder_id`), **licence**
-  (`vocab.LICENSE_OPTIONS`, Tier-2 — push_pin inserts `config.default_license`), and the
-  caption. No title/creator (deliberately trimmed — rightsHolder suffices). Save commits the
-  person (`commit()` → id) then, bound, `update_media(...)` + `update_attachment(caption)`;
-  staged, it updates the in-memory entry.
+- **Gallery** — flex-wrap of fixed-width cards (≈230px). Each card: a `/media/<rel>`
+  thumbnail (image) or category icon + download link, then the metadata **inline beneath the
+  file** (no modal — the important fields must be visible without an extra click):
+  - **caption** — `ui.input`, commits on blur.
+  - **licence** — `ui.select` (`vocab.LICENSE_OPTIONS`) + a Tier-2 push_pin button
+    (inserts `config.default_license`); commits on change.
+  - **rightsHolder** — a `person_field` (Tier-2 push_pin *inside* the field inserts
+    `person_defaults.default_rights_holder_id`); commits on change. (No title/creator —
+    deliberately trimmed; rightsHolder suffices.)
+  - a bottom row: category `ui.select`, primary star, delete.
+  A category **filter** select narrows the gallery. Bound mode writes each change to the DB
+  (`update_media` / `update_attachment`); staged mode updates the in-memory entry.
+- **person_field pin fires on_change:** so the inline rightsHolder pin commits, the
+  push_pin path in `person_field.py` now calls `on_change` after `set_value` (it's a user
+  action; `set_value` itself stays silent to avoid loops).
 
 **Snapshot-before-render:** attachments + their `media` are read into plain dicts inside a
 session so the gallery renders after the session closes (no DetachedInstanceError).
