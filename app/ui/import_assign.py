@@ -25,6 +25,8 @@ from app.ui.taxon_search import build_taxon_search
 from app.ui.taxon_editor import open_new_taxon_dialog
 from app.ui.date_input import attach_date_validation
 from app.ui.person_field import build_person_field
+from app.ui.vocab_field import build_vocab_field
+from app.services.vocabularies import preparation_vocab
 from app.ui.type_status_field import build_type_status_field
 # Controlled vocabularies — single source of truth (app/vocab.py).
 from app.vocab import SEX_OPTIONS, LIFE_STAGE_OPTIONS, NEW_SPECIMEN_DEFAULTS
@@ -220,8 +222,10 @@ def build_import_assign_tab(session_factory, refreshers: dict, on_saved=None) ->
                 ).classes("w-32")
                 sex_sel   = ui.select(SEX_OPTIONS, label="sex").classes("w-28")
                 count_in  = ui.number("n", value=1, min=0, precision=0).classes("w-20")
-                preps_in  = ui.input("preparations",
-                                     placeholder="pinned, in ethanol…").classes("flex-1 min-w-40")
+                prep_field = build_vocab_field(
+                    session_factory, preparation_vocab, "preparations",
+                    classes="flex-1 min-w-40",
+                )
             ui.timer(2.0, lambda: cat_num.set_options({c: c for c in _reserved_opts()}))
 
             with ui.row().classes("w-full flex-wrap gap-3 items-end mt-3"):
@@ -286,7 +290,7 @@ def build_import_assign_tab(session_factory, refreshers: dict, on_saved=None) ->
             # Pre-fill per-specimen fields from spreadsheet
             sp = dwc_svc.row_to_specimen_prefill(row)
             count_in.value  = int(sp["individual_count"] or 1)
-            preps_in.value  = sp["preparations"]
+            prep_field["set_value"](sp["preparations"] or None)
             stage_sel.value = sp["life_stage"] or "adult"
             rem_in.value    = sp["occurrence_remarks"]
 
@@ -514,7 +518,7 @@ def build_import_assign_tab(session_factory, refreshers: dict, on_saved=None) ->
                                 "collection_code":   get_config().collection_code,
                                 "institution_code":  get_config().institution_code,
                                 "individual_count":  int(count_in.value or 1),
-                                "preparations":      preps_in.value,
+                                "preparation_id":    prep_field["commit"](session),
                                 "life_stage":        stage_sel.value,
                                 "basis_of_record":   NEW_SPECIMEN_DEFAULTS["basis_of_record"],
                                 "occurrence_remarks":rem_in.value,

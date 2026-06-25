@@ -26,6 +26,8 @@ from app.services.validation import validate_event_fields
 import app.services.person_defaults as pd_svc
 from app.ui.date_input import attach_date_validation, append_year_pin
 from app.ui.person_field import build_person_field
+from app.ui.vocab_field import build_vocab_field
+from app.services.vocabularies import preparation_vocab
 from app.ui.taxon_search import build_taxon_search
 from app.ui.type_status_field import build_type_status_field
 from app.services.taxa import compose_scientific_name
@@ -236,9 +238,16 @@ def build_mounting_session_section(
                     # n
                     n_in = ui.number("n", value=row["n"], min=1, precision=0).classes("w-16")
                     n_in.on_value_change(lambda e, idx=i: rows[idx].update({"n": int(e.value or 1)}))
-                    # preparations
-                    preps_in = ui.input("preps", value=row["preparations"]).classes("w-28")
-                    preps_in.on_value_change(lambda e, idx=i: rows[idx].update({"preparations": e.value}))
+                    # preparations (controlled vocab — same dropdown as the main forms)
+                    _prep_holder: dict = {}
+                    def _on_prep(idx=i, h=_prep_holder):
+                        rows[idx]["preparations"] = h["f"]["get_value"]() or ""
+                    prep_f = build_vocab_field(
+                        session_factory, preparation_vocab, "preps",
+                        initial_value=row["preparations"] or None,
+                        on_change=_on_prep, classes="w-28",
+                    )
+                    _prep_holder["f"] = prep_f
                     # lifeStage
                     ls_sel = ui.select(_LIFE_STAGE_OPTIONS, value=row["life_stage"], label="stage").classes("w-24")
                     ls_sel.on_value_change(lambda e, idx=i: rows[idx].update({"life_stage": e.value}))
@@ -375,7 +384,8 @@ def build_mounting_session_section(
                                 "collection_code":   cfg.collection_code,
                                 "institution_code":  cfg.institution_code,
                                 "individual_count":  row["n"],
-                                "preparations":      row["preparations"] or None,
+                                "preparation_id":    (preparation_vocab.get_or_create(s, row["preparations"]).id
+                                                      if (row["preparations"] or "").strip() else None),
                                 "life_stage":        row["life_stage"] or None,
                                 "disposition":       NEW_SPECIMEN_DEFAULTS["disposition"],
                                 "basis_of_record":   NEW_SPECIMEN_DEFAULTS["basis_of_record"],

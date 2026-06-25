@@ -1188,7 +1188,9 @@ def index():
                             }],
                         )
 
-                def _collect_specimen_fields() -> dict:
+                def _collect_specimen_fields(session) -> dict:
+                    # session: needed to resolve the preparations controlled-vocab
+                    # name → preparation_id (get_or_create), like the person fields.
                     active = _active_spec[0]
                     ident = active["get_identifier_fields"]()
                     return {
@@ -1196,7 +1198,7 @@ def index():
                         "collection_code":   ident["collection_code"],
                         "institution_code":  ident["institution_code"],
                         "individual_count":  int(active["count_in"].value or 1),
-                        "preparations":      active["preps_in"].value,
+                        "preparation_id":    active["prep_field"]["commit"](session),
                         "life_stage":        active["stage_sel"].value,
                         "disposition":       active["disp_sel"].value,
                         "basis_of_record":   active["basis_sel"].value,
@@ -1309,7 +1311,7 @@ def index():
                                         **ce["collect_fields"](),
                                         "recorded_by_id": recby_id,
                                     },
-                                    specimen_fields=_collect_specimen_fields(),
+                                    specimen_fields=_collect_specimen_fields(session),
                                     determination_fields={
                                         "sex":                      cur_det.get("sex"),
                                         "type_status":              cur_det.get("type_status"),
