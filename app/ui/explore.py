@@ -58,6 +58,10 @@ _CSS = """<style>
 .ex-sp-row { display: flex; align-items: center; gap: 8px; }
 .ex-sp   { font-style: italic; font-size: .9rem; }
 .ex-count { font-size: .72rem; color: var(--tp-base-soft, #888); }
+/* specimen-count pill — distinct from the (italic) name */
+.ex-pill { display: inline-block; font-size: .68rem; font-weight: 700; line-height: 1.45;
+           padding: 0 7px; border-radius: 10px; margin-left: 6px; font-style: normal;
+           background: rgba(3,105,161,.12); color: var(--tp-secondary, #0369a1); }
 .ex-warn { color: #d97706; }
 .ex-lot  { padding: 3px 0 3px 4px; font-size: .82rem; cursor: pointer; border-radius: 4px;
            overflow-wrap: anywhere; }
@@ -193,7 +197,7 @@ def build_explore_panel(session_factory, *, on_open_specimen, on_open_event) -> 
                             if sp.needs_attention:
                                 ui.html('<span class="ex-warn" title="needs attention">⚠</span>')
                             ui.html(f'<span class="ex-sp">{_name_auth(sp.short_label, sp.short_auth)}</span>'
-                                    f'<span class="ex-count">×{sp.count}</span>')
+                                    f'<span class="ex-pill" title="specimens / lots">{sp.count}</span>')
                     with exp:
                         for lot in sp.lots:
                             row = ui.html('<div class="ex-lot">' + _lot_line(lot) + "</div>")
