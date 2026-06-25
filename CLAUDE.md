@@ -162,8 +162,17 @@ not plain text, so an edit keeps the scientific name's italics/bold on the print
   (genus+species bold-italic, subgenus italic, associated species italic) — so the preview
   resembles the PDF (#46). Editing *inside* a `<strong><em>` token keeps its styling; text
   typed outside stays plain (#45's "knows what was edited", achieved structurally, no
-  token-classification logic). A per-box **source (raw-HTML) toggle** is the power-user
-  escape hatch for explicit formatting.
+  token-classification logic). The inline box is for quick tweaks.
+- **Larger editor dialog** (per-box ⤢ button, `_open_label_dialog`): a readable,
+  comfortably-sized WYSIWYG area with a **Bold / Italic toolbar** (select text → click;
+  `document.execCommand` with `styleWithCSS=false` so it emits `<b>/<i>`, which the sanitizer
+  maps to `<strong>/<em>`) — so a user can add explicit formatting without hand-editing tags.
+  The toolbar buttons use a client-side `mousedown.preventDefault` handler so clicking them
+  doesn't collapse the editor's text selection. The dialog also has a **raw-HTML source
+  toggle** (the escape hatch for long/precise markup, which is unreadable in the tiny inline
+  box). The editor's `innerHTML` is read on Save via `ui.run_javascript`; seeded imperatively
+  so Vue never re-binds it. Standard Abort / Save & close modal, deleted on close (timer-leak
+  rule).
 - **Single gatekeeper:** `labels.sanitize_override_html()` reduces arbitrary contenteditable
   HTML to a tiny safe subset (`<div>` lines of `<em>`/`<strong>`; `<b>`→`<strong>`,
   `<i>`→`<em>`; all attributes dropped) — applied both on store and on render.

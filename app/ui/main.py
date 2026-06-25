@@ -9,6 +9,7 @@ All DB access goes through app.services — no ORM queries in this file.
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import re
 import sys
@@ -266,17 +267,23 @@ def index():
                         background:rgba(3,105,161,.10) !important; }
       .pq-prev-edited { background:#fff7ed; border-color:#f59e0b; }
       .dark .pq-prev-edited { background:rgba(245,158,11,.12); }
-      /* the source (raw-HTML) escape hatch sits flush inside the label box */
+      /* the "open larger editor" affordance sits flush inside the label box */
       .pq-box-wrap    { position:relative; }
       .pq-box-toggle  { position:absolute; top:1px; right:1px; opacity:0;
                         transition:opacity .1s; }
       .pq-box-wrap:hover .pq-box-toggle { opacity:.5; }
       .pq-box-toggle:hover { opacity:1 !important; }
-      .pq-box-src     { font-family:monospace; font-size:.66rem; white-space:pre-wrap; }
-      .pq-box-src .q-field__control { min-height:0; padding:0; }
-      .pq-box-src .q-field__control:before,
-      .pq-box-src .q-field__control:after { display:none; }
-      .pq-box-src .q-textarea .q-field__native { padding:0; line-height:1.3; resize:none; }
+      /* larger label editor dialog: a readable WYSIWYG area + raw-HTML source */
+      .pq-dlg-editor  { min-height:120px; border:1px solid var(--tp-base-border);
+                        border-radius:4px; padding:10px 12px; font-size:1rem;
+                        line-height:1.5; background:var(--tp-base-foreground);
+                        outline:none; overflow-wrap:anywhere; }
+      .pq-dlg-editor:focus { outline:2px solid var(--tp-secondary); }
+      .pq-dlg-editor em     { font-style:italic; }
+      .pq-dlg-editor strong { font-weight:700; }
+      .pq-dlg-editor div    { min-height:1.5em; }
+      .pq-dlg-source .q-field__native { font-family:monospace; font-size:.85rem;
+                        line-height:1.45; min-height:120px; }
       .pq-prev-ctl    { justify-content:flex-end; opacity:.55; }
       .pq-prev-ctl:hover { opacity:1; }
       .pq-prev-empty  { font-size:.85rem; font-style:italic; color:var(--tp-base-soft); }
@@ -1846,6 +1853,82 @@ def index():
                                         pq_svc.remove_item(session, qid)
                         _refresh_queue()
 
+                    # Stable DOM ids for the dialog editor (only one open at a time).
+                    _DLG_ED, _DLG_SRC = "pq-dlg-editor", "pq-dlg-source"
+
+                    def _open_label_dialog(qid, seed_html):
+                        """Larger editor for a queued label — a readable WYSIWYG area
+                        with a Bold/Italic toolbar (select text → click), plus a
+                        raw-HTML source toggle (#45). The inline box on the sheet is
+                        fine for quick tweaks; this window is for longer text and
+                        explicit formatting without hand-editing tags."""
+                        mode = {"src": False}
+                        with ui.dialog() as dlg, ui.card().classes("w-full max-w-3xl gap-2"):
+                            ui.label("Edit label for print").classes("text-base font-semibold")
+                            ui.label("Select text and click B / I to format, or switch to "
+                                     "HTML source. Applies to all identical labels; does not "
+                                     "change the record.").classes("text-xs") \
+                                .style("color:var(--tp-base-soft)")
+                            with ui.row().classes("items-center gap-1"):
+                                # mousedown.preventDefault keeps the editor's selection
+                                # alive (a focused toolbar button would otherwise collapse
+                                # it); styleWithCSS=false forces <b>/<i> tags, which the
+                                # sanitizer maps to <strong>/<em>.
+                                b_btn = ui.button(icon="format_bold").props("flat dense").tooltip("Bold")
+                                i_btn = ui.button(icon="format_italic").props("flat dense").tooltip("Italic")
+                                b_btn.on("mousedown", js_handler="(e)=>{e.preventDefault();"
+                                         "document.execCommand('styleWithCSS',false,false);"
+                                         "document.execCommand('bold',false,null);}")
+                                i_btn.on("mousedown", js_handler="(e)=>{e.preventDefault();"
+                                         "document.execCommand('styleWithCSS',false,false);"
+                                         "document.execCommand('italic',false,null);}")
+                                ui.space()
+                                src_btn = ui.button(icon="code").props("flat dense") \
+                                    .tooltip("Toggle HTML source")
+                            editor = (ui.element("div")
+                                      .props(f'contenteditable=true id={_DLG_ED}')
+                                      .classes("pq-dlg-editor"))
+                            source = (ui.textarea()
+                                      .props(f"id={_DLG_SRC} outlined")
+                                      .classes("pq-dlg-source w-full"))
+                            source.set_visibility(False)
+                            with ui.row().classes("justify-end w-full gap-2 mt-1"):
+                                ui.button("Abort").props("flat").on_click(dlg.close)
+                                save_btn = ui.button("Save & close").props("color=primary")
+
+                        # Seed both surfaces (editor innerHTML set imperatively so Vue
+                        # never re-binds/clobbers it; the textarea via its value).
+                        ui.run_javascript(
+                            f"document.getElementById('{_DLG_ED}').innerHTML = {json.dumps(seed_html or '')};")
+                        source.value = seed_html or ""
+
+                        async def _toggle_src():
+                            if not mode["src"]:
+                                html = await ui.run_javascript(
+                                    f"document.getElementById('{_DLG_ED}').innerHTML")
+                                source.value = html or ""
+                                editor.set_visibility(False); source.set_visibility(True)
+                                mode["src"] = True
+                            else:
+                                ui.run_javascript(
+                                    f"document.getElementById('{_DLG_ED}').innerHTML = "
+                                    f"{json.dumps(source.value or '')};")
+                                source.set_visibility(False); editor.set_visibility(True)
+                                mode["src"] = False
+                        src_btn.on_click(_toggle_src)
+
+                        async def _save():
+                            html = (source.value if mode["src"]
+                                    else await ui.run_javascript(
+                                        f"document.getElementById('{_DLG_ED}').innerHTML"))
+                            dlg.close()
+                            _edit_label(qid, html)
+                        save_btn.on_click(_save)
+
+                        # Per-action dialog: delete on close so its timers don't leak.
+                        dlg.on_value_change(lambda e: dlg.delete() if not e.value else None)
+                        dlg.open()
+
                     def _editable_box(kind, sp):
                         html_seed = sp["data_html"]      if kind == "data" else sp["det_html"]
                         auto_html = sp["data_auto_html"] if kind == "data" else sp["det_auto_html"]
@@ -1860,28 +1943,18 @@ def index():
                             # Typing inside a <strong><em> token keeps its styling;
                             # text added outside stays plain (#45). innerHTML is
                             # captured by the global blur listener via data-qid.
-                            wy = (ui.html(html_seed or "")
-                                  .classes(cls)
-                                  .props(f'contenteditable=true data-ident="{ident}" data-qid="{qid}"')
-                                  .tooltip("Edit for print fit (abbreviate / add). Applies to "
-                                           "all identical labels; does not change the record."))
-                            # Escape hatch: raw-HTML source view (hidden until toggled).
-                            src = (ui.textarea(value=html_seed or "")
-                                   .props("borderless dense autogrow")
-                                   .classes(f"{cls} pq-box-src w-full"))
-                            src.set_visibility(False)
-                            src.on("blur", lambda e, q=qid, w=src: _edit_label(q, w.value))
-
-                            def _toggle(w=wy, s=src):
-                                showing_src = not s.visible
-                                s.set_visibility(showing_src)
-                                w.set_visibility(not showing_src)
-
-                            (ui.button(icon="code")
+                            (ui.html(html_seed or "")
+                             .classes(cls)
+                             .props(f'contenteditable=true data-ident="{ident}" data-qid="{qid}"')
+                             .tooltip("Edit inline for print fit, or open the larger editor "
+                                      "(⤢). Applies to all identical labels; does not change "
+                                      "the record."))
+                            # Larger editor: formatting toolbar + HTML source (#45).
+                            (ui.button(icon="open_in_full")
                              .props("flat dense round size=xs")
                              .classes("pq-box-toggle")
-                             .tooltip("Toggle raw-HTML source (power-user / explicit formatting)")
-                             .on_click(lambda _: _toggle()))
+                             .tooltip("Open larger editor (Bold / Italic toolbar + HTML source)")
+                             .on_click(lambda _, q=qid, h=html_seed or "": _open_label_dialog(q, h)))
 
                     def _render_column(sp):
                         with ui.element("div").classes("pq-prev-col"):
