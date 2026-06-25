@@ -220,12 +220,13 @@ def _row_auto_identity(row: PrintQueue) -> str | None:
 def preview_model(session: Session) -> list[dict]:
     """Structured, editable preview of the queued sheet for the UI. Groups → per-
     specimen columns; each column carries, per label type, the queue row id, the
-    printed text (override if set else auto), the auto text, and an identity key
-    (identical labels share it). Shape per specimen column::
+    printed text (override if set else auto), the auto text, the *formatted* HTML
+    (printed + auto, for the WYSIWYG editor — keeps italics/bold, #45/#46), and an
+    identity key (identical labels share it). Shape per specimen column::
 
         {co_id,
-         data, data_auto, data_qid, data_ident,
-         det,  det_auto,  det_qid,  det_ident,
+         data, data_auto, data_html, data_auto_html, data_qid, data_ident,
+         det,  det_auto,  det_html,  det_auto_html,  det_qid,  det_ident,
          id_code}
     """
     rows = session.query(PrintQueue).order_by(PrintQueue.created_at, PrintQueue.id).all()
@@ -237,8 +238,10 @@ def preview_model(session: Session) -> list[dict]:
         def _col(key):
             return cols.setdefault(key, {
                 "co_id": None,
-                "data": None, "data_auto": None, "data_qid": None, "data_ident": None,
-                "det": None,  "det_auto": None,  "det_qid": None,  "det_ident": None,
+                "data": None, "data_auto": None, "data_html": None,
+                "data_auto_html": None, "data_qid": None, "data_ident": None,
+                "det": None,  "det_auto": None,  "det_html": None,
+                "det_auto_html": None,  "det_qid": None,  "det_ident": None,
                 "id_code": None, "id_qid": None,
             })
 
@@ -246,8 +249,11 @@ def preview_model(session: Session) -> list[dict]:
             co = row.collection_object
             col = _col(("co", row.collection_object_id))
             auto = lbl.label_plaintext(_co_to_data_label(co))
+            dl = _co_to_data_label(co, row.text_override)
             col["data_auto"] = auto
             col["data"] = row.text_override if row.text_override is not None else auto
+            col["data_html"] = lbl._data_inner_html(dl)
+            col["data_auto_html"] = lbl.label_auto_html(dl)
             col["data_qid"] = row.id
             col["data_ident"] = _ident(auto)
             col["co_id"] = co.id
@@ -255,9 +261,12 @@ def preview_model(session: Session) -> list[dict]:
             co = row.collection_object
             col = _col(("co", row.collection_object_id))
             dl = _co_to_det_label(co)
+            dl_ov = _co_to_det_label(co, row.text_override)
             auto = lbl.label_plaintext(dl) if dl else "—"
             col["det_auto"] = auto
             col["det"] = row.text_override if row.text_override is not None else auto
+            col["det_html"] = lbl._det_inner_html(dl_ov) if dl_ov else "—"
+            col["det_auto_html"] = lbl.label_auto_html(dl_ov) if dl_ov else "—"
             col["det_qid"] = row.id
             col["det_ident"] = _ident(auto)
             col["co_id"] = co.id

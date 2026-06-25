@@ -25,8 +25,9 @@ import base64
 import html as _html
 import io
 import re as _re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace as _replace
 from functools import lru_cache
+from html.parser import HTMLParser as _HTMLParser
 from typing import Optional
 
 import qrcode
@@ -111,9 +112,105 @@ class DataLabel:
     text_override: Optional[str]            = None
 
 
+# ---------------------------------------------------------------------------
+# Print-only override (#37/#45/#46)
+# ---------------------------------------------------------------------------
+# An override may be stored in one of two forms on print_queue.text_override:
+#   * legacy plaintext  — no markup; printed one <div> per line (escaped).
+#   * formatted HTML     — the sanitized innerHTML captured from the WYSIWYG
+#                          contenteditable editor; keeps the name's italics/bold.
+# `_override_html` picks the path by whether the stored string contains a tag;
+# `sanitize_override_html` is the single gatekeeper for the HTML form, both when
+# storing (UI) and when rendering (here), so only a tiny safe subset ever prints.
+
+# Inline emphasis we keep; the browser's <b>/<i> map onto our house <strong>/<em>.
+_OVERRIDE_INLINE = {"em", "strong"}
+_OVERRIDE_TAG_MAP = {"b": "strong", "i": "em", "em": "em", "strong": "strong"}
+# Block/break tags become a line structure of <div>s (matching the auto labels).
+_OVERRIDE_BLOCK = {"div", "p"}
+
+
+class _OverrideSanitizer(_HTMLParser):
+    """Reduce contenteditable HTML to the safe label subset.
+
+    Keeps only inline <em>/<strong> emphasis (with <b>→<strong>, <i>→<em>),
+    drops every attribute, and rebuilds the line structure as <div> blocks from
+    the source's block/<br> boundaries. Unknown tags are unwrapped (their text
+    survives, their markup does not)."""
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self._lines: list[str] = []
+        self._cur: list[str] = []
+        self._open: list[str] = []   # stack of emitted inline tags (for clean close)
+
+    def _newline(self) -> None:
+        self._lines.append("".join(self._cur))
+        self._cur = []
+
+    def handle_starttag(self, tag, attrs):
+        if tag in _OVERRIDE_BLOCK:
+            if self._cur:
+                self._newline()
+        elif tag == "br":
+            self._newline()
+        elif tag in _OVERRIDE_TAG_MAP:
+            mapped = _OVERRIDE_TAG_MAP[tag]
+            self._open.append(mapped)
+            self._cur.append(f"<{mapped}>")
+
+    def handle_endtag(self, tag):
+        if tag in _OVERRIDE_BLOCK:
+            if self._cur:
+                self._newline()
+        elif tag in _OVERRIDE_TAG_MAP and self._open:
+            mapped = _OVERRIDE_TAG_MAP[tag]
+            if mapped in self._open:
+                # close back to (and including) the matching tag
+                while self._open:
+                    t = self._open.pop()
+                    self._cur.append(f"</{t}>")
+                    if t == mapped:
+                        break
+
+    def handle_data(self, data):
+        self._cur.append(_html.escape(data))
+
+    def result(self) -> str:
+        while self._open:                       # close anything left open
+            self._cur.append(f"</{self._open.pop()}>")
+        if self._cur:
+            self._newline()
+        lines = [ln for ln in self._lines if ln.strip()]
+        return "".join(f"<div>{ln}</div>" for ln in lines)
+
+
+def sanitize_override_html(html: str) -> str:
+    """Reduce arbitrary (contenteditable) HTML to the safe label subset:
+    <div> lines containing only <em>/<strong>. Returns '' for empty content."""
+    p = _OverrideSanitizer()
+    p.feed(html or "")
+    p.close()
+    return p.result()
+
+
+def _looks_like_html(text: str) -> bool:
+    return bool(_re.search(r"<\w+|</\w+|<br", text or ""))
+
+
 def _override_html(text: str) -> str:
-    """Render a print-only override string verbatim — one <div> per line."""
+    """Render a print-only override. Formatted-HTML overrides are sanitized and
+    kept (italics/bold survive); legacy plaintext is escaped one <div> per line."""
+    if _looks_like_html(text):
+        return sanitize_override_html(text)
     return "".join(f"<div>{_e(line)}</div>" for line in text.split("\n"))
+
+
+def label_auto_html(lbl) -> str:
+    """The composed, *formatted* inner HTML of a Data/DeterminationLabel ignoring
+    any override — used to seed the WYSIWYG editor and to detect 'edited' state."""
+    base = _replace(lbl, text_override=None)
+    return _data_inner_html(base) if isinstance(base, DataLabel) else _det_inner_html(base)
 
 
 def label_plaintext(lbl) -> str:

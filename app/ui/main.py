@@ -254,17 +254,29 @@ def index():
                         padding:3px 6px; font-size:.72rem; line-height:1.3;
                         background:var(--tp-base-foreground); overflow-wrap:anywhere; }
       .pq-prev-id     { font-family:monospace; color:var(--tp-base-lighter); }
-      .pq-prev-det    { font-style:italic; }
+      /* WYSIWYG label boxes print like the PDF: genus+species bold-italic,
+         subgenus italic, associated species italic — driven by the rendered
+         <strong>/<em> markup, NOT a blanket italic on the whole box (#45/#46). */
+      .pq-prev-label em     { font-style:italic; }
+      .pq-prev-label strong { font-weight:700; }
       .pq-prev-label[data-ident] { cursor:text; transition:background .1s, outline .1s; }
+      .pq-prev-label[contenteditable]:focus { outline:2px solid var(--tp-secondary);
+                        outline-offset:0; }
       .pq-ident-hl    { outline:2px solid var(--tp-secondary);
                         background:rgba(3,105,161,.10) !important; }
       .pq-prev-edited { background:#fff7ed; border-color:#f59e0b; }
       .dark .pq-prev-edited { background:rgba(245,158,11,.12); }
-      /* the inline editor sits flush inside the label box */
-      .pq-prev-label .q-field__control { min-height:0; padding:0; }
-      .pq-prev-label .q-field__control:before,
-      .pq-prev-label .q-field__control:after { display:none; }
-      .pq-prev-label .q-textarea .q-field__native { padding:0; line-height:1.3; resize:none; }
+      /* the source (raw-HTML) escape hatch sits flush inside the label box */
+      .pq-box-wrap    { position:relative; }
+      .pq-box-toggle  { position:absolute; top:1px; right:1px; opacity:0;
+                        transition:opacity .1s; }
+      .pq-box-wrap:hover .pq-box-toggle { opacity:.5; }
+      .pq-box-toggle:hover { opacity:1 !important; }
+      .pq-box-src     { font-family:monospace; font-size:.66rem; white-space:pre-wrap; }
+      .pq-box-src .q-field__control { min-height:0; padding:0; }
+      .pq-box-src .q-field__control:before,
+      .pq-box-src .q-field__control:after { display:none; }
+      .pq-box-src .q-textarea .q-field__native { padding:0; line-height:1.3; resize:none; }
       .pq-prev-ctl    { justify-content:flex-end; opacity:.55; }
       .pq-prev-ctl:hover { opacity:1; }
       .pq-prev-empty  { font-size:.85rem; font-style:italic; color:var(--tp-base-soft); }
@@ -1795,16 +1807,30 @@ def index():
                             _records_handle["open_specimen"](co_id)
                         main_tabs.set_value("records")
 
-                    def _edit_label(qid, value, auto):
-                        # Blank or == auto clears the override (back to auto); else
+                    def _edit_label(qid, raw_html, auto_html):
+                        # The WYSIWYG box (or source field) hands back HTML; sanitize
+                        # to the safe label subset (italics/bold survive, #45/#46).
+                        # Empty or == auto clears the override (back to auto); else
                         # apply to every identical label (same auto text).
-                        new = None if (not value.strip() or value.strip() == (auto or "").strip()) else value
+                        clean = lbl_svc.sanitize_override_html(raw_html or "")
+                        auto_clean = lbl_svc.sanitize_override_html(auto_html or "")
+                        new = None if (not clean or clean == auto_clean) else clean
                         with _sf() as session:
                             with session.begin():
                                 n = pq_svc.set_override_for_identical(session, qid, new)
                         verb = "Reset to auto" if new is None else "Applied edit"
                         ui.notify(f"{verb} on {n} identical label{'s' if n != 1 else ''}.", type="info")
                         _refresh_queue()
+
+                    def _innerhtml(e) -> str:
+                        # NiceGUI delivers args=[['target','innerHTML']] as e.args
+                        # (a list with the single captured value).
+                        a = e.args
+                        if isinstance(a, list):
+                            a = a[0] if a else ""
+                        if isinstance(a, dict):
+                            a = a.get("innerHTML", "")
+                        return a or ""
 
                     def _delete_column(sp):
                         with _sf() as session:
@@ -1815,20 +1841,44 @@ def index():
                         _refresh_queue()
 
                     def _editable_box(kind, sp):
-                        text  = sp["data"]       if kind == "data" else sp["det"]
-                        auto  = sp["data_auto"]  if kind == "data" else sp["det_auto"]
-                        qid   = sp["data_qid"]   if kind == "data" else sp["det_qid"]
-                        ident = sp["data_ident"] if kind == "data" else sp["det_ident"]
+                        html_seed = sp["data_html"]      if kind == "data" else sp["det_html"]
+                        auto_html = sp["data_auto_html"] if kind == "data" else sp["det_auto_html"]
+                        qid       = sp["data_qid"]       if kind == "data" else sp["det_qid"]
+                        ident     = sp["data_ident"]     if kind == "data" else sp["det_ident"]
                         cls = f"pq-prev-label pq-prev-{kind}"
-                        if (text or "") != (auto or ""):
+                        if (html_seed or "") != (auto_html or ""):
                             cls += " pq-prev-edited"
-                        with ui.element("div").classes(cls).props(f"data-ident={ident}"):
-                            ta = (ui.textarea(value=text or "")
-                                  .props("borderless dense autogrow")
-                                  .classes("w-full").style("font-size:.72rem")
+                        with ui.element("div").classes("pq-box-wrap"):
+                            # Primary surface: a contenteditable box rendered with the
+                            # real formatted label HTML — what you see prints (#46).
+                            # Typing inside a <strong><em> token keeps its styling;
+                            # text added outside stays plain (#45).
+                            wy = (ui.html(html_seed or "")
+                                  .classes(cls)
+                                  .props(f'contenteditable=true data-ident="{ident}"')
                                   .tooltip("Edit for print fit (abbreviate / add). Applies to "
                                            "all identical labels; does not change the record."))
-                            ta.on("blur", lambda _, q=qid, a=auto or "", w=ta: _edit_label(q, w.value, a))
+                            # Escape hatch: raw-HTML source view (hidden until toggled).
+                            src = (ui.textarea(value=html_seed or "")
+                                   .props("borderless dense autogrow")
+                                   .classes(f"{cls} pq-box-src w-full"))
+                            src.set_visibility(False)
+                            wy.on("blur",
+                                  lambda e, q=qid, a=auto_html or "": _edit_label(q, _innerhtml(e), a),
+                                  args=[["target", "innerHTML"]])
+                            src.on("blur",
+                                   lambda e, q=qid, a=auto_html or "", w=src: _edit_label(q, w.value, a))
+
+                            def _toggle(w=wy, s=src):
+                                showing_src = not s.visible
+                                s.set_visibility(showing_src)
+                                w.set_visibility(not showing_src)
+
+                            (ui.button(icon="code")
+                             .props("flat dense round size=xs")
+                             .classes("pq-box-toggle")
+                             .tooltip("Toggle raw-HTML source (power-user / explicit formatting)")
+                             .on_click(lambda _: _toggle()))
 
                     def _render_column(sp):
                         with ui.element("div").classes("pq-prev-col"):
