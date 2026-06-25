@@ -22,6 +22,7 @@ from app.ui.specimen_form import build_specimen_form
 from app.ui.event_reuse import build_event_share_banner
 from app.ui.media_panel import build_media_button
 from app.ui.external_id_panel import build_external_id_button
+from app.ui.life_stage_panel import build_life_stage_button
 
 _FLOAT_ATTRS = frozenset({
     "decimal_latitude", "decimal_longitude",
@@ -45,6 +46,13 @@ def _ext_btn(session_factory, *, target_kind, target_id, tooltip="Resource ident
     return build_external_id_button(
         session_factory, target_kind=target_kind,
         target_id_getter=lambda: target_id, tooltip=tooltip,
+    )["button"]
+
+
+def _ls_btn(session_factory, *, target_id):
+    """A compact rearing / life-stage-history icon+popup button (bound mode)."""
+    return build_life_stage_button(
+        session_factory, target_id_getter=lambda: target_id,
     )["button"]
 
 
@@ -293,6 +301,7 @@ def build_records_tab(session_factory, *, on_saved: callable | None = None) -> N
             initial=co_snap,
             identity_label=f"#{co_id}  {co_snap['catalog_number']}",
             footer_slot=lambda: (
+                _ls_btn(session_factory, target_id=co_id),
                 _ext_btn(session_factory, target_kind="collection_object",
                          target_id=co_id, tooltip="Specimen resource identifiers"),
                 _media_btn(session_factory, target_kind="collection_object",
