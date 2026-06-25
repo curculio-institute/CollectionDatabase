@@ -543,7 +543,10 @@ def index():
       .dark .q-tab-panels        { background:var(--tp-base-background) !important; }
       .dark .q-tab-panel         { background:var(--tp-base-background) !important; }
       /* ── taxonomy checklist ────────────────────────────────────────── */
-      /* rank-based typography — mirrors scientific paper checklists */
+      /* rank-based typography — mirrors published catalogues (e.g. CCPCC) */
+      .tax-rank       { font-size:.58rem; font-weight:600; text-transform:uppercase;
+                        letter-spacing:.07em; color:var(--tp-base-soft);
+                        margin-right:3px; align-self:center; }
       .rank-family    { font-size:1.05rem; font-weight:700;
                         text-transform:uppercase; letter-spacing:.06em; }
       .rank-subfamily { font-size:.95rem;  font-weight:600; }
@@ -1744,6 +1747,8 @@ def index():
                           <span v-if="props.node.synonym"
                                 style="color:var(--tp-base-soft); font-size:.8rem;
                                        font-style:normal; margin-right:-2px;">=</span>
+                          <span v-if="!props.node.synonym && ['superfamily','family','subfamily','tribe','subtribe','genus','subgenus'].includes(props.node.rank)"
+                                class="tax-rank">{{ props.node.rank }}</span>
                           <span :class="'rank-' + props.node.rank">{{ props.node.name }}</span>
                           <span v-if="props.node.auth"
                                 style="font-style:normal; font-size:.78rem;
