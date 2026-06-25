@@ -294,6 +294,15 @@ def index():
       }
       document.addEventListener('mouseover', function(e){ hl(e, true); });
       document.addEventListener('mouseout',  function(e){ hl(e, false); });
+      // Capture-phase blur (blur does not bubble): when a contenteditable label
+      // box loses focus, emit its row id + innerHTML to Python. The DOM node
+      // can't ride NiceGUI's normal event args, so we read innerHTML here.
+      document.addEventListener('blur', function(e){
+        var el = e.target;
+        if(el && el.matches && el.matches('.pq-prev-label[contenteditable][data-qid]')){
+          emitEvent('pq_edit', { qid: el.getAttribute('data-qid'), html: el.innerHTML });
+        }
+      }, true);
     })();
     </script>""")
 
@@ -1807,30 +1816,27 @@ def index():
                             _records_handle["open_specimen"](co_id)
                         main_tabs.set_value("records")
 
-                    def _edit_label(qid, raw_html, auto_html):
+                    def _edit_label(qid, raw_html):
                         # The WYSIWYG box (or source field) hands back HTML; sanitize
                         # to the safe label subset (italics/bold survive, #45/#46).
-                        # Empty or == auto clears the override (back to auto); else
-                        # apply to every identical label (same auto text).
+                        # Empty or == the row's auto text clears the override (→ auto);
+                        # else apply to every identical label (same auto text).
                         clean = lbl_svc.sanitize_override_html(raw_html or "")
-                        auto_clean = lbl_svc.sanitize_override_html(auto_html or "")
-                        new = None if (not clean or clean == auto_clean) else clean
                         with _sf() as session:
                             with session.begin():
+                                auto_clean = lbl_svc.sanitize_override_html(
+                                    pq_svc.row_auto_html(session, qid))
+                                new = None if (not clean or clean == auto_clean) else clean
                                 n = pq_svc.set_override_for_identical(session, qid, new)
                         verb = "Reset to auto" if new is None else "Applied edit"
                         ui.notify(f"{verb} on {n} identical label{'s' if n != 1 else ''}.", type="info")
                         _refresh_queue()
 
-                    def _innerhtml(e) -> str:
-                        # NiceGUI delivers args=[['target','innerHTML']] as e.args
-                        # (a list with the single captured value).
-                        a = e.args
-                        if isinstance(a, list):
-                            a = a[0] if a else ""
-                        if isinstance(a, dict):
-                            a = a.get("innerHTML", "")
-                        return a or ""
+                    # The contenteditable box's innerHTML cannot ride NiceGUI's event
+                    # args (the DOM node is stripped before serialisation), so a global
+                    # capture-phase blur listener (added once in head) reads innerHTML
+                    # client-side and emits 'pq_edit' with the row id + html.
+                    ui.on("pq_edit", lambda e: _edit_label(int(e.args["qid"]), e.args["html"]))
 
                     def _delete_column(sp):
                         with _sf() as session:
@@ -1852,10 +1858,11 @@ def index():
                             # Primary surface: a contenteditable box rendered with the
                             # real formatted label HTML — what you see prints (#46).
                             # Typing inside a <strong><em> token keeps its styling;
-                            # text added outside stays plain (#45).
+                            # text added outside stays plain (#45). innerHTML is
+                            # captured by the global blur listener via data-qid.
                             wy = (ui.html(html_seed or "")
                                   .classes(cls)
-                                  .props(f'contenteditable=true data-ident="{ident}"')
+                                  .props(f'contenteditable=true data-ident="{ident}" data-qid="{qid}"')
                                   .tooltip("Edit for print fit (abbreviate / add). Applies to "
                                            "all identical labels; does not change the record."))
                             # Escape hatch: raw-HTML source view (hidden until toggled).
@@ -1863,11 +1870,7 @@ def index():
                                    .props("borderless dense autogrow")
                                    .classes(f"{cls} pq-box-src w-full"))
                             src.set_visibility(False)
-                            wy.on("blur",
-                                  lambda e, q=qid, a=auto_html or "": _edit_label(q, _innerhtml(e), a),
-                                  args=[["target", "innerHTML"]])
-                            src.on("blur",
-                                   lambda e, q=qid, a=auto_html or "", w=src: _edit_label(q, w.value, a))
+                            src.on("blur", lambda e, q=qid, w=src: _edit_label(q, w.value))
 
                             def _toggle(w=wy, s=src):
                                 showing_src = not s.visible

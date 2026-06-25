@@ -153,12 +153,30 @@ changing the record**. The record stays master: substantial corrections are made
 History: a first cut had the queue edit the *record* directly (`update_collecting_event`,
 live determination editor); that was reversed — a label is a physical artifact with size
 limits, and forcing record edits there mixed concerns. The print-only override was
-deliberately (re-)introduced. **Open follow-ups:** the override stores plain text, so an
-edit drops the name's italics/bold — a formatting-aware editor + source mode is
-[#45](https://github.com/curculio-institute/CollectionDatabase/issues/45); the preview
-should render closer to the real PDF
-[#46](https://github.com/curculio-institute/CollectionDatabase/issues/46). Layout/rendering
-detail is design.md's concern; this section owns the *policy*.
+deliberately (re-)introduced.
+
+**Formatting-aware editing (decided, #45/#46 — done).** The override is **formatted HTML**,
+not plain text, so an edit keeps the scientific name's italics/bold on the printed PDF:
+
+- The preview box is a **`contenteditable` rendered with the real formatted label HTML**
+  (genus+species bold-italic, subgenus italic, associated species italic) — so the preview
+  resembles the PDF (#46). Editing *inside* a `<strong><em>` token keeps its styling; text
+  typed outside stays plain (#45's "knows what was edited", achieved structurally, no
+  token-classification logic). A per-box **source (raw-HTML) toggle** is the power-user
+  escape hatch for explicit formatting.
+- **Single gatekeeper:** `labels.sanitize_override_html()` reduces arbitrary contenteditable
+  HTML to a tiny safe subset (`<div>` lines of `<em>`/`<strong>`; `<b>`→`<strong>`,
+  `<i>`→`<em>`; all attributes dropped) — applied both on store and on render.
+  `labels._override_html` keeps the legacy plaintext path for old overrides (detected by the
+  absence of tags). `labels.label_auto_html()` composes the formatted auto HTML used to seed
+  the editor and to detect "edited == auto → clear".
+- **Capture seam:** a contenteditable's `innerHTML` cannot ride NiceGUI's event args (the DOM
+  node is stripped before serialisation), so a **global capture-phase `blur` listener** reads
+  `innerHTML` client-side and emits `pq_edit {qid, html}`; the server recomputes the row's
+  auto text (`pq_svc.row_auto_html`) to decide store-vs-clear. This also sidesteps a
+  `v-html`-bound contenteditable being clobbered mid-edit by an unrelated Vue patch.
+
+Layout/rendering detail is design.md's concern; this section owns the *policy*.
 
 ## Open issues → GitHub
 

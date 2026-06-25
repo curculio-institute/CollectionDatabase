@@ -282,6 +282,20 @@ def preview_model(session: Session) -> list[dict]:
     ]
 
 
+def row_auto_html(session: Session, queue_id: int) -> str:
+    """The composed, formatted auto HTML for a queued data/determination row —
+    used to detect when an edit equals the auto text (→ clear the override)."""
+    row = session.get(PrintQueue, queue_id)
+    if row is None or not row.collection_object:
+        return ""
+    if row.label_type == "data":
+        return lbl.label_auto_html(_co_to_data_label(row.collection_object))
+    if row.label_type == "determination":
+        dl = _co_to_det_label(row.collection_object)
+        return lbl.label_auto_html(dl) if dl else ""
+    return ""
+
+
 def set_override_for_identical(session: Session, queue_id: int, text: str | None) -> int:
     """Set a print-only override on the given row AND every other queued label
     that is identical to it (same type + same auto text — see _row_auto_identity).
