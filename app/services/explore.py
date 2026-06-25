@@ -192,7 +192,8 @@ def query_specimens(session: Session, filters: list[dict] | None = None) -> list
 @dataclass
 class ChecklistSpecies:
     taxon_id: int | None
-    label: str                 # composed species name
+    label: str                 # composed species name (full)
+    short_label: str           # species name with the genus stripped (catalogue style)
     count: int                 # number of lots (matching)
     needs_attention: bool
     lots: list[SpecimenRow] = field(default_factory=list)
@@ -200,8 +201,9 @@ class ChecklistSpecies:
 
 @dataclass
 class ChecklistGroup:
-    """One genus block, under family/subfamily headers, in drawer order."""
-    headers: list[str]         # ancestor labels shown above (family … genus)
+    """One genus block, under family/subfamily/tribe headers, in drawer order."""
+    headers: list[tuple[str, str]]   # [(rank, label), …] family … genus — for stacked,
+                                     # catalogue-style rank headers printed only when changed
     species: list[ChecklistSpecies] = field(default_factory=list)
 
 
@@ -243,10 +245,17 @@ def checklist(session: Session, filters: list[dict] | None = None) -> list[Check
         names = [c.scientific_name or "" for c in chain]
         # header path = the drawer-divider ranks above this taxon (family … genus);
         # subgenus is excluded so all of a genus's species stay in one group.
-        headers = [format_scientific_name(c) for c in chain
-                   if c.taxon_rank in _HEADER_RANKS and c.id != t.id]
+        header_taxa = [c for c in chain if c.taxon_rank in _HEADER_RANKS and c.id != t.id]
+        headers = [(c.taxon_rank, format_scientific_name(c)) for c in header_taxa]
+        # Catalogue style: strip the leading genus uninomial from the species name
+        # (the genus is the block header), leaving "(Subgenus) epithet Author".
+        full = format_scientific_name(t)
+        genus = next((c for c in header_taxa if c.taxon_rank == "genus"), None)
+        short = full
+        if genus and genus.scientific_name and full.startswith(genus.scientific_name):
+            short = full[len(genus.scientific_name):].lstrip() or full
         sp = ChecklistSpecies(
-            taxon_id=taxon_id, label=format_scientific_name(t),
+            taxon_id=taxon_id, label=full, short_label=short,
             count=len(lots), needs_attention=any(l.needs_attention for l in lots),
             lots=sorted(lots, key=lambda l: (l.locality or "", l.event_date or "")),
         )
@@ -264,10 +273,10 @@ def checklist(session: Session, filters: list[dict] | None = None) -> list[Check
 
     if undetermined:
         groups.append(ChecklistGroup(
-            headers=["— undetermined —"],
+            headers=[("genus", "— undetermined —")],
             species=[ChecklistSpecies(
-                taxon_id=None, label="— undetermined —", count=len(undetermined),
-                needs_attention=True,
+                taxon_id=None, label="— undetermined —", short_label="(no determination)",
+                count=len(undetermined), needs_attention=True,
                 lots=sorted(undetermined, key=lambda l: (l.locality or "")),
             )],
         ))

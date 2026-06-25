@@ -35,18 +35,47 @@ _CSS = """<style>
            padding: 2px 6px 2px 10px; font-size: .82rem; }
 .ex-chip .ex-x { cursor: pointer; color: #9ca3af; font-weight: 700; }
 .ex-chip .ex-x:hover { color: #dc2626; }
-/* checklist */
-.ex-fam  { font-size: .72rem; font-weight: 700; text-transform: uppercase; letter-spacing: .06em;
-           color: var(--tp-base-soft, #888); margin-top: 10px; }
-.ex-gen  { font-size: 1.02rem; font-weight: 700; font-style: italic; margin-top: 1px; }
-.ex-sp-row { display: flex; align-items: center; gap: 8px; padding: 2px 0 2px 14px; }
+/* checklist — published-catalogue look (stacked ranked headers, generous spacing) */
+.ex-hdr   { display: flex; align-items: baseline; gap: 8px; }
+.ex-rank  { font-size: .64rem; font-weight: 600; text-transform: uppercase; letter-spacing: .07em;
+            color: var(--tp-base-soft, #9ca3af); flex-shrink: 0; min-width: 64px; text-align: right; }
+.ex-h-superfamily { margin-top: 16px; }
+.ex-h-superfamily .ex-name { font-weight: 700; text-transform: uppercase; letter-spacing: .04em; }
+.ex-h-family { margin-top: 16px; }
+.ex-h-family .ex-name { font-weight: 800; text-transform: uppercase; letter-spacing: .03em; font-size: 1.04rem; }
+.ex-h-subfamily { margin-top: 7px; }
+.ex-h-subfamily .ex-name { font-weight: 700; }
+.ex-h-tribe .ex-name, .ex-h-subtribe .ex-name { font-weight: 600; color: var(--tp-base-content); }
+.ex-h-genus { margin-top: 9px; }
+.ex-h-genus .ex-name { font-weight: 700; font-style: italic; font-size: 1.02rem; }
+.ex-auth { font-weight: 400; font-style: normal; color: var(--tp-base-soft, #888); font-size: .8em; }
+.ex-sp-row { display: flex; align-items: center; gap: 8px; }
+.ex-sp   { font-style: italic; }
 .ex-count { font-size: .72rem; color: var(--tp-base-soft, #888); }
 .ex-warn { color: #d97706; }
-.ex-lot  { padding: 3px 0 3px 30px; font-size: .82rem; cursor: pointer; border-radius: 4px;
+.ex-lot  { padding: 3px 0 3px 4px; font-size: .82rem; cursor: pointer; border-radius: 4px;
            overflow-wrap: anywhere; }
 .ex-lot:hover { background: rgba(3,105,161,.07); }
 .ex-cat  { font-family: monospace; color: var(--tp-base-soft, #888); font-size: .76rem; }
+/* indent species under their genus block */
+.ex-species-block { padding-left: 80px; }
 </style>"""
+
+
+# Indent (px) of a rank header — deeper ranks sit further right (catalogue style).
+_RANK_INDENT = {"superfamily": 0, "family": 8, "subfamily": 24, "tribe": 40,
+                "subtribe": 56, "genus": 64}
+
+
+def _split_auth(label: str) -> str:
+    """Wrap the authorship tail (', Year' or '(…)') in a muted span. Heuristic:
+    authorship starts at the first capitalised author token / '(' after the name."""
+    import re as _re
+    m = _re.search(r"\s((?:\()?[A-ZÀ-Þ][\wÀ-ÿ.'-]*,?\s*\d{4}.*|\([^)]*\d{4}\).*)$", label)
+    if not m:
+        return _html.escape(label)
+    name, auth = label[:m.start()], label[m.start():].strip()
+    return f'{_html.escape(name)} <span class="ex-auth">{_html.escape(auth)}</span>'
 
 
 def build_explore_panel(session_factory, *, on_open_specimen, on_open_event) -> dict:
@@ -146,25 +175,31 @@ def build_explore_panel(session_factory, *, on_open_specimen, on_open_event) -> 
             ui.label("No specimens match.").classes("text-sm italic mt-3") \
                 .style("color:var(--tp-base-soft)")
             return
+        prev: list[str] = []   # header labels already printed (catalogue: print on change)
         for g in groups:
-            headers = g.headers or []
-            fam, genus = headers[:-1], (headers[-1] if headers else "")
-            if fam:
-                ui.html('<div class="ex-fam">' + "  ›  ".join(_html.escape(h) for h in fam) + "</div>")
-            if genus:
-                ui.html(f'<div class="ex-gen">{_html.escape(genus)}</div>')
-            for sp in g.species:
-                exp = ui.expansion().classes("w-full").props("dense")
-                with exp.add_slot("header"):
-                    with ui.element("div").classes("ex-sp-row"):
-                        if sp.needs_attention:
-                            ui.html('<span class="ex-warn" title="needs attention">⚠</span>')
-                        ui.html(f'<span>{_html.escape(sp.label)}</span>'
-                                f'<span class="ex-count">×{sp.count}</span>')
-                with exp:
-                    for lot in sp.lots:
-                        row = ui.html('<div class="ex-lot">' + _lot_line(lot) + "</div>")
-                        row.on("click", lambda _, c=lot.co_id: on_open_specimen(c))
+            labels = [lbl for _r, lbl in g.headers]
+            i = 0
+            while i < len(prev) and i < len(labels) and prev[i] == labels[i]:
+                i += 1
+            for rank, label in g.headers[i:]:
+                indent = _RANK_INDENT.get(rank, 64)
+                ui.html(f'<div class="ex-hdr ex-h-{rank}" style="padding-left:{indent}px">'
+                        f'<span class="ex-rank">{_html.escape(rank)}</span>'
+                        f'<span class="ex-name">{_split_auth(label)}</span></div>')
+            prev = labels
+            with ui.element("div").classes("ex-species-block w-full"):
+                for sp in g.species:
+                    exp = ui.expansion().classes("w-full").props("dense")
+                    with exp.add_slot("header"):
+                        with ui.element("div").classes("ex-sp-row"):
+                            if sp.needs_attention:
+                                ui.html('<span class="ex-warn" title="needs attention">⚠</span>')
+                            ui.html(f'<span class="ex-sp">{_split_auth(sp.short_label)}</span>'
+                                    f'<span class="ex-count">×{sp.count}</span>')
+                    with exp:
+                        for lot in sp.lots:
+                            row = ui.html('<div class="ex-lot">' + _lot_line(lot) + "</div>")
+                            row.on("click", lambda _, c=lot.co_id: on_open_specimen(c))
 
     def _render_events(evs):
         if not evs:

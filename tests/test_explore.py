@@ -51,7 +51,8 @@ def test_checklist_groups_species_under_genus_in_order(session):
     groups = ex.checklist(session)
     assert len(groups) == 1                       # one genus group
     g = groups[0]
-    assert g.headers[-1].startswith("Otiorhynchus")   # genus header
+    assert g.headers[-1][0] == "genus"            # last header is the genus
+    assert g.headers[-1][1].startswith("Otiorhynchus")
     labels = [sp.label for sp in g.species]
     assert labels == sorted(labels)               # species A→Z within the genus
     counts = {sp.label.split()[1]: sp.count for sp in g.species}
