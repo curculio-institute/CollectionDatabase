@@ -645,6 +645,8 @@ manually in the TW UI. This constrains the sync direction to insert-only forever
 | Tab | Purpose |
 |-----|---------|
 | **Digitize** | Main specimen entry form: collecting event (search/create), taxon (local-first search + TW fallback), sex, count, preparations, notes. Saves to DB. Standard/Visiting modes queue **no** labels (see "Print-queue policy by create mode"); only Mounting queues a sheet. Two layouts (see "Digitize layout modes"). |
+| **Records** | View/edit a single specimen or collecting event (search → detail edit form). The shared `specimen_form` / `collecting_event_form` widgets. Reached directly or drilled into from Explore (`open_specimen` / `open_event` handle). |
+| **Explore** | Dataset browse/query (#40): one faceted search bar (taxa / geography / collectors) drives a **drawer-order taxa checklist** (family→genus headers, species rows w/ material count + ⚠ needs-attention, expand → lots) and an **events** view; click drills into Records; CSV export. Service: `app/services/explore.py`. Map view is Phase C (not built). |
 | **Taxonomy** | Checklist tree (family → synonyms). Filter by rank. Links to TaxonPages. Rebuilds on every tab switch and on every save (via `_refreshers["taxonomy_tree"]`). |
 | **Labels** | Generate identifier label batches (4-char codes). Preview + download PDF. Reprint a whole batch if unused. Staged-codes dashboard. |
 | **Print queue** | Preview and print all staged labels in one grouped PDF (per queue addition; data/identifier/determination column-aligned per specimen). Saves the PDF to `printed_pdf_dir` on print, then clears the queue. |
@@ -691,6 +693,7 @@ arrow-key event, chip styling) is design.md's concern → "Digitize layout modes
 | `life_stage.py` | Reared-specimen life-stage history CRUD + `life_stage_facets()` export projection (Phase 3) |
 | `vocab.py` | Generic single-name controlled-vocabulary service (`Vocabulary`: list/options/get_or_create/update/delete/merge, dynamic FK re-pointing) |
 | `vocabularies.py` | Vocabulary instances + `VOCAB_REGISTRY` (the Controlled Vocabularies tab renders one section per entry) |
+| `explore.py` | Explore-tab querying (#40): `search_facets`, `query_specimens(filters)`, `checklist(filters)` (drawer-order taxa+lots), `events(filters)`, `to_csv`, `counts` |
 
 ### Taxon search widget (`app/ui/taxon_search.py`)
 

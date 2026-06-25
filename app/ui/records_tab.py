@@ -311,6 +311,11 @@ def build_records_tab(session_factory, *, on_saved: callable | None = None) -> N
         _set_mode_specimen()
         spec_select.value = co_id
 
+    def _open_event(ev_id: int) -> None:
+        """Programmatic open (Explore drill-in): switch to event mode + load it."""
+        _set_mode_event()
+        ev_select.value = ev_id
+
     # ── Specimen form ─────────────────────────────────────────────────────────
     def _build_specimen_form(
         co_id, ev_id, ev_n, co_snap, det_snaps, ev_snap, assocs
@@ -679,4 +684,5 @@ def build_records_tab(session_factory, *, on_saved: callable | None = None) -> N
     def _has_content() -> bool:
         return bool(_dirty["fn"]) and _dirty["fn"]()
 
-    return {"open_specimen": _open_specimen, "has_content": _has_content}
+    return {"open_specimen": _open_specimen, "open_event": _open_event,
+            "has_content": _has_content}

@@ -41,6 +41,7 @@ from app.ui.map_picker import add_map_assets
 from app.ui.taxon_editor import build_taxon_editor
 from app.ui.person_field import build_person_field
 from app.ui.records_tab import build_records_tab
+from app.ui.explore import build_explore_panel
 from app.ui.mounting_session import build_mounting_session_section
 from app.ui.specimen_form import build_specimen_form
 from app.ui.collecting_event_form import build_collecting_event_form
@@ -658,6 +659,7 @@ def index():
                 with main_tabs:
                     ui.tab("digitize", label="Specimen Digitization", icon="biotech")
                     ui.tab("records",  label="Records",               icon="edit_note")
+                    ui.tab("explore",  label="Explore",               icon="travel_explore")
                     ui.tab("import",   label="Import & Assign",       icon="upload_file")
                     ui.tab("taxonomy", label="Taxonomy",              icon="account_tree")
                     ui.tab("labels",   label="Labels",                icon="label")
@@ -1595,6 +1597,26 @@ def index():
                         )
 
                 ui.timer(1.0, _sync_rec_dirty)
+
+        # ================================================================
+        # TAB: EXPLORE  (#40 — faceted browse over the dataset; drills into Records)
+        # ================================================================
+        with ui.tab_panel("explore"):
+            with ui.column().classes("w-full max-w-5xl mx-auto px-4 pt-6 pb-16 gap-2"):
+                def _explore_open_spec(co_id):
+                    _records_handle["open_specimen"](co_id)
+                    main_tabs.set_value("records")
+
+                def _explore_open_event(ev_id):
+                    _records_handle["open_event"](ev_id)
+                    main_tabs.set_value("records")
+
+                _explore_handle = build_explore_panel(
+                    _sf,
+                    on_open_specimen=_explore_open_spec,
+                    on_open_event=_explore_open_event,
+                )
+                _refreshers["explore"] = _explore_handle["refresh"]
 
         # ================================================================
         # TAB: IMPORT & ASSIGN

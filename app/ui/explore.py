@@ -1,0 +1,217 @@
+"""Explore panel — the Records tab's browse/query front-end (#40).
+
+One faceted search bar drives two views over the same filtered set:
+  * Taxa   — a drawer-order checklist (family → genus headers, species rows with a
+             material count + needs-attention flag), each species expands to its lots;
+  * Events — collecting events, each expands to the specimens collected there.
+
+Clicking a specimen / event drills into the existing Records edit detail (callbacks),
+so nothing about editing is rebuilt. A CSV export dumps the current filtered set.
+"""
+from __future__ import annotations
+
+import html as _html
+
+from nicegui import ui
+
+import app.services.explore as ex_svc
+
+_CSS = """<style>
+.ex-bar { position: relative; }
+.ex-drop {
+    position: absolute; left: 0; right: 0; top: calc(100% + 2px); z-index: 9999;
+    background: var(--tp-base-foreground, #fff); border: 1px solid var(--tp-base-border, #cbd5e1);
+    border-radius: 8px; box-shadow: 0 8px 24px rgba(0,0,0,.12); max-height: 320px; overflow-y: auto;
+}
+.ex-item { padding: 7px 14px; cursor: pointer; font-size: .9rem; display: flex; align-items: center; gap: 8px;
+           border-bottom: 1px solid var(--tp-base-border, #eee); }
+.ex-item:last-child { border-bottom: none; }
+.ex-item:hover { background: rgba(3,105,161,.08); }
+.ex-tag { font-size: .66rem; font-weight: 700; text-transform: uppercase; letter-spacing: .04em;
+          color: var(--tp-secondary, #0369a1); background: rgba(3,105,161,.10);
+          border-radius: 4px; padding: 1px 6px; flex-shrink: 0; }
+.ex-chip { display: inline-flex; align-items: center; gap: 6px; background: rgba(3,105,161,.10);
+           border: 1px solid var(--tp-base-border, #cbd5e1); border-radius: 14px;
+           padding: 2px 6px 2px 10px; font-size: .82rem; }
+.ex-chip .ex-x { cursor: pointer; color: #9ca3af; font-weight: 700; }
+.ex-chip .ex-x:hover { color: #dc2626; }
+/* checklist */
+.ex-fam  { font-size: .72rem; font-weight: 700; text-transform: uppercase; letter-spacing: .06em;
+           color: var(--tp-base-soft, #888); margin-top: 10px; }
+.ex-gen  { font-size: 1.02rem; font-weight: 700; font-style: italic; margin-top: 1px; }
+.ex-sp-row { display: flex; align-items: center; gap: 8px; padding: 2px 0 2px 14px; }
+.ex-count { font-size: .72rem; color: var(--tp-base-soft, #888); }
+.ex-warn { color: #d97706; }
+.ex-lot  { padding: 3px 0 3px 30px; font-size: .82rem; cursor: pointer; border-radius: 4px;
+           overflow-wrap: anywhere; }
+.ex-lot:hover { background: rgba(3,105,161,.07); }
+.ex-cat  { font-family: monospace; color: var(--tp-base-soft, #888); font-size: .76rem; }
+</style>"""
+
+
+def build_explore_panel(session_factory, *, on_open_specimen, on_open_event) -> dict:
+    ui.add_head_html(_CSS)
+
+    def _with(fn):
+        with session_factory() as s:
+            return fn(s)
+
+    state = {"filters": [], "view": "taxa"}   # filters: list of {kind,label,key,tag}
+
+    # ── search bar + chips ────────────────────────────────────────────────
+    with ui.card().classes("w-full shadow-sm"):
+        with ui.element("div").classes("ex-bar w-full"):
+            search_in = (ui.input(placeholder="Search taxa, localities, collectors…")
+                         .props("outlined dense clearable").classes("w-full"))
+            dropdown = ui.element("div").classes("ex-drop").style("display:none")
+        chips_row = ui.row().classes("items-center gap-2 mt-2")
+        with ui.row().classes("items-center gap-3 mt-2 w-full"):
+            count_lbl = ui.label("").classes("text-sm").style("color:var(--tp-base-soft)")
+            ui.space()
+            taxa_btn = ui.button("Taxa", icon="account_tree").props("dense no-caps")
+            events_btn = ui.button("Events", icon="place").props("dense no-caps flat")
+            csv_btn = ui.button("CSV", icon="download").props("flat dense no-caps") \
+                .tooltip("Export the filtered set as CSV")
+
+    results = ui.column().classes("w-full gap-0 mt-2")
+
+    # ── facet dropdown ────────────────────────────────────────────────────
+    def _refresh_dropdown(term: str):
+        dropdown.clear()
+        term = (term or "").strip()
+        if not term:
+            dropdown.style("display:none")
+            return
+        facets = _with(lambda s: ex_svc.search_facets(s, term, limit=8))
+        # hide facets already active
+        active = {(f["kind"], str(f["key"])) for f in state["filters"]}
+        facets = [f for f in facets if (f.kind, str(f.key)) not in active]
+        if not facets:
+            dropdown.style("display:none")
+            return
+        with dropdown:
+            for f in facets:
+                item = ui.element("div").classes("ex-item")
+                with item:
+                    ui.html(f'<span class="ex-tag">{_html.escape(f.tag)}</span>'
+                            f'<span>{_html.escape(f.label)}</span>')
+                item.on("click", lambda _, fc=f: _add_chip(fc))
+        dropdown.style("display:block")
+
+    def _add_chip(f):
+        state["filters"].append({"kind": f.kind, "label": f.label, "key": f.key, "tag": f.tag})
+        search_in.value = ""
+        dropdown.style("display:none")
+        _render_chips()
+        _refresh()
+
+    def _remove_chip(i):
+        del state["filters"][i]
+        _render_chips()
+        _refresh()
+
+    def _render_chips():
+        chips_row.clear()
+        with chips_row:
+            for i, f in enumerate(state["filters"]):
+                chip = ui.element("div").classes("ex-chip")
+                with chip:
+                    ui.html(f'<span class="ex-tag">{_html.escape(f["tag"])}</span>'
+                            f'<span>{_html.escape(f["label"])}</span>')
+                    ui.html('<span class="ex-x" title="Remove">✕</span>').on(
+                        "click", lambda _, idx=i: _remove_chip(idx))
+            if state["filters"]:
+                ui.button("Clear all", on_click=_clear_all).props("flat dense no-caps size=sm")
+
+    def _clear_all():
+        state["filters"] = []
+        _render_chips()
+        _refresh()
+
+    search_in.on_value_change(lambda e: _refresh_dropdown(e.value or ""))
+
+    # ── results ───────────────────────────────────────────────────────────
+    def _lot_line(lot) -> str:
+        bits = []
+        if lot.sex:
+            bits.append(_html.escape(lot.sex))
+        if lot.count and lot.count != 1:
+            bits.append(f"×{lot.count}")
+        meta = ("  ·  ".join(bits) + "  ·  ") if bits else ""
+        loc = _html.escape(lot.locality or "—")
+        return (f'<span class="ex-cat">{_html.escape(lot.catalog)}</span>  {meta}{loc}')
+
+    def _render_taxa(groups):
+        if not groups:
+            ui.label("No specimens match.").classes("text-sm italic mt-3") \
+                .style("color:var(--tp-base-soft)")
+            return
+        for g in groups:
+            headers = g.headers or []
+            fam, genus = headers[:-1], (headers[-1] if headers else "")
+            if fam:
+                ui.html('<div class="ex-fam">' + "  ›  ".join(_html.escape(h) for h in fam) + "</div>")
+            if genus:
+                ui.html(f'<div class="ex-gen">{_html.escape(genus)}</div>')
+            for sp in g.species:
+                exp = ui.expansion().classes("w-full").props("dense")
+                with exp.add_slot("header"):
+                    with ui.element("div").classes("ex-sp-row"):
+                        if sp.needs_attention:
+                            ui.html('<span class="ex-warn" title="needs attention">⚠</span>')
+                        ui.html(f'<span>{_html.escape(sp.label)}</span>'
+                                f'<span class="ex-count">×{sp.count}</span>')
+                with exp:
+                    for lot in sp.lots:
+                        row = ui.html('<div class="ex-lot">' + _lot_line(lot) + "</div>")
+                        row.on("click", lambda _, c=lot.co_id: on_open_specimen(c))
+
+    def _render_events(evs):
+        if not evs:
+            ui.label("No events match.").classes("text-sm italic mt-3") \
+                .style("color:var(--tp-base-soft)")
+            return
+        for g in evs:
+            exp = ui.expansion().classes("w-full").props("dense")
+            with exp.add_slot("header"):
+                with ui.row().classes("items-center gap-2 w-full"):
+                    ui.button(icon="edit", on_click=lambda _, e=g.event_id: on_open_event(e)) \
+                        .props("flat dense round size=xs").tooltip("Open event")
+                    ui.html(f'<span>{_html.escape(g.summary or "event")}</span>'
+                            f'<span class="ex-count">· {g.n_specimens} spec.</span>')
+            with exp:
+                for lot in g.lots:
+                    row = ui.html('<div class="ex-lot">'
+                                  f'<span>{_html.escape(lot.taxon_label)}</span>  '
+                                  f'<span class="ex-cat">{_html.escape(lot.catalog)}</span></div>')
+                    row.on("click", lambda _, c=lot.co_id: on_open_specimen(c))
+
+    def _refresh():
+        flt = state["filters"]
+        c = _with(lambda s: ex_svc.counts(s, flt))
+        count_lbl.set_text(
+            f"{c['specimens']} specimens · {c['taxa']} taxa · {c['events']} events"
+            f" · {c['georeferenced']} mapped")
+        results.clear()
+        with results:
+            if state["view"] == "taxa":
+                _render_taxa(_with(lambda s: ex_svc.checklist(s, flt)))
+            else:
+                _render_events(_with(lambda s: ex_svc.events(s, flt)))
+
+    def _set_view(v):
+        state["view"] = v
+        taxa_btn.props(f'{"" if v=="taxa" else "flat"}')
+        events_btn.props(f'{"" if v=="events" else "flat"}')
+        _refresh()
+
+    taxa_btn.on_click(lambda: _set_view("taxa"))
+    events_btn.on_click(lambda: _set_view("events"))
+
+    def _export():
+        rows = _with(lambda s: ex_svc.query_specimens(s, state["filters"]))
+        ui.download(ex_svc.to_csv(rows), filename="collection_export.csv", media_type="text/csv")
+    csv_btn.on_click(_export)
+
+    _refresh()
+    return {"refresh": _refresh}
