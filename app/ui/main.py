@@ -544,10 +544,17 @@ def index():
       .dark .q-tab-panel         { background:var(--tp-base-background) !important; }
       /* ── taxonomy checklist ────────────────────────────────────────── */
       /* rank-based typography — mirrors published catalogues (e.g. CCPCC) */
-      .tax-rank       { font-size:.58rem; font-weight:600; text-transform:uppercase;
-                        letter-spacing:.07em; color:var(--tp-base-soft);
-                        margin-right:3px; align-self:center; }
-      .rank-superfamily { font-size:1.15rem; font-weight:700;
+      /* fixed-width, right-aligned rank column so the NAMES all start at the same
+         offset regardless of the rank word's length (Superfamily vs Family etc.) */
+      .tax-rank       { display:inline-block; width:5.6rem; text-align:right;
+                        flex-shrink:0; font-size:.58rem; font-weight:600;
+                        text-transform:uppercase; letter-spacing:.07em;
+                        color:var(--tp-base-soft); margin-right:8px; align-self:center; }
+      /* Flatten the tree's per-level indentation so every name lines up at the same
+         column — hierarchy is carried by the rank label + type size (catalogue style).
+         A small indent is kept so a node's expand arrow still nests under its parent. */
+      .checklist-tree .q-tree__children { padding-left:7px; }
+      .rank-superfamily { font-size:1.45rem; font-weight:700;
                         text-transform:uppercase; letter-spacing:.05em; }
       .rank-family    { font-size:1.35rem; font-weight:800;
                         text-transform:uppercase; letter-spacing:.03em; }
@@ -1778,7 +1785,7 @@ def index():
                         nodes=tree_data,
                         label_key="label",
                         children_key="children",
-                    ).classes("w-full").props("no-connectors dense")
+                    ).classes("w-full checklist-tree").props("no-connectors dense")
                     tax_tree.add_slot("default-header", _NODE_SLOT)
 
                     async def _expand():
