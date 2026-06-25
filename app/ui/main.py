@@ -286,11 +286,12 @@ def index():
     </script>""")
 
     # ── Unsaved-changes guard (beforeunload) ─────────────────────────────
-    # Marks a dirty flag on any edit inside a data-entry tab panel
-    # (.tp-dirty-scope) and warns before a real page close/reload while it is
-    # set. In-app tab switches keep the SPA alive (form state survives them) so
-    # they never trigger this. Python clears the flag at every deliberate reset
-    # (save / mode switch) via window.tpClearDirty().
+    # Each data-entry tab pushes its dirty scope here from a Python ui.timer that
+    # reads the form's real field VALUES (window.tpSetScope), and warns before a
+    # real page close/reload while any scope is set. In-app tab switches keep the
+    # SPA alive (form state survives them) so they never trigger this. Python also
+    # clears a scope at every deliberate reset (save / mode switch) via
+    # window.tpClearDirty().
     ui.add_head_html("""
     <style>
       #tp-unsaved-banner {
@@ -305,8 +306,8 @@ def index():
     (function(){
       if (window._tpDirtyInit) return;
       window._tpDirtyInit = true;
-      // Track WHICH areas have unsaved edits (a .tp-dirty-scope panel carries a
-      // data-dirty-label). The banner names them so the user knows where to go.
+      // Track WHICH areas have unsaved edits (each tab pushes its own scope label
+      // via tpSetScope). The banner names them so the user knows where to go.
       var dirty = new Set();
       window._tpDirty = false;
       function banner(){
@@ -330,22 +331,16 @@ def index():
         if(label){ dirty.delete(label); } else { dirty.clear(); }
         render();
       };
-      // Authoritative, state-based setter pushed from Python (a ui.timer reads
-      // the real field values via has_content), so programmatic fills — map
-      // picker, Tier-2 push-pins, reverse-geocode — are detected too, not just
-      // typed input. Event listeners below remain a belt-and-suspenders catch
-      // for tabs without a Python state check.
+      // Authoritative, state-based setter pushed from Python: every data-entry
+      // tab (Digitize, Records, Import & Assign) runs a ui.timer that reads the
+      // real field VALUES via has_content() and pushes the scope here, so
+      // programmatic fills — map picker, Tier-2 push-pins, reverse-geocode — are
+      // detected too, not just typed input (#41, #47). There is deliberately no
+      // DOM input/change listener anymore.
       window.tpSetScope = function(label, on){
         if(on){ dirty.add(label); } else { dirty.delete(label); }
         render();
       };
-      function mark(e){
-        var t = e.target;
-        var scope = t && t.closest && t.closest('.tp-dirty-scope');
-        if(scope){ dirty.add(scope.getAttribute('data-dirty-label') || 'this form'); render(); }
-      }
-      document.addEventListener('input',  mark, true);
-      document.addEventListener('change', mark, true);
       window.addEventListener('beforeunload', function(e){
         if (window._tpDirty){ e.preventDefault(); e.returnValue = ''; return ''; }
       });
@@ -754,10 +749,10 @@ def index():
         # ================================================================
         # TAB: SPECIMEN DIGITIZATION
         # ================================================================
-        # No .tp-dirty-scope here: Digitize's unsaved-state is detected from the
-        # actual field VALUES via _has_any_content() pushed by a ui.timer (see
-        # below), so programmatic fills (map picker, push-pins, geocode) count —
-        # event-based detection would miss them.
+        # Digitize's unsaved-state is detected from the actual field VALUES via
+        # _has_any_content() pushed by a ui.timer (see below), so programmatic fills
+        # (map picker, push-pins, geocode) count — event-based detection would miss
+        # them. Records & Import use the same value-based pattern (#47).
         with ui.tab_panel("digitize"):
             # ── per-connection state ─────────────────────────────────────
             state = {"event_id": None, "populating": False}
@@ -1547,8 +1542,7 @@ def index():
         # ================================================================
         # TAB: RECORDS
         # ================================================================
-        with ui.tab_panel("records").classes("tp-dirty-scope") \
-                .props('data-dirty-label="Records"'):
+        with ui.tab_panel("records"):
             with ui.column().classes("w-full max-w-5xl mx-auto px-4 pt-6 pb-16 gap-4"):
                 def _records_saved():
                     _mark_form_clean("Records")
@@ -1556,15 +1550,44 @@ def index():
                         fn()
                 _records_handle = build_records_tab(_sf, on_saved=_records_saved)
 
+                # State-based unsaved-changes detection (#47): poll the loaded form's
+                # real field values (not DOM events) so map/geocode fills are seen.
+                _rec_dirty = [False]
+
+                def _sync_rec_dirty():
+                    cur = _records_handle["has_content"]()
+                    if cur != _rec_dirty[0]:
+                        _rec_dirty[0] = cur
+                        ui.run_javascript(
+                            "window.tpSetScope && window.tpSetScope("
+                            f"'Records', {'true' if cur else 'false'})"
+                        )
+
+                ui.timer(1.0, _sync_rec_dirty)
+
         # ================================================================
         # TAB: IMPORT & ASSIGN
         # ================================================================
-        with ui.tab_panel("import").classes("tp-dirty-scope") \
-                .props('data-dirty-label="Import & Assign"'):
-            build_import_assign_tab(
+        with ui.tab_panel("import"):
+            _import_handle = build_import_assign_tab(
                 _sf, _refreshers,
                 on_saved=lambda: _mark_form_clean("Import & Assign"),
             )
+
+            # State-based unsaved-changes detection (#47): dirty while an assign
+            # card is open (a row staged for assignment, not yet saved).
+            _imp_dirty = [False]
+
+            def _sync_imp_dirty():
+                cur = _import_handle["has_content"]()
+                if cur != _imp_dirty[0]:
+                    _imp_dirty[0] = cur
+                    ui.run_javascript(
+                        "window.tpSetScope && window.tpSetScope("
+                        f"'Import & Assign', {'true' if cur else 'false'})"
+                    )
+
+            ui.timer(1.0, _sync_imp_dirty)
 
         # ================================================================
         # TAB: TAXONOMY

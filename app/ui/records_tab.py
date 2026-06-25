@@ -31,6 +31,19 @@ _FLOAT_ATTRS = frozenset({
 })
 
 
+def _norm(v):
+    """Normalise a field value for unsaved-changes comparison (#47): None and an
+    empty/whitespace string are the same 'empty', strings are stripped, so a field
+    edited back to its loaded value is correctly seen as no longer dirty."""
+    if isinstance(v, dict):
+        return {k: _norm(x) for k, x in v.items()}
+    if v is None:
+        return ""
+    if isinstance(v, str):
+        return v.strip()
+    return v
+
+
 def _media_btn(session_factory, *, target_kind, target_id, tooltip="Media"):
     """A compact media icon+popup button (bound mode) for one saved record. The button
     badge indicates how many files are attached (progressive disclosure — the gallery is
@@ -120,13 +133,24 @@ def build_records_tab(session_factory, *, on_saved: callable | None = None) -> N
     # ── Detail area ─────────────────────────────────────────────────────────
     detail = ui.column().classes("w-full gap-4")
 
+    # Value-based unsaved-changes detection (#47). After each load we snapshot the
+    # loaded form's editable widget values as a baseline; "dirty" is current !=
+    # baseline. Unlike DOM-event detection this catches programmatic fills (the map
+    # picker / reverse-geocode in the collecting-event form) and clears the moment
+    # the form matches what was loaded again. `fn` is None when nothing is loaded.
+    _dirty = {"fn": None}
+
+    def _clear_detail():
+        detail.clear()
+        _dirty["fn"] = None
+
     # ── Mode toggle ──────────────────────────────────────────────────────────
     def _set_mode_specimen():
         mode_spec_btn.props("color=secondary")
         mode_ev_btn.props("flat")
         spec_select.style(remove="display:none")
         ev_select.style(add="display:none")
-        detail.clear()
+        _clear_detail()
         spec_select.value = None
 
     def _set_mode_event():
@@ -134,7 +158,7 @@ def build_records_tab(session_factory, *, on_saved: callable | None = None) -> N
         mode_ev_btn.props("color=secondary")
         spec_select.style(add="display:none")
         ev_select.style(remove="display:none")
-        detail.clear()
+        _clear_detail()
         ev_select.value = None
 
     mode_spec_btn.on_click(_set_mode_specimen)
@@ -272,10 +296,10 @@ def build_records_tab(session_factory, *, on_saved: callable | None = None) -> N
             _build_event_form(ev_id, n, cos, ev_snap)
 
     spec_select.on_value_change(
-        lambda e: _load_specimen(e.value) if e.value else detail.clear()
+        lambda e: _load_specimen(e.value) if e.value else _clear_detail()
     )
     ev_select.on_value_change(
-        lambda e: _load_event(e.value) if e.value else detail.clear()
+        lambda e: _load_event(e.value) if e.value else _clear_detail()
     )
 
     # Programmatic open (used by the Print queue "open in Records" link, #37):
@@ -537,6 +561,15 @@ def build_records_tab(session_factory, *, on_saved: callable | None = None) -> N
             ui.space()
             ui.button("Save changes", icon="save", on_click=_save).classes("btn-save")
 
+        # Baseline for unsaved-changes detection (#47): the editable specimen +
+        # collecting-event field values as just loaded. The determination /
+        # association sub-cards save immediately on their own, so they are not part
+        # of this "Save changes" dirty check.
+        def _current_values() -> dict:
+            return _norm({"co": _collect_co_fields(), "ev": _collect_ev_fields()})
+        _baseline = _current_values()
+        _dirty["fn"] = lambda: _current_values() != _baseline
+
     # ── Event form ─────────────────────────────────────────────────────────────
     def _build_event_form(ev_id, n, cos, ev_snap):
         # A shared event (n>1) opens read-only ("view"); the user must click
@@ -595,6 +628,7 @@ def build_records_tab(session_factory, *, on_saved: callable | None = None) -> N
                             **ev_ce["collect_fields"](),
                         )
                 ui.notify(f"Event #{ev_id} saved.", type="positive")
+                _ev_baseline["v"] = _norm(ev_ce["collect_fields"]())   # saved → no longer dirty
                 if on_saved:
                     on_saved()
             except Exception as exc:
@@ -606,4 +640,12 @@ def build_records_tab(session_factory, *, on_saved: callable | None = None) -> N
             if shared:
                 save_btn.set_enabled(False)   # enabled by the "Edit all" unlock
 
-    return {"open_specimen": _open_specimen}
+        # Baseline for unsaved-changes detection (#47), as for the specimen form.
+        # A holder so _save_event can reset it without reloading the form.
+        _ev_baseline = {"v": _norm(ev_ce["collect_fields"]())}
+        _dirty["fn"] = lambda: _norm(ev_ce["collect_fields"]()) != _ev_baseline["v"]
+
+    def _has_content() -> bool:
+        return bool(_dirty["fn"]) and _dirty["fn"]()
+
+    return {"open_specimen": _open_specimen, "has_content": _has_content}

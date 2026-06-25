@@ -69,11 +69,15 @@ def _field_row(label: str, value: str) -> None:
 # Main builder
 # ---------------------------------------------------------------------------
 
-def build_import_assign_tab(session_factory, refreshers: dict, on_saved=None) -> None:
+def build_import_assign_tab(session_factory, refreshers: dict, on_saved=None) -> dict:
     """Build the Import & Assign tab in the current NiceGUI context.
 
     on_saved: optional callback fired after a specimen is successfully assigned —
-    used to clear the unsaved-changes guard (see main.py _mark_form_clean)."""
+    used to clear the unsaved-changes guard (see main.py _mark_form_clean).
+
+    Returns a handle with ``has_content()`` for value-based unsaved-changes
+    detection (#47): True while an assign card is open (a row is staged for
+    assignment but not yet saved); the card hides on save, so it clears itself."""
 
     def _with_session(fn):
         with session_factory() as s:
@@ -559,3 +563,12 @@ def build_import_assign_tab(session_factory, refreshers: dict, on_saved=None) ->
                 fn()
 
         assign_btn.on_click(_on_assign)
+
+    # Value-based unsaved-changes signal (#47): an open assign card means a row is
+    # staged for assignment and not yet saved. _on_assign hides the card on success,
+    # so this clears itself. (More precise than the old DOM-event detection, which
+    # also fired on searching/uploading.)
+    def _has_content() -> bool:
+        return bool(assign_card.visible)
+
+    return {"has_content": _has_content}
