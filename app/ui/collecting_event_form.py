@@ -82,6 +82,11 @@ def _pick_locality(props_list: list[dict]) -> str:
     return best
 
 
+# Cap on nearby point-feature locality candidates (enclosing areas are always shown);
+# keeps the picker a useful shortlist in feature-dense areas, not an exhaustive dump.
+_MAX_LOCALITY_POINTS = 10
+
+
 def _haversine_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     """Great-circle distance in metres (for ranking nearby locality candidates)."""
     r = 6_371_000.0
@@ -258,6 +263,15 @@ def build_collecting_event_form(
             _b.classes(add="hidden")
         _locality_warn.classes(add="hidden")
 
+        # The 'around' search radius scales with the coordinate uncertainty: a precise
+        # point → just the very nearest features; a vague one → a wider net. Floor keeps
+        # the nearest named feature reachable; cap keeps it sane when uncertainty is huge.
+        try:
+            _unc = float(uncert_in.value or 0)
+        except (TypeError, ValueError):
+            _unc = 0.0
+        radius_m = int(max(300, min(_unc or 1000, 3000)))
+
         async def _photon() -> list[dict]:
             async with httpx.AsyncClient(timeout=10) as cl:
                 r = await cl.get(
@@ -288,11 +302,11 @@ def build_collecting_event_form(
                 '  relation(pivot.a)[name][place~"^(island|islet)$"];'
                 ")->.areas;"
                 "("
-                f"  node(around:3000,{lat},{lon})[natural=peak][name];"
-                f"  nwr(around:1500,{lat},{lon})[natural=water][name];"
-                f'  way(around:1500,{lat},{lon})[waterway~"^(river|stream|canal)$"][name];'
-                f"  node(around:2000,{lat},{lon})[place=locality][name];"
-                f'  node(around:2000,{lat},{lon})[natural~"^(spring|cave_entrance|saddle|glacier)$"][name];'
+                f"  node(around:{radius_m},{lat},{lon})[natural=peak][name];"
+                f"  nwr(around:{radius_m},{lat},{lon})[natural=water][name];"
+                f'  way(around:{radius_m},{lat},{lon})[waterway~"^(river|stream|canal)$"][name];'
+                f"  node(around:{radius_m},{lat},{lon})[place=locality][name];"
+                f'  node(around:{radius_m},{lat},{lon})[natural~"^(spring|cave_entrance|saddle|glacier)$"][name];'
                 ")->.pts;"
                 ".areas out tags;"
                 ".pts out center tags;"
@@ -324,26 +338,28 @@ def build_collecting_event_form(
                         if n in seen:
                             continue
                         seen.add(n)
-                        # classify (label + sort priority; enclosing areas rank first,
-                        # then nearby features by distance)
+                        # Two groups: "area" = the point is INSIDE it (reserve / forest /
+                        # protected area) → always listed, no distance; "point" = a nearby
+                        # named feature (peak / water / spring / cave / OSM locality) →
+                        # listed with distance, sorted by distance (filled in by the caller).
                         if natural == "peak":
                             ele = tags.get("ele")
-                            label, pri = f"{n}  (peak{(' ' + ele + ' m') if ele else ''})", 0
+                            kind = f"peak {ele} m" if ele else "peak"
+                            group = "point"
                         elif natural == "water" or waterway in ("river", "stream", "canal"):
-                            label, pri = f"{n}  ({waterway or 'water'})", 1
+                            kind, group = (waterway or "water"), "point"
                         elif natural in ("spring", "cave_entrance", "saddle", "glacier"):
-                            label, pri = f"{n}  ({natural})", 1
+                            kind, group = natural.replace("_entrance", ""), "point"
                         elif place_val == "locality":
-                            label, pri = f"{n}  (locality)", 0
+                            kind, group = "locality", "point"
                         else:
                             kind = (tags.get("leisure") or tags.get("boundary")
                                     or tags.get("landuse") or "area")
-                            label, pri = f"{n}  ({kind})", -1
+                            group = "area"
                         c = el.get("center") or {"lat": el.get("lat"), "lon": el.get("lon")}
                         d = (_haversine_m(lat, lon, c["lat"], c["lon"])
                              if c.get("lat") is not None else 0.0)
-                        out["candidates"].append({"name": n, "label": label, "dist": d, "pri": pri})
-                    out["candidates"].sort(key=lambda x: (x["pri"], x["dist"]))
+                        out["candidates"].append({"name": n, "kind": kind, "group": group, "dist": d})
                     return out
             except Exception:
                 return out
@@ -359,7 +375,11 @@ def build_collecting_event_form(
             return None
 
         p = all_props[0]
-        candidates = overpass["candidates"]   # ranked: enclosing areas, then nearby by distance
+        # Enclosing areas (point is inside → no distance, always listed) vs nearby point
+        # features (with distance, sorted by distance, capped to a shortlist).
+        areas  = [c for c in overpass["candidates"] if c["group"] == "area"]
+        points = sorted((c for c in overpass["candidates"] if c["group"] == "point"),
+                        key=lambda x: x["dist"])[:_MAX_LOCALITY_POINTS]
         _st["populating"] = True
         # country / stateProvince already English (Photon lang=en). administrative_region
         # (Regierungsbezirk) only exists at OSM admin_level 5 → from Overpass.
@@ -370,21 +390,29 @@ def build_collecting_event_form(
         county_in.value  = p.get("county", "")
         muni_in.value    = p.get("city") or p.get("locality") or ""
         # Photon only returns buildings/streets here, so the best collecting locality is
-        # the nearest meaningful natural feature (peak / water / reserve / OSM locality).
+        # the NEAREST specific feature (not the broad enclosing area).
         photon_locality  = _pick_locality(all_props)
-        locality_in.value = photon_locality or (candidates[0]["name"] if candidates else "")
+        locality_in.value = (photon_locality
+                             or (points[0]["name"] if points else "")
+                             or (areas[0]["name"] if areas else ""))
         island_in.value   = overpass["islands"][0] if overpass["islands"] else ""
         _st["populating"] = False
         _fire_edit()
 
-        # "Also nearby" picker: every ranked candidate (labelled with type + the Photon
-        # natural-feature alternatives), click to set locality. De-dup by name.
+        # "Also nearby" picker: enclosing areas first (no distance), then nearby features
+        # with their distance, click to set locality. De-dup by name.
+        def _fmt_dist(d: float) -> str:
+            return f"{round(d)} m" if d < 1000 else f"{d / 1000:.1f} km"
         _alts: list[tuple[str, str]] = []   # (display label, name to set)
         _seen_locs: set[str] = {locality_in.value}
-        for c in candidates:
+        for c in areas:
             if c["name"] not in _seen_locs:
                 _seen_locs.add(c["name"])
-                _alts.append((c["label"], c["name"]))
+                _alts.append((f"{c['name']}  ·  {c['kind']}", c["name"]))
+        for c in points:
+            if c["name"] not in _seen_locs:
+                _seen_locs.add(c["name"])
+                _alts.append((f"{c['name']}  ·  {c['kind']}  ·  {_fmt_dist(c['dist'])}", c["name"]))
         for pr in all_props:
             name = pr.get("name", "")
             kv = (pr.get("osm_key", ""), pr.get("osm_value", ""))
