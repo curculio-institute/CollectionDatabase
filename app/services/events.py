@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 from app.models import CollectingEvent
 from app.models.person import Person
 from app.models.habitat import Habitat
+from app.models.geography import Country, StateProvince, County, Island
 from app.models.base import _utcnow
 from app.services.label_text import format_locality_label
 
@@ -18,6 +19,36 @@ _FLOAT_ATTRS = frozenset({
     "minimum_elevation_in_meters",
     "maximum_elevation_in_meters",
 })
+
+# Free-text event field names that are actually FK-backed geography vocabularies.
+# The form / importer pass them as names; resolve name → *_id (get_or_create) in one
+# place so every write path is covered. administrative_region has no DwC term.
+_GEO_TEXT_TO_FK = {
+    "country":               "country_id",
+    "state_province":        "state_province_id",
+    "administrative_region": "administrative_region_id",
+    "county":                "county_id",
+    "island":                "island_id",
+}
+
+
+def _resolve_geo_fields(session: Session, fields: dict) -> dict:
+    """Convert any geography NAME keys in `fields` to their FK *_id (creating the
+    vocab row when needed; blank → None). Mutates and returns `fields`."""
+    from app.services.vocabularies import (
+        country_vocab, state_province_vocab, administrative_region_vocab,
+        county_vocab, island_vocab,
+    )
+    vocabs = {
+        "country": country_vocab, "state_province": state_province_vocab,
+        "administrative_region": administrative_region_vocab,
+        "county": county_vocab, "island": island_vocab,
+    }
+    for name_key, id_key in _GEO_TEXT_TO_FK.items():
+        if name_key in fields:
+            val = (fields.pop(name_key) or "").strip()
+            fields[id_key] = vocabs[name_key].get_or_create(session, val).id if val else None
+    return fields
 
 
 @dataclass(frozen=True)
@@ -43,18 +74,22 @@ def search_collecting_events(
         q = (
             q.outerjoin(Person, Person.id == CollectingEvent.recorded_by_id)
             .outerjoin(Habitat, Habitat.id == CollectingEvent.habitat_id)
+            .outerjoin(Country, Country.id == CollectingEvent.country_id)
+            .outerjoin(StateProvince, StateProvince.id == CollectingEvent.state_province_id)
+            .outerjoin(County, County.id == CollectingEvent.county_id)
+            .outerjoin(Island, Island.id == CollectingEvent.island_id)
             .filter(
-                CollectingEvent.country.ilike(pat)
-                | CollectingEvent.state_province.ilike(pat)
-                | CollectingEvent.county.ilike(pat)
-                | CollectingEvent.municipality.ilike(pat)
-                | CollectingEvent.island.ilike(pat)
+                CollectingEvent.municipality.ilike(pat)
                 | CollectingEvent.locality.ilike(pat)
                 | CollectingEvent.verbatim_locality.ilike(pat)
                 | CollectingEvent.event_date.ilike(pat)
                 | CollectingEvent.verbatim_event_date.ilike(pat)
                 | Person.full_name.ilike(pat)
                 | Habitat.name.ilike(pat)
+                | Country.name.ilike(pat)
+                | StateProvince.name.ilike(pat)
+                | County.name.ilike(pat)
+                | Island.name.ilike(pat)
             )
         )
     q = q.order_by(CollectingEvent.id.desc()).limit(limit)
@@ -76,12 +111,13 @@ def event_form_snapshot(session: Session, event_id: int) -> dict | None:
     if ev is None:
         return None
     return {
-        "country":                          ev.country,
+        "country":                          ev.country_obj.name if ev.country_obj else None,
         "country_code":                     ev.country_code,
-        "state_province":                   ev.state_province,
-        "county":                           ev.county,
+        "state_province":                   ev.state_province_obj.name if ev.state_province_obj else None,
+        "administrative_region":            ev.administrative_region_obj.name if ev.administrative_region_obj else None,
+        "county":                           ev.county_obj.name if ev.county_obj else None,
         "municipality":                     ev.municipality,
-        "island":                           ev.island,
+        "island":                           ev.island_obj.name if ev.island_obj else None,
         "locality":                         ev.locality,
         "verbatim_locality":                ev.verbatim_locality,
         "event_date":                       ev.event_date,
@@ -104,6 +140,7 @@ def update_collecting_event(session: Session, event_id: int, **fields) -> Collec
     ev = session.get(CollectingEvent, event_id)
     if ev is None:
         raise ValueError(f"CollectingEvent {event_id} not found")
+    _resolve_geo_fields(session, fields)
     for attr, val in fields.items():
         if val == "":
             val = None
@@ -155,6 +192,7 @@ def create_collecting_event(session: Session, **fields) -> CollectingEvent:
     """Insert a new collecting_event. Coerces '' -> None and str -> float for
     numeric columns. ISO-8601 date strings are stored as-is."""
     ce = CollectingEvent(created_at=_utcnow(), updated_at=_utcnow())
+    _resolve_geo_fields(session, fields)
     for attr, val in fields.items():
         if val is None or val == "":
             continue

@@ -80,14 +80,19 @@ def format_locality_label(
     def _e(v: str | None) -> str:
         return (_html.escape(v) if html else v) if v else ""
 
-    country_str = format_country(ev.country, ev.country_code, html=html)
+    # country / stateProvince are controlled-vocab FKs (resolve to their name); county
+    # is too but is omitted from the label line (kept concise — as before, the line
+    # shows state → municipality → locality).
+    _country = ev.country_obj.name if ev.country_obj else None
+    _state = ev.state_province_obj.name if ev.state_province_obj else None
+    country_str = format_country(_country, ev.country_code, html=html)
 
     parts: list[str] = []
 
-    for field in (ev.state_province, ev.municipality, ev.locality):
+    for field in (_state, ev.municipality, ev.locality):
         if field:
             parts.append(_e(field))
-    if not ev.locality and not ev.municipality and not ev.state_province and ev.verbatim_locality:
+    if not ev.locality and not ev.municipality and not _state and ev.verbatim_locality:
         parts.append(_e(ev.verbatim_locality))
 
     coords = format_coords(

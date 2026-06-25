@@ -110,12 +110,14 @@ def build_collecting_event_form(
 
     # ── cascade-wipe: clearing a coarser admin level blanks the finer ones ──
     def _wipe_from(level: str) -> None:
+        # region_in (admin. region) sits between state and county, so a country/state
+        # change blanks it too (resolved at runtime — region_in is defined below).
         if level == "country":
-            state_in.value = county_in.value = muni_in.value = locality_in.value = ""
+            state_in.value = region_in.value = county_in.value = muni_in.value = locality_in.value = ""
             for _b in (_state_warn, _county_warn, _muni_warn, _locality_warn):
                 _b.classes(add="hidden")
         elif level == "state":
-            county_in.value = muni_in.value = locality_in.value = ""
+            region_in.value = county_in.value = muni_in.value = locality_in.value = ""
             for _b in (_county_warn, _muni_warn, _locality_warn):
                 _b.classes(add="hidden")
         elif level == "county":
@@ -551,6 +553,12 @@ def build_collecting_event_form(
             "countryCode", on_change=_fire_edit, placeholder="DE")
         state_in, _state_warn, _state_tip, _state_items, _state_ok = _geocode_input(
             "stateProvince", on_change=_on_state_change)
+        # administrative region (Regierungsbezirk tier) — a controlled vocab too, but
+        # NOT in the Photon cascade (no DwC term; auto-filled from the OSM admin_level-5
+        # boundary). Plain input here; resolved name→id in the events service.
+        region_in = (ui.input("admin. region", on_change=_fire_edit).classes("col-span-1")
+                     .tooltip("Sub-state region (e.g. Oberbayern / Regierungsbezirk) — "
+                              "for permit-level queries"))
         county_in, _county_warn, _county_tip, _county_items, _county_ok = _geocode_input(
             "county", on_change=_on_county_change)
         muni_in, _muni_warn, _muni_tip, _muni_items, _muni_ok = _geocode_input(
@@ -603,6 +611,7 @@ def build_collecting_event_form(
         "country":                          country_in,
         "country_code":                     code_in,
         "state_province":                   state_in,
+        "administrative_region":            region_in,
         "county":                           county_in,
         "municipality":                     muni_in,
         "island":                           island_in,

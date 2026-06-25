@@ -289,7 +289,7 @@ attributes. Mermaid diagrams use plain camelCase. Do not deviate from this patte
 | Table | Purpose |
 |-------|---------|
 | `collection_object` | One physical specimen or lot. `catalog_number` (NOT NULL) is the stable sync join key. `dwc:basisOfRecord`, `dwc:sex`, `dwc:typeStatus`, etc. `preparation_id` FK → `preparation` (controlled vocab, not free text — migration 0039; see "Controlled vocabularies"). |
-| `collecting_event` | Where/when collected; shared by many specimens. Full DwC locality + coordinate block. `dwc:eventDate` supports ISO 8601 intervals (`2024-06-15/2024-06-20`). `dwc:recordedBy` FK → `person(full_name)`. `habitat_id` + `sampling_protocol_id` are controlled-vocab FKs (migration 0040; see "Controlled vocabularies"). |
+| `collecting_event` | Where/when collected; shared by many specimens. Full DwC locality + coordinate block. `dwc:eventDate` supports ISO 8601 intervals (`2024-06-15/2024-06-20`). `dwc:recordedBy` FK → `person(full_name)`. `habitat_id` + `sampling_protocol_id` (migration 0040) and the geography hierarchy `country_id` / `state_province_id` / `administrative_region_id` / `county_id` / `island_id` (migration 0041) are all controlled-vocab FKs (see "Controlled vocabularies"). `municipality` + `locality` stay free text; `dwc:countryCode` stays a per-event column. |
 | `taxon` | Local OTU analogue. DwC parent-link model (GBIF best practices). Columns: `name_element` (atomic source of truth — this rank's own epithet/uninomial, e.g. `crypticus`; migration 0032, Epic #30), `dwc:scientificName` (the *composed* full name without authorship, e.g. `Otiorhynchus crypticus`, maintained from `name_element` + the parent chain), `dwc:taxonRank`, `dwc:scientificNameAuthorship`, `dwc:parentNameUsageID` (self-FK, encodes hierarchy), `dwc:acceptedNameUsageID` (self-FK, marks synonyms — its presence *is* synonym status; `taxonomicStatus` is derived at export, not stored, see below), `taxonworksOtuID`. No denormalised rank columns. |
 | `taxon_determination` | `collection_object` → `taxon` link. `is_current` flag. `taxon_id` may reference a synonym row (deliberate design). `dwc:identifiedBy` FK → `person(full_name)`. |
 | `biological_relationship` | Kind of association (`collected_on`, `feeds_on`, …). |
@@ -301,6 +301,7 @@ attributes. Mermaid diagrams use plain camelCase. Do not deviate from this patte
 | `preparation` | Single-name controlled vocabulary (`id`, `name` UNIQUE) for `collection_object.preparation_id`. First of the single-name vocabularies built on the generic `Vocabulary` service; see "Controlled vocabularies". Migration 0039. |
 | `habitat` | Single-name controlled vocabulary for `collecting_event.habitat_id` (was free-text `dwc:habitat`). Migration 0040. |
 | `sampling_protocol` | Single-name controlled vocabulary for `collecting_event.sampling_protocol_id` (was the hardcoded `dwc:samplingProtocol` UI list). **Seeded** with the curated method set. Migration 0040. |
+| `country` / `state_province` / `county` / `island` / `administrative_region` | The administrative-geography single-name vocabularies on `collecting_event` (migration 0041, #40). Were free-text `dwc:country`/`dwc:stateProvince`/`dwc:county`/`dwc:island`; `administrative_region` (Regierungsbezirk tier) is new and has no DwC term. Resolved name→id in the events service. |
 | `media` | One row per stored file (the bytes live content-addressed on disk; see "Media" below). `sha256` UNIQUE (de-dup). `category` (CHECK ∈ {Image, Sound, Video, Document, Sequence, Other}) is the filter key. Audubon-Core-style metadata; `rights_holder_id` is a **person FK** (ON DELETE RESTRICT), `license` is free text. Migration 0035. |
 | `media_attachment` | Links a `media` row to exactly one of a `collection_object`, `collecting_event`, or `biological_association` (exclusive-arc CHECK; all FKs ON DELETE CASCADE). Per-attachment `caption` / `is_primary` / `sort_order` (mirrors TaxonWorks' Image↔Depiction split). Migration 0035. |
 | `external_identifier` | An external resource link/ID (`source`, `value`, `label`) attached to exactly one of a `collection_object` or a `biological_association` (exclusive-arc CHECK; FKs ON DELETE CASCADE). For an association it denotes the *other party* (optional addition; the association object arc is unchanged). Migration 0037. |
@@ -421,12 +422,26 @@ canonical value). Current single-name vocabularies (more may follow — built on
 | preparations | `collection_object.preparation_id` | `preparation` | 0039 | was `dwc:preparations` TEXT |
 | habitat | `collecting_event.habitat_id` | `habitat` | 0040 | was `dwc:habitat` TEXT |
 | samplingProtocol | `collecting_event.sampling_protocol_id` | `sampling_protocol` | 0040 | was a hardcoded UI list; table **seeded** with the curated set |
+| country | `collecting_event.country_id` | `country` | 0041 | English name (pycountry); `dwc:countryCode` stays per-event |
+| stateProvince | `collecting_event.state_province_id` | `state_province` | 0041 | English name (OSM `name:en`) |
+| administrative region | `collecting_event.administrative_region_id` | `administrative_region` | 0041 | Regierungsbezirk tier; **no DwC term** (local field); local name |
+| county | `collecting_event.county_id` | `county` | 0041 | local name (Landkreis) |
+| island | `collecting_event.island_id` | `island` | 0041 | local name |
 
 **Which fields qualify:** *open, user-coined* vocabularies where consistency tooling (merge)
 helps. **Closed standard vocabularies stay fixed CHECK-constrained lists, NOT editable tables**
 — `sex`, `basisOfRecord`, `disposition`, `identificationQualifier`, `license` (editability
-would create `Male`/`male` duplicates or values TW rejects). Geographic fields
-(`country`/`stateProvince`/`county`/`locality`/…) come from geocoding, not a manual vocab.
+would create `Male`/`male` duplicates or values TW rejects).
+
+**Geography is the exception that proves the rule (revised, #40):** the administrative levels
+*are* controlled vocabs — even though they come from geocoding, the geocoder yields
+language/spelling variants (`Deutschland` vs `Germany`) and the faceted Explore search demands
+consistency, so they're FK vocabs with merge. `municipality` + `locality` stay free text
+(too specific; municipality search is "the map's job"). **Resolution lives in the events
+service** (`_resolve_geo_fields` in `events.py` maps the name keys → `*_id` via get_or_create
+in `create`/`update_collecting_event`), so the event form keeps its geocode-input widgets +
+boundary-warning UI **unchanged** — only the service + the model-read sites resolve by FK.
+Language policy: country + stateProvince in English (pycountry / OSM `name:en`), the rest local.
 
 The shared mechanism:
 

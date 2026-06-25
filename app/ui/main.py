@@ -957,12 +957,13 @@ def index():
                             # raise DetachedInstanceError). The widget's load() blanks
                             # None and stringifies numerics.
                             snapshot = {
-                                "country":                          ev.country,
+                                "country":                          ev.country_obj.name if ev.country_obj else None,
                                 "country_code":                     ev.country_code,
-                                "state_province":                   ev.state_province,
-                                "county":                           ev.county,
+                                "state_province":                   ev.state_province_obj.name if ev.state_province_obj else None,
+                                "administrative_region":            ev.administrative_region_obj.name if ev.administrative_region_obj else None,
+                                "county":                           ev.county_obj.name if ev.county_obj else None,
                                 "municipality":                     ev.municipality,
-                                "island":                           ev.island,
+                                "island":                           ev.island_obj.name if ev.island_obj else None,
                                 "locality":                         ev.locality,
                                 "verbatim_locality":                ev.verbatim_locality,
                                 "event_date":                       ev.event_date,
