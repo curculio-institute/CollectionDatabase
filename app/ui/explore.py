@@ -35,47 +35,46 @@ _CSS = """<style>
            padding: 2px 6px 2px 10px; font-size: .82rem; }
 .ex-chip .ex-x { cursor: pointer; color: #9ca3af; font-weight: 700; }
 .ex-chip .ex-x:hover { color: #dc2626; }
-/* checklist — published-catalogue look (stacked ranked headers, generous spacing) */
-.ex-hdr   { display: flex; align-items: baseline; gap: 8px; }
-.ex-rank  { font-size: .64rem; font-weight: 600; text-transform: uppercase; letter-spacing: .07em;
-            color: var(--tp-base-soft, #9ca3af); flex-shrink: 0; min-width: 64px; text-align: right; }
-.ex-h-superfamily { margin-top: 16px; }
-.ex-h-superfamily .ex-name { font-weight: 700; text-transform: uppercase; letter-spacing: .04em; }
-.ex-h-family { margin-top: 16px; }
-.ex-h-family .ex-name { font-weight: 800; text-transform: uppercase; letter-spacing: .03em; font-size: 1.04rem; }
-.ex-h-subfamily { margin-top: 7px; }
-.ex-h-subfamily .ex-name { font-weight: 700; }
-.ex-h-tribe .ex-name, .ex-h-subtribe .ex-name { font-weight: 600; color: var(--tp-base-content); }
-.ex-h-genus { margin-top: 9px; }
-.ex-h-genus .ex-name { font-weight: 700; font-style: italic; font-size: 1.02rem; }
-.ex-auth { font-weight: 400; font-style: normal; color: var(--tp-base-soft, #888); font-size: .8em; }
+/* checklist — published-catalogue look: flush-left ranked headers distinguished by
+   SIZE (higher taxa bigger), not deep indentation; subgenus is its own header. */
+.ex-hdr   { display: flex; align-items: baseline; gap: 7px; line-height: 1.25; }
+.ex-rank  { font-size: .58rem; font-weight: 600; text-transform: uppercase; letter-spacing: .07em;
+            color: var(--tp-base-soft, #9ca3af); align-self: center; flex-shrink: 0; }
+.ex-name  { line-height: 1.2; }
+.ex-h-superfamily { margin-top: 20px; }
+.ex-h-superfamily .ex-name { font-size: 1.05rem; font-weight: 700; text-transform: uppercase; letter-spacing: .04em; }
+.ex-h-family { margin-top: 18px; }
+.ex-h-family .ex-name { font-size: 1.35rem; font-weight: 800; text-transform: uppercase; letter-spacing: .02em; }
+.ex-h-subfamily { margin-top: 9px; }
+.ex-h-subfamily .ex-name { font-size: 1.12rem; font-weight: 700; }
+.ex-h-tribe { margin-top: 5px; }
+.ex-h-tribe .ex-name { font-size: 1.0rem; font-weight: 600; }
+.ex-h-subtribe .ex-name { font-size: .92rem; font-weight: 600; }
+.ex-h-genus { margin-top: 11px; }
+.ex-h-genus .ex-name { font-size: 1.08rem; font-weight: 700; font-style: italic; }
+.ex-h-subgenus { margin-top: 3px; }
+.ex-h-subgenus .ex-name { font-size: .96rem; font-weight: 600; font-style: italic; }
+.ex-auth { font-weight: 400; font-style: normal; color: var(--tp-base-soft, #888); font-size: .78em; }
 .ex-sp-row { display: flex; align-items: center; gap: 8px; }
-.ex-sp   { font-style: italic; }
+.ex-sp   { font-style: italic; font-size: .9rem; }
 .ex-count { font-size: .72rem; color: var(--tp-base-soft, #888); }
 .ex-warn { color: #d97706; }
 .ex-lot  { padding: 3px 0 3px 4px; font-size: .82rem; cursor: pointer; border-radius: 4px;
            overflow-wrap: anywhere; }
 .ex-lot:hover { background: rgba(3,105,161,.07); }
 .ex-cat  { font-family: monospace; color: var(--tp-base-soft, #888); font-size: .76rem; }
-/* indent species under their genus block */
-.ex-species-block { padding-left: 80px; }
+/* species sit one gentle, CONSTANT indent under their (sub)genus block */
+.ex-species-block { padding-left: 1.6em; }
 </style>"""
 
 
-# Indent (px) of a rank header — deeper ranks sit further right (catalogue style).
-_RANK_INDENT = {"superfamily": 0, "family": 8, "subfamily": 24, "tribe": 40,
-                "subtribe": 56, "genus": 64}
-
-
-def _split_auth(label: str) -> str:
-    """Wrap the authorship tail (', Year' or '(…)') in a muted span. Heuristic:
-    authorship starts at the first capitalised author token / '(' after the name."""
-    import re as _re
-    m = _re.search(r"\s((?:\()?[A-ZÀ-Þ][\wÀ-ÿ.'-]*,?\s*\d{4}.*|\([^)]*\d{4}\).*)$", label)
-    if not m:
-        return _html.escape(label)
-    name, auth = label[:m.start()], label[m.start():].strip()
-    return f'{_html.escape(name)} <span class="ex-auth">{_html.escape(auth)}</span>'
+def _name_auth(name: str, auth: str) -> str:
+    """Render a name with its authorship in a muted span (authorship kept separate by
+    the service, so no fragile guessing about where the name ends)."""
+    out = _html.escape(name)
+    if auth:
+        out += f' <span class="ex-auth">{_html.escape(auth)}</span>'
+    return out
 
 
 def build_explore_panel(session_factory, *, on_open_specimen, on_open_event) -> dict:
@@ -175,18 +174,17 @@ def build_explore_panel(session_factory, *, on_open_specimen, on_open_event) -> 
             ui.label("No specimens match.").classes("text-sm italic mt-3") \
                 .style("color:var(--tp-base-soft)")
             return
-        prev: list[str] = []   # header labels already printed (catalogue: print on change)
+        prev: list[str] = []   # header names already printed (catalogue: print on change)
         for g in groups:
-            labels = [lbl for _r, lbl in g.headers]
+            names = [nm for _r, nm, _a in g.headers]
             i = 0
-            while i < len(prev) and i < len(labels) and prev[i] == labels[i]:
+            while i < len(prev) and i < len(names) and prev[i] == names[i]:
                 i += 1
-            for rank, label in g.headers[i:]:
-                indent = _RANK_INDENT.get(rank, 64)
-                ui.html(f'<div class="ex-hdr ex-h-{rank}" style="padding-left:{indent}px">'
+            for rank, name, auth in g.headers[i:]:
+                ui.html(f'<div class="ex-hdr ex-h-{rank}">'
                         f'<span class="ex-rank">{_html.escape(rank)}</span>'
-                        f'<span class="ex-name">{_split_auth(label)}</span></div>')
-            prev = labels
+                        f'<span class="ex-name">{_name_auth(name, auth)}</span></div>')
+            prev = names
             with ui.element("div").classes("ex-species-block w-full"):
                 for sp in g.species:
                     exp = ui.expansion().classes("w-full").props("dense")
@@ -194,7 +192,7 @@ def build_explore_panel(session_factory, *, on_open_specimen, on_open_event) -> 
                         with ui.element("div").classes("ex-sp-row"):
                             if sp.needs_attention:
                                 ui.html('<span class="ex-warn" title="needs attention">⚠</span>')
-                            ui.html(f'<span class="ex-sp">{_split_auth(sp.short_label)}</span>'
+                            ui.html(f'<span class="ex-sp">{_name_auth(sp.short_label, sp.short_auth)}</span>'
                                     f'<span class="ex-count">×{sp.count}</span>')
                     with exp:
                         for lot in sp.lots:

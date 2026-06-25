@@ -547,12 +547,14 @@ def index():
       .tax-rank       { font-size:.58rem; font-weight:600; text-transform:uppercase;
                         letter-spacing:.07em; color:var(--tp-base-soft);
                         margin-right:3px; align-self:center; }
-      .rank-family    { font-size:1.05rem; font-weight:700;
-                        text-transform:uppercase; letter-spacing:.06em; }
-      .rank-subfamily { font-size:.95rem;  font-weight:600; }
-      .rank-tribe     { font-size:.9rem;  font-weight:500; }
-      .rank-subtribe  { font-size:.875rem; font-style:italic; }
-      .rank-genus     { font-size:.9rem;  font-weight:700; font-style:italic; }
+      .rank-superfamily { font-size:1.15rem; font-weight:700;
+                        text-transform:uppercase; letter-spacing:.05em; }
+      .rank-family    { font-size:1.35rem; font-weight:800;
+                        text-transform:uppercase; letter-spacing:.03em; }
+      .rank-subfamily { font-size:1.12rem; font-weight:700; }
+      .rank-tribe     { font-size:1.0rem;  font-weight:600; }
+      .rank-subtribe  { font-size:.92rem; font-weight:600; }
+      .rank-genus     { font-size:1.05rem; font-weight:700; font-style:italic; }
       .rank-subgenus  { font-size:.875rem; font-style:italic; }
       .rank-species     { font-size:.875rem; font-style:italic; }
       .rank-subspecies  { font-size:.875rem; font-style:italic; }
