@@ -229,7 +229,12 @@ def build_collecting_event_form(
     _clid = list(_coord_sink._event_listeners.keys())[-1]
 
     async def _inject_coord_paste_js():
-        await ui.run_javascript(f"""
+        # Fire-and-forget: the script self-installs (retries via setTimeout) and
+        # emits paste events back — we don't need its return value, so a slow client
+        # ack must not raise (e.g. during a busy initial page build). Give it headroom
+        # and swallow only the ack timeout; the JS is delivered regardless.
+        try:
+            await ui.run_javascript(f"""
         (function install() {{
             var latEl = document.querySelector('._coord-lat-{_uid} input');
             var lonEl = document.querySelector('._coord-lon-{_uid} input');
@@ -252,7 +257,9 @@ def build_collecting_event_form(
                 }});
             }});
         }})();
-        """)
+        """, timeout=5.0)
+        except TimeoutError:
+            pass   # JS still ran on the client; only the round-trip ack was slow
 
     ui.timer(0.3, _inject_coord_paste_js, once=True)
 
