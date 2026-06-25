@@ -82,6 +82,16 @@ def _pick_locality(props_list: list[dict]) -> str:
     return best
 
 
+def _haversine_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    """Great-circle distance in metres (for ranking nearby locality candidates)."""
+    r = 6_371_000.0
+    p1, p2 = math.radians(lat1), math.radians(lat2)
+    dphi = math.radians(lat2 - lat1)
+    dlmb = math.radians(lon2 - lon1)
+    a = math.sin(dphi / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dlmb / 2) ** 2
+    return 2 * r * math.asin(min(1.0, math.sqrt(a)))
+
+
 def build_collecting_event_form(
     session_factory,
     *,
@@ -258,24 +268,38 @@ def build_collecting_event_form(
                 r.raise_for_status()
                 return [f["properties"] for f in r.json().get("features", [])]
 
-        async def _overpass() -> list[dict]:
+        async def _overpass() -> dict:
+            # One query: (1) enclosing admin_level-5 boundary → administrative_region;
+            # (2) enclosing named areas (reserves / forests / islands); (3) nearby named
+            # natural features (peaks / water / caves / OSM localities) by radius — because
+            # Photon only returns buildings/streets here, not meaningful collecting spots.
             q = (
-                f"[out:json][timeout:10];"
+                "[out:json][timeout:25];"
                 f"is_in({lat},{lon})->.a;"
-                f"("
-                f"  way(pivot.a)[name][boundary=protected_area];"
-                f"  way(pivot.a)[name][leisure=nature_reserve];"
-                f'  way(pivot.a)[name][landuse~"^(forest|wood)$"];'
-                f"  way(pivot.a)[name][place~\"^(island|islet)$\"];"
-                f"  relation(pivot.a)[name][boundary=protected_area];"
-                f"  relation(pivot.a)[name][leisure=nature_reserve];"
-                f'  relation(pivot.a)[name][landuse~"^(forest|wood)$"];'
-                f"  relation(pivot.a)[name][place~\"^(island|islet|region)$\"];"
-                f");"
-                f"out tags;"
+                "("
+                "  relation(pivot.a)[boundary=administrative][admin_level=5][name];"
+                "  way(pivot.a)[name][boundary=protected_area];"
+                "  way(pivot.a)[name][leisure=nature_reserve];"
+                '  way(pivot.a)[name][landuse~"^(forest|wood)$"];'
+                '  way(pivot.a)[name][place~"^(island|islet)$"];'
+                "  relation(pivot.a)[name][boundary~\"^(protected_area|national_park)$\"];"
+                "  relation(pivot.a)[name][leisure=nature_reserve];"
+                '  relation(pivot.a)[name][landuse~"^(forest|wood)$"];'
+                '  relation(pivot.a)[name][place~"^(island|islet)$"];'
+                ")->.areas;"
+                "("
+                f"  node(around:3000,{lat},{lon})[natural=peak][name];"
+                f"  nwr(around:1500,{lat},{lon})[natural=water][name];"
+                f'  way(around:1500,{lat},{lon})[waterway~"^(river|stream|canal)$"][name];'
+                f"  node(around:2000,{lat},{lon})[place=locality][name];"
+                f'  node(around:2000,{lat},{lon})[natural~"^(spring|cave_entrance|saddle|glacier)$"][name];'
+                ")->.pts;"
+                ".areas out tags;"
+                ".pts out center tags;"
             )
+            out = {"admin_region": "", "islands": [], "candidates": []}
             try:
-                async with httpx.AsyncClient(timeout=12) as cl:
+                async with httpx.AsyncClient(timeout=20) as cl:
                     r = await cl.post(
                         "https://overpass-api.de/api/interpreter",
                         data={"data": q},
@@ -283,22 +307,49 @@ def build_collecting_event_form(
                     )
                     r.raise_for_status()
                     seen: set[str] = set()
-                    results: list[dict] = []
                     for el in r.json().get("elements", []):
                         tags = el.get("tags", {})
                         n = tags.get("name", "")
-                        if not n or n in seen:
+                        if not n:
+                            continue
+                        place_val, natural = tags.get("place", ""), tags.get("natural", "")
+                        waterway = tags.get("waterway", "")
+                        if tags.get("admin_level") == "5" and tags.get("boundary") == "administrative":
+                            out["admin_region"] = out["admin_region"] or n
+                            continue
+                        if place_val in ("island", "islet"):
+                            if n not in out["islands"]:
+                                out["islands"].append(n)
+                            continue
+                        if n in seen:
                             continue
                         seen.add(n)
-                        place_val = tags.get("place", "")
-                        kind = "island" if place_val in ("island", "islet") else "locality"
-                        results.append({"name": n, "kind": kind})
-                    return results
+                        # classify (label + sort priority; enclosing areas rank first,
+                        # then nearby features by distance)
+                        if natural == "peak":
+                            ele = tags.get("ele")
+                            label, pri = f"{n}  (peak{(' ' + ele + ' m') if ele else ''})", 0
+                        elif natural == "water" or waterway in ("river", "stream", "canal"):
+                            label, pri = f"{n}  ({waterway or 'water'})", 1
+                        elif natural in ("spring", "cave_entrance", "saddle", "glacier"):
+                            label, pri = f"{n}  ({natural})", 1
+                        elif place_val == "locality":
+                            label, pri = f"{n}  (locality)", 0
+                        else:
+                            kind = (tags.get("leisure") or tags.get("boundary")
+                                    or tags.get("landuse") or "area")
+                            label, pri = f"{n}  ({kind})", -1
+                        c = el.get("center") or {"lat": el.get("lat"), "lon": el.get("lon")}
+                        d = (_haversine_m(lat, lon, c["lat"], c["lon"])
+                             if c.get("lat") is not None else 0.0)
+                        out["candidates"].append({"name": n, "label": label, "dist": d, "pri": pri})
+                    out["candidates"].sort(key=lambda x: (x["pri"], x["dist"]))
+                    return out
             except Exception:
-                return []
+                return out
 
         try:
-            all_props, overpass_names = await asyncio.gather(_photon(), _overpass())
+            all_props, overpass = await asyncio.gather(_photon(), _overpass())
         except Exception as ex:
             ui.notify(f"Reverse geocoding failed: {ex}", type="negative")
             return None
@@ -308,42 +359,48 @@ def build_collecting_event_form(
             return None
 
         p = all_props[0]
+        candidates = overpass["candidates"]   # ranked: enclosing areas, then nearby by distance
         _st["populating"] = True
+        # country / stateProvince already English (Photon lang=en). administrative_region
+        # (Regierungsbezirk) only exists at OSM admin_level 5 → from Overpass.
         country_in.value = p.get("country", "")
         code_in.value    = p.get("countrycode", "").upper()
         state_in.value   = p.get("state", "")
+        region_in.value  = overpass["admin_region"]
         county_in.value  = p.get("county", "")
         muni_in.value    = p.get("city") or p.get("locality") or ""
+        # Photon only returns buildings/streets here, so the best collecting locality is
+        # the nearest meaningful natural feature (peak / water / reserve / OSM locality).
         photon_locality  = _pick_locality(all_props)
-        overpass_islands = [r["name"] for r in overpass_names if r["kind"] == "island"]
-        overpass_locs    = [r["name"] for r in overpass_names if r["kind"] == "locality"]
-        locality_in.value = photon_locality or (overpass_locs[0] if overpass_locs else "")
-        island_in.value   = overpass_islands[0] if overpass_islands else ""
+        locality_in.value = photon_locality or (candidates[0]["name"] if candidates else "")
+        island_in.value   = overpass["islands"][0] if overpass["islands"] else ""
         _st["populating"] = False
         _fire_edit()
 
-        _alt_names: list[str] = []
+        # "Also nearby" picker: every ranked candidate (labelled with type + the Photon
+        # natural-feature alternatives), click to set locality. De-dup by name.
+        _alts: list[tuple[str, str]] = []   # (display label, name to set)
         _seen_locs: set[str] = {locality_in.value}
+        for c in candidates:
+            if c["name"] not in _seen_locs:
+                _seen_locs.add(c["name"])
+                _alts.append((c["label"], c["name"]))
         for pr in all_props:
             name = pr.get("name", "")
             kv = (pr.get("osm_key", ""), pr.get("osm_value", ""))
             if kv in _LOCALITY_KV and name and name not in _seen_locs:
                 _seen_locs.add(name)
-                _alt_names.append(name)
-        for name in overpass_locs:
-            if name not in _seen_locs:
-                _seen_locs.add(name)
-                _alt_names.append(name)
-        if _alt_names:
+                _alts.append((name, name))
+        if _alts:
             _locality_items.clear()
             with _locality_items:
-                for _n in _alt_names:
-                    async def _pick_alt(nm=_n):
+                for _label, _name in _alts:
+                    async def _pick_alt(nm=_name):
                         locality_in.value = nm
                         _fire_edit()
                         _locality_warn.classes(add="hidden")
-                    ui.menu_item(_n, on_click=_pick_alt)
-            _locality_tip.text = "Also nearby: " + ", ".join(_alt_names)
+                    ui.menu_item(_label, on_click=_pick_alt)
+            _locality_tip.text = "Also nearby: " + ", ".join(lbl for lbl, _ in _alts[:8])
             _locality_tip.update()
             _locality_warn.classes(remove="hidden")
 

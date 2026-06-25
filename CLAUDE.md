@@ -441,7 +441,16 @@ consistency, so they're FK vocabs with merge. `municipality` + `locality` stay f
 service** (`_resolve_geo_fields` in `events.py` maps the name keys → `*_id` via get_or_create
 in `create`/`update_collecting_event`), so the event form keeps its geocode-input widgets +
 boundary-warning UI **unchanged** — only the service + the model-read sites resolve by FK.
-Language policy: country + stateProvince in English (pycountry / OSM `name:en`), the rest local.
+Language policy: country + stateProvince in English (Photon `lang=en`), the rest local.
+
+**Geocoding upgrades (`collecting_event_form._reverse_geocode`, #40):** Photon (`lang=en`)
+gives English country/state but only returns buildings/streets near a point — *not* meaningful
+collecting localities — and never the Regierungsbezirk. So one Overpass query adds: the
+enclosing **admin_level-5 boundary → administrative_region** (e.g. Oberbayern), and the
+**nearest named natural features by radius** — peaks (+elevation), water bodies / waterways,
+springs / caves / saddles, and OSM `place=locality` — de-duped by name and **ranked**
+(enclosing areas first, then by distance) into the "Also nearby" locality picker. `locality`
+auto-fills to the best candidate (the nearest meaningful feature) when Photon has no named one.
 
 The shared mechanism:
 
