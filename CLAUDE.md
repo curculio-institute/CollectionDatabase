@@ -273,6 +273,7 @@ attributes. Mermaid diagrams use plain camelCase. Do not deviate from this patte
 | `person_defaults` | Single-row table holding the push-pin person defaults: `default_identified_by_id`, `default_recorded_by_id`, and `default_rights_holder_id` (media rightsHolder; migration 0036). All are `INTEGER REFERENCES person(id) ON DELETE RESTRICT`. See rationale below. |
 | `media` | One row per stored file (the bytes live content-addressed on disk; see "Media" below). `sha256` UNIQUE (de-dup). `category` (CHECK ∈ {Image, Sound, Video, Document, Sequence, Other}) is the filter key. Audubon-Core-style metadata; `rights_holder_id` is a **person FK** (ON DELETE RESTRICT), `license` is free text. Migration 0035. |
 | `media_attachment` | Links a `media` row to exactly one of a `collection_object`, `collecting_event`, or `biological_association` (exclusive-arc CHECK; all FKs ON DELETE CASCADE). Per-attachment `caption` / `is_primary` / `sort_order` (mirrors TaxonWorks' Image↔Depiction split). Migration 0035. |
+| `external_identifier` | An external resource link/ID (`source`, `value`, `label`) attached to exactly one of a `collection_object` or a `biological_association` (exclusive-arc CHECK; FKs ON DELETE CASCADE). For an association it denotes the *other party* (optional addition; the association object arc is unchanged). Migration 0037. |
 
 ### Media storage (decided, #48)
 
@@ -308,9 +309,28 @@ storage:
   a category filter, and per-item category / primary / delete / details (rightsHolder,
   licence, caption). It runs in two modes: **bound** (Records — writes straight to the DB,
   on the specimen, event, and per-association) and **staged** (Specimen Digitization — the
-  record doesn't exist yet, so files are stored and committed to the new specimen on Save;
-  `commit(session, target_id)`). Service: `app/services/media.py`. (Digitize staging
-  currently covers the **specimen**; event/association media are added in Records.)
+  record doesn't exist yet, so files are stored and committed to the new records on Save;
+  `commit(session, target_id)`). Staged Digitize media covers the **specimen, event, and
+  each biological association** — `finalize_specimen` returns the created associations so
+  per-association staged media maps to the new ids. Service: `app/services/media.py`.
+
+### External resource identifiers (decided, #49)
+
+A specimen (or a biological association's *other party*) can carry external resource
+identifiers — e.g. an iNaturalist observation **URI** (a resolvable, API-queryable
+identifier, not merely a "link"). Stored in `external_identifier` (exclusive-arc to a
+`collection_object` *or* a `biological_association`; the association's object arc is
+**unchanged** — the URI is an optional addition denoting the other party).
+
+- **The user pastes only the URI** (`value`, NOT NULL). `source`/`label` are nullable and
+  currently unpopulated — kept on the row for flexibility (a source can be derived from the
+  URI later, at export/query time); there is deliberately **no source dropdown or
+  auto-detection** in the UI for now.
+- **UI** (`app/ui/external_id_panel.py` → `build_external_id_button`): a link-icon button
+  with a count badge opens a small modal (list + a single "Resource identifier (URI)" field;
+  **Abort / Save & close**, the standard modal pattern). Bound (Records: specimen +
+  per-association) and staged (Digitize: specimen + per-association, committed on Save).
+  Service: `app/services/external_ids.py`.
 
 ### Why person defaults live in the DB, not config.json
 
@@ -548,6 +568,7 @@ arrow-key event, chip styling) is design.md's concern → "Digitize layout modes
 | `print_queue.py` | Stage + retrieve + clear print-queue items |
 | `dwc_import.py` | Parse DwC CSV, field aliasing, row-to-form-field mapping |
 | `media.py` | Content-addressed media store (store/dedup/verify/delete) + attachment CRUD (attach to specimen/event/association) |
+| `external_ids.py` | External resource identifier CRUD (attach to specimen/association) + iNaturalist/GBIF/… URL source detection |
 
 ### Taxon search widget (`app/ui/taxon_search.py`)
 

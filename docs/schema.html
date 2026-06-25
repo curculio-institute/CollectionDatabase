@@ -241,6 +241,14 @@ erDiagram
         INTEGER is_primary
     }
 
+    external_identifier {
+        INTEGER id PK
+        INTEGER collection_object_id FK "arc: exactly one"
+        INTEGER biological_association_id FK "arc: exactly one"
+        TEXT value
+        TEXT source
+    }
+
     taxon ||--o{ taxon : "parent of"
     taxon |o--o{ taxon : "accepted name of"
     collecting_event ||--o{ collection_object : "collected at"
@@ -255,7 +263,9 @@ erDiagram
     collection_object |o--o{ media_attachment : "attaches (arc)"
     collecting_event |o--o{ media_attachment : "attaches (arc)"
     biological_association |o--o{ media_attachment : "attaches (arc)"
-    </div>
+    collection_object |o--o{ external_identifier : "identifies (arc)"
+    biological_association |o--o{ external_identifier : "other party (arc)"
+</div>
   </div>
 </div>
 
@@ -493,6 +503,26 @@ erDiagram
   </table>
 </div>
 
+<div class="table-card">
+  <h2>external_identifier</h2>
+  <div class="desc">An external resource link/identifier (e.g. an iNaturalist observation
+    URL) attached to exactly one of a collection_object or a biological_association
+    (exclusive-arc CHECK; both FKs ON DELETE CASCADE). For an association it denotes the
+    <em>other party</em> — an optional addition; the association's object arc is unchanged.
+    Migration 0037.</div>
+  <table>
+    <thead><tr><th>Type</th><th>Column</th><th>Notes</th></tr></thead>
+    <tbody>
+      <tr><td><span class="badge badge-INTEGER">INTEGER</span></td><td class="col-local">id</td><td><span class="tag tag-PK">PK</span></td></tr>
+      <tr><td><span class="badge badge-INTEGER">INTEGER</span></td><td class="col-local">collection_object_id</td><td><span class="tag tag-FK">FK</span> <span class="tag tag-ARC">ARC</span></td></tr>
+      <tr><td><span class="badge badge-INTEGER">INTEGER</span></td><td class="col-local">biological_association_id</td><td><span class="tag tag-FK">FK</span> <span class="tag tag-ARC">ARC</span></td></tr>
+      <tr><td><span class="badge badge-TEXT">TEXT</span></td><td class="col-local">value</td><td>NOT NULL — the URI / identifier (the user pastes this)</td></tr>
+      <tr><td><span class="badge badge-TEXT">TEXT</span></td><td class="col-local">source / label / remarks</td><td>optional; source currently unpopulated (kept for future flexibility)</td></tr>
+      <tr><td><span class="badge badge-TEXT">TEXT</span></td><td class="col-local">created_at / updated_at</td><td></td></tr>
+    </tbody>
+  </table>
+</div>
+
 <!-- ── integrity constraints ──────────────────────────────────── -->
 <p class="section-heading" id="constraints">Integrity Constraints</p>
 
@@ -531,6 +561,7 @@ erDiagram
       <tr><td class="col-local">ck_media_byte_size_non_negative</td><td class="col-local">media</td><td><code>byte_size</code> is empty, or ≥ 0</td></tr>
       <tr><td class="col-local">ck_media_attachment_exclusive_arc</td><td class="col-local">media_attachment</td><td>exactly one of <code>collection_object_id</code> / <code>collecting_event_id</code> / <code>biological_association_id</code> is set <span class="tag tag-ARC">ARC</span></td></tr>
       <tr><td class="col-local">ck_media_attachment_is_primary</td><td class="col-local">media_attachment</td><td><code>is_primary</code> is 0 or 1</td></tr>
+      <tr><td class="col-local">ck_external_identifier_exclusive_arc</td><td class="col-local">external_identifier</td><td>exactly one of <code>collection_object_id</code> / <code>biological_association_id</code> is set <span class="tag tag-ARC">ARC</span></td></tr>
     </tbody>
   </table>
 </div>
@@ -549,6 +580,7 @@ erDiagram
       <tr><td><span class="tag tag-FK">FK</span></td><td class="col-local">media</td><td><code>rights_holder_id</code> → person ON DELETE RESTRICT (delete-safe; re-pointed by merge_persons)</td></tr>
       <tr><td><span class="tag tag-FK">FK</span></td><td class="col-local">media_attachment</td><td><code>media_id</code> → media, and each arc FK (<code>collection_object_id</code> / <code>collecting_event_id</code> / <code>biological_association_id</code>) → its table, all ON DELETE CASCADE</td></tr>
       <tr><td><span class="tag tag-FK">FK</span></td><td class="col-local">person_defaults</td><td><code>default_rights_holder_id</code> → person ON DELETE RESTRICT (Tier-2 default for media rightsHolder; migration 0036)</td></tr>
+      <tr><td><span class="tag tag-FK">FK</span></td><td class="col-local">external_identifier</td><td>each arc FK (<code>collection_object_id</code> / <code>biological_association_id</code>) → its table, ON DELETE CASCADE</td></tr>
     </tbody>
   </table>
 </div>
