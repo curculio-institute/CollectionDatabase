@@ -145,11 +145,16 @@ class SpecimenRow:
     count: int
     type_status: str | None
     event_id: int | None
-    locality: str              # one-line locality label
+    locality: str              # one-line locality label (incl. associated species)
     event_date: str | None
     recorded_by: str | None
     lat: float | None
     lon: float | None
+    # The composed data-label content (locality + date + collector + associated
+    # species). Specimens with the same content are the same "data" and collapse into
+    # one checklist row by default — the print-queue "identical labels" notion (#37),
+    # by CONTENT not by event-row id (duplicate event rows still collapse).
+    data_key: str = ""
 
 
 def _apply_filters(session: Session, q, filters: list[dict], idx: dict[int, Taxon]):
@@ -190,6 +195,12 @@ def query_specimens(session: Session, filters: list[dict] | None = None) -> list
     for co, td, ev in q.all():
         t = idx.get(td.taxon_id) if td else None
         rank = (t.taxon_rank if t else None)
+        # Biological associations of this specimen (subject role): identity for the
+        # collapse key + the object names for the locality line.
+        assocs = co.subject_associations
+        assoc_taxa = [format_scientific_name(a.object_taxon) if a.object_taxon
+                      else f"specimen #{a.object_collection_object_id}" for a in assocs]
+        loc = format_locality_label(ev, assoc_taxa or None) if ev else ""
         rows.append(SpecimenRow(
             co_id=co.id,
             catalog=co.catalog_number,
@@ -201,11 +212,12 @@ def query_specimens(session: Session, filters: list[dict] | None = None) -> list
             count=co.individual_count,
             type_status=(td.type_status if td else None),
             event_id=co.collecting_event_id,
-            locality=(format_locality_label(ev) if ev else ""),
+            locality=loc,
             event_date=(ev.event_date if ev else None),
             recorded_by=(ev.recorded_by_person.full_name if (ev and ev.recorded_by_person) else None),
             lat=(ev.decimal_latitude if ev else None),
             lon=(ev.decimal_longitude if ev else None),
+            data_key=(loc or f"co-{co.id}"),
         ))
     return rows
 
@@ -213,14 +225,24 @@ def query_specimens(session: Session, filters: list[dict] | None = None) -> list
 # ── drawer-order checklist (taxa axis) ────────────────────────────────────────
 
 @dataclass
+class LotGroup:
+    """Specimens of one species sharing the same collecting event + biological
+    associations — the same 'data'. Collapsed to one row by default; expand for the
+    individual specimens."""
+    count: int                 # number of specimens in the group
+    locality: str              # shared one-line locality (incl. associated species)
+    specimens: list[SpecimenRow] = field(default_factory=list)
+
+
+@dataclass
 class ChecklistSpecies:
     taxon_id: int | None
     label: str                 # composed species name (full)
     short_label: str           # bare epithet (genus/subgenus are headers)
     short_auth: str            # authorship (rendered muted, separate from the name)
-    count: int                 # number of lots (matching)
+    count: int                 # total specimens (matching)
     needs_attention: bool
-    lots: list[SpecimenRow] = field(default_factory=list)
+    lot_groups: list[LotGroup] = field(default_factory=list)
 
 
 @dataclass
@@ -241,6 +263,17 @@ def _ancestor_chain(t: Taxon, idx: dict[int, Taxon]) -> list[Taxon]:
             chain.append(cur)
         cur = idx.get(cur.parent_name_usage_id) if cur.parent_name_usage_id else None
     return list(reversed(chain))
+
+
+def _group_lots(lots: list[SpecimenRow]) -> list[LotGroup]:
+    """Collapse lots sharing the same collecting event + biological associations."""
+    by_key: dict[tuple, list[SpecimenRow]] = {}
+    for l in lots:
+        by_key.setdefault(l.data_key, []).append(l)
+    groups = [LotGroup(count=len(v), locality=v[0].locality, specimens=v)
+              for v in by_key.values()]
+    groups.sort(key=lambda g: g.locality or "")
+    return groups
 
 
 def checklist(session: Session, filters: list[dict] | None = None) -> list[ChecklistGroup]:
@@ -278,7 +311,7 @@ def checklist(session: Session, filters: list[dict] | None = None) -> list[Check
         sp = ChecklistSpecies(
             taxon_id=taxon_id, label=full, short_label=epithet, short_auth=ep_auth,
             count=len(lots), needs_attention=any(l.needs_attention for l in lots),
-            lots=sorted(lots, key=lambda l: (l.locality or "", l.event_date or "")),
+            lot_groups=_group_lots(lots),
         )
         species_entries.append((tuple(names), headers, sp))
 
@@ -298,7 +331,7 @@ def checklist(session: Session, filters: list[dict] | None = None) -> list[Check
             species=[ChecklistSpecies(
                 taxon_id=None, label="— undetermined —", short_label="(no determination)",
                 short_auth="", count=len(undetermined), needs_attention=True,
-                lots=sorted(undetermined, key=lambda l: (l.locality or "")),
+                lot_groups=_group_lots(undetermined),
             )],
         ))
     return groups

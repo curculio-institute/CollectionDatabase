@@ -199,9 +199,28 @@ def build_explore_panel(session_factory, *, on_open_specimen, on_open_event) -> 
                             ui.html(f'<span class="ex-sp">{_name_auth(sp.short_label, sp.short_auth)}</span>'
                                     f'<span class="ex-pill" title="specimens / lots">{sp.count}</span>')
                     with exp:
-                        for lot in sp.lots:
-                            row = ui.html('<div class="ex-lot">' + _lot_line(lot) + "</div>")
-                            row.on("click", lambda _, c=lot.co_id: on_open_specimen(c))
+                        for lg in sp.lot_groups:
+                            if lg.count == 1:
+                                lot = lg.specimens[0]
+                                row = ui.html('<div class="ex-lot">' + _lot_line(lot) + "</div>")
+                                row.on("click", lambda _, c=lot.co_id: on_open_specimen(c))
+                            else:
+                                # identical event + associations → collapsed, expand for each
+                                lexp = ui.expansion().classes("w-full").props("dense")
+                                with lexp.add_slot("header"):
+                                    ui.html('<div class="ex-lot">'
+                                            f'{_html.escape(lg.locality or "—")}'
+                                            f'<span class="ex-pill" title="identical specimens">{lg.count}</span>'
+                                            "</div>")
+                                with lexp:
+                                    for lot in lg.specimens:
+                                        meta = []
+                                        if lot.sex:
+                                            meta.append(_html.escape(lot.sex))
+                                        m = ("  ·  " + "  ·  ".join(meta)) if meta else ""
+                                        row = ui.html('<div class="ex-lot" style="padding-left:18px">'
+                                                      f'<span class="ex-cat">{_html.escape(lot.catalog)}</span>{m}</div>')
+                                        row.on("click", lambda _, c=lot.co_id: on_open_specimen(c))
 
     def _render_events(evs):
         if not evs:

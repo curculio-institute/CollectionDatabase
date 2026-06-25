@@ -77,6 +77,31 @@ def test_events_axis_groups_specimens(session):
     assert {g.n_specimens for g in evs} == {1, 2}
 
 
+def test_identical_event_and_assoc_lots_collapse(session):
+    from app.models import BiologicalRelationship, BiologicalAssociation
+    f = _fixture(session)
+    sp1, de = f["sp1"], f["de"]
+    # sp1 already has 2 specimens at event `de`, no associations → one collapsed group.
+    groups = ex.checklist(session)
+    sulc = next(s for g in groups for s in g.species if "sulcatus" in s.label)
+    assert sulc.count == 2
+    assert len(sulc.lot_groups) == 1 and sulc.lot_groups[0].count == 2
+
+    # Add a third specimen at the SAME event but with a host association → its own group.
+    co = _specimen(session, sp1, de, "A4")
+    rel = BiologicalRelationship(name="collected on", created_at=_utcnow(), updated_at=_utcnow())
+    session.add(rel); session.flush()
+    host = _taxon(session, "Quercus robur", "species")
+    session.add(BiologicalAssociation(
+        subject_collection_object_id=co.id, biological_relationship_id=rel.id,
+        object_taxon_id=host.id, created_at=_utcnow(), updated_at=_utcnow()))
+    session.flush()
+    groups = ex.checklist(session)
+    sulc = next(s for g in groups for s in g.species if "sulcatus" in s.label)
+    assert sulc.count == 3                       # 3 specimens total
+    assert len(sulc.lot_groups) == 2             # but two distinct (event+assoc) lots
+
+
 def test_csv_has_header_and_rows(session):
     _fixture(session)
     text = ex.to_csv(ex.query_specimens(session)).decode()
