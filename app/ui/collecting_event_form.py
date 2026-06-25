@@ -689,4 +689,9 @@ def build_collecting_event_form(
         "set_readonly":   _set_readonly,
         "recby_refresh":  recby_state["refresh"],
         "recby_get":      recby_state["get_value"],
+        # Name getters for the FK-backed vocab fields — used by value-based
+        # unsaved-changes detection (#47) to snapshot current values without a
+        # session (no get_or_create side effect).
+        "habitat_get":    habitat_field["get_value"],
+        "protocol_get":   protocol_field["get_value"],
     }

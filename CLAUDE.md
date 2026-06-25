@@ -762,17 +762,26 @@ The durability guarantee and the three mechanisms that back it (#41):
   **not** mtime — `copy2` copies the source's mtime, so mtimes are not creation order.
 - **Unsaved-changes detection + banner.** A scope-aware bottom banner ("Unsaved changes in:
   *tab*") plus a `beforeunload` guard fire while a data-entry area has unsaved edits (in-app
-  tab switches keep the SPA alive, so they never warn). Detection is **value-based on
-  Digitize**: a `ui.timer` polls `_has_any_content()` (the real field *values*) and pushes
-  the result to the client via `window.tpSetScope()`. This is deliberate — **event-based
-  detection only catches typed input**, missing programmatic fills (map picker, Tier-2
-  push-pins, reverse-geocode), which would leave values in fields the app is unaware of; it
-  also makes the banner clear when every card is cleared. Records/Import still use the
-  event-based head-script (`.tp-dirty-scope` + `input`/`change` listeners); extending
-  value-based detection to them is
-  [#47](https://github.com/curculio-institute/CollectionDatabase/issues/47). Python clears a
-  scope at every deliberate reset via `window.tpClearDirty(label)` (`_mark_form_clean(scope)`):
-  after a save and after a Digitize mode switch.
+  tab switches keep the SPA alive, so they never warn). Detection is **value-based on every
+  data-entry tab** (Digitize, Records, Import & Assign — #41, #47): a per-tab `ui.timer`
+  polls the form's real field *values* via `has_content()` and pushes the scope to the client
+  via `window.tpSetScope()` only when the boolean flips. This is deliberate — **DOM
+  event-based detection only catches typed input**, missing programmatic fills (map picker,
+  Tier-2 push-pins, reverse-geocode), which would leave values in fields the app is unaware
+  of. There is no longer any `.tp-dirty-scope`/`input`/`change` head-script listener.
+  - **Digitize** — `_has_any_content()` aggregates each card's `has_content()`; clears when
+    every card is cleared.
+  - **Records** — "changed since loaded": after a specimen/event loads, a baseline of the
+    editable specimen + collecting-event field values is snapshotted (`_norm` treats None ≡
+    empty, strips strings); `has_content()` = current ≠ baseline. Editing a field back to its
+    loaded value correctly clears the banner. The determination / association sub-cards save
+    immediately on their own and are not part of this check.
+  - **Import & Assign** — `has_content()` = an assign card is open (a row staged for
+    assignment, not yet saved); it self-clears when the card hides on save.
+
+  Python also clears a scope at every deliberate reset via `window.tpClearDirty(label)`
+  (`_mark_form_clean(scope)`): after a save and after a Digitize mode switch (the timer
+  agrees on the next tick).
 - **Mode-switch confirm + per-card Clear.** Switching Digitize mode wipes the form, so it
   first asks "Discard unsaved data?" — but only when a card actually holds content
   (`_has_any_content()` aggregates each card's `has_content()`). Each of the four Digitize
