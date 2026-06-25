@@ -9,6 +9,7 @@ All DB access goes through app.services — no ORM queries in this file.
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import re
 import sys
@@ -254,17 +255,35 @@ def index():
                         padding:3px 6px; font-size:.72rem; line-height:1.3;
                         background:var(--tp-base-foreground); overflow-wrap:anywhere; }
       .pq-prev-id     { font-family:monospace; color:var(--tp-base-lighter); }
-      .pq-prev-det    { font-style:italic; }
+      /* WYSIWYG label boxes print like the PDF: genus+species bold-italic,
+         subgenus italic, associated species italic — driven by the rendered
+         <strong>/<em> markup, NOT a blanket italic on the whole box (#45/#46). */
+      .pq-prev-label em     { font-style:italic; }
+      .pq-prev-label strong { font-weight:700; }
       .pq-prev-label[data-ident] { cursor:text; transition:background .1s, outline .1s; }
+      .pq-prev-label[contenteditable]:focus { outline:2px solid var(--tp-secondary);
+                        outline-offset:0; }
       .pq-ident-hl    { outline:2px solid var(--tp-secondary);
                         background:rgba(3,105,161,.10) !important; }
       .pq-prev-edited { background:#fff7ed; border-color:#f59e0b; }
       .dark .pq-prev-edited { background:rgba(245,158,11,.12); }
-      /* the inline editor sits flush inside the label box */
-      .pq-prev-label .q-field__control { min-height:0; padding:0; }
-      .pq-prev-label .q-field__control:before,
-      .pq-prev-label .q-field__control:after { display:none; }
-      .pq-prev-label .q-textarea .q-field__native { padding:0; line-height:1.3; resize:none; }
+      /* the "open larger editor" affordance sits flush inside the label box */
+      .pq-box-wrap    { position:relative; }
+      .pq-box-toggle  { position:absolute; top:1px; right:1px; opacity:0;
+                        transition:opacity .1s; }
+      .pq-box-wrap:hover .pq-box-toggle { opacity:.5; }
+      .pq-box-toggle:hover { opacity:1 !important; }
+      /* larger label editor dialog: a readable WYSIWYG area + raw-HTML source */
+      .pq-dlg-editor  { min-height:120px; border:1px solid var(--tp-base-border);
+                        border-radius:4px; padding:10px 12px; font-size:1rem;
+                        line-height:1.5; background:var(--tp-base-foreground);
+                        outline:none; overflow-wrap:anywhere; }
+      .pq-dlg-editor:focus { outline:2px solid var(--tp-secondary); }
+      .pq-dlg-editor em     { font-style:italic; }
+      .pq-dlg-editor strong { font-weight:700; }
+      .pq-dlg-editor div    { min-height:1.5em; }
+      .pq-dlg-source .q-field__native { font-family:monospace; font-size:.85rem;
+                        line-height:1.45; min-height:120px; }
       .pq-prev-ctl    { justify-content:flex-end; opacity:.55; }
       .pq-prev-ctl:hover { opacity:1; }
       .pq-prev-empty  { font-size:.85rem; font-style:italic; color:var(--tp-base-soft); }
@@ -282,6 +301,15 @@ def index():
       }
       document.addEventListener('mouseover', function(e){ hl(e, true); });
       document.addEventListener('mouseout',  function(e){ hl(e, false); });
+      // Capture-phase blur (blur does not bubble): when a contenteditable label
+      // box loses focus, emit its row id + innerHTML to Python. The DOM node
+      // can't ride NiceGUI's normal event args, so we read innerHTML here.
+      document.addEventListener('blur', function(e){
+        var el = e.target;
+        if(el && el.matches && el.matches('.pq-prev-label[contenteditable][data-qid]')){
+          emitEvent('pq_edit', { qid: el.getAttribute('data-qid'), html: el.innerHTML });
+        }
+      }, true);
     })();
     </script>""")
 
@@ -1795,16 +1823,27 @@ def index():
                             _records_handle["open_specimen"](co_id)
                         main_tabs.set_value("records")
 
-                    def _edit_label(qid, value, auto):
-                        # Blank or == auto clears the override (back to auto); else
-                        # apply to every identical label (same auto text).
-                        new = None if (not value.strip() or value.strip() == (auto or "").strip()) else value
+                    def _edit_label(qid, raw_html):
+                        # The WYSIWYG box (or source field) hands back HTML; sanitize
+                        # to the safe label subset (italics/bold survive, #45/#46).
+                        # Empty or == the row's auto text clears the override (→ auto);
+                        # else apply to every identical label (same auto text).
+                        clean = lbl_svc.sanitize_override_html(raw_html or "")
                         with _sf() as session:
                             with session.begin():
+                                auto_clean = lbl_svc.sanitize_override_html(
+                                    pq_svc.row_auto_html(session, qid))
+                                new = None if (not clean or clean == auto_clean) else clean
                                 n = pq_svc.set_override_for_identical(session, qid, new)
                         verb = "Reset to auto" if new is None else "Applied edit"
                         ui.notify(f"{verb} on {n} identical label{'s' if n != 1 else ''}.", type="info")
                         _refresh_queue()
+
+                    # The contenteditable box's innerHTML cannot ride NiceGUI's event
+                    # args (the DOM node is stripped before serialisation), so a global
+                    # capture-phase blur listener (added once in head) reads innerHTML
+                    # client-side and emits 'pq_edit' with the row id + html.
+                    ui.on("pq_edit", lambda e: _edit_label(int(e.args["qid"]), e.args["html"]))
 
                     def _delete_column(sp):
                         with _sf() as session:
@@ -1814,21 +1853,108 @@ def index():
                                         pq_svc.remove_item(session, qid)
                         _refresh_queue()
 
+                    # Stable DOM ids for the dialog editor (only one open at a time).
+                    _DLG_ED, _DLG_SRC = "pq-dlg-editor", "pq-dlg-source"
+
+                    def _open_label_dialog(qid, seed_html):
+                        """Larger editor for a queued label — a readable WYSIWYG area
+                        with a Bold/Italic toolbar (select text → click), plus a
+                        raw-HTML source toggle (#45). The inline box on the sheet is
+                        fine for quick tweaks; this window is for longer text and
+                        explicit formatting without hand-editing tags."""
+                        mode = {"src": False}
+                        with ui.dialog() as dlg, ui.card().classes("w-full max-w-3xl gap-2"):
+                            ui.label("Edit label for print").classes("text-base font-semibold")
+                            ui.label("Select text and click B / I to format, or switch to "
+                                     "HTML source. Applies to all identical labels; does not "
+                                     "change the record.").classes("text-xs") \
+                                .style("color:var(--tp-base-soft)")
+                            with ui.row().classes("items-center gap-1"):
+                                # mousedown.preventDefault keeps the editor's selection
+                                # alive (a focused toolbar button would otherwise collapse
+                                # it); styleWithCSS=false forces <b>/<i> tags, which the
+                                # sanitizer maps to <strong>/<em>.
+                                b_btn = ui.button(icon="format_bold").props("flat dense").tooltip("Bold")
+                                i_btn = ui.button(icon="format_italic").props("flat dense").tooltip("Italic")
+                                b_btn.on("mousedown", js_handler="(e)=>{e.preventDefault();"
+                                         "document.execCommand('styleWithCSS',false,false);"
+                                         "document.execCommand('bold',false,null);}")
+                                i_btn.on("mousedown", js_handler="(e)=>{e.preventDefault();"
+                                         "document.execCommand('styleWithCSS',false,false);"
+                                         "document.execCommand('italic',false,null);}")
+                                ui.space()
+                                src_btn = ui.button(icon="code").props("flat dense") \
+                                    .tooltip("Toggle HTML source")
+                            editor = (ui.element("div")
+                                      .props(f'contenteditable=true id={_DLG_ED}')
+                                      .classes("pq-dlg-editor"))
+                            source = (ui.textarea()
+                                      .props(f"id={_DLG_SRC} outlined")
+                                      .classes("pq-dlg-source w-full"))
+                            source.set_visibility(False)
+                            with ui.row().classes("justify-end w-full gap-2 mt-1"):
+                                ui.button("Abort").props("flat").on_click(dlg.close)
+                                save_btn = ui.button("Save & close").props("color=primary")
+
+                        # Seed both surfaces (editor innerHTML set imperatively so Vue
+                        # never re-binds/clobbers it; the textarea via its value).
+                        ui.run_javascript(
+                            f"document.getElementById('{_DLG_ED}').innerHTML = {json.dumps(seed_html or '')};")
+                        source.value = seed_html or ""
+
+                        async def _toggle_src():
+                            if not mode["src"]:
+                                html = await ui.run_javascript(
+                                    f"document.getElementById('{_DLG_ED}').innerHTML")
+                                source.value = html or ""
+                                editor.set_visibility(False); source.set_visibility(True)
+                                mode["src"] = True
+                            else:
+                                ui.run_javascript(
+                                    f"document.getElementById('{_DLG_ED}').innerHTML = "
+                                    f"{json.dumps(source.value or '')};")
+                                source.set_visibility(False); editor.set_visibility(True)
+                                mode["src"] = False
+                        src_btn.on_click(_toggle_src)
+
+                        async def _save():
+                            html = (source.value if mode["src"]
+                                    else await ui.run_javascript(
+                                        f"document.getElementById('{_DLG_ED}').innerHTML"))
+                            dlg.close()
+                            _edit_label(qid, html)
+                        save_btn.on_click(_save)
+
+                        # Per-action dialog: delete on close so its timers don't leak.
+                        dlg.on_value_change(lambda e: dlg.delete() if not e.value else None)
+                        dlg.open()
+
                     def _editable_box(kind, sp):
-                        text  = sp["data"]       if kind == "data" else sp["det"]
-                        auto  = sp["data_auto"]  if kind == "data" else sp["det_auto"]
-                        qid   = sp["data_qid"]   if kind == "data" else sp["det_qid"]
-                        ident = sp["data_ident"] if kind == "data" else sp["det_ident"]
+                        html_seed = sp["data_html"]      if kind == "data" else sp["det_html"]
+                        auto_html = sp["data_auto_html"] if kind == "data" else sp["det_auto_html"]
+                        qid       = sp["data_qid"]       if kind == "data" else sp["det_qid"]
+                        ident     = sp["data_ident"]     if kind == "data" else sp["det_ident"]
                         cls = f"pq-prev-label pq-prev-{kind}"
-                        if (text or "") != (auto or ""):
+                        if (html_seed or "") != (auto_html or ""):
                             cls += " pq-prev-edited"
-                        with ui.element("div").classes(cls).props(f"data-ident={ident}"):
-                            ta = (ui.textarea(value=text or "")
-                                  .props("borderless dense autogrow")
-                                  .classes("w-full").style("font-size:.72rem")
-                                  .tooltip("Edit for print fit (abbreviate / add). Applies to "
-                                           "all identical labels; does not change the record."))
-                            ta.on("blur", lambda _, q=qid, a=auto or "", w=ta: _edit_label(q, w.value, a))
+                        with ui.element("div").classes("pq-box-wrap"):
+                            # Primary surface: a contenteditable box rendered with the
+                            # real formatted label HTML — what you see prints (#46).
+                            # Typing inside a <strong><em> token keeps its styling;
+                            # text added outside stays plain (#45). innerHTML is
+                            # captured by the global blur listener via data-qid.
+                            (ui.html(html_seed or "")
+                             .classes(cls)
+                             .props(f'contenteditable=true data-ident="{ident}" data-qid="{qid}"')
+                             .tooltip("Edit inline for print fit, or open the larger editor "
+                                      "(⤢). Applies to all identical labels; does not change "
+                                      "the record."))
+                            # Larger editor: formatting toolbar + HTML source (#45).
+                            (ui.button(icon="open_in_full")
+                             .props("flat dense round size=xs")
+                             .classes("pq-box-toggle")
+                             .tooltip("Open larger editor (Bold / Italic toolbar + HTML source)")
+                             .on_click(lambda _, q=qid, h=html_seed or "": _open_label_dialog(q, h)))
 
                     def _render_column(sp):
                         with ui.element("div").classes("pq-prev-col"):
