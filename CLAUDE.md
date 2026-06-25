@@ -288,8 +288,8 @@ attributes. Mermaid diagrams use plain camelCase. Do not deviate from this patte
 
 | Table | Purpose |
 |-------|---------|
-| `collection_object` | One physical specimen or lot. `catalog_number` (NOT NULL) is the stable sync join key. `dwc:basisOfRecord`, `dwc:sex`, `dwc:preparations`, `dwc:typeStatus`, etc. |
-| `collecting_event` | Where/when collected; shared by many specimens. Full DwC locality + coordinate block. `dwc:eventDate` supports ISO 8601 intervals (`2024-06-15/2024-06-20`). `dwc:recordedBy` FK → `person(full_name)`. |
+| `collection_object` | One physical specimen or lot. `catalog_number` (NOT NULL) is the stable sync join key. `dwc:basisOfRecord`, `dwc:sex`, `dwc:typeStatus`, etc. `preparation_id` FK → `preparation` (controlled vocab, not free text — migration 0039; see "Controlled vocabularies"). |
+| `collecting_event` | Where/when collected; shared by many specimens. Full DwC locality + coordinate block. `dwc:eventDate` supports ISO 8601 intervals (`2024-06-15/2024-06-20`). `dwc:recordedBy` FK → `person(full_name)`. `habitat_id` + `sampling_protocol_id` are controlled-vocab FKs (migration 0040; see "Controlled vocabularies"). |
 | `taxon` | Local OTU analogue. DwC parent-link model (GBIF best practices). Columns: `name_element` (atomic source of truth — this rank's own epithet/uninomial, e.g. `crypticus`; migration 0032, Epic #30), `dwc:scientificName` (the *composed* full name without authorship, e.g. `Otiorhynchus crypticus`, maintained from `name_element` + the parent chain), `dwc:taxonRank`, `dwc:scientificNameAuthorship`, `dwc:parentNameUsageID` (self-FK, encodes hierarchy), `dwc:acceptedNameUsageID` (self-FK, marks synonyms — its presence *is* synonym status; `taxonomicStatus` is derived at export, not stored, see below), `taxonworksOtuID`. No denormalised rank columns. |
 | `taxon_determination` | `collection_object` → `taxon` link. `is_current` flag. `taxon_id` may reference a synonym row (deliberate design). `dwc:identifiedBy` FK → `person(full_name)`. |
 | `biological_relationship` | Kind of association (`collected_on`, `feeds_on`, …). |
@@ -298,6 +298,9 @@ attributes. Mermaid diagrams use plain camelCase. Do not deviate from this patte
 | `label_batch` | Groups of `label_code` rows with a `created_at` timestamp. Batches can be reprinted only if no code in the batch has been used yet. |
 | `print_queue` | Staged label jobs (`label_type` ∈ {data, determination, identifier}) pending a single print run. Items removed after printing. (The `data` label carries locality/date/collector — there is no separate "locality" type.) |
 | `person_defaults` | Single-row table holding the push-pin person defaults: `default_identified_by_id`, `default_recorded_by_id`, and `default_rights_holder_id` (media rightsHolder; migration 0036). All are `INTEGER REFERENCES person(id) ON DELETE RESTRICT`. See rationale below. |
+| `preparation` | Single-name controlled vocabulary (`id`, `name` UNIQUE) for `collection_object.preparation_id`. First of the single-name vocabularies built on the generic `Vocabulary` service; see "Controlled vocabularies". Migration 0039. |
+| `habitat` | Single-name controlled vocabulary for `collecting_event.habitat_id` (was free-text `dwc:habitat`). Migration 0040. |
+| `sampling_protocol` | Single-name controlled vocabulary for `collecting_event.sampling_protocol_id` (was the hardcoded `dwc:samplingProtocol` UI list). **Seeded** with the curated method set. Migration 0040. |
 | `media` | One row per stored file (the bytes live content-addressed on disk; see "Media" below). `sha256` UNIQUE (de-dup). `category` (CHECK ∈ {Image, Sound, Video, Document, Sequence, Other}) is the filter key. Audubon-Core-style metadata; `rights_holder_id` is a **person FK** (ON DELETE RESTRICT), `license` is free text. Migration 0035. |
 | `media_attachment` | Links a `media` row to exactly one of a `collection_object`, `collecting_event`, or `biological_association` (exclusive-arc CHECK; all FKs ON DELETE CASCADE). Per-attachment `caption` / `is_primary` / `sort_order` (mirrors TaxonWorks' Image↔Depiction split). Migration 0035. |
 | `external_identifier` | An external resource link/ID (`source`, `value`, `label`) attached to exactly one of a `collection_object` or a `biological_association` (exclusive-arc CHECK; FKs ON DELETE CASCADE). For an association it denotes the *other party* (optional addition; the association object arc is unchanged). Migration 0037. |
@@ -406,6 +409,50 @@ references a DB entity belongs in the DB, not in a flat file.
 `(identified_by, recorded_by)`; `set_defaults(session, *, identified_by, recorded_by)`
 updates the row. Push-pin `default_fn` closures in UI files open their own session and call
 `pd_svc.get_defaults(s)[0/1]`.
+
+### Controlled vocabularies (single-name; the generic pattern, decided)
+
+Some fields are **controlled vocabularies referenced by FK**, not free text, so they can be
+**edited and merged like persons** (rename once, re-point everywhere; fold a typo into the
+canonical value). Current single-name vocabularies (more may follow — built once, reused):
+
+| Field | Column | Table | Migration | Note |
+|-------|--------|-------|-----------|------|
+| preparations | `collection_object.preparation_id` | `preparation` | 0039 | was `dwc:preparations` TEXT |
+| habitat | `collecting_event.habitat_id` | `habitat` | 0040 | was `dwc:habitat` TEXT |
+| samplingProtocol | `collecting_event.sampling_protocol_id` | `sampling_protocol` | 0040 | was a hardcoded UI list; table **seeded** with the curated set |
+
+**Which fields qualify:** *open, user-coined* vocabularies where consistency tooling (merge)
+helps. **Closed standard vocabularies stay fixed CHECK-constrained lists, NOT editable tables**
+— `sex`, `basisOfRecord`, `disposition`, `identificationQualifier`, `license` (editability
+would create `Male`/`male` duplicates or values TW rejects). Geographic fields
+(`country`/`stateProvince`/`county`/`locality`/…) come from geocoding, not a manual vocab.
+
+The shared mechanism:
+
+- **`app/services/vocab.py` → `Vocabulary`** — generic CRUD + merge for any single-name table
+  (`id`, `name` UNIQUE), parameterised by the model. `list` / `options` / `get_or_create` /
+  `create` / `update` / `delete` / `merge_preview` / `merge`. Merge and delete-safety
+  **re-discover referencing FK columns dynamically** via `PRAGMA foreign_key_list` (same
+  mechanism as `merge_persons`), so any FK at the vocab table — present or future — is handled
+  with no hardcoded list. `delete` is blocked while referenced (and the FK is `ON DELETE
+  RESTRICT` as a DB backstop).
+- **`app/services/vocabularies.py`** — instances + a `VOCAB_REGISTRY` of `VocabSpec`s (display
+  metadata). **Adding a vocab = a model + a migration + one registry entry**; it then appears
+  in the Controlled Vocabularies tab and gets a dropdown field automatically.
+- **`app/ui/vocab_field.py` → `build_vocab_field`** — the data-entry widget, the *same*
+  custom-dropdown UX as the person field (`✚ add <typed>` + existing matches, no free-text
+  escape; reuses person_field's CSS/nav). `get_value()` is the name; **`commit(session)`
+  resolves name → id (get_or_create) inside the save transaction and returns the FK** (exactly
+  like person `commit`). Used in Digitize/Records (shared `specimen_form`), Import & Assign,
+  and Mounting.
+- **DwC export** resolves `preparation_id` → `preparation.name` → `dwc:preparations` at export
+  time (mirrors `recordedBy`/`identifiedBy`; nothing denormalised on `collection_object`).
+- **Controlled Vocabularies tab** renders one card per registry entry (`_build_vocab_section`)
+  with edit / merge / delete / add — the generic mirror of the People card.
+- **Person stays separate** (not folded into `Vocabulary`): it carries extra columns
+  (`abbreviated_name`, `orcid`) and label-printing logic. `Vocabulary` is for the *single-name*
+  case only.
 
 ### Removed from original design
 
@@ -618,6 +665,8 @@ arrow-key event, chip styling) is design.md's concern → "Digitize layout modes
 | `media.py` | Content-addressed media store (store/dedup/verify/delete) + attachment CRUD (attach to specimen/event/association) |
 | `external_ids.py` | External resource identifier CRUD (attach to specimen/association) |
 | `life_stage.py` | Reared-specimen life-stage history CRUD + `life_stage_facets()` export projection (Phase 3) |
+| `vocab.py` | Generic single-name controlled-vocabulary service (`Vocabulary`: list/options/get_or_create/update/delete/merge, dynamic FK re-pointing) |
+| `vocabularies.py` | Vocabulary instances + `VOCAB_REGISTRY` (the Controlled Vocabularies tab renders one section per entry) |
 
 ### Taxon search widget (`app/ui/taxon_search.py`)
 

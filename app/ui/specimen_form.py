@@ -29,6 +29,8 @@ from nicegui import ui
 
 from app.config import get_config
 import app.services.identifiers as id_svc
+from app.services.vocabularies import preparation_vocab
+from app.ui.vocab_field import build_vocab_field
 from app.vocab import (
     LIFE_STAGE_OPTIONS, BASIS_OPTIONS, DISPOSITION_OPTIONS, NEW_SPECIMEN_DEFAULTS,
 )
@@ -54,8 +56,10 @@ def build_specimen_form(
     Handle keys:
       card             — the ui.card element (for visibility toggling)
       policy           — the identifier_policy string
-      cat_num, count_in, preps_in, stage_sel, disp_sel, basis_sel,
+      cat_num, count_in, stage_sel, disp_sel, basis_sel,
       inst_code_disp, coll_code_disp, rem_in   — the field widgets.
+      prep_field       — the preparations controlled-vocab field handle (a dict
+                        with get_value/set_value/commit; commit(session)→preparation_id).
                         In edit mode cat_num/inst_code_disp/coll_code_disp are None.
                         In standard mode inst/coll are read-only config displays;
                         in visiting mode they are editable free-text inputs.
@@ -123,9 +127,10 @@ def build_specimen_form(
                 inst_code_disp = ui.input("institutionCode *", placeholder="host institution").classes("w-40")
             with ui.row().classes("w-full flex-wrap gap-3 items-end mt-2"):
                 count_in = ui.number("n", value=v_count, min=0, precision=0).classes("w-20")
-                preps_in = ui.input(
-                    "preparations", value=v_preps, placeholder="pinned, in ethanol…"
-                ).classes("flex-1 min-w-40")
+                prep_field = build_vocab_field(
+                    session_factory, preparation_vocab, "preparations",
+                    initial_value=v_preps or None, classes="flex-1 min-w-40",
+                )
         else:
             with ui.row().classes("w-full flex-wrap gap-3 items-end"):
                 if is_standard:
@@ -136,9 +141,10 @@ def build_specimen_form(
                         label="identifier *",
                     ).classes("w-32")
                 count_in = ui.number("n", value=v_count, min=0, precision=0).classes("w-20")
-                preps_in = ui.input(
-                    "preparations", value=v_preps, placeholder="pinned, in ethanol…"
-                ).classes("flex-1 min-w-40")
+                prep_field = build_vocab_field(
+                    session_factory, preparation_vocab, "preparations",
+                    initial_value=v_preps or None, classes="flex-1 min-w-40",
+                )
             if is_standard:
                 # Skip the DB read while the card is hidden (Mounting / Visiting mode).
                 def _refresh_code_opts():
@@ -241,7 +247,7 @@ def build_specimen_form(
             return False
         if cat_num is not None and (cat_num.value or ""):
             return True
-        if (preps_in.value or "").strip() or (rem_in.value or "").strip():
+        if (prep_field["get_value"]() or "").strip() or (rem_in.value or "").strip():
             return True
         try:
             if int(count_in.value or 1) != NEW_SPECIMEN_DEFAULTS["individual_count"]:
@@ -261,7 +267,7 @@ def build_specimen_form(
             coll_code_disp.value = ""
             inst_code_disp.value = ""
         count_in.value  = NEW_SPECIMEN_DEFAULTS["individual_count"]
-        preps_in.value  = ""
+        prep_field["set_value"](None)
         stage_sel.value = NEW_SPECIMEN_DEFAULTS["life_stage"]
         disp_sel.value  = NEW_SPECIMEN_DEFAULTS["disposition"]
         basis_sel.value = NEW_SPECIMEN_DEFAULTS["basis_of_record"]
@@ -272,7 +278,7 @@ def build_specimen_form(
         "policy":         identifier_policy,
         "cat_num":        cat_num,
         "count_in":       count_in,
-        "preps_in":       preps_in,
+        "prep_field":     prep_field,
         "stage_sel":      stage_sel,
         "disp_sel":       disp_sel,
         "basis_sel":      basis_sel,

@@ -31,7 +31,11 @@ class CollectionObject(Base, TimestampMixin):
     life_stage: Mapped[Optional[str]] = mapped_column("dwc:lifeStage", String, nullable=True)
     # "in collection" | "on loan" | "donated" | "exchanged" | "missing" | "destroyed"
     disposition: Mapped[Optional[str]] = mapped_column("dwc:disposition", String, nullable=True)
-    preparations: Mapped[Optional[str]] = mapped_column("dwc:preparations", String, nullable=True)
+    # preparations is a controlled vocabulary (FK → preparation), not free text —
+    # so it can be edited/merged like persons. The DwC `preparations` string is
+    # resolved from preparation.name at export time (mirrors recordedBy/identifiedBy).
+    preparation_id: Mapped[Optional[int]] = mapped_column(
+        Integer, ForeignKey("preparation.id", ondelete="RESTRICT"), nullable=True)
     occurrence_remarks: Mapped[Optional[str]] = mapped_column("dwc:materialEntityRemarks", String, nullable=True)
 
     __table_args__ = (
@@ -53,6 +57,7 @@ class CollectionObject(Base, TimestampMixin):
     )
 
     collecting_event: Mapped[Optional["CollectingEvent"]] = relationship("CollectingEvent", back_populates="collection_objects")
+    preparation: Mapped[Optional["Preparation"]] = relationship("Preparation")
     determinations: Mapped[List["TaxonDetermination"]] = relationship(
         "TaxonDetermination", back_populates="collection_object", cascade="all, delete-orphan")
     subject_associations: Mapped[List["BiologicalAssociation"]] = relationship(

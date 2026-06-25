@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session
 
 from app.models import CollectingEvent
 from app.models.person import Person
+from app.models.habitat import Habitat
 from app.models.base import _utcnow
 from app.services.label_text import format_locality_label
 
@@ -41,6 +42,7 @@ def search_collecting_events(
         pat = f"%{query.strip()}%"
         q = (
             q.outerjoin(Person, Person.id == CollectingEvent.recorded_by_id)
+            .outerjoin(Habitat, Habitat.id == CollectingEvent.habitat_id)
             .filter(
                 CollectingEvent.country.ilike(pat)
                 | CollectingEvent.state_province.ilike(pat)
@@ -52,7 +54,7 @@ def search_collecting_events(
                 | CollectingEvent.event_date.ilike(pat)
                 | CollectingEvent.verbatim_event_date.ilike(pat)
                 | Person.full_name.ilike(pat)
-                | CollectingEvent.habitat.ilike(pat)
+                | Habitat.name.ilike(pat)
             )
         )
     q = q.order_by(CollectingEvent.id.desc()).limit(limit)
@@ -89,8 +91,8 @@ def event_form_snapshot(session: Session, event_id: int) -> dict | None:
         "coordinate_uncertainty_in_meters": ev.coordinate_uncertainty_in_meters,
         "minimum_elevation_in_meters":      ev.minimum_elevation_in_meters,
         "maximum_elevation_in_meters":      ev.maximum_elevation_in_meters,
-        "habitat":                          ev.habitat,
-        "sampling_protocol":                ev.sampling_protocol,
+        "habitat":                          ev.habitat_obj.name if ev.habitat_obj else None,
+        "sampling_protocol":                ev.sampling_protocol_obj.name if ev.sampling_protocol_obj else None,
         "field_number":                     ev.field_number,
         "verbatim_label":                   ev.verbatim_label,
         "recorded_by": ev.recorded_by_person.full_name if ev.recorded_by_person else None,
