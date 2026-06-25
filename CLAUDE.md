@@ -274,6 +274,7 @@ attributes. Mermaid diagrams use plain camelCase. Do not deviate from this patte
 | `media` | One row per stored file (the bytes live content-addressed on disk; see "Media" below). `sha256` UNIQUE (de-dup). `category` (CHECK ∈ {Image, Sound, Video, Document, Sequence, Other}) is the filter key. Audubon-Core-style metadata; `rights_holder_id` is a **person FK** (ON DELETE RESTRICT), `license` is free text. Migration 0035. |
 | `media_attachment` | Links a `media` row to exactly one of a `collection_object`, `collecting_event`, or `biological_association` (exclusive-arc CHECK; all FKs ON DELETE CASCADE). Per-attachment `caption` / `is_primary` / `sort_order` (mirrors TaxonWorks' Image↔Depiction split). Migration 0035. |
 | `external_identifier` | An external resource link/ID (`source`, `value`, `label`) attached to exactly one of a `collection_object` or a `biological_association` (exclusive-arc CHECK; FKs ON DELETE CASCADE). For an association it denotes the *other party* (optional addition; the association object arc is unchanged). Migration 0037. |
+| `life_stage_record` | Reared-specimen life-stage history: per-specimen `(dwc:lifeStage, dwc:basisOfRecord, dwc:eventDate)` rows for *earlier* stages of the same individual (e.g. the wild larva). FK → `collection_object` ON DELETE CASCADE; `basisOfRecord` CHECK mirrors `collection_object`'s. No duplicate specimen/event rows. Migration 0038. |
 
 ### Media storage (decided, #48)
 
@@ -331,6 +332,26 @@ identifier, not merely a "link"). Stored in `external_identifier` (exclusive-arc
   **Abort / Save & close**, the standard modal pattern). Bound (Records: specimen +
   per-association) and staged (Digitize: specimen + per-association, committed on Save).
   Service: `app/services/external_ids.py`.
+
+### Reared specimens — life-stage history (decided, #50)
+
+A reared specimen is preserved as one stage (e.g. the adult) but was collected in the wild
+as an immature (egg/larva/pupa). We record the life-stage history **linked to the specimen,
+without duplicating specimens or events** (duplication was rejected as invasive/untidy):
+
+- The preserved stage stays on `collection_object` (`dwc:lifeStage`, `dwc:basisOfRecord`),
+  and the specimen's own `collecting_event` carries the original wild date + locality.
+- Each earlier stage is a `life_stage_record` row — `(dwc:lifeStage, dwc:basisOfRecord,
+  dwc:eventDate)` for the *same individual* (e.g. larva / HumanObservation / wild date).
+- **Export (Phase 3, not built):** the preserved specimen → a PreservedSpecimen DwC record;
+  each `life_stage_record` → a separate record (the wild larva as a **HumanObservation**,
+  sharing the specimen's locality, with its own eventDate), the two **linked** via a derived
+  `dwc:associatedOccurrences` / resourceRelationship — **no stored resource-relationship
+  table** (the FK to the specimen is the relationship). `life_stage.life_stage_facets()`
+  returns the facets (preserved first) for the export to consume.
+- **UI:** a timeline-icon button (`app/ui/life_stage_panel.py` → `build_life_stage_button`)
+  with a count badge → a small Abort/Save&close modal (lifeStage + basisOfRecord defaulting
+  `HumanObservation` + eventDate). Bound in Records, staged in Digitize (committed on Save).
 
 ### Why person defaults live in the DB, not config.json
 
@@ -568,7 +589,8 @@ arrow-key event, chip styling) is design.md's concern → "Digitize layout modes
 | `print_queue.py` | Stage + retrieve + clear print-queue items |
 | `dwc_import.py` | Parse DwC CSV, field aliasing, row-to-form-field mapping |
 | `media.py` | Content-addressed media store (store/dedup/verify/delete) + attachment CRUD (attach to specimen/event/association) |
-| `external_ids.py` | External resource identifier CRUD (attach to specimen/association) + iNaturalist/GBIF/… URL source detection |
+| `external_ids.py` | External resource identifier CRUD (attach to specimen/association) |
+| `life_stage.py` | Reared-specimen life-stage history CRUD + `life_stage_facets()` export projection (Phase 3) |
 
 ### Taxon search widget (`app/ui/taxon_search.py`)
 

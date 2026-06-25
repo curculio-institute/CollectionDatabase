@@ -933,6 +933,25 @@ staged_items}`; bound + staged modes work exactly as the media button.
   media button) and on each association row. Digitize — staged specimen + per-association
   buttons, committed on Save (per-association via `finalize_specimen`'s returned ids).
 
+## Rearing / life-stage button + popup (life_stage_panel.py)
+
+`build_life_stage_button(session_factory, *, target_id_getter=None, staged=False,
+staged_store=None, on_change=None, tooltip)` — a timeline-icon button with a count badge for
+a reared specimen's life-stage history. Same bound/staged structure as the media and
+external-id buttons; returns `{button, refresh, has_content, commit, clear, staged_items}`.
+
+- **Popup:** lists existing stages (`lifeStage · basisOfRecord · eventDate`, delete each)
+  and an add form — `lifeStage` (`vocab.LIFE_STAGE_OPTIONS`, default `larva`),
+  `basisOfRecord` (`vocab.BASIS_OPTIONS`, default `HumanObservation`), and `eventDate`
+  (a `ui.input` with `attach_date_validation(allow_interval=True)`). **Abort / Save & close.**
+- **Semantics:** each row is an earlier stage of the *same individual*; the locality is the
+  specimen's collecting event (not duplicated). The preserved stage stays on
+  `collection_object`. The service `life_stage_facets()` returns the export facets
+  (preserved first) for the Phase-3 DwC export.
+- **Placement:** the third footer button on the specimen card (rearing · resource id ·
+  media), lower-right. Records (bound) + Digitize (staged, committed on Save). Specimen-only
+  (rearing is per individual; not on events/associations).
+
 ## CatalogNumber and printing workflow
 
 CatalogNumber format: `"collectionCode" + "-" + 5-digit zero-padded ascending number`

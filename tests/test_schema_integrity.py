@@ -27,6 +27,7 @@ STRICT_TABLES = sorted({
     "label_code", "label_batch", "print_queue",
     "media", "media_attachment",  # 0035
     "external_identifier",  # 0037
+    "life_stage_record",  # 0038
 })
 
 # Tables whose constraints were dropped + restored — checked in extra detail below.

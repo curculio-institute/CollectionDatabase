@@ -46,8 +46,10 @@ from app.ui.collecting_event_form import build_collecting_event_form
 from app.ui.event_reuse import build_event_share_banner
 from app.ui.media_panel import build_media_button
 from app.ui.external_id_panel import build_external_id_button
+from app.ui.life_stage_panel import build_life_stage_button
 import app.services.media as media_svc
 import app.services.external_ids as extid_svc
+import app.services.life_stage as lifestage_svc
 from app.services.biological import (
     sync_biological_relationships,
     get_relationship_options,
@@ -811,9 +813,12 @@ def index():
                 spec_media_v = {}
                 spec_extid = {}
                 spec_extid_v = {}
+                spec_ls = {}
+                spec_ls_v = {}
 
-                def _mk_spec_footer(media_holder, extid_holder):
-                    # Both staged controllers, rendered bottom-right of the specimen card.
+                def _mk_spec_footer(media_holder, extid_holder, ls_holder):
+                    # Staged controllers, rendered bottom-right of the specimen card.
+                    ls_holder.update(build_life_stage_button(_sf, staged=True))
                     extid_holder.update(build_external_id_button(
                         _sf, target_kind="collection_object", staged=True,
                         tooltip="Specimen resource identifiers (attached on Save)"))
@@ -827,7 +832,7 @@ def index():
                     # paths below reference them unchanged.
                     spec = build_specimen_form(
                         _sf, identifier_policy="standard",
-                        footer_slot=lambda: _mk_spec_footer(spec_media, spec_extid))
+                        footer_slot=lambda: _mk_spec_footer(spec_media, spec_extid, spec_ls))
                     specimen_card = spec["card"]
                     specimen_card.classes(remove="w-full", add="flex-1 min-w-[360px]")
                     # Visiting-collection variant: free-text identity, pure data
@@ -836,7 +841,7 @@ def index():
                     # card (only one of the two is ever visible).
                     spec_visiting = build_specimen_form(
                         _sf, identifier_policy="visiting",
-                        footer_slot=lambda: _mk_spec_footer(spec_media_v, spec_extid_v))
+                        footer_slot=lambda: _mk_spec_footer(spec_media_v, spec_extid_v, spec_ls_v))
                     spec_visiting["card"].set_visibility(False)
                     spec_visiting["card"].classes(remove="w-full",
                                                   add="flex-1 min-w-[360px]")
@@ -863,6 +868,10 @@ def index():
                 def _active_extid() -> dict:
                     """The staged external-id controller for the active specimen card."""
                     return spec_extid_v if _active_spec[0] is spec_visiting else spec_extid
+
+                def _active_ls() -> dict:
+                    """The staged life-stage controller for the active specimen card."""
+                    return spec_ls_v if _active_spec[0] is spec_visiting else spec_ls
 
                 # ── COLLECTING EVENT ─────────────────────────────────────
                 with ui.card().classes("w-full shadow-sm") as event_card:
@@ -1271,6 +1280,7 @@ def index():
                         or bool(bio_obj_state["taxon_id"])
                         or _active_media()["has_content"]()
                         or _active_extid()["has_content"]()
+                        or _active_ls()["has_content"]()
                         or event_media["has_content"]()
                         or any(a.get("media_items") or a.get("extid_items")
                                for a in bio_state["associations"])
@@ -1345,6 +1355,7 @@ def index():
                                 # association's media to its freshly-created row.
                                 _active_media()["commit"](session, co.id)
                                 _active_extid()["commit"](session, co.id)
+                                _active_ls()["commit"](session, co.id)
                                 if co.collecting_event_id:
                                     event_media["commit"](session, co.collecting_event_id)
                                 for _assoc, _ba in zip(bio_state["associations"], created_assocs):
@@ -1374,6 +1385,7 @@ def index():
                         return
                     spec_media["clear"](); spec_media_v["clear"]()   # staged media committed
                     spec_extid["clear"](); spec_extid_v["clear"]()
+                    spec_ls["clear"](); spec_ls_v["clear"]()
                     event_media["clear"]()
                     _refresh_table()
                     _clear_after_save()
@@ -1418,6 +1430,7 @@ def index():
                     _refresh_assoc_list()
                     spec_media["clear"](); spec_media_v["clear"](); event_media["clear"]()
                     spec_extid["clear"](); spec_extid_v["clear"]()
+                    spec_ls["clear"](); spec_ls_v["clear"]()
                     event_sel.value = None
                     state["event_id"] = None
                     event_status.set_content("· new event")

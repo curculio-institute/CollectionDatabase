@@ -10,6 +10,7 @@ from .print_queue import PrintQueue
 from .person import Person
 from .media import Media, MediaAttachment
 from .external_identifier import ExternalIdentifier
+from .life_stage import LifeStageRecord
 
 __all__ = [
     "Base",
@@ -27,4 +28,5 @@ __all__ = [
     "Media",
     "MediaAttachment",
     "ExternalIdentifier",
+    "LifeStageRecord",
 ]
