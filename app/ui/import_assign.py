@@ -26,7 +26,9 @@ from app.ui.taxon_editor import open_new_taxon_dialog
 from app.ui.date_input import attach_date_validation
 from app.ui.person_field import build_person_field
 from app.ui.vocab_field import build_vocab_field
-from app.services.vocabularies import preparation_vocab
+from app.services.vocabularies import (
+    preparation_vocab, habitat_vocab, sampling_protocol_vocab,
+)
 from app.ui.type_status_field import build_type_status_field
 # Controlled vocabularies — single source of truth (app/vocab.py).
 from app.vocab import SEX_OPTIONS, LIFE_STAGE_OPTIONS, NEW_SPECIMEN_DEFAULTS
@@ -508,11 +510,21 @@ def build_import_assign_tab(session_factory, refreshers: dict, on_saved=None) ->
                 with session_factory() as session:
                     with session.begin():
                         idby_id = id_by_state["commit"](session)
+                        # habitat + samplingProtocol are controlled vocabularies:
+                        # resolve the parsed text → FK ids (get_or_create), like the
+                        # event form's commit does for the interactive tabs.
+                        event_fields = dwc_svc.row_to_event_fields(row)
+                        _hab = (event_fields.pop("habitat", None) or "").strip()
+                        _samp = (event_fields.pop("sampling_protocol", None) or "").strip()
+                        event_fields["habitat_id"] = (
+                            habitat_vocab.get_or_create(session, _hab).id if _hab else None)
+                        event_fields["sampling_protocol_id"] = (
+                            sampling_protocol_vocab.get_or_create(session, _samp).id if _samp else None)
                         co = svc.save_specimen_entry(
                             session,
                             taxon_id=state["taxon_id"],
                             event_id=None,
-                            event_fields=dwc_svc.row_to_event_fields(row),
+                            event_fields=event_fields,
                             specimen_fields={
                                 "catalog_number":    code,
                                 "collection_code":   get_config().collection_code,

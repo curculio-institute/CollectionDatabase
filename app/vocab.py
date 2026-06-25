@@ -42,6 +42,10 @@ DISPOSITION_OPTIONS = [
     "exchanged", "missing", "destroyed", "",
 ]
 
+# SUPERSEDED: samplingProtocol is now a DB-backed controlled vocabulary
+# (sampling_protocol table, migration 0040 seeded it with this set). This constant
+# is retained only as the historical seed source; it is NOT used at runtime — the
+# form reads the table via sampling_protocol_vocab.
 SAMPLING_PROTOCOLS = [
     "hand collecting", "sweep net", "beating", "pitfall trap",
     "light trap", "sifting", "bark peeling", "rearing", "Berlese funnel",

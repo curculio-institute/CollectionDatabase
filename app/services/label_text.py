@@ -99,8 +99,9 @@ def format_locality_label(
         # coords is derived from floats — no HTML special chars
         parts.append(coords)
 
-    if ev.habitat:
-        parts.append(_e(ev.habitat))
+    _habitat = ev.habitat_obj.name if ev.habitat_obj else None
+    if _habitat:
+        parts.append(_e(_habitat))
 
     if associated_species:
         for sp in associated_species:

@@ -56,8 +56,14 @@ class CollectingEvent(Base, TimestampMixin):
     event_date: Mapped[Optional[str]] = mapped_column("dwc:eventDate", String, nullable=True)
     verbatim_event_date: Mapped[Optional[str]] = mapped_column("dwc:verbatimEventDate", String, nullable=True)
     field_number: Mapped[Optional[str]] = mapped_column("dwc:fieldNumber", String, nullable=True)
-    habitat: Mapped[Optional[str]] = mapped_column("dwc:habitat", String, nullable=True)
-    sampling_protocol: Mapped[Optional[str]] = mapped_column("dwc:samplingProtocol", String, nullable=True)
+    # habitat and samplingProtocol are controlled vocabularies (FK), not free text —
+    # editable/mergeable like persons. The DwC strings resolve from name at export.
+    habitat_id: Mapped[Optional[int]] = mapped_column(
+        Integer, ForeignKey("habitat.id", ondelete="RESTRICT"), nullable=True)
+    habitat_obj: Mapped[Optional["Habitat"]] = relationship("Habitat", lazy="select")
+    sampling_protocol_id: Mapped[Optional[int]] = mapped_column(
+        Integer, ForeignKey("sampling_protocol.id", ondelete="RESTRICT"), nullable=True)
+    sampling_protocol_obj: Mapped[Optional["SamplingProtocol"]] = relationship("SamplingProtocol", lazy="select")
     recorded_by_id: Mapped[Optional[int]] = mapped_column(Integer, ForeignKey("person.id", ondelete="RESTRICT"), nullable=True)
     recorded_by_person: Mapped[Optional["Person"]] = relationship("Person", lazy="select", foreign_keys="[CollectingEvent.recorded_by_id]")
     event_remarks: Mapped[Optional[str]] = mapped_column("dwc:eventRemarks", String, nullable=True)

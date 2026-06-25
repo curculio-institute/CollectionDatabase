@@ -15,7 +15,8 @@ Boundary (see build_collecting_event_form):
   params  — session_factory; default_recby_fn (push-pin default); on_field_edit
             (dirty-tracking callback, fired on every user edit, suppressed while
             load()/geocode populate fields).
-  handle  — collect_fields(); commit(session) → recorded_by_id; load(snapshot);
+  handle  — collect_fields(); commit(session) → {recorded_by_id, habitat_id,
+            sampling_protocol_id}; load(snapshot);
             reset(); set_readonly(bool); plus recby helpers for the tab.
 
 Reuse note: the coordinate-paste JS interceptor is scoped to a per-instance CSS
@@ -32,9 +33,10 @@ import httpx
 from nicegui import ui
 
 from app.config import get_config
-from app.vocab import SAMPLING_PROTOCOLS
+from app.services.vocabularies import habitat_vocab, sampling_protocol_vocab
 from app.ui.map_picker import build_map_picker
 from app.ui.person_field import build_person_field
+from app.ui.vocab_field import build_vocab_field
 from app.ui.date_input import attach_date_validation
 
 
@@ -91,7 +93,9 @@ def build_collecting_event_form(
     Returns a handle dict:
       card_fields_present : (no card — caller wraps); see module docstring.
       collect_fields()    : {snake_case field: value} for the save path.
-      commit(session)     : commit the recordedBy person → recorded_by_id (or None).
+      commit(session)     : resolve the FK-backed fields → a dict of ids
+                            {recorded_by_id, habitat_id, sampling_protocol_id}
+                            (each may be None); spread into create/update.
       load(snapshot)      : populate every field from a dict (suppresses on_field_edit).
       reset()             : blank every field.
       set_readonly(bool)  : lock/unlock all fields + map (reused-event / view-only).
@@ -571,8 +575,15 @@ def build_collecting_event_form(
     # ── Ecology ─────────────────────────────────────────────────────────────
     ui.label("Ecology").classes("text-xs font-semibold uppercase tracking-wider text-grey-6 mt-4")
     with ui.grid(columns=2).classes("w-full gap-3 mt-1"):
-        habitat_in   = ui.input("habitat", on_change=_fire_edit).classes("col-span-1")
-        protocol_sel = ui.select(SAMPLING_PROTOCOLS, label="samplingProtocol").classes("col-span-1")
+        # habitat + samplingProtocol are controlled vocabularies (same dropdown as
+        # the person/preparation fields). They are NOT in _event_widgets — their
+        # values are FK ids resolved at commit (like recordedBy), not text.
+        habitat_field  = build_vocab_field(
+            session_factory, habitat_vocab, "habitat",
+            on_change=_fire_edit, classes="col-span-1")
+        protocol_field = build_vocab_field(
+            session_factory, sampling_protocol_vocab, "samplingProtocol",
+            on_change=_fire_edit, classes="col-span-1")
 
     # ── Recorded by ─────────────────────────────────────────────────────────
     ui.label("Recorded by").classes("text-xs font-semibold uppercase tracking-wider text-grey-6 mt-4")
@@ -604,25 +615,42 @@ def build_collecting_event_form(
         "coordinate_uncertainty_in_meters": uncert_in,
         "minimum_elevation_in_meters":      elev_min_in,
         "maximum_elevation_in_meters":      elev_max_in,
-        "habitat":                          habitat_in,
-        "sampling_protocol":                protocol_sel,
         "field_number":                     fieldnum_in,
         "verbatim_label":                   verblabel_in,
     }
 
     def _collect_fields() -> dict:
+        # Text fields only; the FK-backed vocabs (habitat / samplingProtocol) and
+        # recordedBy are resolved to ids by commit() — kept out of here so that
+        # validation (which calls collect_fields) has no get_or_create side effect.
         return {name: w.value for name, w in _event_widgets.items()}
 
+    def _commit(s) -> dict:
+        """Resolve the FK-backed fields and return the id triplet to store on the
+        event: recordedBy + habitat + samplingProtocol (creating vocab rows as
+        needed). Spread into the create/update call alongside collect_fields()."""
+        return {
+            "recorded_by_id":       recby_state["commit"](s),
+            "habitat_id":           habitat_field["commit"](s),
+            "sampling_protocol_id": protocol_field["commit"](s),
+        }
+
     def _has_content() -> bool:
-        """True if any event field or the recordedBy person holds a value."""
+        """True if any event field or a FK-backed vocab / recordedBy holds a value."""
         if any(str(w.value or "").strip() for w in _event_widgets.values()):
             return True
-        return bool(recby_state["get_value"]())
+        return bool(
+            recby_state["get_value"]()
+            or habitat_field["get_value"]()
+            or protocol_field["get_value"]()
+        )
 
     def _reset() -> None:
         for w in _event_widgets.values():
             w.value = ""
         recby_state["set_value"](None)
+        habitat_field["set_value"](None)
+        protocol_field["set_value"](None)
 
     def _load(snapshot: dict) -> None:
         """Populate every field from a snapshot dict (suppresses on_field_edit)."""
@@ -632,6 +660,8 @@ def build_collecting_event_form(
         for name, w in _event_widgets.items():
             w.value = _s(snapshot.get(name))
         recby_state["set_value"](snapshot.get("recorded_by") or None)
+        habitat_field["set_value"](snapshot.get("habitat") or None)
+        protocol_field["set_value"](snapshot.get("sampling_protocol") or None)
         _st["populating"] = False
 
     def _set_readonly(readonly: bool) -> None:
@@ -640,6 +670,8 @@ def build_collecting_event_form(
         for w in _event_widgets.values():
             w.props(remove="readonly") if editable else w.props("readonly")
         recby_state["set_readonly"](readonly)
+        habitat_field["set_readonly"](readonly)
+        protocol_field["set_readonly"](readonly)
         _lookup_btn.set_enabled(editable)
         _lookup_btn.tooltip(
             "Fill country / state / county from coordinates via Photon"
@@ -651,7 +683,7 @@ def build_collecting_event_form(
     return {
         "collect_fields": _collect_fields,
         "has_content":    _has_content,
-        "commit":         lambda s: recby_state["commit"](s),
+        "commit":         _commit,
         "load":           _load,
         "reset":          _reset,
         "set_readonly":   _set_readonly,

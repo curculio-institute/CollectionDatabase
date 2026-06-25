@@ -212,13 +212,13 @@ def build_records_tab(session_factory, *, on_saved: callable | None = None) -> N
                 "event_date":                       ev.event_date           if ev else None,
                 "verbatim_event_date":              ev.verbatim_event_date  if ev else None,
                 "recorded_by":                      ev.recorded_by_person.full_name if (ev and ev.recorded_by_person) else None,
-                "habitat":                          ev.habitat              if ev else None,
+                "habitat":                          (ev.habitat_obj.name if ev and ev.habitat_obj else None),
                 "decimal_latitude":                 ev.decimal_latitude     if ev else None,
                 "decimal_longitude":                ev.decimal_longitude    if ev else None,
                 "coordinate_uncertainty_in_meters": ev.coordinate_uncertainty_in_meters if ev else None,
                 "minimum_elevation_in_meters":      ev.minimum_elevation_in_meters      if ev else None,
                 "maximum_elevation_in_meters":      ev.maximum_elevation_in_meters      if ev else None,
-                "sampling_protocol":                ev.sampling_protocol    if ev else None,
+                "sampling_protocol":                (ev.sampling_protocol_obj.name if ev and ev.sampling_protocol_obj else None),
                 "field_number":                     ev.field_number         if ev else None,
                 "verbatim_label":                   ev.verbatim_label       if ev else None,
             }
@@ -257,13 +257,13 @@ def build_records_tab(session_factory, *, on_saved: callable | None = None) -> N
                 "event_date":                       ev.event_date,
                 "verbatim_event_date":              ev.verbatim_event_date,
                 "recorded_by":                      ev.recorded_by_person.full_name if ev.recorded_by_person else None,
-                "habitat":                          ev.habitat,
+                "habitat":                          ev.habitat_obj.name if ev.habitat_obj else None,
                 "decimal_latitude":                 ev.decimal_latitude,
                 "decimal_longitude":                ev.decimal_longitude,
                 "coordinate_uncertainty_in_meters": ev.coordinate_uncertainty_in_meters,
                 "minimum_elevation_in_meters":      ev.minimum_elevation_in_meters,
                 "maximum_elevation_in_meters":      ev.maximum_elevation_in_meters,
-                "sampling_protocol":                ev.sampling_protocol,
+                "sampling_protocol":                ev.sampling_protocol_obj.name if ev.sampling_protocol_obj else None,
                 "field_number":                     ev.field_number,
                 "verbatim_label":                   ev.verbatim_label,
             }
@@ -522,10 +522,10 @@ def build_records_tab(session_factory, *, on_saved: callable | None = None) -> N
                         # view mode this is a specimen-only save (the event — and
                         # every other specimen on it — is left untouched).
                         if ev_fields and ev_id and _ev_editable[0]:
-                            recby_id = ev_ce["commit"](s)
+                            event_ids = ev_ce["commit"](s)
                             ev_svc.update_collecting_event(
                                 s, ev_id,
-                                recorded_by_id=recby_id,
+                                **event_ids,
                                 **ev_fields,
                             )
                 ui.notify("Changes saved.", type="positive")
@@ -590,10 +590,10 @@ def build_records_tab(session_factory, *, on_saved: callable | None = None) -> N
             try:
                 with session_factory() as s:
                     with s.begin():
-                        recby_id = ev_ce["commit"](s)
+                        event_ids = ev_ce["commit"](s)
                         ev_svc.update_collecting_event(
                             s, ev_id,
-                            recorded_by_id=recby_id,
+                            **event_ids,
                             **ev_ce["collect_fields"](),
                         )
                 ui.notify(f"Event #{ev_id} saved.", type="positive")

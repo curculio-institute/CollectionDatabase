@@ -11,6 +11,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from app.models.preparation import Preparation
+from app.models.habitat import Habitat
+from app.models.sampling_protocol import SamplingProtocol
 from app.services.vocab import Vocabulary
 
 
@@ -25,6 +27,9 @@ class VocabSpec:
 
 
 preparation_vocab = Vocabulary(Preparation, ref_table="preparation", noun="preparation")
+habitat_vocab = Vocabulary(Habitat, ref_table="habitat", noun="habitat")
+sampling_protocol_vocab = Vocabulary(
+    SamplingProtocol, ref_table="sampling_protocol", noun="sampling protocol")
 
 PREPARATION = VocabSpec(
     key="preparations",
@@ -35,5 +40,23 @@ PREPARATION = VocabSpec(
     field_label="preparations",
 )
 
+HABITAT = VocabSpec(
+    key="habitat",
+    vocab=habitat_vocab,
+    title="Habitats",
+    help="Values used in the collecting-event habitat field (e.g. broadleaf forest edge).",
+    add_label="Add habitat",
+    field_label="habitat",
+)
+
+SAMPLING_PROTOCOL = VocabSpec(
+    key="sampling_protocol",
+    vocab=sampling_protocol_vocab,
+    title="Sampling protocols",
+    help="Collecting methods used in the samplingProtocol field (e.g. beating, pitfall trap).",
+    add_label="Add sampling protocol",
+    field_label="samplingProtocol",
+)
+
 # Ordered list consumed by the Controlled Vocabularies tab.
-VOCAB_REGISTRY: list[VocabSpec] = [PREPARATION]
+VOCAB_REGISTRY: list[VocabSpec] = [PREPARATION, HABITAT, SAMPLING_PROTOCOL]

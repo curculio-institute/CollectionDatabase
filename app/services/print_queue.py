@@ -129,7 +129,7 @@ def _co_to_data_label(co: CollectionObject, text_override: str | None = None) ->
         elevation_max            = ev.maximum_elevation_in_meters     if ev else None,
         event_date               = ev.event_date                      if ev else None,
         recorded_by              = ev.recorded_by_person.full_name if (ev and ev.recorded_by_person) else None,
-        habitat                  = ev.habitat                         if ev else None,
+        habitat                  = (ev.habitat_obj.name if ev and ev.habitat_obj else None),
         associated_species       = assoc_names or None,
     )
 

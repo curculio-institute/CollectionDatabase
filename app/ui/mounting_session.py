@@ -7,7 +7,7 @@ Usage:
     ms_state = build_mounting_session_section(
         session_factory,
         collect_event_fields=lambda: _collect_event_fields(),
-        commit_recby=lambda s: recby_state["commit"](s),
+        commit_event=lambda s: ce["commit"](s),
         bio_state=bio_state,
         on_saved=lambda: _ms_on_saved(),
     )
@@ -55,7 +55,7 @@ def build_mounting_session_section(
     session_factory,
     *,
     collect_event_fields,   # () -> dict (called at save time, not render time)
-    commit_recby,           # (session) -> int | None
+    commit_event,           # (session) -> {recorded_by_id, habitat_id, sampling_protocol_id}
     bio_state: dict,        # {"associations": [...]}
     on_saved,               # () -> None
     event_id_getter=lambda: None,  # () -> int | None: the selected/reused event,
@@ -353,8 +353,8 @@ def build_mounting_session_section(
         try:
             with session_factory() as s:
                 with s.begin():
-                    recby_id = commit_recby(s)
-                    ev_fields = {**collect_event_fields(), "recorded_by_id": recby_id}
+                    event_ids = commit_event(s)
+                    ev_fields = {**collect_event_fields(), **event_ids}
 
                     # Generate all sequential codes in one batch
                     _batch_id, codes = id_svc.reserve_sequential_codes(

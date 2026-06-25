@@ -949,8 +949,8 @@ def index():
                                 "coordinate_uncertainty_in_meters": ev.coordinate_uncertainty_in_meters,
                                 "minimum_elevation_in_meters":      ev.minimum_elevation_in_meters,
                                 "maximum_elevation_in_meters":      ev.maximum_elevation_in_meters,
-                                "habitat":                          ev.habitat,
-                                "sampling_protocol":                ev.sampling_protocol,
+                                "habitat":                          ev.habitat_obj.name if ev.habitat_obj else None,
+                                "sampling_protocol":                ev.sampling_protocol_obj.name if ev.sampling_protocol_obj else None,
                                 "field_number":                     ev.field_number,
                                 "verbatim_label":                   ev.verbatim_label,
                                 "recorded_by": ev.recorded_by_person.full_name if ev.recorded_by_person else None,
@@ -1109,7 +1109,7 @@ def index():
                     ms_state = build_mounting_session_section(
                         _sf,
                         collect_event_fields=lambda: ce["collect_fields"](),
-                        commit_recby=lambda s: ce["commit"](s),
+                        commit_event=lambda s: ce["commit"](s),
                         bio_state=bio_state,
                         on_saved=lambda: _ms_on_saved(),
                         event_id_getter=lambda: state["event_id"],
@@ -1302,14 +1302,14 @@ def index():
                         code = active["get_identifier_fields"]()["catalog_number"]
                         with _sf() as session:
                             with session.begin():
-                                recby_id = ce["commit"](session)
+                                event_ids = ce["commit"](session)
                                 co = svc.save_specimen_entry(
                                     session,
                                     taxon_id=cur_det["taxon_id"],
                                     event_id=state["event_id"],
                                     event_fields={
                                         **ce["collect_fields"](),
-                                        "recorded_by_id": recby_id,
+                                        **event_ids,
                                     },
                                     specimen_fields=_collect_specimen_fields(session),
                                     determination_fields={
