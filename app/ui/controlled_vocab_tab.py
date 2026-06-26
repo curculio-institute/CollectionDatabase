@@ -28,11 +28,12 @@ def build_controlled_vocab_tab(session_factory, *, on_person_changed=None) -> No
             people = _with_session(persons_svc.list_persons)
             return [
                 {
-                    "id":    str(p.id),
-                    "full":  p.full_name,
-                    "abbr":  p.abbreviated_name or "",
-                    "orcid": p.orcid or "",
-                    "conf":  "🔒" if p.confidential else "",
+                    "id":      str(p.id),
+                    "full":    p.full_name,
+                    "abbr":    p.abbreviated_name or "",
+                    "orcid":   p.orcid or "",
+                    "conf":    "🔒" if p.confidential else "",
+                    "consent": "✅" if p.consent_approved else "",
                 }
                 for p in people
             ]
@@ -42,6 +43,7 @@ def build_controlled_vocab_tab(session_factory, *, on_person_changed=None) -> No
                 {"name": "full",  "label": "Full name",        "field": "full",  "align": "left", "sortable": True},
                 {"name": "abbr",  "label": "Abbreviated name",  "field": "abbr",  "align": "left"},
                 {"name": "orcid", "label": "ORCID",             "field": "orcid", "align": "left"},
+                {"name": "consent", "label": "Consented", "field": "consent", "align": "center"},
                 {"name": "conf",  "label": "Confidential",      "field": "conf",  "align": "center"},
                 {"name": "actions", "label": "", "field": "actions", "align": "right"},
             ],
@@ -76,14 +78,25 @@ def build_controlled_vocab_tab(session_factory, *, on_person_changed=None) -> No
             ui.label("Edit person").classes("section-label mb-2")
             dlg_full  = ui.input("Full name *").classes("w-full")
             dlg_abbr  = ui.input("Abbreviated name", placeholder="J. Jilg").classes("w-full mt-2")
-            dlg_orcid = ui.input("ORCID", placeholder="0000-0000-0000-0000").classes("w-full mt-2")
+            dlg_orcid = ui.input("ORCID", placeholder="https://orcid.org/0000-0000-0000-0000").classes("w-full mt-2")
+            dlg_consent = (
+                ui.checkbox("Consented — export with name")
+                .props("dense").classes("mt-2")
+                .tooltip("The person was asked and agreed to be published WITH their "
+                         "name. A record that consent was obtained.")
+            )
             dlg_conf  = (
                 ui.checkbox("Confidential — obscure this name on export")
-                .props("dense").classes("mt-2")
+                .props("dense")
                 .tooltip("On DwC export, this person's name is replaced with the "
                          "generic privacy label wherever they appear as recordedBy / "
                          "identifiedBy. The records themselves are still exported.")
             )
+            # Mutually exclusive — opposite export choices.
+            dlg_consent.on_value_change(
+                lambda e: e.value and dlg_conf.set_value(False))
+            dlg_conf.on_value_change(
+                lambda e: e.value and dlg_consent.set_value(False))
 
             def _save_edit():
                 if not dlg_full.value.strip():
@@ -98,6 +111,7 @@ def build_controlled_vocab_tab(session_factory, *, on_person_changed=None) -> No
                                 abbreviated_name=dlg_abbr.value or None,
                                 orcid=dlg_orcid.value or None,
                                 confidential=dlg_conf.value,
+                                consent_approved=dlg_consent.value,
                             )
                     edit_dialog.close()
                     _refresh_table()
@@ -116,7 +130,8 @@ def build_controlled_vocab_tab(session_factory, *, on_person_changed=None) -> No
             dlg_full.value   = row["full"]
             dlg_abbr.value   = row["abbr"]
             dlg_orcid.value  = row["orcid"]
-            dlg_conf.value   = bool(row.get("conf"))
+            dlg_conf.value    = bool(row.get("conf"))
+            dlg_consent.value = bool(row.get("consent"))
             edit_dialog.open()
 
         def _delete_person(row: dict):
@@ -306,7 +321,18 @@ def build_controlled_vocab_tab(session_factory, *, on_person_changed=None) -> No
         with ui.grid(columns=3).classes("w-full gap-3"):
             add_full  = ui.input("Full name *").classes("col-span-1")
             add_abbr  = ui.input("Abbreviated name", placeholder="J. Jilg").classes("col-span-1")
-            add_orcid = ui.input("ORCID", placeholder="0000-0000-0000-0000").classes("col-span-1")
+            add_orcid = ui.input("ORCID", placeholder="https://orcid.org/0000-0000-0000-0000").classes("col-span-1")
+        with ui.row().classes("items-center gap-4 mt-1"):
+            add_consent = (
+                ui.checkbox("Consented — export with name").props("dense")
+                .tooltip("Asked and agreed to be published with their name.")
+            )
+            add_conf = (
+                ui.checkbox("Confidential — obscure on export").props("dense")
+                .tooltip("Name replaced with the generic privacy label on export.")
+            )
+            add_consent.on_value_change(lambda e: e.value and add_conf.set_value(False))
+            add_conf.on_value_change(lambda e: e.value and add_consent.set_value(False))
 
         def _add_person():
             if not add_full.value.strip():
@@ -320,10 +346,14 @@ def build_controlled_vocab_tab(session_factory, *, on_person_changed=None) -> No
                             full_name=add_full.value,
                             abbreviated_name=add_abbr.value or None,
                             orcid=add_orcid.value or None,
+                            confidential=add_conf.value,
+                            consent_approved=add_consent.value,
                         )
                 add_full.value  = ""
                 add_abbr.value  = ""
                 add_orcid.value = ""
+                add_conf.value = False
+                add_consent.value = False
                 _refresh_table()
                 if on_person_changed:
                     on_person_changed()

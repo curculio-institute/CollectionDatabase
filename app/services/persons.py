@@ -9,6 +9,16 @@ from sqlalchemy.orm import Session
 from app.models.person import Person
 from app.models.base import _utcnow
 
+
+def _check_consent_exclusive(confidential: bool, consent_approved: bool) -> None:
+    """Confidential (obscure on export) and Consented (export with name) are
+    opposite intents — never both (mirrors the DB CHECK; raises a friendly error)."""
+    if confidential and consent_approved:
+        raise ValueError(
+            "A person cannot be both Confidential and Consented — these are "
+            "opposite export choices."
+        )
+
 # Human-readable label for each FK column that references person(id).
 _FK_LABELS: dict[tuple[str, str], str] = {
     ("collecting_event",   "recorded_by_id"):          "recorded-by on collecting events",
@@ -56,12 +66,15 @@ def create_person(
     abbreviated_name: str | None = None,
     orcid: str | None = None,
     confidential: bool = False,
+    consent_approved: bool = False,
 ) -> Person:
+    _check_consent_exclusive(confidential, consent_approved)
     p = Person(
         full_name=full_name.strip(),
         abbreviated_name=abbreviated_name.strip() if abbreviated_name else None,
         orcid=orcid.strip() if orcid else None,
         confidential=1 if confidential else 0,
+        consent_approved=1 if consent_approved else 0,
         created_at=_utcnow(),
         updated_at=_utcnow(),
     )
@@ -78,7 +91,9 @@ def update_person(
     abbreviated_name: str | None = None,
     orcid: str | None = None,
     confidential: bool = False,
+    consent_approved: bool = False,
 ) -> Person:
+    _check_consent_exclusive(confidential, consent_approved)
     p = session.get(Person, person_id)
     if p is None:
         raise ValueError(f"Person {person_id} not found")
@@ -86,6 +101,7 @@ def update_person(
     p.abbreviated_name = abbreviated_name.strip() if abbreviated_name else None
     p.orcid            = orcid.strip() if orcid else None
     p.confidential     = 1 if confidential else 0
+    p.consent_approved = 1 if consent_approved else 0
     p.updated_at       = _utcnow()
     session.flush()
     return p

@@ -22,10 +22,18 @@ class Person(Base, TimestampMixin):
     # obscured (not dropped) in the DwC export wherever they appear as
     # recordedBy / identifiedBy. Never pushed to TaxonWorks.
     confidential:     Mapped[int]           = mapped_column(Integer, nullable=False, server_default="0")
+    # Local-only consent flag (migration 0044). The person was asked and agreed to
+    # be exported WITH their name ("Consented — export with name"). Complements
+    # confidential: it documents that consent was obtained. Informational.
+    consent_approved: Mapped[int]           = mapped_column(Integer, nullable=False, server_default="0")
 
     __table_args__ = (
         UniqueConstraint("full_name", name="uq_person_full_name"),
         CheckConstraint("confidential IN (0, 1)", name="ck_person_confidential"),
+        CheckConstraint("consent_approved IN (0, 1)", name="ck_person_consent_approved"),
+        # mutually exclusive: obscured on export XOR named-with-consent, never both
+        CheckConstraint("consent_approved = 0 OR confidential = 0",
+                        name="ck_person_consent_xor_confidential"),
     )
 
     @property

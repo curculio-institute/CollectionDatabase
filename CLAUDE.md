@@ -408,9 +408,18 @@ are DB columns.
     with the media / external-id / life-stage icons (saves vertical space). In the shared
     `specimen_form` (`conf_chk`) and `collecting_event_form` (footer row + `footer_slot`),
     so it appears in both Digitize and Records; seeded from the record, round-tripped on save.
-  - **Person** — a `Confidential` column (🔒) in the Controlled Vocabularies → People table
-    and a checkbox in the person edit dialog (`persons_svc.create_person` / `update_person`
-    take `confidential=`).
+  - **Person** — `Consented` (✅) and `Confidential` (🔒) columns in the Controlled
+    Vocabularies → People table + checkboxes in the add / edit dialogs
+    (`persons_svc.create_person` / `update_person` take `confidential=` / `consent_approved=`).
+
+**Person consent (migration 0044).** A person also carries `consent_approved` ("Consented —
+export with name"): the collector was **asked and agreed** to be published under their name.
+It is the **opposite** of `confidential` and the two are **mutually exclusive** — enforced at
+three levels: a DB CHECK (`ck_person_consent_xor_confidential`), a service guard
+(`persons._check_consent_exclusive`, friendly `ValueError`), and UI auto-uncheck (checking one
+clears the other). `consent_approved` is informational/curatorial (the consent audit trail);
+`confidential` is what drives export obscuring. ORCID is stored **verbatim** (full
+`https://orcid.org/…` URI; the form placeholder shows the URL form) — never reformatted.
 
 ### Why person defaults live in the DB, not config.json
 

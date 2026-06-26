@@ -45,6 +45,28 @@ def test_event_confidential_round_trip(session):
     assert session.get(CollectingEvent, ce.id).confidential == 0
 
 
+def test_person_consent_round_trip(session):
+    p = persons_svc.create_person(session, full_name="Consenting C", consent_approved=True)
+    session.flush()
+    assert p.consent_approved == 1 and p.confidential == 0
+
+
+def test_person_consent_and_confidential_mutually_exclusive(session):
+    # service guard (friendly ValueError) — opposite export intents
+    with pytest.raises(ValueError):
+        persons_svc.create_person(
+            session, full_name="Conflicted", confidential=True, consent_approved=True)
+
+
+def test_person_consent_xor_confidential_db_check(session):
+    # DB CHECK backs the service guard even on a raw attribute write
+    p = persons_svc.create_person(session, full_name="Raw Writer", confidential=True)
+    session.flush()
+    with pytest.raises(IntegrityError):
+        p.consent_approved = 1
+        session.flush()
+
+
 def test_confidential_check_rejects_out_of_range(session):
     co = create_collection_object(
         session, collecting_event_id=None,
