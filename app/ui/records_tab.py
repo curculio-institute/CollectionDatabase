@@ -99,7 +99,7 @@ def build_records_tab(session_factory, *, on_saved: callable | None = None) -> N
                 r.collection_object_id: (
                     f"#{r.collection_object_id}  "
                     f"{id_svc.format_catalog_display(r.collection_code, r.catalog_number)}  "
-                    f"{r.scientific_name or '—'}"
+                    f"{(r.scientific_name + ' ' + r.authorship) if (r.scientific_name and r.authorship) else (r.scientific_name or '—')}"
                 )
                 for r in rows
             }

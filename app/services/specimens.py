@@ -28,7 +28,8 @@ class RecentRow:
     collection_object_id: int
     catalog_number: str
     collection_code: str
-    scientific_name: str
+    scientific_name: str       # composed name, WITHOUT authorship
+    authorship: str | None     # kept separate so callers can style it (upright)
     sex: str | None
     individual_count: int | None
     country: str | None
@@ -324,7 +325,8 @@ def recent_specimens(session: Session, limit: int = 200) -> list[RecentRow]:
             collection_object_id=co.id,
             catalog_number=co.catalog_number,
             collection_code=co.collection_code,
-            scientific_name=format_scientific_name(t) if t else "",
+            scientific_name=(t.scientific_name or "") if t else "",
+            authorship=(t.scientific_name_authorship if t else None),
             sex=td.sex if td else None,
             individual_count=co.individual_count,
             country=(ce.country_obj.name if (ce and ce.country_obj) else None),

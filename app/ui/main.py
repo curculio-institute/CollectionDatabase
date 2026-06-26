@@ -9,6 +9,7 @@ All DB access goes through app.services — no ORM queries in this file.
 from __future__ import annotations
 
 import asyncio
+import html as _html
 import json
 import os
 import re
@@ -62,19 +63,6 @@ from app.services.validation import validate_event_fields
 # Constants
 # ---------------------------------------------------------------------------
 # Controlled-vocabulary lists live in app/vocab.py (single source of truth).
-
-TABLE_COLS = [
-    {"name": "id",       "label": "ID",       "field": "id",       "align": "right",  "sortable": True},
-    {"name": "catalog",  "label": "Catalog",  "field": "catalog",  "align": "left",   "sortable": True},
-    {"name": "species",  "label": "Species",  "field": "species",  "align": "left",   "sortable": True},
-    {"name": "sex",      "label": "Sex",      "field": "sex",      "align": "center"},
-    {"name": "n",        "label": "n",        "field": "n",        "align": "right"},
-    {"name": "country",  "label": "Country",  "field": "country",  "align": "left"},
-    {"name": "locality", "label": "Locality", "field": "locality", "align": "left"},
-    {"name": "date",     "label": "Date",     "field": "date",     "align": "left",   "sortable": True},
-    {"name": "leg",      "label": "leg.",      "field": "leg",      "align": "left"},
-    {"name": "det",      "label": "det.",      "field": "det",      "align": "left"},
-]
 
 # ---------------------------------------------------------------------------
 # Engine (module-level, created once)
@@ -587,6 +575,21 @@ def index():
       /* tighten tree row spacing for dense checklist feel */
       .q-tree > .q-tree__node { padding-top:0; padding-bottom:0; }
       .q-tree .q-tree__node-header { padding:2px 4px; min-height:0; }
+      /* ── recent-specimens list (Digitize) — label-style, fully visible ─ */
+      .rc-list  { display:flex; flex-direction:column; }
+      .rc-row   { padding:5px 2px; border-bottom:1px solid var(--tp-base-border); }
+      .rc-row:last-child { border-bottom:none; }
+      .rc-main  { display:flex; align-items:baseline; flex-wrap:wrap; gap:7px; }
+      .rc-cat   { font-family:monospace; font-size:.8rem; font-weight:700;
+                  color:var(--tp-secondary); }
+      .rc-sp    { font-style:italic; font-size:.92rem; }
+      .rc-auth  { font-size:.76rem; color:var(--tp-base-soft); }
+      .rc-indet { font-size:.92rem; color:var(--tp-base-soft); font-style:italic; }
+      .rc-chip  { font-size:.68rem; font-weight:600; padding:0 6px; border-radius:10px;
+                  background:var(--tp-base-muted); color:var(--tp-base-lighter); }
+      .rc-meta  { font-size:.78rem; color:var(--tp-base-soft); margin-top:1px; }
+      .rc-sep   { opacity:.5; padding:0 2px; }
+      .rc-empty { font-size:.82rem; color:var(--tp-base-soft); padding:8px 2px; }
       /* scrollbar */
       ::-webkit-scrollbar       { width:5px; height:5px; }
       ::-webkit-scrollbar-track { background:var(--tp-base-muted); }
@@ -816,23 +819,47 @@ def index():
                                for o in svc.search_collecting_events(s, "")}
                 )
 
-            def _table_rows() -> list[dict]:
-                rows = _with_session(lambda s: svc.recent_specimens(s))
-                return [
-                    {
-                        "id":      str(r.collection_object_id),
-                        "catalog": id_svc.format_catalog_display(r.collection_code, r.catalog_number),
-                        "species": r.scientific_name,
-                        "sex":     r.sex or "",
-                        "n":       str(r.individual_count if r.individual_count is not None else ""),
-                        "country": r.country or "",
-                        "locality":r.locality or "",
-                        "date":    r.event_date or "",
-                        "leg":     r.recorded_by or "",
-                        "det":     f"det. {r.identified_by}" if r.identified_by else "",
-                    }
-                    for r in rows
-                ]
+            # Recent specimens are shown as a compact, fully-visible list (the old
+            # 10-column table truncated everything) — last 8, label-style: catalog +
+            # italic name on top, locality/date/leg/det beneath. Confirmation of what
+            # was just saved, not a data grid (browsing/search lives in Records/Explore).
+            _RECENT_LIMIT = 8
+
+            def _recent_html() -> str:
+                rows = _with_session(lambda s: svc.recent_specimens(s, limit=_RECENT_LIMIT))
+                if not rows:
+                    return '<div class="rc-empty">No specimens yet.</div>'
+                items: list[str] = []
+                for r in rows:
+                    cat = _html.escape(
+                        id_svc.format_catalog_display(r.collection_code, r.catalog_number))
+                    if r.scientific_name:
+                        name = f'<span class="rc-sp">{_html.escape(r.scientific_name)}</span>'
+                        if r.authorship:
+                            name += f' <span class="rc-auth">{_html.escape(r.authorship)}</span>'
+                    else:
+                        name = '<span class="rc-indet">indet.</span>'
+                    chips = ""
+                    if r.sex:
+                        chips += f'<span class="rc-chip">{_html.escape(r.sex)}</span>'
+                    if r.individual_count and r.individual_count > 1:
+                        chips += f'<span class="rc-chip">×{r.individual_count}</span>'
+                    # secondary line: place · date · leg. · det.  (skip empties)
+                    place = ", ".join(p for p in (r.locality, r.country) if p)
+                    bits = [b for b in (
+                        _html.escape(place) if place else "",
+                        _html.escape(r.event_date) if r.event_date else "",
+                        f"leg. {_html.escape(r.recorded_by)}" if r.recorded_by else "",
+                        f"det. {_html.escape(r.identified_by)}" if r.identified_by else "",
+                    ) if b]
+                    meta = '<span class="rc-sep">·</span>'.join(bits)
+                    items.append(
+                        '<div class="rc-row">'
+                        f'<div class="rc-main"><span class="rc-cat">{cat}</span>{name}{chips}</div>'
+                        + (f'<div class="rc-meta">{meta}</div>' if meta else "")
+                        + '</div>'
+                    )
+                return f'<div class="rc-list">{"".join(items)}</div>'
 
             # max-w is set by _apply_digitize_layout (max-w-7xl normal /
             # max-w-4xl single-card); never hard-coded here.
@@ -1189,12 +1216,7 @@ def index():
                         ui.space()
                         ui.button("", icon="refresh", on_click=lambda: _refresh_table()) \
                             .props("flat dense round").tooltip("Refresh")
-                    table = ui.table(
-                        columns=TABLE_COLS,
-                        rows=_table_rows(),
-                        row_key="id",
-                        pagination={"rowsPerPage": 50, "sortBy": "id", "descending": True},
-                    ).classes("w-full").props("dense flat")
+                    recent_box = ui.html(_recent_html()).classes("w-full")
 
                 # ── save / clear logic ────────────────────────────────────
 
@@ -1448,8 +1470,7 @@ def index():
                 save_btn.on_click(_on_save)
 
                 def _refresh_table():
-                    table.rows = _table_rows()
-                    table.update()
+                    recent_box.set_content(_recent_html())
 
                 def _ms_on_saved():
                     event_sel.set_options(_event_opts())
