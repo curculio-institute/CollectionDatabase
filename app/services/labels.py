@@ -467,22 +467,20 @@ def _split_identifier_code(code: str) -> tuple[str, str]:
 def _id_label_inner(code: str, collection_name: str = "") -> str:
     """Inner HTML for one identifier label: QR image + the code column.
 
-    Layout (#56): a tiny full-width collection-name header (if known), then a row
-    with the QR on the left and the code on the right, split over two lines —
-    ``JJPC-`` then ``00304`` — centred.
+    Layout (#56): a tiny full-width collection-name header (if known) on top, then a
+    row with the QR on the left and the full code ``JJPC-00304`` on one line,
+    centred, to its right.
     """
-    prefix, number = _split_identifier_code(code)
     qr = _qr_data_url(code)
     name_html = (
         f'<div class="id-collname">{_e(collection_name)}</div>'
         if collection_name else ""
     )
-    pfx_html = f'<div class="id-pfx">{_e(prefix)}</div>' if prefix else ""
     return (
         f'{name_html}'
         f'<div class="id-row">'
         f'<img src="{qr}">'
-        f'<div class="id-text">{pfx_html}<div class="id-num">{_e(number)}</div></div>'
+        f'<div class="id-text"><div class="id-code">{_e(code)}</div></div>'
         f'</div>'
     )
 
@@ -492,14 +490,15 @@ def _id_label_inner(code: str, collection_name: str = "") -> str:
 _ID_TEXT_CSS = """
 .id-collname {
     font-family: 'Fira Code', 'DejaVu Sans Mono', monospace;
-    font-size: 2.6pt; font-weight: 600; letter-spacing: 0.02pt;
+    font-size: 2.5pt; font-weight: 600; letter-spacing: 0;
     line-height: 1.0; text-align: center; width: 100%;
     white-space: nowrap; overflow: hidden;
 }
-.id-row { display: flex; align-items: center; gap: 0.8mm; width: 100%; flex: 1; }
+.id-row { display: flex; align-items: center; gap: 0.9mm; width: 100%; flex: 1; }
+.id-row img { width: 4.3mm; height: 4.3mm; flex-shrink: 0; image-rendering: pixelated; }
 .id-text {
     flex: 1;
-    min-width: 0;            /* allow the column to shrink so the code wraps */
+    min-width: 0;
     display: flex;
     flex-direction: column;
     align-items: center;
@@ -507,11 +506,9 @@ _ID_TEXT_CSS = """
     font-family: 'Fira Code', 'DejaVu Sans Mono', monospace;
     font-weight: bold;
     text-align: center;
-    line-height: 1.15;
     overflow: hidden;
 }
-.id-pfx, .id-num { font-size: 6pt; letter-spacing: 0.3pt; white-space: nowrap;
-                   line-height: 1.1; }
+.id-code { font-size: 5.5pt; letter-spacing: 0.2pt; white-space: nowrap; }
 """
 
 _ID_CSS = _BASE_CSS + _ID_TEXT_CSS + """
@@ -519,12 +516,10 @@ _ID_CSS = _BASE_CSS + _ID_TEXT_CSS + """
     height: 6.5mm;
     display: flex;
     flex-direction: column;
-    align-items: center;
     justify-content: center;
-    gap: 0.2mm;
-    padding: 0.3mm 0.5mm;
+    padding: 0.45mm 0.5mm 0.35mm;
 }
-.label img { width: 4.5mm; height: 4.5mm; flex-shrink: 0; image-rendering: pixelated; }
+.label img { width: 4.3mm; height: 4.3mm; flex-shrink: 0; image-rendering: pixelated; }
 """
 
 
