@@ -302,12 +302,19 @@ def checklist(session: Session, filters: list[dict] | None = None) -> list[Check
         names = [c.scientific_name or "" for c in chain]
         # header path = the drawer-divider ranks above this taxon (family … genus);
         # subgenus is excluded so all of a genus's species stay in one group.
-        header_taxa = [c for c in chain if c.taxon_rank in _HEADER_RANKS and c.id != t.id]
+        # When the determination is at a header rank itself (genus/family/super…/),
+        # that taxon becomes its OWN header and the row is an indet. placeholder under
+        # it — so e.g. material determined only to 'Curculionoidea' sits UNDER the
+        # superfamily header, not floating above it. Otherwise (species/subspecies)
+        # the header path is the ancestors and the row is the bare epithet.
+        header_taxa = [c for c in chain if c.taxon_rank in _HEADER_RANKS]
         headers = [(c.taxon_rank, *_header_label(c)) for c in header_taxa]
-        # Catalogue style: genus AND subgenus are headers, so the species row shows the
-        # bare epithet ('sulcatus' + muted '(Fabricius, 1775)').
         full = format_scientific_name(t)
-        epithet, ep_auth = _species_epithet(t)
+        if t.taxon_rank in _HEADER_RANKS:
+            epithet = "sp." if t.taxon_rank in ("genus", "subgenus") else "indet."
+            ep_auth = ""
+        else:
+            epithet, ep_auth = _species_epithet(t)
         sp = ChecklistSpecies(
             taxon_id=taxon_id, label=full, short_label=epithet, short_auth=ep_auth,
             count=len(lots), needs_attention=any(l.needs_attention for l in lots),
