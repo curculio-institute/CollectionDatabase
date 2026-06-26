@@ -18,14 +18,28 @@ class CollectingEvent(Base, TimestampMixin):
     # DwC verbatim label (MaterialEntity term)
     verbatim_label: Mapped[Optional[str]] = mapped_column("dwc:verbatimLabel", String, nullable=True)
 
-    # DwC locality hierarchy: continent → country → stateProvince → county → municipality → locality
+    # DwC locality hierarchy: continent → country → stateProvince → (admin region) → county → municipality → locality
+    # The administrative levels are controlled vocabularies (FK), editable/mergeable like
+    # persons, so the faceted Explore search has consistent values (#40). The DwC strings
+    # resolve from name at export; administrative_region has no DwC term (local field).
     continent: Mapped[Optional[str]] = mapped_column("dwc:continent", String, nullable=True)
-    country: Mapped[Optional[str]] = mapped_column("dwc:country", String, nullable=True)
+    country_id: Mapped[Optional[int]] = mapped_column(
+        Integer, ForeignKey("country.id", ondelete="RESTRICT"), nullable=True)
+    country_obj: Mapped[Optional["Country"]] = relationship("Country", lazy="select")
     country_code: Mapped[Optional[str]] = mapped_column("dwc:countryCode", String, nullable=True)
-    state_province: Mapped[Optional[str]] = mapped_column("dwc:stateProvince", String, nullable=True)
-    county: Mapped[Optional[str]] = mapped_column("dwc:county", String, nullable=True)
+    state_province_id: Mapped[Optional[int]] = mapped_column(
+        Integer, ForeignKey("state_province.id", ondelete="RESTRICT"), nullable=True)
+    state_province_obj: Mapped[Optional["StateProvince"]] = relationship("StateProvince", lazy="select")
+    administrative_region_id: Mapped[Optional[int]] = mapped_column(
+        Integer, ForeignKey("administrative_region.id", ondelete="RESTRICT"), nullable=True)
+    administrative_region_obj: Mapped[Optional["AdministrativeRegion"]] = relationship("AdministrativeRegion", lazy="select")
+    county_id: Mapped[Optional[int]] = mapped_column(
+        Integer, ForeignKey("county.id", ondelete="RESTRICT"), nullable=True)
+    county_obj: Mapped[Optional["County"]] = relationship("County", lazy="select")
     municipality: Mapped[Optional[str]] = mapped_column("dwc:municipality", String, nullable=True)
-    island: Mapped[Optional[str]] = mapped_column("dwc:island", String, nullable=True)
+    island_id: Mapped[Optional[int]] = mapped_column(
+        Integer, ForeignKey("island.id", ondelete="RESTRICT"), nullable=True)
+    island_obj: Mapped[Optional["Island"]] = relationship("Island", lazy="select")
     locality: Mapped[Optional[str]] = mapped_column("dwc:locality", String, nullable=True)
     verbatim_locality: Mapped[Optional[str]] = mapped_column("dwc:verbatimLocality", String, nullable=True)
     location_remarks: Mapped[Optional[str]] = mapped_column("dwc:locationRemarks", String, nullable=True)
@@ -72,6 +86,9 @@ class CollectingEvent(Base, TimestampMixin):
     habitat_enriched: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     # 1 = buffer spans >1 habitat class; 0 = unambiguous; NULL = not yet assessed
     habitat_ambiguous: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    # Local-only privacy flag (migration 0043). A confidential event withholds its
+    # specimens from the DwC export entirely. Never pushed to TaxonWorks.
+    confidential: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
 
     __table_args__ = (
         CheckConstraint(
@@ -94,6 +111,7 @@ class CollectingEvent(Base, TimestampMixin):
             "habitat_ambiguous IS NULL OR habitat_ambiguous IN (0, 1)",
             name="ck_ce_habitat_ambiguous_bool",
         ),
+        CheckConstraint("confidential IN (0, 1)", name="ck_ce_confidential"),
     )
 
     collection_objects: Mapped[List["CollectionObject"]] = relationship(

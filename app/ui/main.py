@@ -9,6 +9,7 @@ All DB access goes through app.services — no ORM queries in this file.
 from __future__ import annotations
 
 import asyncio
+import html as _html
 import json
 import os
 import re
@@ -22,6 +23,7 @@ import app.services as svc
 import app.services.taxonomy as tax_svc
 import app.services.identifiers as id_svc
 import app.services.labels as lbl_svc
+import app.services.repositories as repo_svc
 import app.services.print_queue as pq_svc
 from app.config import get_config, save_config, printed_pdf_dir, media_dir
 
@@ -41,6 +43,7 @@ from app.ui.map_picker import add_map_assets
 from app.ui.taxon_editor import build_taxon_editor
 from app.ui.person_field import build_person_field
 from app.ui.records_tab import build_records_tab
+from app.ui.explore import build_explore_panel
 from app.ui.mounting_session import build_mounting_session_section
 from app.ui.specimen_form import build_specimen_form
 from app.ui.collecting_event_form import build_collecting_event_form
@@ -61,19 +64,6 @@ from app.services.validation import validate_event_fields
 # Constants
 # ---------------------------------------------------------------------------
 # Controlled-vocabulary lists live in app/vocab.py (single source of truth).
-
-TABLE_COLS = [
-    {"name": "id",       "label": "ID",       "field": "id",       "align": "right",  "sortable": True},
-    {"name": "catalog",  "label": "Catalog",  "field": "catalog",  "align": "left",   "sortable": True},
-    {"name": "species",  "label": "Species",  "field": "species",  "align": "left",   "sortable": True},
-    {"name": "sex",      "label": "Sex",      "field": "sex",      "align": "center"},
-    {"name": "n",        "label": "n",        "field": "n",        "align": "right"},
-    {"name": "country",  "label": "Country",  "field": "country",  "align": "left"},
-    {"name": "locality", "label": "Locality", "field": "locality", "align": "left"},
-    {"name": "date",     "label": "Date",     "field": "date",     "align": "left",   "sortable": True},
-    {"name": "leg",      "label": "leg.",      "field": "leg",      "align": "left"},
-    {"name": "det",      "label": "det.",      "field": "det",      "align": "left"},
-]
 
 # ---------------------------------------------------------------------------
 # Engine (module-level, created once)
@@ -324,10 +314,11 @@ def index():
     <style>
       #tp-unsaved-banner {
         display:none; position:fixed; bottom:16px; left:50%;
-        transform:translateX(-50%); z-index:9999;
+        transform:translateX(-50%); z-index:6000;
         background:#b45309; color:#fff; padding:7px 18px; border-radius:9px;
         font-size:.82rem; font-weight:600; letter-spacing:.01em;
         box-shadow:0 2px 10px rgba(0,0,0,.28);
+        transition:bottom .2s ease;
       }
     </style>
     <script>
@@ -372,6 +363,24 @@ def index():
       window.addEventListener('beforeunload', function(e){
         if (window._tpDirty){ e.preventDefault(); e.returnValue = ''; return ''; }
       });
+      // #55: notifications appear at the bottom too. Lift the banner to hover just
+      // above any visible bottom notifications, and drop it back to its resting
+      // 16px once they clear — so it never sits on top of a warning the user needs
+      // to read.
+      function adjustBannerPos(){
+        var b = document.getElementById('tp-unsaved-banner');
+        if(!b || b.style.display === 'none') return;
+        var rest = 16, offset = rest;
+        document.querySelectorAll(
+          '.q-notifications__list--bottom, .q-notifications__list--bottom-right, '
+          + '.q-notifications__list--bottom-left').forEach(function(list){
+            if(list.querySelector('.q-notification')){
+              offset = Math.max(offset, rest + list.getBoundingClientRect().height + 8);
+            }
+          });
+        b.style.bottom = offset + 'px';
+      }
+      setInterval(adjustBannerPos, 250);
     })();
     </script>""")
 
@@ -542,13 +551,33 @@ def index():
       .dark .q-tab-panels        { background:var(--tp-base-background) !important; }
       .dark .q-tab-panel         { background:var(--tp-base-background) !important; }
       /* ── taxonomy checklist ────────────────────────────────────────── */
-      /* rank-based typography — mirrors scientific paper checklists */
-      .rank-family    { font-size:1.05rem; font-weight:700;
-                        text-transform:uppercase; letter-spacing:.06em; }
-      .rank-subfamily { font-size:.95rem;  font-weight:600; }
-      .rank-tribe     { font-size:.9rem;  font-weight:500; }
-      .rank-subtribe  { font-size:.875rem; font-style:italic; }
-      .rank-genus     { font-size:.9rem;  font-weight:700; font-style:italic; }
+      /* rank-based typography — mirrors published catalogues (e.g. CCPCC) */
+      /* fixed-width, right-aligned rank column so the NAMES all start at the same
+         offset regardless of the rank word's length (Superfamily vs Family etc.) */
+      .tax-rank       { display:inline-block; width:5.6rem; text-align:right;
+                        flex-shrink:0; font-size:.58rem; font-weight:600;
+                        text-transform:uppercase; letter-spacing:.07em;
+                        color:var(--tp-base-soft); margin-right:8px; align-self:center; }
+      /* Flatten the tree's per-level indentation so every name lines up at the same
+         column — hierarchy is carried by the rank label + type size (catalogue style),
+         not by indentation. Collapse/expand still works via the node arrows. */
+      .checklist-tree .q-tree__children { padding-left:0; }
+      /* reorderable hint (family-and-above): faint, brightens on row hover.
+         The actual reorder happens via row-select + the ↑/↓ toolbar buttons. */
+      .tax-move-hint { opacity:0; transition:opacity .12s; margin-left:4px;
+                       color:var(--tp-base-soft); cursor:default; }
+      .checklist-tree.reorder-on .q-tree__node-header:hover .tax-move-hint { opacity:.45; }
+      .rank-order,
+      .rank-suborder,
+      .rank-infraorder,
+      .rank-superfamily { font-size:1.45rem; font-weight:700;
+                        text-transform:uppercase; letter-spacing:.05em; }
+      .rank-family    { font-size:1.35rem; font-weight:800;
+                        text-transform:uppercase; letter-spacing:.03em; }
+      .rank-subfamily { font-size:1.12rem; font-weight:700; }
+      .rank-tribe     { font-size:1.0rem;  font-weight:600; }
+      .rank-subtribe  { font-size:.92rem; font-weight:600; }
+      .rank-genus     { font-size:1.05rem; font-weight:700; font-style:italic; }
       .rank-subgenus  { font-size:.875rem; font-style:italic; }
       .rank-species     { font-size:.875rem; font-style:italic; }
       .rank-subspecies  { font-size:.875rem; font-style:italic; }
@@ -566,6 +595,21 @@ def index():
       /* tighten tree row spacing for dense checklist feel */
       .q-tree > .q-tree__node { padding-top:0; padding-bottom:0; }
       .q-tree .q-tree__node-header { padding:2px 4px; min-height:0; }
+      /* ── recent-specimens list (Digitize) — label-style, fully visible ─ */
+      .rc-list  { display:flex; flex-direction:column; }
+      .rc-row   { padding:5px 2px; border-bottom:1px solid var(--tp-base-border); }
+      .rc-row:last-child { border-bottom:none; }
+      .rc-main  { display:flex; align-items:baseline; flex-wrap:wrap; gap:7px; }
+      .rc-cat   { font-family:monospace; font-size:.8rem; font-weight:700;
+                  color:var(--tp-secondary); }
+      .rc-sp    { font-style:italic; font-size:.92rem; }
+      .rc-auth  { font-size:.76rem; color:var(--tp-base-soft); }
+      .rc-indet { font-size:.92rem; color:var(--tp-base-soft); font-style:italic; }
+      .rc-chip  { font-size:.68rem; font-weight:600; padding:0 6px; border-radius:10px;
+                  background:var(--tp-base-muted); color:var(--tp-base-lighter); }
+      .rc-meta  { font-size:.78rem; color:var(--tp-base-soft); margin-top:1px; }
+      .rc-sep   { opacity:.5; padding:0 2px; }
+      .rc-empty { font-size:.82rem; color:var(--tp-base-soft); padding:8px 2px; }
       /* scrollbar */
       ::-webkit-scrollbar       { width:5px; height:5px; }
       ::-webkit-scrollbar-track { background:var(--tp-base-muted); }
@@ -658,6 +702,7 @@ def index():
                 with main_tabs:
                     ui.tab("digitize", label="Specimen Digitization", icon="biotech")
                     ui.tab("records",  label="Records",               icon="edit_note")
+                    ui.tab("explore",  label="Explore",               icon="travel_explore")
                     ui.tab("import",   label="Import & Assign",       icon="upload_file")
                     ui.tab("taxonomy", label="Taxonomy",              icon="account_tree")
                     ui.tab("labels",   label="Labels",                icon="label")
@@ -794,23 +839,47 @@ def index():
                                for o in svc.search_collecting_events(s, "")}
                 )
 
-            def _table_rows() -> list[dict]:
-                rows = _with_session(lambda s: svc.recent_specimens(s))
-                return [
-                    {
-                        "id":      str(r.collection_object_id),
-                        "catalog": id_svc.format_catalog_display(r.collection_code, r.catalog_number),
-                        "species": r.scientific_name,
-                        "sex":     r.sex or "",
-                        "n":       str(r.individual_count if r.individual_count is not None else ""),
-                        "country": r.country or "",
-                        "locality":r.locality or "",
-                        "date":    r.event_date or "",
-                        "leg":     r.recorded_by or "",
-                        "det":     f"det. {r.identified_by}" if r.identified_by else "",
-                    }
-                    for r in rows
-                ]
+            # Recent specimens are shown as a compact, fully-visible list (the old
+            # 10-column table truncated everything) — last 8, label-style: catalog +
+            # italic name on top, locality/date/leg/det beneath. Confirmation of what
+            # was just saved, not a data grid (browsing/search lives in Records/Explore).
+            _RECENT_LIMIT = 8
+
+            def _recent_html() -> str:
+                rows = _with_session(lambda s: svc.recent_specimens(s, limit=_RECENT_LIMIT))
+                if not rows:
+                    return '<div class="rc-empty">No specimens yet.</div>'
+                items: list[str] = []
+                for r in rows:
+                    cat = _html.escape(
+                        id_svc.format_catalog_display(r.collection_code, r.catalog_number))
+                    if r.scientific_name:
+                        name = f'<span class="rc-sp">{_html.escape(r.scientific_name)}</span>'
+                        if r.authorship:
+                            name += f' <span class="rc-auth">{_html.escape(r.authorship)}</span>'
+                    else:
+                        name = '<span class="rc-indet">indet.</span>'
+                    chips = ""
+                    if r.sex:
+                        chips += f'<span class="rc-chip">{_html.escape(r.sex)}</span>'
+                    if r.individual_count and r.individual_count > 1:
+                        chips += f'<span class="rc-chip">×{r.individual_count}</span>'
+                    # secondary line: place · date · leg. · det.  (skip empties)
+                    place = ", ".join(p for p in (r.locality, r.country) if p)
+                    bits = [b for b in (
+                        _html.escape(place) if place else "",
+                        _html.escape(r.event_date) if r.event_date else "",
+                        f"leg. {_html.escape(r.recorded_by)}" if r.recorded_by else "",
+                        f"det. {_html.escape(r.identified_by)}" if r.identified_by else "",
+                    ) if b]
+                    meta = '<span class="rc-sep">·</span>'.join(bits)
+                    items.append(
+                        '<div class="rc-row">'
+                        f'<div class="rc-main"><span class="rc-cat">{cat}</span>{name}{chips}</div>'
+                        + (f'<div class="rc-meta">{meta}</div>' if meta else "")
+                        + '</div>'
+                    )
+                return f'<div class="rc-list">{"".join(items)}</div>'
 
             # max-w is set by _apply_digitize_layout (max-w-7xl normal /
             # max-w-4xl single-card); never hard-coded here.
@@ -927,10 +996,20 @@ def index():
                             event_status.set_content("· new event (edited)")
                             event_status.classes(remove="event-linked", add="event-new")
 
+                    # Event media (staged; committed to the event on Save). Built
+                    # into the form's footer so it shares the Confidential line.
+                    event_media: dict = {}
+
+                    def _event_footer():
+                        event_media.update(build_media_button(
+                            _sf, target_kind="collecting_event", staged=True,
+                            tooltip="Event media (attached on Save)"))
+
                     ce = build_collecting_event_form(
                         _sf,
                         default_recby_fn=_default_recby,
                         on_field_edit=_on_event_field_edit,
+                        footer_slot=_event_footer,
                     )
 
                     def _refresh_person_opts():
@@ -957,12 +1036,13 @@ def index():
                             # raise DetachedInstanceError). The widget's load() blanks
                             # None and stringifies numerics.
                             snapshot = {
-                                "country":                          ev.country,
+                                "country":                          ev.country_obj.name if ev.country_obj else None,
                                 "country_code":                     ev.country_code,
-                                "state_province":                   ev.state_province,
-                                "county":                           ev.county,
+                                "state_province":                   ev.state_province_obj.name if ev.state_province_obj else None,
+                                "administrative_region":            ev.administrative_region_obj.name if ev.administrative_region_obj else None,
+                                "county":                           ev.county_obj.name if ev.county_obj else None,
                                 "municipality":                     ev.municipality,
-                                "island":                           ev.island,
+                                "island":                           ev.island_obj.name if ev.island_obj else None,
                                 "locality":                         ev.locality,
                                 "verbatim_locality":                ev.verbatim_locality,
                                 "event_date":                       ev.event_date,
@@ -977,6 +1057,7 @@ def index():
                                 "field_number":                     ev.field_number,
                                 "verbatim_label":                   ev.verbatim_label,
                                 "recorded_by": ev.recorded_by_person.full_name if ev.recorded_by_person else None,
+                                "confidential": ev.confidential,
                             }
                             preview = format_event_preview_html(ev)
                             n_shared = ev_svc.count_co_at_event(s, eid)
@@ -995,12 +1076,6 @@ def index():
                         _show_reuse_banner(eid, ev_n)
 
                     event_sel.on_value_change(_on_event_selected)
-
-                    # Event media (staged; committed to the event on Save)
-                    with ui.row().classes("w-full justify-end mt-2"):
-                        event_media = build_media_button(
-                            _sf, target_kind="collecting_event", staged=True,
-                            tooltip="Event media (attached on Save)")
 
                 # ── BIOLOGICAL ASSOCIATIONS ───────────────────────────────
                 with ui.card().classes("w-full shadow-sm") as bio_card:
@@ -1166,12 +1241,7 @@ def index():
                         ui.space()
                         ui.button("", icon="refresh", on_click=lambda: _refresh_table()) \
                             .props("flat dense round").tooltip("Refresh")
-                    table = ui.table(
-                        columns=TABLE_COLS,
-                        rows=_table_rows(),
-                        row_key="id",
-                        pagination={"rowsPerPage": 50, "sortBy": "id", "descending": True},
-                    ).classes("w-full").props("dense flat")
+                    recent_box = ui.html(_recent_html()).classes("w-full")
 
                 # ── save / clear logic ────────────────────────────────────
 
@@ -1226,6 +1296,7 @@ def index():
                         "disposition":       active["disp_sel"].value,
                         "basis_of_record":   active["basis_sel"].value,
                         "occurrence_remarks":active["rem_in"].value,
+                        "confidential":      1 if active["conf_chk"].value else 0,
                     }
 
                 def _validate() -> str | None:
@@ -1425,8 +1496,7 @@ def index():
                 save_btn.on_click(_on_save)
 
                 def _refresh_table():
-                    table.rows = _table_rows()
-                    table.update()
+                    recent_box.set_content(_recent_html())
 
                 def _ms_on_saved():
                     event_sel.set_options(_event_opts())
@@ -1596,6 +1666,26 @@ def index():
                 ui.timer(1.0, _sync_rec_dirty)
 
         # ================================================================
+        # TAB: EXPLORE  (#40 — faceted browse over the dataset; drills into Records)
+        # ================================================================
+        with ui.tab_panel("explore"):
+            with ui.column().classes("w-full max-w-5xl mx-auto px-4 pt-6 pb-16 gap-2"):
+                def _explore_open_spec(co_id):
+                    _records_handle["open_specimen"](co_id)
+                    main_tabs.set_value("records")
+
+                def _explore_open_event(ev_id):
+                    _records_handle["open_event"](ev_id)
+                    main_tabs.set_value("records")
+
+                _explore_handle = build_explore_panel(
+                    _sf,
+                    on_open_specimen=_explore_open_spec,
+                    on_open_event=_explore_open_event,
+                )
+                _refreshers["explore"] = _explore_handle["refresh"]
+
+        # ================================================================
         # TAB: IMPORT & ASSIGN
         # ================================================================
         with ui.tab_panel("import"):
@@ -1625,24 +1715,11 @@ def index():
         with ui.tab_panel("taxonomy"):
             with ui.column().classes("w-full max-w-5xl mx-auto px-4 pt-6 pb-16 gap-4"):
 
-                # ── summary stats ────────────────────────────────────────
-                stats = _with_session(tax_svc.get_stats)
-                _tax_stat_labels: dict[str, object] = {}
-                with ui.row().classes("w-full gap-4"):
-                    for label, value in [
-                        ("Accepted taxa", stats.total_accepted),
-                        ("Species",       stats.total_species),
-                    ]:
-                        with ui.card().classes("shadow-sm px-5 py-3 flex-1 text-center"):
-                            _tax_stat_labels[label] = ui.label(str(value)).style(
-                                "font-size:1.8rem; font-weight:300; color:var(--tp-secondary);"
-                            )
-                            ui.label(label).classes("section-label mt-1")
-
+                # Summary stat cards (accepted-taxa / species counts) were removed
+                # — low value, took vertical space. The refresher stays as a no-op
+                # so the existing call sites need no change.
                 def _refresh_taxonomy_stats():
-                    s = _with_session(tax_svc.get_stats)
-                    _tax_stat_labels["Accepted taxa"].set_text(str(s.total_accepted))
-                    _tax_stat_labels["Species"].set_text(str(s.total_species))
+                    pass
                 _refreshers["taxonomy_stats"] = _refresh_taxonomy_stats
 
                 # ── nomenclatural code tabs + manage buttons ──────────────
@@ -1663,6 +1740,39 @@ def index():
                             ui.tab("ALL",  label="All codes")
 
                         ui.space()
+
+                        # Reorder mode — arranging the taxonomic sequence is an
+                        # occasional curatorial action, so it stays behind this
+                        # toggle (progressive disclosure). When on, the reorder
+                        # toolbar below appears and orderable rows become
+                        # selectable to move; off restores plain browsing.
+                        _reorder_mode = {"on": False}
+
+                        def _toggle_reorder():
+                            on = not _reorder_mode["on"]
+                            _reorder_mode["on"] = on
+                            _reorder_bar.set_visibility(on)
+                            if on:
+                                _reorder_btn.props("color=secondary")
+                                tax_tree.classes(add="reorder-on")
+                            else:
+                                _reorder_btn.props(remove="color=secondary")
+                                tax_tree.classes(remove="reorder-on")
+                                _sel_taxon["tid"] = None
+                                _btn_up.set_enabled(False)
+                                _btn_dn.set_enabled(False)
+                                _reorder_lbl.set_text(
+                                    "Select a family or higher rank to reorder")
+                                tax_tree._props["selected"] = None
+                                tax_tree.update()
+
+                        _reorder_btn = (
+                            ui.button("Reorder", icon="swap_vert")
+                            .props("flat dense")
+                            .tooltip("Arrange family-and-above ranks into the "
+                                     "collection's taxonomic sequence")
+                        )
+                        _reorder_btn.on_click(_toggle_reorder)
 
                         def _on_saved_taxon():
                             _refresh_taxonomy_stats()
@@ -1696,8 +1806,27 @@ def index():
 
                 # ── checklist card ───────────────────────────────────────
                 with ui.card().classes("w-full shadow-sm"):
-                    with ui.row().classes("items-center gap-2 mb-3"):
+                    _collapsed = {"on": False}   # tree starts fully expanded
+                    with ui.row().classes("items-center gap-2 mb-3 w-full"):
                         ui.label("Checklist").classes("section-label")
+                        ui.space()
+                        _collapse_btn = (
+                            ui.button("Collapse all", icon="unfold_less")
+                            .props("flat dense")
+                        )
+
+                        async def _toggle_collapse():
+                            _collapsed["on"] = not _collapsed["on"]
+                            if _collapsed["on"]:
+                                await tax_tree.run_method("collapseAll")
+                                _collapse_btn.set_text("Expand all")
+                                _collapse_btn.props("icon=unfold_more")
+                            else:
+                                await tax_tree.run_method("expandAll")
+                                _collapse_btn.set_text("Collapse all")
+                                _collapse_btn.props("icon=unfold_less")
+
+                        _collapse_btn.on_click(_toggle_collapse)
 
                     # Filter select — searchable across all rank levels
                     checklist_opts = _with_session(tax_svc.checklist_options)
@@ -1712,15 +1841,87 @@ def index():
                         .tooltip("Type a name at any rank to filter the checklist")
                     )
 
+                    # Reorder toolbar — display-only taxonomic sequence for
+                    # family-and-above ranks (#40). Selecting an orderable row
+                    # (native q-tree selection, Python-side on_select) enables
+                    # the ↑/↓ buttons; below family stays alphabetical.
+                    _sel_taxon: dict[str, int | None] = {"tid": None}
+                    _reorder_bar = ui.row().classes("items-center gap-1 mb-3")
+                    with _reorder_bar:
+                        ui.icon("swap_vert").classes("text-base") \
+                          .style("color:var(--tp-base-soft)")
+                        _reorder_lbl = (
+                            ui.label("Select a family or higher rank to reorder")
+                            .classes("text-xs").style("color:var(--tp-base-soft)")
+                        )
+                        _btn_up = (
+                            ui.button(icon="keyboard_arrow_up")
+                            .props("flat dense round size=sm")
+                            .tooltip("Move up (taxonomic sequence)")
+                        )
+                        _btn_dn = (
+                            ui.button(icon="keyboard_arrow_down")
+                            .props("flat dense round size=sm")
+                            .tooltip("Move down (taxonomic sequence)")
+                        )
+                    _btn_up.set_enabled(False)
+                    _btn_dn.set_enabled(False)
+                    _reorder_bar.set_visibility(False)   # revealed by the Reorder toggle
+
+                    def _on_node_select(e):
+                        from app.models import Taxon
+                        if not _reorder_mode["on"]:
+                            return
+                        nid = e.value or ""
+                        tid = None
+                        name = None
+                        if isinstance(nid, str) and nid.startswith("taxon-"):
+                            try:
+                                cand = int(nid.split("-", 1)[1])
+                            except ValueError:
+                                cand = None
+                            if cand is not None:
+                                with _sf() as s:
+                                    t = s.get(Taxon, cand)
+                                    if t is not None and t.taxon_rank in tax_svc.ORDERABLE_RANKS:
+                                        tid = t.id
+                                        name = t.scientific_name
+                        _sel_taxon["tid"] = tid
+                        _btn_up.set_enabled(tid is not None)
+                        _btn_dn.set_enabled(tid is not None)
+                        _reorder_lbl.set_text(
+                            f"Reorder: {name}" if tid is not None
+                            else "Select a family or higher rank to reorder"
+                        )
+
+                    def _do_move(direction: int):
+                        tid = _sel_taxon["tid"]
+                        if tid is None:
+                            return
+                        with _sf() as s:
+                            with s.begin():
+                                tax_svc.move_taxon(s, tid, direction)
+                        _refresh_tree()
+                        if "explore" in _refreshers:
+                            _refreshers["explore"]()
+                        # keep the row selected after the rebuild
+                        tax_tree._props["selected"] = f"taxon-{tid}"
+                        tax_tree.update()
+
+                    _btn_up.on_click(lambda: _do_move(-1))
+                    _btn_dn.on_click(lambda: _do_move(1))
+
                     tree_data = _with_session(
                         lambda s: tax_svc.build_taxonomy_tree(s, nomenclatural_code="ICZN")
                     )
 
                     _NODE_SLOT = r"""
-                        <div style="display:flex; align-items:baseline; gap:7px; padding:2px 0 1px;">
+                        <div style="display:flex; align-items:baseline; gap:7px; padding:2px 0 1px; cursor:pointer; flex:1;"
+                             @click="props.node.children && props.node.children.length ? props.tree.setExpanded(props.key, !props.expanded) : null">
                           <span v-if="props.node.synonym"
                                 style="color:var(--tp-base-soft); font-size:.8rem;
                                        font-style:normal; margin-right:-2px;">=</span>
+                          <span class="tax-rank">{{ ['order','suborder','infraorder','superfamily','family','subfamily','tribe','subtribe','genus','subgenus'].includes(props.node.rank) ? props.node.rank : '' }}</span>
                           <span :class="'rank-' + props.node.rank">{{ props.node.name }}</span>
                           <span v-if="props.node.auth"
                                 style="font-style:normal; font-size:.78rem;
@@ -1740,6 +1941,10 @@ def index():
                                     text-decoration:none; opacity:.6; line-height:1; margin-left:2px;"
                              onmouseover="this.style.opacity='1'"
                              onmouseout="this.style.opacity='.6'">↗</a>
+                          <q-icon v-if="props.node.orderable" name="swap_vert"
+                                  size="15px" class="tax-move-hint">
+                            <q-tooltip>Click the row, then use the ↑/↓ buttons above to set the taxonomic sequence</q-tooltip>
+                          </q-icon>
                         </div>
                     """
 
@@ -1748,12 +1953,17 @@ def index():
                         nodes=tree_data,
                         label_key="label",
                         children_key="children",
-                    ).classes("w-full").props("no-connectors dense")
+                        on_select=_on_node_select,
+                    ).classes("w-full checklist-tree").props("no-connectors dense")
                     tax_tree.add_slot("default-header", _NODE_SLOT)
 
                     async def _expand():
                         await asyncio.sleep(0.15)
                         await tax_tree.run_method("expandAll")
+                        # a re-expand (filter/tab change) resets the toggle state
+                        _collapsed["on"] = False
+                        _collapse_btn.set_text("Collapse all")
+                        _collapse_btn.props("icon=unfold_less")
 
                     async def _on_filter_change(e):
                         key = e.value or ""
@@ -2050,11 +2260,41 @@ def index():
                         ui.notify(f"Labels downloaded — queue cleared. Saved {archive.name}",
                                   type="positive")
 
-                    def _clear_queue():
+                    def _do_clear_queue():
                         with _sf() as session:
                             with session.begin():
                                 pq_svc.clear_queue(session)
                         _refresh_queue()
+
+                    def _clear_queue():
+                        # Clearing removes queued labels WITHOUT printing. The reserved
+                        # identifier codes are NOT deleted — they stay in their batch
+                        # (the "Staged" count) and can be re-added to the queue / printed
+                        # from the Labels tab. Confirm first so codes are never lost by a
+                        # stray click (user request).
+                        summary = _with_session(pq_svc.queue_summary)
+                        if summary.total == 0:
+                            ui.notify("Queue is already empty.", type="info")
+                            return
+                        dlg = ui.dialog()
+                        with dlg, ui.card().classes("min-w-[420px]"):
+                            ui.label("Clear the print queue?").classes("section-label mb-1")
+                            ui.label(
+                                f"{summary.total} queued label(s) will be removed "
+                                "without printing. Reserved identifier codes are NOT "
+                                "lost — they stay in their batch and can be re-added any "
+                                "time from the Labels tab → Reserved codes → "
+                                "“Add to print queue”."
+                            ).classes("text-sm").style("color:var(--tp-base-soft)")
+                            with ui.row().classes("justify-end w-full gap-2 mt-3"):
+                                ui.button("Cancel", on_click=dlg.close).props("flat no-caps")
+                                def _confirm():
+                                    dlg.close()
+                                    _do_clear_queue()
+                                ui.button("Clear without printing", on_click=_confirm) \
+                                    .props("no-caps color=negative")
+                        dlg.on_value_change(lambda e: dlg.delete() if not e.value else None)
+                        dlg.open()
 
                     print_btn.on_click(_print_all)
                     clear_btn.on_click(_clear_queue)
@@ -2163,7 +2403,8 @@ def index():
                         if not codes:
                             ui.notify("No reserved codes left in this batch.", type="warning")
                             return
-                        pdf = lbl_svc.identifier_sheet(codes)
+                        names = _with_session(repo_svc.name_map)
+                        pdf = lbl_svc.identifier_sheet(codes, names)
                         ui.download(pdf, filename=f"identifiers_reprint_batch{bid}.pdf",
                                     media_type="application/pdf")
                         id_status.set_text(f"✓ Reprinted {len(codes)} codes from batch {bid}")
@@ -2200,9 +2441,25 @@ def index():
                                 note = "" if b.n_reserved == b.n_total \
                                        else f"  · {b.n_total - b.n_reserved} assigned"
                                 with ui.column().classes("w-full mt-3 gap-1"):
-                                    ui.label(f"{ts}  —  {b.n_reserved} staged{note}") \
-                                      .classes("text-xs font-medium") \
-                                      .style("color:var(--tp-base-soft)")
+                                    with ui.row().classes("items-center gap-2 w-full"):
+                                        ui.label(f"{ts}  —  {b.n_reserved} staged{note}") \
+                                          .classes("text-xs font-medium") \
+                                          .style("color:var(--tp-base-soft)")
+                                        ui.space()
+                                        def _requeue(bid=b.batch_id):
+                                            with _sf() as s:
+                                                with s.begin():
+                                                    n = pq_svc.requeue_batch_identifiers(s, bid)
+                                            if n:
+                                                ui.notify(f"Added {n} code(s) to the print queue.",
+                                                          type="positive")
+                                            else:
+                                                ui.notify("All reserved codes from this batch "
+                                                          "are already in the queue.", type="info")
+                                            _refresh_queue()
+                                        ui.button("Add to print queue", icon="playlist_add",
+                                                  on_click=_requeue) \
+                                            .props("flat dense no-caps size=sm color=secondary")
                                     codes = _with_session(
                                         lambda s, bid=b.batch_id: id_svc.codes_for_batch(s, bid)
                                     )
@@ -2287,6 +2544,26 @@ def index():
                 "Written into every new record. Required before saving a specimen."
             ).classes("text-xs mb-2").style("color:var(--tp-base-soft)")
             cfg_now_id = get_config()
+
+            # Default collection — pick from the Collections vocabulary; selecting a
+            # row fills institutionCode + collectionCode below (which stay editable as
+            # the stored values). Keeps the new-specimen default in sync with the
+            # collection's metadata + the printed label (#56).
+            def _repo_opts() -> dict:
+                with _sf() as s:
+                    return {
+                        r.collection_code: f"{r.collection_code} — {r.collection_full_name}"
+                        for r in repo_svc.list_repositories(s)
+                    }
+
+            default_collection_sel = ui.select(
+                options=_repo_opts(),
+                value=cfg_now_id.collection_code or None,
+                label="Default collection (from Collections vocabulary)",
+                with_input=True,
+            ).classes("w-full mt-1")
+            ui.timer(2.0, lambda: default_collection_sel.set_options(_repo_opts()))
+
             institution_code_in = ui.input(
                 "institutionCode",
                 value=cfg_now_id.institution_code,
@@ -2297,6 +2574,20 @@ def index():
                 value=cfg_now_id.collection_code,
                 placeholder="e.g. Jilg",
             ).classes("w-full mt-2")
+
+            def _on_default_collection(e):
+                code = e.value
+                if not code:
+                    return
+                with _sf() as s:
+                    r = next((x for x in repo_svc.list_repositories(s)
+                              if x.collection_code == code), None)
+                if r is not None:
+                    collection_code_in.value = r.collection_code
+                    # Only fill institutionCode if the row actually has one — don't
+                    # invent it from the collection code.
+                    institution_code_in.value = r.institution_code or ""
+            default_collection_sel.on_value_change(_on_default_collection)
 
             ui.separator().classes("my-3")
 
@@ -2430,6 +2721,8 @@ def index():
         tp_base_in.value        = cfg.taxonpages_base
         institution_code_in.value = cfg.institution_code
         collection_code_in.value  = cfg.collection_code
+        default_collection_sel.set_options(_repo_opts())
+        default_collection_sel.value = cfg.collection_code or None
         map_layer_sel.value     = cfg.map_default_layer or "street"
         digitize_layout_toggle.value = cfg.digitize_layout or "normal"
         default_license_sel.value = cfg.default_license or ""

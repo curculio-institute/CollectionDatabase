@@ -11,9 +11,11 @@ from .person import Person
 from .preparation import Preparation
 from .habitat import Habitat
 from .sampling_protocol import SamplingProtocol
+from .geography import Country, StateProvince, County, Island, AdministrativeRegion
 from .media import Media, MediaAttachment
 from .external_identifier import ExternalIdentifier
 from .life_stage import LifeStageRecord
+from .repository import Repository
 
 __all__ = [
     "Base",
@@ -31,8 +33,14 @@ __all__ = [
     "Preparation",
     "Habitat",
     "SamplingProtocol",
+    "Country",
+    "StateProvince",
+    "County",
+    "Island",
+    "AdministrativeRegion",
     "Media",
     "MediaAttachment",
     "ExternalIdentifier",
     "LifeStageRecord",
+    "Repository",
 ]

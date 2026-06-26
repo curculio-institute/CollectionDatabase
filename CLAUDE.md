@@ -289,7 +289,7 @@ attributes. Mermaid diagrams use plain camelCase. Do not deviate from this patte
 | Table | Purpose |
 |-------|---------|
 | `collection_object` | One physical specimen or lot. `catalog_number` (NOT NULL) is the stable sync join key. `dwc:basisOfRecord`, `dwc:sex`, `dwc:typeStatus`, etc. `preparation_id` FK → `preparation` (controlled vocab, not free text — migration 0039; see "Controlled vocabularies"). |
-| `collecting_event` | Where/when collected; shared by many specimens. Full DwC locality + coordinate block. `dwc:eventDate` supports ISO 8601 intervals (`2024-06-15/2024-06-20`). `dwc:recordedBy` FK → `person(full_name)`. `habitat_id` + `sampling_protocol_id` are controlled-vocab FKs (migration 0040; see "Controlled vocabularies"). |
+| `collecting_event` | Where/when collected; shared by many specimens. Full DwC locality + coordinate block. `dwc:eventDate` supports ISO 8601 intervals (`2024-06-15/2024-06-20`). `dwc:recordedBy` FK → `person(full_name)`. `habitat_id` + `sampling_protocol_id` (migration 0040) and the geography hierarchy `country_id` / `state_province_id` / `administrative_region_id` / `county_id` / `island_id` (migration 0041) are all controlled-vocab FKs (see "Controlled vocabularies"). `municipality` + `locality` stay free text; `dwc:countryCode` stays a per-event column. |
 | `taxon` | Local OTU analogue. DwC parent-link model (GBIF best practices). Columns: `name_element` (atomic source of truth — this rank's own epithet/uninomial, e.g. `crypticus`; migration 0032, Epic #30), `dwc:scientificName` (the *composed* full name without authorship, e.g. `Otiorhynchus crypticus`, maintained from `name_element` + the parent chain), `dwc:taxonRank`, `dwc:scientificNameAuthorship`, `dwc:parentNameUsageID` (self-FK, encodes hierarchy), `dwc:acceptedNameUsageID` (self-FK, marks synonyms — its presence *is* synonym status; `taxonomicStatus` is derived at export, not stored, see below), `taxonworksOtuID`. No denormalised rank columns. |
 | `taxon_determination` | `collection_object` → `taxon` link. `is_current` flag. `taxon_id` may reference a synonym row (deliberate design). `dwc:identifiedBy` FK → `person(full_name)`. |
 | `biological_relationship` | Kind of association (`collected_on`, `feeds_on`, …). |
@@ -301,6 +301,7 @@ attributes. Mermaid diagrams use plain camelCase. Do not deviate from this patte
 | `preparation` | Single-name controlled vocabulary (`id`, `name` UNIQUE) for `collection_object.preparation_id`. First of the single-name vocabularies built on the generic `Vocabulary` service; see "Controlled vocabularies". Migration 0039. |
 | `habitat` | Single-name controlled vocabulary for `collecting_event.habitat_id` (was free-text `dwc:habitat`). Migration 0040. |
 | `sampling_protocol` | Single-name controlled vocabulary for `collecting_event.sampling_protocol_id` (was the hardcoded `dwc:samplingProtocol` UI list). **Seeded** with the curated method set. Migration 0040. |
+| `country` / `state_province` / `county` / `island` / `administrative_region` | The administrative-geography single-name vocabularies on `collecting_event` (migration 0041, #40). Were free-text `dwc:country`/`dwc:stateProvince`/`dwc:county`/`dwc:island`; `administrative_region` (Regierungsbezirk tier) is new and has no DwC term. Resolved name→id in the events service. |
 | `media` | One row per stored file (the bytes live content-addressed on disk; see "Media" below). `sha256` UNIQUE (de-dup). `category` (CHECK ∈ {Image, Sound, Video, Document, Sequence, Other}) is the filter key. Audubon-Core-style metadata; `rights_holder_id` is a **person FK** (ON DELETE RESTRICT), `license` is free text. Migration 0035. |
 | `media_attachment` | Links a `media` row to exactly one of a `collection_object`, `collecting_event`, or `biological_association` (exclusive-arc CHECK; all FKs ON DELETE CASCADE). Per-attachment `caption` / `is_primary` / `sort_order` (mirrors TaxonWorks' Image↔Depiction split). Migration 0035. |
 | `external_identifier` | An external resource link/ID (`source`, `value`, `label`) attached to exactly one of a `collection_object` or a `biological_association` (exclusive-arc CHECK; FKs ON DELETE CASCADE). For an association it denotes the *other party* (optional addition; the association object arc is unchanged). Migration 0037. |
@@ -383,6 +384,43 @@ without duplicating specimens or events** (duplication was rejected as invasive/
   with a count badge → a small Abort/Save&close modal (lifeStage + basisOfRecord defaulting
   `HumanObservation` + eventDate). Bound in Records, staged in Digitize (committed on Save).
 
+### Confidential / privacy flag (decided)
+
+Some records must be withheld when the dataset is exported to TaxonWorks (e.g. a
+sensitive locality, or a collector who must not be named publicly). A **local-only**
+`confidential` flag (`INTEGER NOT NULL DEFAULT 0`, named `CHECK (… IN (0,1))`; migration
+0043, native `ADD COLUMN` so STRICT/CHECK/FK on the two STRICT tables are preserved) lives
+on **three** tables, with **two different export semantics**:
+
+| Table | Confidential means (at DwC export — **Phase 3, contract only; not yet wired**) |
+|-------|------------------------------------------------------------------------------|
+| `person` | **Obscure, don't drop.** The occurrence is still exported, but everywhere this person is `recordedBy` / `identifiedBy` the name is replaced with `config.confidential_person_label` (default `"Collector obscured (Privacy Policy)"`). |
+| `collection_object` | **Drop.** The specimen is omitted from the export entirely. |
+| `collecting_event` | **Drop its specimens.** A confidential event withholds *all* its specimens from the export (you cannot keep the occurrence but blank the locality — that breaks the record). |
+
+The flag is **never pushed** to TaxonWorks (not a DwC term); it only governs what the
+exporter emits. It is **not** stored in `config.json` for the same reason person defaults
+aren't: the obscure-label *string* is config (survives a DB wipe), but the per-record flags
+are DB columns.
+
+- **UI** (progressive disclosure — only the rare sensitive record sets it):
+  - **Specimen / Event** — a compact `Confidential` checkbox sharing the card-footer line
+    with the media / external-id / life-stage icons (saves vertical space). In the shared
+    `specimen_form` (`conf_chk`) and `collecting_event_form` (footer row + `footer_slot`),
+    so it appears in both Digitize and Records; seeded from the record, round-tripped on save.
+  - **Person** — `Consented` (✅) and `Confidential` (🔒) columns in the Controlled
+    Vocabularies → People table + checkboxes in the add / edit dialogs
+    (`persons_svc.create_person` / `update_person` take `confidential=` / `consent_approved=`).
+
+**Person consent (migration 0044).** A person also carries `consent_approved` ("Consented —
+export with name"): the collector was **asked and agreed** to be published under their name.
+It is the **opposite** of `confidential` and the two are **mutually exclusive** — enforced at
+three levels: a DB CHECK (`ck_person_consent_xor_confidential`), a service guard
+(`persons._check_consent_exclusive`, friendly `ValueError`), and UI auto-uncheck (checking one
+clears the other). `consent_approved` is informational/curatorial (the consent audit trail);
+`confidential` is what drives export obscuring. ORCID is stored **verbatim** (full
+`https://orcid.org/…` URI; the form placeholder shows the URL form) — never reformatted.
+
 ### Why person defaults live in the DB, not config.json
 
 `config.json` stores environment settings (TW credentials, institution code, UI prefs) that
@@ -421,12 +459,35 @@ canonical value). Current single-name vocabularies (more may follow — built on
 | preparations | `collection_object.preparation_id` | `preparation` | 0039 | was `dwc:preparations` TEXT |
 | habitat | `collecting_event.habitat_id` | `habitat` | 0040 | was `dwc:habitat` TEXT |
 | samplingProtocol | `collecting_event.sampling_protocol_id` | `sampling_protocol` | 0040 | was a hardcoded UI list; table **seeded** with the curated set |
+| country | `collecting_event.country_id` | `country` | 0041 | English name (pycountry); `dwc:countryCode` stays per-event |
+| stateProvince | `collecting_event.state_province_id` | `state_province` | 0041 | English name (OSM `name:en`) |
+| administrative region | `collecting_event.administrative_region_id` | `administrative_region` | 0041 | Regierungsbezirk tier; **no DwC term** (local field); local name |
+| county | `collecting_event.county_id` | `county` | 0041 | local name (Landkreis) |
+| island | `collecting_event.island_id` | `island` | 0041 | local name |
 
 **Which fields qualify:** *open, user-coined* vocabularies where consistency tooling (merge)
 helps. **Closed standard vocabularies stay fixed CHECK-constrained lists, NOT editable tables**
 — `sex`, `basisOfRecord`, `disposition`, `identificationQualifier`, `license` (editability
-would create `Male`/`male` duplicates or values TW rejects). Geographic fields
-(`country`/`stateProvince`/`county`/`locality`/…) come from geocoding, not a manual vocab.
+would create `Male`/`male` duplicates or values TW rejects).
+
+**Geography is the exception that proves the rule (revised, #40):** the administrative levels
+*are* controlled vocabs — even though they come from geocoding, the geocoder yields
+language/spelling variants (`Deutschland` vs `Germany`) and the faceted Explore search demands
+consistency, so they're FK vocabs with merge. `municipality` + `locality` stay free text
+(too specific; municipality search is "the map's job"). **Resolution lives in the events
+service** (`_resolve_geo_fields` in `events.py` maps the name keys → `*_id` via get_or_create
+in `create`/`update_collecting_event`), so the event form keeps its geocode-input widgets +
+boundary-warning UI **unchanged** — only the service + the model-read sites resolve by FK.
+Language policy: country + stateProvince in English (Photon `lang=en`), the rest local.
+
+**Geocoding upgrades (`collecting_event_form._reverse_geocode`, #40):** Photon (`lang=en`)
+gives English country/state but only returns buildings/streets near a point — *not* meaningful
+collecting localities — and never the Regierungsbezirk. So one Overpass query adds: the
+enclosing **admin_level-5 boundary → administrative_region** (e.g. Oberbayern), and the
+**nearest named natural features by radius** — peaks (+elevation), water bodies / waterways,
+springs / caves / saddles, and OSM `place=locality` — de-duped by name and **ranked**
+(enclosing areas first, then by distance) into the "Also nearby" locality picker. `locality`
+auto-fills to the best candidate (the nearest meaningful feature) when Photon has no named one.
 
 The shared mechanism:
 
@@ -453,6 +514,14 @@ The shared mechanism:
 - **Person stays separate** (not folded into `Vocabulary`): it carries extra columns
   (`abbreviated_name`, `orcid`) and label-printing logic. `Vocabulary` is for the *single-name*
   case only.
+- **Collections/institutions (`repository`) stay separate too** (multi-column, #56): keyed
+  by `dwc:collectionCode`, with `collection_full_name` / `institution_full_name` and the two
+  TaxonWorks ids (institution=Repository, collection=Namespace). DwC-mapping columns carry the
+  `dwc:` prefix; the rest are local. It is the source for the identifier label's full
+  collection name (`repositories.name_map`, resolved by the code prefix `JJPC-00304`→`JJPC`)
+  and for the Settings "Default collection" (which fills `config.institutionCode`/
+  `collectionCode` for new specimens). Its own Controlled-Vocabularies card (not the generic
+  single-name one). Migration 0045.
 
 ### Removed from original design
 
@@ -621,6 +690,8 @@ manually in the TW UI. This constrains the sync direction to insert-only forever
 | Tab | Purpose |
 |-----|---------|
 | **Digitize** | Main specimen entry form: collecting event (search/create), taxon (local-first search + TW fallback), sex, count, preparations, notes. Saves to DB. Standard/Visiting modes queue **no** labels (see "Print-queue policy by create mode"); only Mounting queues a sheet. Two layouts (see "Digitize layout modes"). |
+| **Records** | View/edit a single specimen or collecting event (search → detail edit form). The shared `specimen_form` / `collecting_event_form` widgets. Reached directly or drilled into from Explore (`open_specimen` / `open_event` handle). |
+| **Explore** | Dataset browse/query (#40): one faceted search bar (taxa / geography / collectors) drives a **drawer-order taxa checklist** (family→genus headers, species rows w/ material count + ⚠ needs-attention, expand → lots) and an **events** view; click drills into Records; CSV export. Service: `app/services/explore.py`. Map view is Phase C (not built). |
 | **Taxonomy** | Checklist tree (family → synonyms). Filter by rank. Links to TaxonPages. Rebuilds on every tab switch and on every save (via `_refreshers["taxonomy_tree"]`). |
 | **Labels** | Generate identifier label batches (4-char codes). Preview + download PDF. Reprint a whole batch if unused. Staged-codes dashboard. |
 | **Print queue** | Preview and print all staged labels in one grouped PDF (per queue addition; data/identifier/determination column-aligned per specimen). Saves the PDF to `printed_pdf_dir` on print, then clears the queue. |
@@ -667,6 +738,8 @@ arrow-key event, chip styling) is design.md's concern → "Digitize layout modes
 | `life_stage.py` | Reared-specimen life-stage history CRUD + `life_stage_facets()` export projection (Phase 3) |
 | `vocab.py` | Generic single-name controlled-vocabulary service (`Vocabulary`: list/options/get_or_create/update/delete/merge, dynamic FK re-pointing) |
 | `vocabularies.py` | Vocabulary instances + `VOCAB_REGISTRY` (the Controlled Vocabularies tab renders one section per entry) |
+| `repositories.py` | Collections/institutions CRUD (multi-column vocab, #56) + `name_map` (collectionCode→full name) for the identifier label |
+| `explore.py` | Explore-tab querying (#40): `search_facets`, `query_specimens(filters)`, `checklist(filters)` (drawer-order taxa+lots), `events(filters)`, `to_csv`, `counts` |
 
 ### Taxon search widget (`app/ui/taxon_search.py`)
 

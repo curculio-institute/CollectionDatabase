@@ -99,7 +99,7 @@ def build_records_tab(session_factory, *, on_saved: callable | None = None) -> N
                 r.collection_object_id: (
                     f"#{r.collection_object_id}  "
                     f"{id_svc.format_catalog_display(r.collection_code, r.catalog_number)}  "
-                    f"{r.scientific_name or '—'}"
+                    f"{(r.scientific_name + ' ' + r.authorship) if (r.scientific_name and r.authorship) else (r.scientific_name or '—')}"
                 )
                 for r in rows
             }
@@ -190,6 +190,7 @@ def build_records_tab(session_factory, *, on_saved: callable | None = None) -> N
                 "disposition":       co.disposition,
                 "basis_of_record":   co.basis_of_record,
                 "occurrence_remarks":co.occurrence_remarks,
+                "confidential":      co.confidential,
             }
 
             # Snapshot all determinations as plain dicts while session is open (avoids DetachedInstanceError).
@@ -225,17 +226,19 @@ def build_records_tab(session_factory, *, on_saved: callable | None = None) -> N
                 })
 
             ev_snap = {
-                "country":                          ev.country              if ev else None,
+                "country":                          (ev.country_obj.name if ev and ev.country_obj else None),
                 "country_code":                     ev.country_code         if ev else None,
-                "state_province":                   ev.state_province       if ev else None,
-                "county":                           ev.county               if ev else None,
+                "state_province":                   (ev.state_province_obj.name if ev and ev.state_province_obj else None),
+                "administrative_region":            (ev.administrative_region_obj.name if ev and ev.administrative_region_obj else None),
+                "county":                           (ev.county_obj.name if ev and ev.county_obj else None),
                 "municipality":                     ev.municipality         if ev else None,
-                "island":                           ev.island               if ev else None,
+                "island":                           (ev.island_obj.name if ev and ev.island_obj else None),
                 "locality":                         ev.locality             if ev else None,
                 "verbatim_locality":                ev.verbatim_locality    if ev else None,
                 "event_date":                       ev.event_date           if ev else None,
                 "verbatim_event_date":              ev.verbatim_event_date  if ev else None,
                 "recorded_by":                      ev.recorded_by_person.full_name if (ev and ev.recorded_by_person) else None,
+                "confidential":                     ev.confidential if ev else 0,
                 "habitat":                          (ev.habitat_obj.name if ev and ev.habitat_obj else None),
                 "decimal_latitude":                 ev.decimal_latitude     if ev else None,
                 "decimal_longitude":                ev.decimal_longitude    if ev else None,
@@ -270,17 +273,19 @@ def build_records_tab(session_factory, *, on_saved: callable | None = None) -> N
                 for c in ev.collection_objects[:30]
             ]
             ev_snap = {
-                "country":                          ev.country,
+                "country":                          ev.country_obj.name if ev.country_obj else None,
                 "country_code":                     ev.country_code,
-                "state_province":                   ev.state_province,
-                "county":                           ev.county,
+                "state_province":                   ev.state_province_obj.name if ev.state_province_obj else None,
+                "administrative_region":            ev.administrative_region_obj.name if ev.administrative_region_obj else None,
+                "county":                           ev.county_obj.name if ev.county_obj else None,
                 "municipality":                     ev.municipality,
-                "island":                           ev.island,
+                "island":                           ev.island_obj.name if ev.island_obj else None,
                 "locality":                         ev.locality,
                 "verbatim_locality":                ev.verbatim_locality,
                 "event_date":                       ev.event_date,
                 "verbatim_event_date":              ev.verbatim_event_date,
                 "recorded_by":                      ev.recorded_by_person.full_name if ev.recorded_by_person else None,
+                "confidential":                     ev.confidential,
                 "habitat":                          ev.habitat_obj.name if ev.habitat_obj else None,
                 "decimal_latitude":                 ev.decimal_latitude,
                 "decimal_longitude":                ev.decimal_longitude,
@@ -308,6 +313,11 @@ def build_records_tab(session_factory, *, on_saved: callable | None = None) -> N
     def _open_specimen(co_id: int) -> None:
         _set_mode_specimen()
         spec_select.value = co_id
+
+    def _open_event(ev_id: int) -> None:
+        """Programmatic open (Explore drill-in): switch to event mode + load it."""
+        _set_mode_event()
+        ev_select.value = ev_id
 
     # ── Specimen form ─────────────────────────────────────────────────────────
     def _build_specimen_form(
@@ -338,6 +348,7 @@ def build_records_tab(session_factory, *, on_saved: callable | None = None) -> N
         disp_sel     = spec["disp_sel"]
         basis_sel    = spec["basis_sel"]
         rem_in       = spec["rem_in"]
+        conf_chk     = spec["conf_chk"]
         coll_code_in = spec["coll_code_disp"]
 
         # ── Identifications card ──────────────────────────────────────────
@@ -405,15 +416,17 @@ def build_records_tab(session_factory, *, on_saved: callable | None = None) -> N
                 ev_ce = None
             else:
                 # Shared widget (same form as Digitize); seeded from the snapshot.
-                ev_ce = build_collecting_event_form(session_factory, default_recby_fn=_default_recby)
+                # Event media shares the form's Confidential footer line.
+                def _ev_footer():
+                    if ev_id:
+                        _media_btn(session_factory, target_kind="collecting_event",
+                                   target_id=ev_id, tooltip="Event media")
+                ev_ce = build_collecting_event_form(
+                    session_factory, default_recby_fn=_default_recby,
+                    footer_slot=_ev_footer)
                 ev_ce["load"](ev_snap)
                 if ev_n > 1:
                     ev_ce["set_readonly"](True)   # view-only until "Edit all" unlocks
-
-            if ev_id:
-                with ui.row().classes("w-full justify-end mt-2"):
-                    _media_btn(session_factory, target_kind="collecting_event",
-                               target_id=ev_id, tooltip="Event media")
 
         # ── Biological Associations card ───────────────────────────────────
         with ui.card().classes("w-full shadow-sm"):
@@ -528,6 +541,7 @@ def build_records_tab(session_factory, *, on_saved: callable | None = None) -> N
                 "disposition":       disp_sel.value,
                 "basis_of_record":   basis_sel.value,
                 "occurrence_remarks":rem_in.value,
+                "confidential":      1 if conf_chk.value else 0,
             }
 
         def _collect_ev_fields() -> dict:
@@ -581,6 +595,7 @@ def build_records_tab(session_factory, *, on_saved: callable | None = None) -> N
                 "disposition":        disp_sel.value,
                 "basis_of_record":    basis_sel.value,
                 "occurrence_remarks": rem_in.value,
+                "confidential":       1 if conf_chk.value else 0,
             }
             ev = dict(_collect_ev_fields())
             if ev_ce:
@@ -630,13 +645,16 @@ def build_records_tab(session_factory, *, on_saved: callable | None = None) -> N
                 )
 
             # Shared widget (same form as Digitize); seeded from the snapshot.
-            ev_ce = build_collecting_event_form(session_factory, default_recby_fn=_default_recby)
+            # Event media shares the form's Confidential footer line.
+            def _ev_footer():
+                _media_btn(session_factory, target_kind="collecting_event",
+                           target_id=ev_id, tooltip="Event media")
+            ev_ce = build_collecting_event_form(
+                session_factory, default_recby_fn=_default_recby,
+                footer_slot=_ev_footer)
             ev_ce["load"](ev_snap)
             if shared:
                 ev_ce["set_readonly"](True)   # view-only until "Edit all" unlocks
-            with ui.row().classes("w-full justify-end mt-2"):
-                _media_btn(session_factory, target_kind="collecting_event",
-                           target_id=ev_id, tooltip="Event media")
 
         def _save_event():
             try:
@@ -677,4 +695,5 @@ def build_records_tab(session_factory, *, on_saved: callable | None = None) -> N
     def _has_content() -> bool:
         return bool(_dirty["fn"]) and _dirty["fn"]()
 
-    return {"open_specimen": _open_specimen, "has_content": _has_content}
+    return {"open_specimen": _open_specimen, "open_event": _open_event,
+            "has_content": _has_content}

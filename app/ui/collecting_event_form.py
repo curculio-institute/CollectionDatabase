@@ -82,11 +82,27 @@ def _pick_locality(props_list: list[dict]) -> str:
     return best
 
 
+# Cap on nearby point-feature locality candidates (enclosing areas are always shown);
+# keeps the picker a useful shortlist in feature-dense areas, not an exhaustive dump.
+_MAX_LOCALITY_POINTS = 10
+
+
+def _haversine_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    """Great-circle distance in metres (for ranking nearby locality candidates)."""
+    r = 6_371_000.0
+    p1, p2 = math.radians(lat1), math.radians(lat2)
+    dphi = math.radians(lat2 - lat1)
+    dlmb = math.radians(lon2 - lon1)
+    a = math.sin(dphi / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dlmb / 2) ** 2
+    return 2 * r * math.asin(min(1.0, math.sqrt(a)))
+
+
 def build_collecting_event_form(
     session_factory,
     *,
     default_recby_fn=None,
     on_field_edit=None,
+    footer_slot=None,
 ) -> dict:
     """Render the collecting-event field block into the current context.
 
@@ -110,12 +126,14 @@ def build_collecting_event_form(
 
     # ── cascade-wipe: clearing a coarser admin level blanks the finer ones ──
     def _wipe_from(level: str) -> None:
+        # region_in (admin. region) sits between state and county, so a country/state
+        # change blanks it too (resolved at runtime — region_in is defined below).
         if level == "country":
-            state_in.value = county_in.value = muni_in.value = locality_in.value = ""
+            state_in.value = region_in.value = county_in.value = muni_in.value = locality_in.value = ""
             for _b in (_state_warn, _county_warn, _muni_warn, _locality_warn):
                 _b.classes(add="hidden")
         elif level == "state":
-            county_in.value = muni_in.value = locality_in.value = ""
+            region_in.value = county_in.value = muni_in.value = locality_in.value = ""
             for _b in (_county_warn, _muni_warn, _locality_warn):
                 _b.classes(add="hidden")
         elif level == "county":
@@ -212,7 +230,12 @@ def build_collecting_event_form(
     _clid = list(_coord_sink._event_listeners.keys())[-1]
 
     async def _inject_coord_paste_js():
-        await ui.run_javascript(f"""
+        # Fire-and-forget: the script self-installs (retries via setTimeout) and
+        # emits paste events back — we don't need its return value, so a slow client
+        # ack must not raise (e.g. during a busy initial page build). Give it headroom
+        # and swallow only the ack timeout; the JS is delivered regardless.
+        try:
+            await ui.run_javascript(f"""
         (function install() {{
             var latEl = document.querySelector('._coord-lat-{_uid} input');
             var lonEl = document.querySelector('._coord-lon-{_uid} input');
@@ -235,7 +258,9 @@ def build_collecting_event_form(
                 }});
             }});
         }})();
-        """)
+        """, timeout=5.0)
+        except TimeoutError:
+            pass   # JS still ran on the client; only the round-trip ack was slow
 
     ui.timer(0.3, _inject_coord_paste_js, once=True)
 
@@ -245,6 +270,15 @@ def build_collecting_event_form(
         for _b in (_cntry_warn, _code_warn, _state_warn, _county_warn, _muni_warn):
             _b.classes(add="hidden")
         _locality_warn.classes(add="hidden")
+
+        # The 'around' search radius scales with the coordinate uncertainty: a precise
+        # point → just the very nearest features; a vague one → a wider net. Floor keeps
+        # the nearest named feature reachable; cap keeps it sane when uncertainty is huge.
+        try:
+            _unc = float(uncert_in.value or 0)
+        except (TypeError, ValueError):
+            _unc = 0.0
+        radius_m = int(max(300, min(_unc or 1000, 3000)))
 
         async def _photon() -> list[dict]:
             async with httpx.AsyncClient(timeout=10) as cl:
@@ -256,24 +290,38 @@ def build_collecting_event_form(
                 r.raise_for_status()
                 return [f["properties"] for f in r.json().get("features", [])]
 
-        async def _overpass() -> list[dict]:
+        async def _overpass() -> dict:
+            # One query: (1) enclosing admin_level-5 boundary → administrative_region;
+            # (2) enclosing named areas (reserves / forests / islands); (3) nearby named
+            # natural features (peaks / water / caves / OSM localities) by radius — because
+            # Photon only returns buildings/streets here, not meaningful collecting spots.
             q = (
-                f"[out:json][timeout:10];"
+                "[out:json][timeout:25];"
                 f"is_in({lat},{lon})->.a;"
-                f"("
-                f"  way(pivot.a)[name][boundary=protected_area];"
-                f"  way(pivot.a)[name][leisure=nature_reserve];"
-                f'  way(pivot.a)[name][landuse~"^(forest|wood)$"];'
-                f"  way(pivot.a)[name][place~\"^(island|islet)$\"];"
-                f"  relation(pivot.a)[name][boundary=protected_area];"
-                f"  relation(pivot.a)[name][leisure=nature_reserve];"
-                f'  relation(pivot.a)[name][landuse~"^(forest|wood)$"];'
-                f"  relation(pivot.a)[name][place~\"^(island|islet|region)$\"];"
-                f");"
-                f"out tags;"
+                "("
+                "  relation(pivot.a)[boundary=administrative][admin_level=5][name];"
+                "  way(pivot.a)[name][boundary=protected_area];"
+                "  way(pivot.a)[name][leisure=nature_reserve];"
+                '  way(pivot.a)[name][landuse~"^(forest|wood)$"];'
+                '  way(pivot.a)[name][place~"^(island|islet)$"];'
+                "  relation(pivot.a)[name][boundary~\"^(protected_area|national_park)$\"];"
+                "  relation(pivot.a)[name][leisure=nature_reserve];"
+                '  relation(pivot.a)[name][landuse~"^(forest|wood)$"];'
+                '  relation(pivot.a)[name][place~"^(island|islet)$"];'
+                ")->.areas;"
+                "("
+                f"  node(around:{radius_m},{lat},{lon})[natural=peak][name];"
+                f"  nwr(around:{radius_m},{lat},{lon})[natural=water][name];"
+                f'  way(around:{radius_m},{lat},{lon})[waterway~"^(river|stream|canal)$"][name];'
+                f"  node(around:{radius_m},{lat},{lon})[place=locality][name];"
+                f'  node(around:{radius_m},{lat},{lon})[natural~"^(spring|cave_entrance|saddle|glacier)$"][name];'
+                ")->.pts;"
+                ".areas out tags;"
+                ".pts out center tags;"
             )
+            out = {"admin_region": "", "islands": [], "candidates": []}
             try:
-                async with httpx.AsyncClient(timeout=12) as cl:
+                async with httpx.AsyncClient(timeout=20) as cl:
                     r = await cl.post(
                         "https://overpass-api.de/api/interpreter",
                         data={"data": q},
@@ -281,22 +329,51 @@ def build_collecting_event_form(
                     )
                     r.raise_for_status()
                     seen: set[str] = set()
-                    results: list[dict] = []
                     for el in r.json().get("elements", []):
                         tags = el.get("tags", {})
                         n = tags.get("name", "")
-                        if not n or n in seen:
+                        if not n:
+                            continue
+                        place_val, natural = tags.get("place", ""), tags.get("natural", "")
+                        waterway = tags.get("waterway", "")
+                        if tags.get("admin_level") == "5" and tags.get("boundary") == "administrative":
+                            out["admin_region"] = out["admin_region"] or n
+                            continue
+                        if place_val in ("island", "islet"):
+                            if n not in out["islands"]:
+                                out["islands"].append(n)
+                            continue
+                        if n in seen:
                             continue
                         seen.add(n)
-                        place_val = tags.get("place", "")
-                        kind = "island" if place_val in ("island", "islet") else "locality"
-                        results.append({"name": n, "kind": kind})
-                    return results
+                        # Two groups: "area" = the point is INSIDE it (reserve / forest /
+                        # protected area) → always listed, no distance; "point" = a nearby
+                        # named feature (peak / water / spring / cave / OSM locality) →
+                        # listed with distance, sorted by distance (filled in by the caller).
+                        if natural == "peak":
+                            ele = tags.get("ele")
+                            kind = f"peak {ele} m" if ele else "peak"
+                            group = "point"
+                        elif natural == "water" or waterway in ("river", "stream", "canal"):
+                            kind, group = (waterway or "water"), "point"
+                        elif natural in ("spring", "cave_entrance", "saddle", "glacier"):
+                            kind, group = natural.replace("_entrance", ""), "point"
+                        elif place_val == "locality":
+                            kind, group = "locality", "point"
+                        else:
+                            kind = (tags.get("leisure") or tags.get("boundary")
+                                    or tags.get("landuse") or "area")
+                            group = "area"
+                        c = el.get("center") or {"lat": el.get("lat"), "lon": el.get("lon")}
+                        d = (_haversine_m(lat, lon, c["lat"], c["lon"])
+                             if c.get("lat") is not None else 0.0)
+                        out["candidates"].append({"name": n, "kind": kind, "group": group, "dist": d})
+                    return out
             except Exception:
-                return []
+                return out
 
         try:
-            all_props, overpass_names = await asyncio.gather(_photon(), _overpass())
+            all_props, overpass = await asyncio.gather(_photon(), _overpass())
         except Exception as ex:
             ui.notify(f"Reverse geocoding failed: {ex}", type="negative")
             return None
@@ -306,42 +383,60 @@ def build_collecting_event_form(
             return None
 
         p = all_props[0]
+        # Enclosing areas (point is inside → no distance, always listed) vs nearby point
+        # features (with distance, sorted by distance, capped to a shortlist).
+        areas  = [c for c in overpass["candidates"] if c["group"] == "area"]
+        points = sorted((c for c in overpass["candidates"] if c["group"] == "point"),
+                        key=lambda x: x["dist"])[:_MAX_LOCALITY_POINTS]
         _st["populating"] = True
+        # country / stateProvince already English (Photon lang=en). administrative_region
+        # (Regierungsbezirk) only exists at OSM admin_level 5 → from Overpass.
         country_in.value = p.get("country", "")
         code_in.value    = p.get("countrycode", "").upper()
         state_in.value   = p.get("state", "")
+        region_in.value  = overpass["admin_region"]
         county_in.value  = p.get("county", "")
         muni_in.value    = p.get("city") or p.get("locality") or ""
+        # Photon only returns buildings/streets here, so the best collecting locality is
+        # the NEAREST specific feature (not the broad enclosing area).
         photon_locality  = _pick_locality(all_props)
-        overpass_islands = [r["name"] for r in overpass_names if r["kind"] == "island"]
-        overpass_locs    = [r["name"] for r in overpass_names if r["kind"] == "locality"]
-        locality_in.value = photon_locality or (overpass_locs[0] if overpass_locs else "")
-        island_in.value   = overpass_islands[0] if overpass_islands else ""
+        locality_in.value = (photon_locality
+                             or (points[0]["name"] if points else "")
+                             or (areas[0]["name"] if areas else ""))
+        island_in.value   = overpass["islands"][0] if overpass["islands"] else ""
         _st["populating"] = False
         _fire_edit()
 
-        _alt_names: list[str] = []
+        # "Also nearby" picker: enclosing areas first (no distance), then nearby features
+        # with their distance, click to set locality. De-dup by name.
+        def _fmt_dist(d: float) -> str:
+            return f"{round(d)} m" if d < 1000 else f"{d / 1000:.1f} km"
+        _alts: list[tuple[str, str]] = []   # (display label, name to set)
         _seen_locs: set[str] = {locality_in.value}
+        for c in areas:
+            if c["name"] not in _seen_locs:
+                _seen_locs.add(c["name"])
+                _alts.append((f"{c['name']}  ·  {c['kind']}", c["name"]))
+        for c in points:
+            if c["name"] not in _seen_locs:
+                _seen_locs.add(c["name"])
+                _alts.append((f"{c['name']}  ·  {c['kind']}  ·  {_fmt_dist(c['dist'])}", c["name"]))
         for pr in all_props:
             name = pr.get("name", "")
             kv = (pr.get("osm_key", ""), pr.get("osm_value", ""))
             if kv in _LOCALITY_KV and name and name not in _seen_locs:
                 _seen_locs.add(name)
-                _alt_names.append(name)
-        for name in overpass_locs:
-            if name not in _seen_locs:
-                _seen_locs.add(name)
-                _alt_names.append(name)
-        if _alt_names:
+                _alts.append((name, name))
+        if _alts:
             _locality_items.clear()
             with _locality_items:
-                for _n in _alt_names:
-                    async def _pick_alt(nm=_n):
+                for _label, _name in _alts:
+                    async def _pick_alt(nm=_name):
                         locality_in.value = nm
                         _fire_edit()
                         _locality_warn.classes(add="hidden")
-                    ui.menu_item(_n, on_click=_pick_alt)
-            _locality_tip.text = "Also nearby: " + ", ".join(_alt_names)
+                    ui.menu_item(_label, on_click=_pick_alt)
+            _locality_tip.text = "Also nearby: " + ", ".join(lbl for lbl, _ in _alts[:8])
             _locality_tip.update()
             _locality_warn.classes(remove="hidden")
 
@@ -551,6 +646,12 @@ def build_collecting_event_form(
             "countryCode", on_change=_fire_edit, placeholder="DE")
         state_in, _state_warn, _state_tip, _state_items, _state_ok = _geocode_input(
             "stateProvince", on_change=_on_state_change)
+        # administrative region (Regierungsbezirk tier) — a controlled vocab too, but
+        # NOT in the Photon cascade (no DwC term; auto-filled from the OSM admin_level-5
+        # boundary). Plain input here; resolved name→id in the events service.
+        region_in = (ui.input("admin. region", on_change=_fire_edit).classes("col-span-1")
+                     .tooltip("Sub-state region (e.g. Oberbayern / Regierungsbezirk) — "
+                              "for permit-level queries"))
         county_in, _county_warn, _county_tip, _county_items, _county_ok = _geocode_input(
             "county", on_change=_on_county_change)
         muni_in, _muni_warn, _muni_tip, _muni_items, _muni_ok = _geocode_input(
@@ -598,11 +699,28 @@ def build_collecting_event_form(
 
     verblabel_in = ui.input("verbatimLabel", on_change=_fire_edit).classes("w-full mt-4")
 
+    # Footer: the Confidential flag (left) shares one line with the caller's
+    # widgets (event media button, right) to save vertical space. A confidential
+    # event withholds all its specimens from the DwC export. Local-only flag.
+    with ui.row().classes("w-full items-center justify-between mt-2"):
+        conf_chk = (
+            ui.checkbox("Confidential")
+            .props("dense")
+            .tooltip("Withhold this event's specimens from public export — a "
+                     "confidential event drops all its specimens from the DwC "
+                     "export (TaxonWorks). Local-only flag.")
+        )
+        conf_chk.on_value_change(lambda e: _fire_edit())
+        if footer_slot is not None:
+            with ui.row().classes("items-center gap-1"):
+                footer_slot()
+
     # ── field registry: single source for collect / load / reset / readonly ──
     _event_widgets = {
         "country":                          country_in,
         "country_code":                     code_in,
         "state_province":                   state_in,
+        "administrative_region":            region_in,
         "county":                           county_in,
         "municipality":                     muni_in,
         "island":                           island_in,
@@ -623,7 +741,9 @@ def build_collecting_event_form(
         # Text fields only; the FK-backed vocabs (habitat / samplingProtocol) and
         # recordedBy are resolved to ids by commit() — kept out of here so that
         # validation (which calls collect_fields) has no get_or_create side effect.
-        return {name: w.value for name, w in _event_widgets.items()}
+        out = {name: w.value for name, w in _event_widgets.items()}
+        out["confidential"] = 1 if conf_chk.value else 0
+        return out
 
     def _commit(s) -> dict:
         """Resolve the FK-backed fields and return the id triplet to store on the
@@ -639,6 +759,8 @@ def build_collecting_event_form(
         """True if any event field or a FK-backed vocab / recordedBy holds a value."""
         if any(str(w.value or "").strip() for w in _event_widgets.values()):
             return True
+        if conf_chk.value:
+            return True
         return bool(
             recby_state["get_value"]()
             or habitat_field["get_value"]()
@@ -648,6 +770,7 @@ def build_collecting_event_form(
     def _reset() -> None:
         for w in _event_widgets.values():
             w.value = ""
+        conf_chk.value = False
         recby_state["set_value"](None)
         habitat_field["set_value"](None)
         protocol_field["set_value"](None)
@@ -659,6 +782,7 @@ def build_collecting_event_form(
         _st["populating"] = True
         for name, w in _event_widgets.items():
             w.value = _s(snapshot.get(name))
+        conf_chk.value = bool(snapshot.get("confidential"))
         recby_state["set_value"](snapshot.get("recorded_by") or None)
         habitat_field["set_value"](snapshot.get("habitat") or None)
         protocol_field["set_value"](snapshot.get("sampling_protocol") or None)
@@ -669,6 +793,7 @@ def build_collecting_event_form(
         _st["editable"] = editable
         for w in _event_widgets.values():
             w.props(remove="readonly") if editable else w.props("readonly")
+        conf_chk.set_enabled(editable)
         recby_state["set_readonly"](readonly)
         habitat_field["set_readonly"](readonly)
         protocol_field["set_readonly"](readonly)

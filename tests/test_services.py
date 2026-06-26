@@ -1,6 +1,7 @@
 """Service-layer tests. All DB state rolls back after each test (conftest fixture)."""
 import pytest
 from app.models import Taxon, CollectingEvent, CollectionObject, TaxonDetermination
+from app.models.geography import Country, StateProvince
 from app.models.person import Person
 from app.models.base import _utcnow
 from app.services.taxa import (
@@ -49,15 +50,12 @@ def _taxon(session, genus="Carabus", species="coriaceus", authorship="Linnaeus, 
 
 def _event(session, country="Germany", state="Bavaria", locality="Berchtesgaden",
            event_date="2024-06-15", recorded_by="J. Jilg"):
+    # Geography is FK-backed now; create_collecting_event resolves name → id.
     recorded_by_id = _person(session, recorded_by).id if recorded_by else None
-    ce = CollectingEvent(
-        country=country, state_province=state, locality=locality,
+    return create_collecting_event(
+        session, country=country, state_province=state, locality=locality,
         event_date=event_date, recorded_by_id=recorded_by_id,
-        created_at=_utcnow(), updated_at=_utcnow(),
     )
-    session.add(ce)
-    session.flush()
-    return ce
 
 
 # ---------------------------------------------------------------------------
@@ -223,9 +221,10 @@ def test_search_taxa_case_insensitive(session):
 # ---------------------------------------------------------------------------
 
 def test_format_event_summary_full():
+    # country / stateProvince are controlled-vocab FKs now; set the relationship.
     ce = CollectingEvent(
-        country="Germany", state_province="Bavaria", locality="Berchtesgaden",
-        event_date="2024-06-15",
+        country_obj=Country(name="Germany"), state_province_obj=StateProvince(name="Bavaria"),
+        locality="Berchtesgaden", event_date="2024-06-15",
     )
     s = format_event_summary(ce)
     assert "Germany" in s
@@ -234,7 +233,7 @@ def test_format_event_summary_full():
 
 
 def test_format_event_summary_skips_blanks():
-    ce = CollectingEvent(country="Spain", locality="Sierra Nevada")
+    ce = CollectingEvent(country_obj=Country(name="Spain"), locality="Sierra Nevada")
     s = format_event_summary(ce)
     assert "·  ·" not in s
     assert "Spain" in s
@@ -339,7 +338,7 @@ def test_save_specimen_entry_creates_new_event_when_no_event_id(session):
 
     assert co.collecting_event_id is not None
     ce = session.get(CollectingEvent, co.collecting_event_id)
-    assert ce.country == "France"
+    assert ce.country_obj.name == "France"
     assert ce.locality == "Camargue"
 
 

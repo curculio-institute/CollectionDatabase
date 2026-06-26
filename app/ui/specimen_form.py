@@ -184,11 +184,23 @@ def build_specimen_form(
                     )
             rem_in = ui.input("materialEntityRemarks", value=v_rem).classes("w-full mt-3")
 
-        # Caller-supplied footer widget (e.g. the specimen media button), bottom-right
-        # of the card — away from the header Clear button.
-        if footer_slot is not None:
-            with ui.row().classes("w-full justify-end mt-2"):
-                footer_slot()
+        # Footer: the Confidential flag (left) shares one line with the caller's
+        # widgets (media / external-id / life-stage buttons, right) to save vertical
+        # space. A confidential specimen is dropped entirely from the DwC export.
+        with ui.row().classes("w-full items-center justify-between mt-2"):
+            conf_chk = (
+                ui.checkbox(
+                    "Confidential",
+                    value=(bool(init.get("confidential")) if is_edit else False),
+                )
+                .props("dense")
+                .tooltip("Withhold from public export — a confidential specimen is "
+                         "dropped entirely from the DwC export (TaxonWorks). "
+                         "Local-only flag.")
+            )
+            if footer_slot is not None:
+                with ui.row().classes("items-center gap-1"):
+                    footer_slot()
 
         if is_standard:
             def _refresh_identity_display():
@@ -258,6 +270,8 @@ def build_specimen_form(
             (coll_code_disp.value or "").strip() or (inst_code_disp.value or "").strip()
         ):
             return True
+        if conf_chk.value:
+            return True
         return False
 
     def reset() -> None:
@@ -272,6 +286,7 @@ def build_specimen_form(
         disp_sel.value  = NEW_SPECIMEN_DEFAULTS["disposition"]
         basis_sel.value = NEW_SPECIMEN_DEFAULTS["basis_of_record"]
         rem_in.value    = ""
+        conf_chk.value  = False
 
     return {
         "card":           card,
@@ -285,6 +300,7 @@ def build_specimen_form(
         "inst_code_disp": inst_code_disp,
         "coll_code_disp": coll_code_disp,
         "rem_in":         rem_in,
+        "conf_chk":       conf_chk,
         "get_identifier_fields": get_identifier_fields,
         "refresh_codes":  refresh_codes,
         "reset":          reset,

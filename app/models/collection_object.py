@@ -37,6 +37,9 @@ class CollectionObject(Base, TimestampMixin):
     preparation_id: Mapped[Optional[int]] = mapped_column(
         Integer, ForeignKey("preparation.id", ondelete="RESTRICT"), nullable=True)
     occurrence_remarks: Mapped[Optional[str]] = mapped_column("dwc:materialEntityRemarks", String, nullable=True)
+    # Local-only privacy flag (migration 0043). A confidential specimen is dropped
+    # from the DwC export entirely. Never pushed to TaxonWorks.
+    confidential: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
 
     __table_args__ = (
         # Catalog number is unique per collection, not globally — foreign datasets
@@ -54,6 +57,7 @@ class CollectionObject(Base, TimestampMixin):
             "('in collection', 'on loan', 'donated', 'exchanged', 'missing', 'destroyed')",
             name="ck_co_disposition",
         ),
+        CheckConstraint("confidential IN (0, 1)", name="ck_co_confidential"),
     )
 
     collecting_event: Mapped[Optional["CollectingEvent"]] = relationship("CollectingEvent", back_populates="collection_objects")

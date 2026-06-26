@@ -13,6 +13,9 @@ from dataclasses import dataclass
 from app.models.preparation import Preparation
 from app.models.habitat import Habitat
 from app.models.sampling_protocol import SamplingProtocol
+from app.models.geography import (
+    Country, StateProvince, County, Island, AdministrativeRegion,
+)
 from app.services.vocab import Vocabulary
 
 
@@ -58,5 +61,44 @@ SAMPLING_PROTOCOL = VocabSpec(
     field_label="samplingProtocol",
 )
 
+# ── Geography facets (administrative hierarchy) ───────────────────────────────
+# Single-name vocabularies on collecting_event so locality values are consistent
+# enough for the faceted Explore search + mergeable (Deutschland → Germany). #40.
+country_vocab = Vocabulary(Country, ref_table="country", noun="country")
+state_province_vocab = Vocabulary(StateProvince, ref_table="state_province", noun="state / province")
+county_vocab = Vocabulary(County, ref_table="county", noun="county")
+island_vocab = Vocabulary(Island, ref_table="island", noun="island")
+administrative_region_vocab = Vocabulary(
+    AdministrativeRegion, ref_table="administrative_region", noun="administrative region")
+
+COUNTRY = VocabSpec(
+    key="country", vocab=country_vocab, title="Countries",
+    help="Country names (English). Merge variants like Deutschland → Germany.",
+    add_label="Add country", field_label="country",
+)
+STATE_PROVINCE = VocabSpec(
+    key="state_province", vocab=state_province_vocab, title="States / provinces",
+    help="State / province (English), e.g. Bavaria — the Bundesland level.",
+    add_label="Add state / province", field_label="stateProvince",
+)
+ADMINISTRATIVE_REGION = VocabSpec(
+    key="administrative_region", vocab=administrative_region_vocab, title="Administrative regions",
+    help="Sub-state region between state and county, e.g. Oberbayern (Regierungsbezirk). Local field, no DwC term.",
+    add_label="Add administrative region", field_label="administrative region",
+)
+COUNTY = VocabSpec(
+    key="county", vocab=county_vocab, title="Counties",
+    help="County / district (local name), e.g. Landkreis Berchtesgadener Land.",
+    add_label="Add county", field_label="county",
+)
+ISLAND = VocabSpec(
+    key="island", vocab=island_vocab, title="Islands",
+    help="Island names (local).",
+    add_label="Add island", field_label="island",
+)
+
 # Ordered list consumed by the Controlled Vocabularies tab.
-VOCAB_REGISTRY: list[VocabSpec] = [PREPARATION, HABITAT, SAMPLING_PROTOCOL]
+VOCAB_REGISTRY: list[VocabSpec] = [
+    PREPARATION, HABITAT, SAMPLING_PROTOCOL,
+    COUNTRY, STATE_PROVINCE, ADMINISTRATIVE_REGION, COUNTY, ISLAND,
+]

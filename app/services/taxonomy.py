@@ -26,6 +26,47 @@ from app.models import CollectionObject, Taxon, TaxonDetermination
 from app.services.taxa import format_scientific_name
 from app.services.taxonworks import taxonpages_url
 
+# Ranks the user may manually re-order (the collection's taxonomic sequence):
+# family and everything above it. Below family stays alphabetical (#40).
+ORDERABLE_RANKS = frozenset({
+    "kingdom", "phylum", "subphylum", "class", "subclass", "infraclass",
+    "superorder", "order", "suborder", "infraorder", "series", "superfamily", "family",
+})
+
+_NO_ORDER = 10 ** 9   # sort key for an unset sort_order → after the arranged ones
+
+
+def order_key(t: Taxon):
+    """Sibling display key: manual sort_order first (the arranged taxonomic
+    sequence), then alphabetical. Unset sort_order ⇒ pure alphabetical."""
+    return (t.sort_order if t.sort_order is not None else _NO_ORDER,
+            t.scientific_name or "")
+
+
+def move_taxon(session: Session, taxon_id: int, direction: int) -> None:
+    """Move a family-or-above taxon up (-1) / down (+1) among its siblings, by
+    swapping manual sort_order values. The first move materialises the siblings'
+    current (alphabetical) order into sort_order so subsequent moves are stable.
+    No-op for ranks below family."""
+    t = session.get(Taxon, taxon_id)
+    if t is None or t.taxon_rank not in ORDERABLE_RANKS:
+        return
+    sibs = (
+        session.query(Taxon)
+        .filter(Taxon.parent_name_usage_id == t.parent_name_usage_id,
+                Taxon.accepted_name_usage_id.is_(None))
+        .all()
+    )
+    sibs.sort(key=order_key)
+    if any(s.sort_order is None for s in sibs):       # materialise current order
+        for i, s in enumerate(sibs):
+            s.sort_order = i
+    idx = next(i for i, s in enumerate(sibs) if s.id == t.id)
+    j = idx + direction
+    if 0 <= j < len(sibs):
+        sibs[idx].sort_order, sibs[j].sort_order = sibs[j].sort_order, sibs[idx].sort_order
+    session.flush()
+
 
 @dataclass
 class TaxonomyStats:
@@ -141,7 +182,7 @@ def build_taxonomy_tree(
 
     return [
         _build_node(t, children_map, spec_counts, syn_map)
-        for t in sorted(roots, key=lambda t: t.scientific_name or "")
+        for t in sorted(roots, key=order_key)
     ]
 
 
@@ -152,9 +193,7 @@ def _build_node(
     syn_map: dict,
 ) -> dict:
     """Recursively build a tree node dict for `taxon`."""
-    child_taxa = sorted(
-        children_map.get(taxon.id, []), key=lambda t: t.scientific_name or ""
-    )
+    child_taxa = sorted(children_map.get(taxon.id, []), key=order_key)
     child_nodes = [
         _build_node(c, children_map, spec_counts, syn_map) for c in child_taxa
     ]
@@ -182,10 +221,12 @@ def _build_node(
 
     node: dict = {
         "id":         f"taxon-{taxon.id}",
+        "tid":        taxon.id,            # raw id for the reorder controls
         "label":      format_scientific_name(taxon),
         "name":       taxon.scientific_name or f"taxon #{taxon.id}",
         "auth":       taxon.scientific_name_authorship or "",
         "rank":       taxon.taxon_rank or "unknown",
+        "orderable":  (taxon.taxon_rank in ORDERABLE_RANKS),
         "spec_count": total_spec,
         "spp_count":  total_spp,
     }

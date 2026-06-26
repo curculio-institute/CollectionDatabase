@@ -43,7 +43,7 @@ def test_store_is_content_addressed_and_dedups(media_env):
 
 def test_attach_list_and_delete_cleans_up(media_env):
     s, store = media_env
-    ev = CollectingEvent(country="Germany")
+    ev = CollectingEvent(locality="Germany")
     s.add(ev); s.flush()
 
     att = media_svc.add_attachment(
@@ -70,7 +70,7 @@ def test_update_media_rights_holder_and_license(media_env):
     from app.models import Person, Media
 
     p = Person(full_name="Jane Photographer"); s.add(p); s.flush()
-    ev = CollectingEvent(country="Germany"); s.add(ev); s.flush()
+    ev = CollectingEvent(locality="Germany"); s.add(ev); s.flush()
     att = media_svc.add_attachment(
         s, target_kind="collecting_event", target_id=ev.id,
         data=b"img-bytes", filename="x.jpg",
@@ -113,7 +113,7 @@ def test_attach_stored_staged_commit(media_env):
 
 def test_shared_media_not_deleted_while_referenced(media_env):
     s, _ = media_env
-    e1 = CollectingEvent(country="Germany"); e2 = CollectingEvent(country="Austria")
+    e1 = CollectingEvent(locality="Germany"); e2 = CollectingEvent(locality="Austria")
     s.add_all([e1, e2]); s.flush()
     data = b"shared-bytes"
     a1 = media_svc.add_attachment(s, target_kind="collecting_event", target_id=e1.id, data=data, filename="x.jpg")

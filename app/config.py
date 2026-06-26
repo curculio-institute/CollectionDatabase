@@ -53,6 +53,11 @@ class AppConfig:
     # person and lives in the DB (person_defaults.default_rights_holder_id), not here.
     default_license: str = ""
 
+    # Privacy: the generic string substituted for a confidential person's name in
+    # the DwC export (recordedBy / identifiedBy). The record is still exported; only
+    # the name is obscured. Confidential specimens/events are dropped entirely.
+    confidential_person_label: str = "Collector obscured (Privacy Policy)"
+
 
 def printed_pdf_dir() -> Path:
     """Resolved archival folder for printed label PDFs (created if missing)."""

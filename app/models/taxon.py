@@ -74,6 +74,11 @@ class Taxon(Base, TimestampMixin):
         "dwc:nomenclaturalCode", String, nullable=True
     )
 
+    # Display-only manual ordering among siblings (the collection's taxonomic
+    # sequence). Used ONLY by the checklist UI for family-and-above ranks; NULL ⇒
+    # fall back to alphabetical. Never exported (not a DwC term, #40).
+    sort_order: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+
     parent: Mapped[Optional[Taxon]] = relationship(
         "Taxon", foreign_keys="Taxon.parent_name_usage_id",
         remote_side="Taxon.id", back_populates="children",

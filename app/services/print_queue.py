@@ -78,6 +78,34 @@ def enqueue_identifier(
     ))
 
 
+def requeue_batch_identifiers(session: Session, batch_id: int) -> int:
+    """Re-add a batch's reserved (unprinted/unassigned) identifier codes to the
+    print queue, so codes are never lost — a cleared queue can always be rebuilt
+    from the batch. Skips codes already queued (no duplicates). Returns how many
+    were added."""
+    from app.models import LabelCode
+    reserved = (
+        session.query(LabelCode)
+        .filter(LabelCode.batch_id == batch_id, LabelCode.status == "reserved")
+        .order_by(LabelCode.created_at)
+        .all()
+    )
+    if not reserved:
+        return 0
+    already = {
+        q.label_code_id for q in
+        session.query(PrintQueue).filter(PrintQueue.label_type == "identifier").all()
+    }
+    todo = [c for c in reserved if c.id not in already]
+    if not todo:
+        return 0
+    gid = next_print_group_id(session)
+    for c in todo:
+        enqueue_identifier(session, c.id, print_group_id=gid, source=SOURCE_IDENTIFIERS)
+    session.flush()
+    return len(todo)
+
+
 # ---------------------------------------------------------------------------
 # Queue contents
 # ---------------------------------------------------------------------------
@@ -115,11 +143,11 @@ def _co_to_data_label(co: CollectionObject, text_override: str | None = None) ->
     ]
     return lbl.DataLabel(
         text_override            = text_override,
-        country                  = ev.country                         if ev else None,
+        country                  = (ev.country_obj.name if ev and ev.country_obj else None),
         country_code             = ev.country_code                    if ev else None,
-        state_province           = ev.state_province                  if ev else None,
+        state_province           = (ev.state_province_obj.name if ev and ev.state_province_obj else None),
         municipality             = ev.municipality                    if ev else None,
-        county                   = ev.county                          if ev else None,
+        county                   = (ev.county_obj.name if ev and ev.county_obj else None),
         locality                 = ev.locality                        if ev else None,
         verbatim_locality        = ev.verbatim_locality               if ev else None,
         latitude                 = ev.decimal_latitude                if ev else None,
@@ -320,8 +348,9 @@ def set_override_for_identical(session: Session, queue_id: int, text: str | None
 
 def build_pdf(session: Session, printed_at: str | None = None) -> bytes:
     """Render all queued labels into a single grouped PDF (see `queued_groups`)."""
+    from app.services import repositories as repo_svc
     groups = queued_groups(session)
-    return lbl.grouped_sheet(groups, printed_at or _utcnow())
+    return lbl.grouped_sheet(groups, printed_at or _utcnow(), repo_svc.name_map(session))
 
 
 def clear_queue(session: Session) -> int:
