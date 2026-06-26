@@ -505,7 +505,7 @@ _ID_TEXT_CSS = """
     white-space: nowrap; overflow: hidden;
 }
 .id-row { display: flex; align-items: center; gap: 0.9mm; width: 100%; }
-.id-row img { width: 4.3mm; height: 4.3mm; flex-shrink: 0; image-rendering: pixelated; }
+.id-row img { width: 4.5mm; height: 4.5mm; flex-shrink: 0; image-rendering: pixelated; }
 .id-text { flex: 1; min-width: 0; text-align: center; overflow: hidden; }
 .id-code { font-size: 5pt; letter-spacing: 0.1pt; white-space: nowrap; }
 """
