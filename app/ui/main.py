@@ -1869,7 +1869,8 @@ def index():
                     )
 
                     _NODE_SLOT = r"""
-                        <div style="display:flex; align-items:baseline; gap:7px; padding:2px 0 1px;">
+                        <div style="display:flex; align-items:baseline; gap:7px; padding:2px 0 1px; cursor:pointer; flex:1;"
+                             @click="props.node.children && props.node.children.length ? props.tree.setExpanded(props.key, !props.expanded) : null">
                           <span v-if="props.node.synonym"
                                 style="color:var(--tp-base-soft); font-size:.8rem;
                                        font-style:normal; margin-right:-2px;">=</span>
