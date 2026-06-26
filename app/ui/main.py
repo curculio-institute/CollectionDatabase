@@ -23,6 +23,7 @@ import app.services as svc
 import app.services.taxonomy as tax_svc
 import app.services.identifiers as id_svc
 import app.services.labels as lbl_svc
+import app.services.repositories as repo_svc
 import app.services.print_queue as pq_svc
 from app.config import get_config, save_config, printed_pdf_dir, media_dir
 
@@ -2353,7 +2354,8 @@ def index():
                         if not codes:
                             ui.notify("No reserved codes left in this batch.", type="warning")
                             return
-                        pdf = lbl_svc.identifier_sheet(codes)
+                        names = _with_session(repo_svc.name_map)
+                        pdf = lbl_svc.identifier_sheet(codes, names)
                         ui.download(pdf, filename=f"identifiers_reprint_batch{bid}.pdf",
                                     media_type="application/pdf")
                         id_status.set_text(f"✓ Reprinted {len(codes)} codes from batch {bid}")

@@ -464,24 +464,42 @@ def _split_identifier_code(code: str) -> tuple[str, str]:
     return code[:idx + 1], code[idx + 1:]
 
 
-def _id_label_inner(code: str) -> str:
-    """Inner HTML for one identifier label: QR image + two-line code text."""
+def _id_label_inner(code: str, collection_name: str = "") -> str:
+    """Inner HTML for one identifier label: QR image + the code column.
+
+    Layout (#56): a tiny full-width collection-name header (if known), then a row
+    with the QR on the left and the code on the right, split over two lines —
+    ``JJPC-`` then ``00304`` — centred.
+    """
     prefix, number = _split_identifier_code(code)
     qr = _qr_data_url(code)
-    prefix_html = f'<div class="id-prefix">{_e(prefix)}</div>' if prefix else ""
+    name_html = (
+        f'<div class="id-collname">{_e(collection_name)}</div>'
+        if collection_name else ""
+    )
+    pfx_html = f'<div class="id-pfx">{_e(prefix)}</div>' if prefix else ""
     return (
+        f'{name_html}'
+        f'<div class="id-row">'
         f'<img src="{qr}">'
-        f'<div class="id-text">'
-        f'{prefix_html}'
-        f'<div class="id-number">{_e(number)}</div>'
+        f'<div class="id-text">{pfx_html}<div class="id-num">{_e(number)}</div></div>'
         f'</div>'
     )
 
 
-# Shared CSS for the two-line code column — included in every identifier-label CSS block.
+# Shared CSS for the code column — included in every identifier-label CSS block.
+# The label stacks a tiny full-width collection-name header over a QR+code row.
 _ID_TEXT_CSS = """
+.id-collname {
+    font-family: 'Fira Code', 'DejaVu Sans Mono', monospace;
+    font-size: 2.6pt; font-weight: 600; letter-spacing: 0.02pt;
+    line-height: 1.0; text-align: center; width: 100%;
+    white-space: nowrap; overflow: hidden;
+}
+.id-row { display: flex; align-items: center; gap: 0.8mm; width: 100%; flex: 1; }
 .id-text {
     flex: 1;
+    min-width: 0;            /* allow the column to shrink so the code wraps */
     display: flex;
     flex-direction: column;
     align-items: center;
@@ -489,28 +507,43 @@ _ID_TEXT_CSS = """
     font-family: 'Fira Code', 'DejaVu Sans Mono', monospace;
     font-weight: bold;
     text-align: center;
-    line-height: 1.3;
+    line-height: 1.15;
+    overflow: hidden;
 }
-.id-prefix { font-size: 4pt;  letter-spacing: 0.3pt; }
-.id-number  { font-size: 8pt;  letter-spacing: 0.5pt; }
+.id-pfx, .id-num { font-size: 6pt; letter-spacing: 0.3pt; white-space: nowrap;
+                   line-height: 1.1; }
 """
 
 _ID_CSS = _BASE_CSS + _ID_TEXT_CSS + """
 .label {
-    height: 5.5mm;
+    height: 6.5mm;
     display: flex;
+    flex-direction: column;
     align-items: center;
-    gap: 0.8mm;
+    justify-content: center;
+    gap: 0.2mm;
     padding: 0.3mm 0.5mm;
 }
 .label img { width: 4.5mm; height: 4.5mm; flex-shrink: 0; image-rendering: pixelated; }
 """
 
 
-def identifier_sheet(codes: list[str]) -> bytes:
-    """PDF sheet of identifier-only labels (18 × 5.5 mm)."""
+def _collection_of(code: str, names: dict[str, str] | None) -> str:
+    """Full collection name for a code, by its prefix (``JJPC-00304`` → ``JJPC``)."""
+    if not names:
+        return ""
+    prefix, _ = _split_identifier_code(code)
+    return names.get(prefix.rstrip("-"), "")
+
+
+def identifier_sheet(codes: list[str], names: dict[str, str] | None = None) -> bytes:
+    """PDF sheet of identifier-only labels (18 × 7 mm).
+
+    ``names`` maps a collection code (the code prefix) → its full name, printed in
+    tiny letters above the code (see repositories.name_map). Unknown prefixes just
+    omit the name line."""
     items = [
-        f'<div class="label">{_id_label_inner(c)}</div>'
+        f'<div class="label">{_id_label_inner(c, _collection_of(c, names))}</div>'
         for c in codes
     ]
     html = (f"<html><head><style>{_ID_CSS}</style></head>"
@@ -604,13 +637,14 @@ def _det_cell(d: Optional[DeterminationLabel]) -> str:
     return f'<td class="cell"><div class="lbl-det">{_det_inner_html(d)}</div></td>'
 
 
-def _id_cell(code: Optional[str]) -> str:
+def _id_cell(code: Optional[str], names: dict[str, str] | None = None) -> str:
     if not code:
         return '<td class="cell"></td>'
-    return f'<td class="cell"><div class="lbl-id">{_id_label_inner(code)}</div></td>'
+    inner = _id_label_inner(code, _collection_of(code, names))
+    return f'<td class="cell"><div class="lbl-id">{inner}</div></td>'
 
 
-def _group_html(group: LabelGroup) -> str:
+def _group_html(group: LabelGroup, names: dict[str, str] | None = None) -> str:
     specs = group.specimens
     if not specs:
         return ""
@@ -628,7 +662,7 @@ def _group_html(group: LabelGroup) -> str:
         if has_data:
             rows.append("<tr>" + "".join(_data_cell(s.data) for s in chunk) + "</tr>")
         if has_id:
-            rows.append("<tr>" + "".join(_id_cell(s.id_code) for s in chunk) + "</tr>")
+            rows.append("<tr>" + "".join(_id_cell(s.id_code, names) for s in chunk) + "</tr>")
         if has_det:
             rows.append("<tr>" + "".join(_det_cell(s.determination) for s in chunk) + "</tr>")
         chunks.append(f'<table class="chunk">{"".join(rows)}</table>')
@@ -637,15 +671,19 @@ def _group_html(group: LabelGroup) -> str:
     return f'<div class="group">{header}{"".join(chunks)}</div>'
 
 
-def _grouped_html(groups: list[LabelGroup], printed_at: str) -> str:
-    body = "".join(_group_html(g) for g in groups if g.specimens)
+def _grouped_html(groups: list[LabelGroup], printed_at: str,
+                  names: dict[str, str] | None = None) -> str:
+    body = "".join(_group_html(g, names) for g in groups if g.specimens)
     stamp = f'<div class="printed-at">Printed: {_e(printed_at)}</div>'
     return (f"<html><head><style>{_GROUPED_CSS}</style></head>"
             f'<body>{stamp}<div class="sheet">{body}</div></body></html>')
 
 
-def grouped_sheet(groups: list[LabelGroup], printed_at: str) -> bytes:
-    """Render queued labels as a grouped, column-aligned sheet (see module note)."""
-    return HTML(string=_grouped_html(groups, printed_at)).write_pdf()
+def grouped_sheet(groups: list[LabelGroup], printed_at: str,
+                  names: dict[str, str] | None = None) -> bytes:
+    """Render queued labels as a grouped, column-aligned sheet (see module note).
+
+    ``names`` maps collection code → full name for the identifier band (#56)."""
+    return HTML(string=_grouped_html(groups, printed_at, names)).write_pdf()
 
 

@@ -15,6 +15,7 @@ from .geography import Country, StateProvince, County, Island, AdministrativeReg
 from .media import Media, MediaAttachment
 from .external_identifier import ExternalIdentifier
 from .life_stage import LifeStageRecord
+from .repository import Repository
 
 __all__ = [
     "Base",
@@ -41,4 +42,5 @@ __all__ = [
     "MediaAttachment",
     "ExternalIdentifier",
     "LifeStageRecord",
+    "Repository",
 ]
