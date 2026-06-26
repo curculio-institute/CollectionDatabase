@@ -558,7 +558,7 @@ def index():
          The actual reorder happens via row-select + the ↑/↓ toolbar buttons. */
       .tax-move-hint { opacity:0; transition:opacity .12s; margin-left:4px;
                        color:var(--tp-base-soft); cursor:default; }
-      .checklist-tree .q-tree__node-header:hover .tax-move-hint { opacity:.45; }
+      .checklist-tree.reorder-on .q-tree__node-header:hover .tax-move-hint { opacity:.45; }
       .rank-order,
       .rank-suborder,
       .rank-infraorder,
@@ -1668,24 +1668,11 @@ def index():
         with ui.tab_panel("taxonomy"):
             with ui.column().classes("w-full max-w-5xl mx-auto px-4 pt-6 pb-16 gap-4"):
 
-                # ── summary stats ────────────────────────────────────────
-                stats = _with_session(tax_svc.get_stats)
-                _tax_stat_labels: dict[str, object] = {}
-                with ui.row().classes("w-full gap-4"):
-                    for label, value in [
-                        ("Accepted taxa", stats.total_accepted),
-                        ("Species",       stats.total_species),
-                    ]:
-                        with ui.card().classes("shadow-sm px-5 py-3 flex-1 text-center"):
-                            _tax_stat_labels[label] = ui.label(str(value)).style(
-                                "font-size:1.8rem; font-weight:300; color:var(--tp-secondary);"
-                            )
-                            ui.label(label).classes("section-label mt-1")
-
+                # Summary stat cards (accepted-taxa / species counts) were removed
+                # — low value, took vertical space. The refresher stays as a no-op
+                # so the existing call sites need no change.
                 def _refresh_taxonomy_stats():
-                    s = _with_session(tax_svc.get_stats)
-                    _tax_stat_labels["Accepted taxa"].set_text(str(s.total_accepted))
-                    _tax_stat_labels["Species"].set_text(str(s.total_species))
+                    pass
                 _refreshers["taxonomy_stats"] = _refresh_taxonomy_stats
 
                 # ── nomenclatural code tabs + manage buttons ──────────────
@@ -1706,6 +1693,39 @@ def index():
                             ui.tab("ALL",  label="All codes")
 
                         ui.space()
+
+                        # Reorder mode — arranging the taxonomic sequence is an
+                        # occasional curatorial action, so it stays behind this
+                        # toggle (progressive disclosure). When on, the reorder
+                        # toolbar below appears and orderable rows become
+                        # selectable to move; off restores plain browsing.
+                        _reorder_mode = {"on": False}
+
+                        def _toggle_reorder():
+                            on = not _reorder_mode["on"]
+                            _reorder_mode["on"] = on
+                            _reorder_bar.set_visibility(on)
+                            if on:
+                                _reorder_btn.props("color=secondary")
+                                tax_tree.classes(add="reorder-on")
+                            else:
+                                _reorder_btn.props(remove="color=secondary")
+                                tax_tree.classes(remove="reorder-on")
+                                _sel_taxon["tid"] = None
+                                _btn_up.set_enabled(False)
+                                _btn_dn.set_enabled(False)
+                                _reorder_lbl.set_text(
+                                    "Select a family or higher rank to reorder")
+                                tax_tree._props["selected"] = None
+                                tax_tree.update()
+
+                        _reorder_btn = (
+                            ui.button("Reorder", icon="swap_vert")
+                            .props("flat dense")
+                            .tooltip("Arrange family-and-above ranks into the "
+                                     "collection's taxonomic sequence")
+                        )
+                        _reorder_btn.on_click(_toggle_reorder)
 
                         def _on_saved_taxon():
                             _refresh_taxonomy_stats()
@@ -1760,7 +1780,8 @@ def index():
                     # (native q-tree selection, Python-side on_select) enables
                     # the ↑/↓ buttons; below family stays alphabetical.
                     _sel_taxon: dict[str, int | None] = {"tid": None}
-                    with ui.row().classes("items-center gap-1 mb-3"):
+                    _reorder_bar = ui.row().classes("items-center gap-1 mb-3")
+                    with _reorder_bar:
                         ui.icon("swap_vert").classes("text-base") \
                           .style("color:var(--tp-base-soft)")
                         _reorder_lbl = (
@@ -1779,9 +1800,12 @@ def index():
                         )
                     _btn_up.set_enabled(False)
                     _btn_dn.set_enabled(False)
+                    _reorder_bar.set_visibility(False)   # revealed by the Reorder toggle
 
                     def _on_node_select(e):
                         from app.models import Taxon
+                        if not _reorder_mode["on"]:
+                            return
                         nid = e.value or ""
                         tid = None
                         name = None
