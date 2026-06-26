@@ -467,9 +467,11 @@ def _split_identifier_code(code: str) -> tuple[str, str]:
 def _id_label_inner(code: str, collection_name: str = "") -> str:
     """Inner HTML for one identifier label: QR image + the code column.
 
-    Layout (#56): a tiny full-width collection-name header (if known) on top, then a
-    row with the QR on the left and the full code ``JJPC-00304`` on one line,
-    centred, to its right.
+    Layout (#56): a self-contained vertical block — a tiny full-width collection-name
+    header (if known) on top, then a row with the QR on the left and the full code
+    ``JJPC-00304`` on one line, centred, to its right. Self-contained (``.id-label``
+    owns the whole layout) so it renders identically in the Labels sheet AND inside
+    the Print-queue grouped cell, regardless of the wrapping container.
     """
     qr = _qr_data_url(code)
     name_html = (
@@ -477,52 +479,41 @@ def _id_label_inner(code: str, collection_name: str = "") -> str:
         if collection_name else ""
     )
     return (
+        f'<div class="id-label">'
         f'{name_html}'
         f'<div class="id-row">'
         f'<img src="{qr}">'
         f'<div class="id-text"><div class="id-code">{_e(code)}</div></div>'
         f'</div>'
+        f'</div>'
     )
 
 
-# Shared CSS for the code column — included in every identifier-label CSS block.
-# The label stacks a tiny full-width collection-name header over a QR+code row.
+# Shared CSS for the identifier label — included in every identifier-label CSS block.
+# ``.id-label`` is the whole self-contained block (vertical: name header over a
+# QR+code row); it fills whatever container holds it (.label / .lbl-id), so both
+# sheets render the same compact label.
 _ID_TEXT_CSS = """
+.id-label {
+    display: flex; flex-direction: column; justify-content: center;
+    width: 100%; height: 100%;
+    font-family: 'Fira Code', 'DejaVu Sans Mono', monospace; font-weight: bold;
+}
 .id-collname {
-    font-family: 'Fira Code', 'DejaVu Sans Mono', monospace;
     font-size: 2.5pt; font-weight: 600; letter-spacing: 0;
     line-height: 1.0; text-align: center; width: 100%;
     white-space: nowrap; overflow: hidden;
 }
-.id-row { display: flex; align-items: center; gap: 0.9mm; width: 100%; flex: 1; }
+.id-row { display: flex; align-items: center; gap: 0.9mm; width: 100%; }
 .id-row img { width: 4.3mm; height: 4.3mm; flex-shrink: 0; image-rendering: pixelated; }
-.id-text {
-    flex: 1;
-    min-width: 0;
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    font-family: 'Fira Code', 'DejaVu Sans Mono', monospace;
-    font-weight: bold;
-    text-align: center;
-    overflow: hidden;
-}
-.id-code { font-size: 5.5pt; letter-spacing: 0.2pt; white-space: nowrap; }
+.id-text { flex: 1; min-width: 0; text-align: center; overflow: hidden; }
+.id-code { font-size: 5pt; letter-spacing: 0.1pt; white-space: nowrap; }
 """
 
 _ID_CSS = _BASE_CSS + _ID_TEXT_CSS + """
-.label {
-    height: 6.5mm;
-    /* inline-flex (not flex) so the labels still tile left-to-right across the
-       sheet — a plain block flex would stack them one per line and waste the page. */
-    display: inline-flex;
-    vertical-align: top;
-    flex-direction: column;
-    justify-content: center;
-    padding: 0.45mm 0.5mm 0.35mm;
-}
-.label img { width: 4.3mm; height: 4.3mm; flex-shrink: 0; image-rendering: pixelated; }
+/* .label stays inline-block (from _BASE_CSS) so labels tile across the sheet; the
+   self-contained .id-label inside owns the vertical layout. */
+.label { height: 6.5mm; padding: 0.45mm 0.5mm 0.35mm; }
 """
 
 
@@ -615,11 +606,10 @@ _GROUPED_CSS = _BASE_CSS + _ID_TEXT_CSS + f"""
     font-size: {_FONT_SIZE};
 }}
 .lbl-id {{
-    height: 5.5mm;
+    height: 6.5mm;
     border: 0.1mm dashed #aaa; padding: 0.3mm 0.5mm;
-    display: flex; align-items: center; gap: 0.8mm;
+    overflow: hidden;
 }}
-.lbl-id img {{ width: 4.5mm; height: 4.5mm; flex-shrink: 0; image-rendering: pixelated; }}
 """
 
 
