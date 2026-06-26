@@ -37,9 +37,12 @@ _CSS = """<style>
 .ex-chip .ex-x:hover { color: #dc2626; }
 /* checklist — published-catalogue look: flush-left ranked headers distinguished by
    SIZE (higher taxa bigger), not deep indentation; subgenus is its own header. */
-.ex-hdr   { display: flex; align-items: baseline; gap: 7px; line-height: 1.25; }
-.ex-rank  { font-size: .58rem; font-weight: 600; text-transform: uppercase; letter-spacing: .07em;
-            color: var(--tp-base-soft, #9ca3af); align-self: center; flex-shrink: 0; }
+.ex-hdr   { display: flex; align-items: baseline; gap: 8px; line-height: 1.25; }
+/* fixed-width right-aligned rank column → every name starts at the same x,
+   regardless of the rank word's length (Superfamily vs Family) */
+.ex-rank  { display: inline-block; width: 5.6rem; text-align: right; flex-shrink: 0;
+            align-self: center; font-size: .58rem; font-weight: 600;
+            text-transform: uppercase; letter-spacing: .07em; color: var(--tp-base-soft, #9ca3af); }
 .ex-name  { line-height: 1.2; }
 .ex-h-superfamily { margin-top: 20px; }
 .ex-h-superfamily .ex-name { font-size: 1.05rem; font-weight: 700; text-transform: uppercase; letter-spacing: .04em; }
@@ -67,8 +70,12 @@ _CSS = """<style>
            overflow-wrap: anywhere; }
 .ex-lot:hover { background: rgba(3,105,161,.07); }
 .ex-cat  { font-family: monospace; color: var(--tp-base-soft, #888); font-size: .76rem; }
-/* species sit one gentle, CONSTANT indent under their (sub)genus block */
-.ex-species-block { padding-left: 1.6em; }
+/* species line up under the (sub)genus NAME column (past the rank column), so the
+   whole list shares one left edge for names instead of the epithets outdenting */
+.ex-species-block { padding-left: calc(5.6rem + 8px); }
+/* trim the expansion's own chrome so the epithet sits at the name column */
+.ex-species-block .q-expansion-item .q-item { padding: 0; min-height: 0; }
+.ex-species-block .q-expansion-item .q-item__section--avatar { min-width: 0; padding: 0; }
 </style>"""
 
 

@@ -551,9 +551,9 @@ def index():
                         text-transform:uppercase; letter-spacing:.07em;
                         color:var(--tp-base-soft); margin-right:8px; align-self:center; }
       /* Flatten the tree's per-level indentation so every name lines up at the same
-         column — hierarchy is carried by the rank label + type size (catalogue style).
-         A small indent is kept so a node's expand arrow still nests under its parent. */
-      .checklist-tree .q-tree__children { padding-left:7px; }
+         column — hierarchy is carried by the rank label + type size (catalogue style),
+         not by indentation. Collapse/expand still works via the node arrows. */
+      .checklist-tree .q-tree__children { padding-left:0; }
       .rank-superfamily { font-size:1.45rem; font-weight:700;
                         text-transform:uppercase; letter-spacing:.05em; }
       .rank-family    { font-size:1.35rem; font-weight:800;
@@ -1756,8 +1756,7 @@ def index():
                           <span v-if="props.node.synonym"
                                 style="color:var(--tp-base-soft); font-size:.8rem;
                                        font-style:normal; margin-right:-2px;">=</span>
-                          <span v-if="!props.node.synonym && ['superfamily','family','subfamily','tribe','subtribe','genus','subgenus'].includes(props.node.rank)"
-                                class="tax-rank">{{ props.node.rank }}</span>
+                          <span class="tax-rank">{{ ['superfamily','family','subfamily','tribe','subtribe','genus','subgenus'].includes(props.node.rank) ? props.node.rank : '' }}</span>
                           <span :class="'rank-' + props.node.rank">{{ props.node.name }}</span>
                           <span v-if="props.node.auth"
                                 style="font-style:normal; font-size:.78rem;
