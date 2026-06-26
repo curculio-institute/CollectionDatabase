@@ -514,7 +514,10 @@ _ID_TEXT_CSS = """
 _ID_CSS = _BASE_CSS + _ID_TEXT_CSS + """
 .label {
     height: 6.5mm;
-    display: flex;
+    /* inline-flex (not flex) so the labels still tile left-to-right across the
+       sheet — a plain block flex would stack them one per line and waste the page. */
+    display: inline-flex;
+    vertical-align: top;
     flex-direction: column;
     justify-content: center;
     padding: 0.45mm 0.5mm 0.35mm;
