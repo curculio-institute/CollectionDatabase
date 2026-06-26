@@ -45,7 +45,7 @@ _CSS = """<style>
             text-transform: uppercase; letter-spacing: .07em; color: var(--tp-base-soft, #9ca3af); }
 .ex-name  { line-height: 1.2; }
 .ex-h-superfamily { margin-top: 20px; }
-.ex-h-superfamily .ex-name { font-size: 1.05rem; font-weight: 700; text-transform: uppercase; letter-spacing: .04em; }
+.ex-h-superfamily .ex-name { font-size: 1.45rem; font-weight: 700; text-transform: uppercase; letter-spacing: .04em; }
 .ex-h-family { margin-top: 18px; }
 .ex-h-family .ex-name { font-size: 1.35rem; font-weight: 800; text-transform: uppercase; letter-spacing: .02em; }
 .ex-h-subfamily { margin-top: 9px; }
