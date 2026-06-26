@@ -299,7 +299,10 @@ def checklist(session: Session, filters: list[dict] | None = None) -> list[Check
             undetermined.extend(lots)
             continue
         chain = _ancestor_chain(t, idx)
-        names = [c.scientific_name or "" for c in chain]
+        # Drawer order: each ancestor sorts by its manual sort_order first (the
+        # arranged taxonomic sequence at family-and-above), then alphabetically.
+        names = [(c.sort_order if c.sort_order is not None else 10 ** 9,
+                  c.scientific_name or "") for c in chain]
         # header path = the drawer-divider ranks above this taxon (family … genus);
         # subgenus is excluded so all of a genus's species stay in one group.
         # When the determination is at a header rank itself (genus/family/super…/),

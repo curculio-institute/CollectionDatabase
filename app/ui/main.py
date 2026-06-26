@@ -554,6 +554,11 @@ def index():
          column — hierarchy is carried by the rank label + type size (catalogue style),
          not by indentation. Collapse/expand still works via the node arrows. */
       .checklist-tree .q-tree__children { padding-left:0; }
+      /* reorderable hint (family-and-above): faint, brightens on row hover.
+         The actual reorder happens via row-select + the ↑/↓ toolbar buttons. */
+      .tax-move-hint { opacity:0; transition:opacity .12s; margin-left:4px;
+                       color:var(--tp-base-soft); cursor:default; }
+      .checklist-tree .q-tree__node-header:hover .tax-move-hint { opacity:.45; }
       .rank-superfamily { font-size:1.45rem; font-weight:700;
                         text-transform:uppercase; letter-spacing:.05em; }
       .rank-family    { font-size:1.35rem; font-weight:800;
@@ -1747,6 +1752,72 @@ def index():
                         .tooltip("Type a name at any rank to filter the checklist")
                     )
 
+                    # Reorder toolbar — display-only taxonomic sequence for
+                    # family-and-above ranks (#40). Selecting an orderable row
+                    # (native q-tree selection, Python-side on_select) enables
+                    # the ↑/↓ buttons; below family stays alphabetical.
+                    _sel_taxon: dict[str, int | None] = {"tid": None}
+                    with ui.row().classes("items-center gap-1 mb-3"):
+                        ui.icon("swap_vert").classes("text-base") \
+                          .style("color:var(--tp-base-soft)")
+                        _reorder_lbl = (
+                            ui.label("Select a family or higher rank to reorder")
+                            .classes("text-xs").style("color:var(--tp-base-soft)")
+                        )
+                        _btn_up = (
+                            ui.button(icon="keyboard_arrow_up")
+                            .props("flat dense round size=sm")
+                            .tooltip("Move up (taxonomic sequence)")
+                        )
+                        _btn_dn = (
+                            ui.button(icon="keyboard_arrow_down")
+                            .props("flat dense round size=sm")
+                            .tooltip("Move down (taxonomic sequence)")
+                        )
+                    _btn_up.set_enabled(False)
+                    _btn_dn.set_enabled(False)
+
+                    def _on_node_select(e):
+                        from app.models import Taxon
+                        nid = e.value or ""
+                        tid = None
+                        name = None
+                        if isinstance(nid, str) and nid.startswith("taxon-"):
+                            try:
+                                cand = int(nid.split("-", 1)[1])
+                            except ValueError:
+                                cand = None
+                            if cand is not None:
+                                with _sf() as s:
+                                    t = s.get(Taxon, cand)
+                                    if t is not None and t.taxon_rank in tax_svc.ORDERABLE_RANKS:
+                                        tid = t.id
+                                        name = t.scientific_name
+                        _sel_taxon["tid"] = tid
+                        _btn_up.set_enabled(tid is not None)
+                        _btn_dn.set_enabled(tid is not None)
+                        _reorder_lbl.set_text(
+                            f"Reorder: {name}" if tid is not None
+                            else "Select a family or higher rank to reorder"
+                        )
+
+                    def _do_move(direction: int):
+                        tid = _sel_taxon["tid"]
+                        if tid is None:
+                            return
+                        with _sf() as s:
+                            with s.begin():
+                                tax_svc.move_taxon(s, tid, direction)
+                        _refresh_tree()
+                        if "explore" in _refreshers:
+                            _refreshers["explore"]()
+                        # keep the row selected after the rebuild
+                        tax_tree._props["selected"] = f"taxon-{tid}"
+                        tax_tree.update()
+
+                    _btn_up.on_click(lambda: _do_move(-1))
+                    _btn_dn.on_click(lambda: _do_move(1))
+
                     tree_data = _with_session(
                         lambda s: tax_svc.build_taxonomy_tree(s, nomenclatural_code="ICZN")
                     )
@@ -1776,6 +1847,10 @@ def index():
                                     text-decoration:none; opacity:.6; line-height:1; margin-left:2px;"
                              onmouseover="this.style.opacity='1'"
                              onmouseout="this.style.opacity='.6'">↗</a>
+                          <q-icon v-if="props.node.orderable" name="swap_vert"
+                                  size="15px" class="tax-move-hint">
+                            <q-tooltip>Click the row, then use the ↑/↓ buttons above to set the taxonomic sequence</q-tooltip>
+                          </q-icon>
                         </div>
                     """
 
@@ -1784,6 +1859,7 @@ def index():
                         nodes=tree_data,
                         label_key="label",
                         children_key="children",
+                        on_select=_on_node_select,
                     ).classes("w-full checklist-tree").props("no-connectors dense")
                     tax_tree.add_slot("default-header", _NODE_SLOT)
 
