@@ -2519,7 +2519,9 @@ def index():
                               if x.collection_code == code), None)
                 if r is not None:
                     collection_code_in.value = r.collection_code
-                    institution_code_in.value = r.institution_code or r.collection_code
+                    # Only fill institutionCode if the row actually has one — don't
+                    # invent it from the collection code.
+                    institution_code_in.value = r.institution_code or ""
             default_collection_sel.on_value_change(_on_default_collection)
 
             ui.separator().classes("my-3")
