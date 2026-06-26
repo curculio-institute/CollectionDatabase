@@ -2479,6 +2479,26 @@ def index():
                 "Written into every new record. Required before saving a specimen."
             ).classes("text-xs mb-2").style("color:var(--tp-base-soft)")
             cfg_now_id = get_config()
+
+            # Default collection — pick from the Collections vocabulary; selecting a
+            # row fills institutionCode + collectionCode below (which stay editable as
+            # the stored values). Keeps the new-specimen default in sync with the
+            # collection's metadata + the printed label (#56).
+            def _repo_opts() -> dict:
+                with _sf() as s:
+                    return {
+                        r.collection_code: f"{r.collection_code} — {r.collection_full_name}"
+                        for r in repo_svc.list_repositories(s)
+                    }
+
+            default_collection_sel = ui.select(
+                options=_repo_opts(),
+                value=cfg_now_id.collection_code or None,
+                label="Default collection (from Collections vocabulary)",
+                with_input=True,
+            ).classes("w-full mt-1")
+            ui.timer(2.0, lambda: default_collection_sel.set_options(_repo_opts()))
+
             institution_code_in = ui.input(
                 "institutionCode",
                 value=cfg_now_id.institution_code,
@@ -2489,6 +2509,18 @@ def index():
                 value=cfg_now_id.collection_code,
                 placeholder="e.g. Jilg",
             ).classes("w-full mt-2")
+
+            def _on_default_collection(e):
+                code = e.value
+                if not code:
+                    return
+                with _sf() as s:
+                    r = next((x for x in repo_svc.list_repositories(s)
+                              if x.collection_code == code), None)
+                if r is not None:
+                    collection_code_in.value = r.collection_code
+                    institution_code_in.value = r.institution_code or r.collection_code
+            default_collection_sel.on_value_change(_on_default_collection)
 
             ui.separator().classes("my-3")
 
@@ -2622,6 +2654,8 @@ def index():
         tp_base_in.value        = cfg.taxonpages_base
         institution_code_in.value = cfg.institution_code
         collection_code_in.value  = cfg.collection_code
+        default_collection_sel.set_options(_repo_opts())
+        default_collection_sel.value = cfg.collection_code or None
         map_layer_sel.value     = cfg.map_default_layer or "street"
         digitize_layout_toggle.value = cfg.digitize_layout or "normal"
         default_license_sel.value = cfg.default_license or ""

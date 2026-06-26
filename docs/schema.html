@@ -606,6 +606,29 @@ erDiagram
   </table>
 </div>
 
+<div class="table-card">
+  <h2>repository</h2>
+  <div class="desc">Collections / institutions controlled vocabulary (#56). Keyed by
+    dwc:collectionCode (the prefix embedded in every catalog number, e.g. JJPC in
+    JJPC-00304). Source for the identifier label's full collection name and the Settings
+    default collection. DwC-mapping columns carry the dwc: prefix; full names + TW ids are
+    local. TaxonWorks stores the institution (Repository) and collection (Namespace) under
+    separate ids. STRICT. Migration 0045.</div>
+  <table>
+    <thead><tr><th>Type</th><th>Column</th><th>Notes</th></tr></thead>
+    <tbody>
+      <tr><td><span class="badge badge-INTEGER">INTEGER</span></td><td class="col-local">id</td><td><span class="tag tag-PK">PK</span></td></tr>
+      <tr><td><span class="badge badge-TEXT">TEXT</span></td><td class="col-dwc"><a href="https://dwc.tdwg.org/list/#dwc_institutionCode">dwc:institutionCode</a></td><td></td></tr>
+      <tr><td><span class="badge badge-TEXT">TEXT</span></td><td class="col-local">institution_full_name</td><td></td></tr>
+      <tr><td><span class="badge badge-TEXT">TEXT</span></td><td class="col-dwc"><a href="https://dwc.tdwg.org/list/#dwc_collectionCode">dwc:collectionCode</a></td><td>NOT NULL, UNIQUE — the label join key</td></tr>
+      <tr><td><span class="badge badge-TEXT">TEXT</span></td><td class="col-local">collection_full_name</td><td>NOT NULL — prints on the identifier label</td></tr>
+      <tr><td><span class="badge badge-INTEGER">INTEGER</span></td><td class="col-local">taxonworks_institution_id</td><td>TW Repository id (nullable)</td></tr>
+      <tr><td><span class="badge badge-INTEGER">INTEGER</span></td><td class="col-local">taxonworks_collection_id</td><td>TW Namespace id (nullable)</td></tr>
+      <tr><td><span class="badge badge-TEXT">TEXT</span></td><td class="col-local">created_at / updated_at</td><td></td></tr>
+    </tbody>
+  </table>
+</div>
+
 <!-- ── integrity constraints ──────────────────────────────────── -->
 <p class="section-heading" id="constraints">Integrity Constraints</p>
 

@@ -514,6 +514,14 @@ The shared mechanism:
 - **Person stays separate** (not folded into `Vocabulary`): it carries extra columns
   (`abbreviated_name`, `orcid`) and label-printing logic. `Vocabulary` is for the *single-name*
   case only.
+- **Collections/institutions (`repository`) stay separate too** (multi-column, #56): keyed
+  by `dwc:collectionCode`, with `collection_full_name` / `institution_full_name` and the two
+  TaxonWorks ids (institution=Repository, collection=Namespace). DwC-mapping columns carry the
+  `dwc:` prefix; the rest are local. It is the source for the identifier label's full
+  collection name (`repositories.name_map`, resolved by the code prefix `JJPC-00304`→`JJPC`)
+  and for the Settings "Default collection" (which fills `config.institutionCode`/
+  `collectionCode` for new specimens). Its own Controlled-Vocabularies card (not the generic
+  single-name one). Migration 0045.
 
 ### Removed from original design
 
@@ -730,6 +738,7 @@ arrow-key event, chip styling) is design.md's concern → "Digitize layout modes
 | `life_stage.py` | Reared-specimen life-stage history CRUD + `life_stage_facets()` export projection (Phase 3) |
 | `vocab.py` | Generic single-name controlled-vocabulary service (`Vocabulary`: list/options/get_or_create/update/delete/merge, dynamic FK re-pointing) |
 | `vocabularies.py` | Vocabulary instances + `VOCAB_REGISTRY` (the Controlled Vocabularies tab renders one section per entry) |
+| `repositories.py` | Collections/institutions CRUD (multi-column vocab, #56) + `name_map` (collectionCode→full name) for the identifier label |
 | `explore.py` | Explore-tab querying (#40): `search_facets`, `query_specimens(filters)`, `checklist(filters)` (drawer-order taxa+lots), `events(filters)`, `to_csv`, `counts` |
 
 ### Taxon search widget (`app/ui/taxon_search.py`)
