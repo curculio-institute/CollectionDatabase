@@ -314,10 +314,11 @@ def index():
     <style>
       #tp-unsaved-banner {
         display:none; position:fixed; bottom:16px; left:50%;
-        transform:translateX(-50%); z-index:9999;
+        transform:translateX(-50%); z-index:6000;
         background:#b45309; color:#fff; padding:7px 18px; border-radius:9px;
         font-size:.82rem; font-weight:600; letter-spacing:.01em;
         box-shadow:0 2px 10px rgba(0,0,0,.28);
+        transition:bottom .2s ease;
       }
     </style>
     <script>
@@ -362,6 +363,24 @@ def index():
       window.addEventListener('beforeunload', function(e){
         if (window._tpDirty){ e.preventDefault(); e.returnValue = ''; return ''; }
       });
+      // #55: notifications appear at the bottom too. Lift the banner to hover just
+      // above any visible bottom notifications, and drop it back to its resting
+      // 16px once they clear — so it never sits on top of a warning the user needs
+      // to read.
+      function adjustBannerPos(){
+        var b = document.getElementById('tp-unsaved-banner');
+        if(!b || b.style.display === 'none') return;
+        var rest = 16, offset = rest;
+        document.querySelectorAll(
+          '.q-notifications__list--bottom, .q-notifications__list--bottom-right, '
+          + '.q-notifications__list--bottom-left').forEach(function(list){
+            if(list.querySelector('.q-notification')){
+              offset = Math.max(offset, rest + list.getBoundingClientRect().height + 8);
+            }
+          });
+        b.style.bottom = offset + 'px';
+      }
+      setInterval(adjustBannerPos, 250);
     })();
     </script>""")
 
