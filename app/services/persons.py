@@ -55,11 +55,13 @@ def create_person(
     full_name: str,
     abbreviated_name: str | None = None,
     orcid: str | None = None,
+    confidential: bool = False,
 ) -> Person:
     p = Person(
         full_name=full_name.strip(),
         abbreviated_name=abbreviated_name.strip() if abbreviated_name else None,
         orcid=orcid.strip() if orcid else None,
+        confidential=1 if confidential else 0,
         created_at=_utcnow(),
         updated_at=_utcnow(),
     )
@@ -75,6 +77,7 @@ def update_person(
     full_name: str,
     abbreviated_name: str | None = None,
     orcid: str | None = None,
+    confidential: bool = False,
 ) -> Person:
     p = session.get(Person, person_id)
     if p is None:
@@ -82,6 +85,7 @@ def update_person(
     p.full_name        = full_name.strip()
     p.abbreviated_name = abbreviated_name.strip() if abbreviated_name else None
     p.orcid            = orcid.strip() if orcid else None
+    p.confidential     = 1 if confidential else 0
     p.updated_at       = _utcnow()
     session.flush()
     return p

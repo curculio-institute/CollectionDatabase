@@ -32,6 +32,7 @@ def build_controlled_vocab_tab(session_factory, *, on_person_changed=None) -> No
                     "full":  p.full_name,
                     "abbr":  p.abbreviated_name or "",
                     "orcid": p.orcid or "",
+                    "conf":  "🔒" if p.confidential else "",
                 }
                 for p in people
             ]
@@ -41,6 +42,7 @@ def build_controlled_vocab_tab(session_factory, *, on_person_changed=None) -> No
                 {"name": "full",  "label": "Full name",        "field": "full",  "align": "left", "sortable": True},
                 {"name": "abbr",  "label": "Abbreviated name",  "field": "abbr",  "align": "left"},
                 {"name": "orcid", "label": "ORCID",             "field": "orcid", "align": "left"},
+                {"name": "conf",  "label": "Confidential",      "field": "conf",  "align": "center"},
                 {"name": "actions", "label": "", "field": "actions", "align": "right"},
             ],
             rows=_load_rows(),
@@ -75,6 +77,13 @@ def build_controlled_vocab_tab(session_factory, *, on_person_changed=None) -> No
             dlg_full  = ui.input("Full name *").classes("w-full")
             dlg_abbr  = ui.input("Abbreviated name", placeholder="J. Jilg").classes("w-full mt-2")
             dlg_orcid = ui.input("ORCID", placeholder="0000-0000-0000-0000").classes("w-full mt-2")
+            dlg_conf  = (
+                ui.checkbox("Confidential — obscure this name on export")
+                .props("dense").classes("mt-2")
+                .tooltip("On DwC export, this person's name is replaced with the "
+                         "generic privacy label wherever they appear as recordedBy / "
+                         "identifiedBy. The records themselves are still exported.")
+            )
 
             def _save_edit():
                 if not dlg_full.value.strip():
@@ -88,6 +97,7 @@ def build_controlled_vocab_tab(session_factory, *, on_person_changed=None) -> No
                                 full_name=dlg_full.value,
                                 abbreviated_name=dlg_abbr.value or None,
                                 orcid=dlg_orcid.value or None,
+                                confidential=dlg_conf.value,
                             )
                     edit_dialog.close()
                     _refresh_table()
@@ -106,6 +116,7 @@ def build_controlled_vocab_tab(session_factory, *, on_person_changed=None) -> No
             dlg_full.value   = row["full"]
             dlg_abbr.value   = row["abbr"]
             dlg_orcid.value  = row["orcid"]
+            dlg_conf.value   = bool(row.get("conf"))
             edit_dialog.open()
 
         def _delete_person(row: dict):

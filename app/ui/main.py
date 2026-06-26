@@ -976,10 +976,20 @@ def index():
                             event_status.set_content("· new event (edited)")
                             event_status.classes(remove="event-linked", add="event-new")
 
+                    # Event media (staged; committed to the event on Save). Built
+                    # into the form's footer so it shares the Confidential line.
+                    event_media: dict = {}
+
+                    def _event_footer():
+                        event_media.update(build_media_button(
+                            _sf, target_kind="collecting_event", staged=True,
+                            tooltip="Event media (attached on Save)"))
+
                     ce = build_collecting_event_form(
                         _sf,
                         default_recby_fn=_default_recby,
                         on_field_edit=_on_event_field_edit,
+                        footer_slot=_event_footer,
                     )
 
                     def _refresh_person_opts():
@@ -1027,6 +1037,7 @@ def index():
                                 "field_number":                     ev.field_number,
                                 "verbatim_label":                   ev.verbatim_label,
                                 "recorded_by": ev.recorded_by_person.full_name if ev.recorded_by_person else None,
+                                "confidential": ev.confidential,
                             }
                             preview = format_event_preview_html(ev)
                             n_shared = ev_svc.count_co_at_event(s, eid)
@@ -1045,12 +1056,6 @@ def index():
                         _show_reuse_banner(eid, ev_n)
 
                     event_sel.on_value_change(_on_event_selected)
-
-                    # Event media (staged; committed to the event on Save)
-                    with ui.row().classes("w-full justify-end mt-2"):
-                        event_media = build_media_button(
-                            _sf, target_kind="collecting_event", staged=True,
-                            tooltip="Event media (attached on Save)")
 
                 # ── BIOLOGICAL ASSOCIATIONS ───────────────────────────────
                 with ui.card().classes("w-full shadow-sm") as bio_card:
@@ -1271,6 +1276,7 @@ def index():
                         "disposition":       active["disp_sel"].value,
                         "basis_of_record":   active["basis_sel"].value,
                         "occurrence_remarks":active["rem_in"].value,
+                        "confidential":      1 if active["conf_chk"].value else 0,
                     }
 
                 def _validate() -> str | None:

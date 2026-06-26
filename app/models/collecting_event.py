@@ -86,6 +86,9 @@ class CollectingEvent(Base, TimestampMixin):
     habitat_enriched: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     # 1 = buffer spans >1 habitat class; 0 = unambiguous; NULL = not yet assessed
     habitat_ambiguous: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    # Local-only privacy flag (migration 0043). A confidential event withholds its
+    # specimens from the DwC export entirely. Never pushed to TaxonWorks.
+    confidential: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
 
     __table_args__ = (
         CheckConstraint(
@@ -108,6 +111,7 @@ class CollectingEvent(Base, TimestampMixin):
             "habitat_ambiguous IS NULL OR habitat_ambiguous IN (0, 1)",
             name="ck_ce_habitat_ambiguous_bool",
         ),
+        CheckConstraint("confidential IN (0, 1)", name="ck_ce_confidential"),
     )
 
     collection_objects: Mapped[List["CollectionObject"]] = relationship(

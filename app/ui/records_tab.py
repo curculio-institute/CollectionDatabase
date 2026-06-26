@@ -190,6 +190,7 @@ def build_records_tab(session_factory, *, on_saved: callable | None = None) -> N
                 "disposition":       co.disposition,
                 "basis_of_record":   co.basis_of_record,
                 "occurrence_remarks":co.occurrence_remarks,
+                "confidential":      co.confidential,
             }
 
             # Snapshot all determinations as plain dicts while session is open (avoids DetachedInstanceError).
@@ -237,6 +238,7 @@ def build_records_tab(session_factory, *, on_saved: callable | None = None) -> N
                 "event_date":                       ev.event_date           if ev else None,
                 "verbatim_event_date":              ev.verbatim_event_date  if ev else None,
                 "recorded_by":                      ev.recorded_by_person.full_name if (ev and ev.recorded_by_person) else None,
+                "confidential":                     ev.confidential if ev else 0,
                 "habitat":                          (ev.habitat_obj.name if ev and ev.habitat_obj else None),
                 "decimal_latitude":                 ev.decimal_latitude     if ev else None,
                 "decimal_longitude":                ev.decimal_longitude    if ev else None,
@@ -283,6 +285,7 @@ def build_records_tab(session_factory, *, on_saved: callable | None = None) -> N
                 "event_date":                       ev.event_date,
                 "verbatim_event_date":              ev.verbatim_event_date,
                 "recorded_by":                      ev.recorded_by_person.full_name if ev.recorded_by_person else None,
+                "confidential":                     ev.confidential,
                 "habitat":                          ev.habitat_obj.name if ev.habitat_obj else None,
                 "decimal_latitude":                 ev.decimal_latitude,
                 "decimal_longitude":                ev.decimal_longitude,
@@ -345,6 +348,7 @@ def build_records_tab(session_factory, *, on_saved: callable | None = None) -> N
         disp_sel     = spec["disp_sel"]
         basis_sel    = spec["basis_sel"]
         rem_in       = spec["rem_in"]
+        conf_chk     = spec["conf_chk"]
         coll_code_in = spec["coll_code_disp"]
 
         # ── Identifications card ──────────────────────────────────────────
@@ -412,15 +416,17 @@ def build_records_tab(session_factory, *, on_saved: callable | None = None) -> N
                 ev_ce = None
             else:
                 # Shared widget (same form as Digitize); seeded from the snapshot.
-                ev_ce = build_collecting_event_form(session_factory, default_recby_fn=_default_recby)
+                # Event media shares the form's Confidential footer line.
+                def _ev_footer():
+                    if ev_id:
+                        _media_btn(session_factory, target_kind="collecting_event",
+                                   target_id=ev_id, tooltip="Event media")
+                ev_ce = build_collecting_event_form(
+                    session_factory, default_recby_fn=_default_recby,
+                    footer_slot=_ev_footer)
                 ev_ce["load"](ev_snap)
                 if ev_n > 1:
                     ev_ce["set_readonly"](True)   # view-only until "Edit all" unlocks
-
-            if ev_id:
-                with ui.row().classes("w-full justify-end mt-2"):
-                    _media_btn(session_factory, target_kind="collecting_event",
-                               target_id=ev_id, tooltip="Event media")
 
         # ── Biological Associations card ───────────────────────────────────
         with ui.card().classes("w-full shadow-sm"):
@@ -535,6 +541,7 @@ def build_records_tab(session_factory, *, on_saved: callable | None = None) -> N
                 "disposition":       disp_sel.value,
                 "basis_of_record":   basis_sel.value,
                 "occurrence_remarks":rem_in.value,
+                "confidential":      1 if conf_chk.value else 0,
             }
 
         def _collect_ev_fields() -> dict:
@@ -588,6 +595,7 @@ def build_records_tab(session_factory, *, on_saved: callable | None = None) -> N
                 "disposition":        disp_sel.value,
                 "basis_of_record":    basis_sel.value,
                 "occurrence_remarks": rem_in.value,
+                "confidential":       1 if conf_chk.value else 0,
             }
             ev = dict(_collect_ev_fields())
             if ev_ce:
@@ -637,13 +645,16 @@ def build_records_tab(session_factory, *, on_saved: callable | None = None) -> N
                 )
 
             # Shared widget (same form as Digitize); seeded from the snapshot.
-            ev_ce = build_collecting_event_form(session_factory, default_recby_fn=_default_recby)
+            # Event media shares the form's Confidential footer line.
+            def _ev_footer():
+                _media_btn(session_factory, target_kind="collecting_event",
+                           target_id=ev_id, tooltip="Event media")
+            ev_ce = build_collecting_event_form(
+                session_factory, default_recby_fn=_default_recby,
+                footer_slot=_ev_footer)
             ev_ce["load"](ev_snap)
             if shared:
                 ev_ce["set_readonly"](True)   # view-only until "Edit all" unlocks
-            with ui.row().classes("w-full justify-end mt-2"):
-                _media_btn(session_factory, target_kind="collecting_event",
-                           target_id=ev_id, tooltip="Event media")
 
         def _save_event():
             try:

@@ -102,6 +102,7 @@ def build_collecting_event_form(
     *,
     default_recby_fn=None,
     on_field_edit=None,
+    footer_slot=None,
 ) -> dict:
     """Render the collecting-event field block into the current context.
 
@@ -698,6 +699,22 @@ def build_collecting_event_form(
 
     verblabel_in = ui.input("verbatimLabel", on_change=_fire_edit).classes("w-full mt-4")
 
+    # Footer: the Confidential flag (left) shares one line with the caller's
+    # widgets (event media button, right) to save vertical space. A confidential
+    # event withholds all its specimens from the DwC export. Local-only flag.
+    with ui.row().classes("w-full items-center justify-between mt-2"):
+        conf_chk = (
+            ui.checkbox("Confidential")
+            .props("dense")
+            .tooltip("Withhold this event's specimens from public export — a "
+                     "confidential event drops all its specimens from the DwC "
+                     "export (TaxonWorks). Local-only flag.")
+        )
+        conf_chk.on_value_change(lambda e: _fire_edit())
+        if footer_slot is not None:
+            with ui.row().classes("items-center gap-1"):
+                footer_slot()
+
     # ── field registry: single source for collect / load / reset / readonly ──
     _event_widgets = {
         "country":                          country_in,
@@ -724,7 +741,9 @@ def build_collecting_event_form(
         # Text fields only; the FK-backed vocabs (habitat / samplingProtocol) and
         # recordedBy are resolved to ids by commit() — kept out of here so that
         # validation (which calls collect_fields) has no get_or_create side effect.
-        return {name: w.value for name, w in _event_widgets.items()}
+        out = {name: w.value for name, w in _event_widgets.items()}
+        out["confidential"] = 1 if conf_chk.value else 0
+        return out
 
     def _commit(s) -> dict:
         """Resolve the FK-backed fields and return the id triplet to store on the
@@ -740,6 +759,8 @@ def build_collecting_event_form(
         """True if any event field or a FK-backed vocab / recordedBy holds a value."""
         if any(str(w.value or "").strip() for w in _event_widgets.values()):
             return True
+        if conf_chk.value:
+            return True
         return bool(
             recby_state["get_value"]()
             or habitat_field["get_value"]()
@@ -749,6 +770,7 @@ def build_collecting_event_form(
     def _reset() -> None:
         for w in _event_widgets.values():
             w.value = ""
+        conf_chk.value = False
         recby_state["set_value"](None)
         habitat_field["set_value"](None)
         protocol_field["set_value"](None)
@@ -760,6 +782,7 @@ def build_collecting_event_form(
         _st["populating"] = True
         for name, w in _event_widgets.items():
             w.value = _s(snapshot.get(name))
+        conf_chk.value = bool(snapshot.get("confidential"))
         recby_state["set_value"](snapshot.get("recorded_by") or None)
         habitat_field["set_value"](snapshot.get("habitat") or None)
         protocol_field["set_value"](snapshot.get("sampling_protocol") or None)
@@ -770,6 +793,7 @@ def build_collecting_event_form(
         _st["editable"] = editable
         for w in _event_widgets.values():
             w.props(remove="readonly") if editable else w.props("readonly")
+        conf_chk.set_enabled(editable)
         recby_state["set_readonly"](readonly)
         habitat_field["set_readonly"](readonly)
         protocol_field["set_readonly"](readonly)

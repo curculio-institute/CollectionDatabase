@@ -1,6 +1,6 @@
 from __future__ import annotations
 from typing import Optional
-from sqlalchemy import Integer, String, UniqueConstraint
+from sqlalchemy import Integer, String, UniqueConstraint, CheckConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 from .base import Base, TimestampMixin
 
@@ -18,9 +18,14 @@ class Person(Base, TimestampMixin):
     full_name:        Mapped[str]           = mapped_column(String, nullable=False)
     abbreviated_name: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     orcid:            Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    # Local-only privacy flag (migration 0043). A confidential person's name is
+    # obscured (not dropped) in the DwC export wherever they appear as
+    # recordedBy / identifiedBy. Never pushed to TaxonWorks.
+    confidential:     Mapped[int]           = mapped_column(Integer, nullable=False, server_default="0")
 
     __table_args__ = (
         UniqueConstraint("full_name", name="uq_person_full_name"),
+        CheckConstraint("confidential IN (0, 1)", name="ck_person_confidential"),
     )
 
     @property

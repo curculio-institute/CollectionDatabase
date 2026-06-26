@@ -384,6 +384,34 @@ without duplicating specimens or events** (duplication was rejected as invasive/
   with a count badge → a small Abort/Save&close modal (lifeStage + basisOfRecord defaulting
   `HumanObservation` + eventDate). Bound in Records, staged in Digitize (committed on Save).
 
+### Confidential / privacy flag (decided)
+
+Some records must be withheld when the dataset is exported to TaxonWorks (e.g. a
+sensitive locality, or a collector who must not be named publicly). A **local-only**
+`confidential` flag (`INTEGER NOT NULL DEFAULT 0`, named `CHECK (… IN (0,1))`; migration
+0043, native `ADD COLUMN` so STRICT/CHECK/FK on the two STRICT tables are preserved) lives
+on **three** tables, with **two different export semantics**:
+
+| Table | Confidential means (at DwC export — **Phase 3, contract only; not yet wired**) |
+|-------|------------------------------------------------------------------------------|
+| `person` | **Obscure, don't drop.** The occurrence is still exported, but everywhere this person is `recordedBy` / `identifiedBy` the name is replaced with `config.confidential_person_label` (default `"Collector obscured (Privacy Policy)"`). |
+| `collection_object` | **Drop.** The specimen is omitted from the export entirely. |
+| `collecting_event` | **Drop its specimens.** A confidential event withholds *all* its specimens from the export (you cannot keep the occurrence but blank the locality — that breaks the record). |
+
+The flag is **never pushed** to TaxonWorks (not a DwC term); it only governs what the
+exporter emits. It is **not** stored in `config.json` for the same reason person defaults
+aren't: the obscure-label *string* is config (survives a DB wipe), but the per-record flags
+are DB columns.
+
+- **UI** (progressive disclosure — only the rare sensitive record sets it):
+  - **Specimen / Event** — a compact `Confidential` checkbox sharing the card-footer line
+    with the media / external-id / life-stage icons (saves vertical space). In the shared
+    `specimen_form` (`conf_chk`) and `collecting_event_form` (footer row + `footer_slot`),
+    so it appears in both Digitize and Records; seeded from the record, round-tripped on save.
+  - **Person** — a `Confidential` column (🔒) in the Controlled Vocabularies → People table
+    and a checkbox in the person edit dialog (`persons_svc.create_person` / `update_person`
+    take `confidential=`).
+
 ### Why person defaults live in the DB, not config.json
 
 `config.json` stores environment settings (TW credentials, institution code, UI prefs) that
