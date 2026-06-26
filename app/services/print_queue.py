@@ -78,6 +78,34 @@ def enqueue_identifier(
     ))
 
 
+def requeue_batch_identifiers(session: Session, batch_id: int) -> int:
+    """Re-add a batch's reserved (unprinted/unassigned) identifier codes to the
+    print queue, so codes are never lost — a cleared queue can always be rebuilt
+    from the batch. Skips codes already queued (no duplicates). Returns how many
+    were added."""
+    from app.models import LabelCode
+    reserved = (
+        session.query(LabelCode)
+        .filter(LabelCode.batch_id == batch_id, LabelCode.status == "reserved")
+        .order_by(LabelCode.created_at)
+        .all()
+    )
+    if not reserved:
+        return 0
+    already = {
+        q.label_code_id for q in
+        session.query(PrintQueue).filter(PrintQueue.label_type == "identifier").all()
+    }
+    todo = [c for c in reserved if c.id not in already]
+    if not todo:
+        return 0
+    gid = next_print_group_id(session)
+    for c in todo:
+        enqueue_identifier(session, c.id, print_group_id=gid, source=SOURCE_IDENTIFIERS)
+    session.flush()
+    return len(todo)
+
+
 # ---------------------------------------------------------------------------
 # Queue contents
 # ---------------------------------------------------------------------------

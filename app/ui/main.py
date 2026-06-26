@@ -2241,11 +2241,41 @@ def index():
                         ui.notify(f"Labels downloaded — queue cleared. Saved {archive.name}",
                                   type="positive")
 
-                    def _clear_queue():
+                    def _do_clear_queue():
                         with _sf() as session:
                             with session.begin():
                                 pq_svc.clear_queue(session)
                         _refresh_queue()
+
+                    def _clear_queue():
+                        # Clearing removes queued labels WITHOUT printing. The reserved
+                        # identifier codes are NOT deleted — they stay in their batch
+                        # (the "Staged" count) and can be re-added to the queue / printed
+                        # from the Labels tab. Confirm first so codes are never lost by a
+                        # stray click (user request).
+                        summary = _with_session(pq_svc.queue_summary)
+                        if summary.total == 0:
+                            ui.notify("Queue is already empty.", type="info")
+                            return
+                        dlg = ui.dialog()
+                        with dlg, ui.card().classes("min-w-[420px]"):
+                            ui.label("Clear the print queue?").classes("section-label mb-1")
+                            ui.label(
+                                f"{summary.total} queued label(s) will be removed "
+                                "without printing. Reserved identifier codes are NOT "
+                                "lost — they stay in their batch and can be re-added any "
+                                "time from the Labels tab → Reserved codes → "
+                                "“Add to print queue”."
+                            ).classes("text-sm").style("color:var(--tp-base-soft)")
+                            with ui.row().classes("justify-end w-full gap-2 mt-3"):
+                                ui.button("Cancel", on_click=dlg.close).props("flat no-caps")
+                                def _confirm():
+                                    dlg.close()
+                                    _do_clear_queue()
+                                ui.button("Clear without printing", on_click=_confirm) \
+                                    .props("no-caps color=negative")
+                        dlg.on_value_change(lambda e: dlg.delete() if not e.value else None)
+                        dlg.open()
 
                     print_btn.on_click(_print_all)
                     clear_btn.on_click(_clear_queue)
@@ -2392,9 +2422,25 @@ def index():
                                 note = "" if b.n_reserved == b.n_total \
                                        else f"  · {b.n_total - b.n_reserved} assigned"
                                 with ui.column().classes("w-full mt-3 gap-1"):
-                                    ui.label(f"{ts}  —  {b.n_reserved} staged{note}") \
-                                      .classes("text-xs font-medium") \
-                                      .style("color:var(--tp-base-soft)")
+                                    with ui.row().classes("items-center gap-2 w-full"):
+                                        ui.label(f"{ts}  —  {b.n_reserved} staged{note}") \
+                                          .classes("text-xs font-medium") \
+                                          .style("color:var(--tp-base-soft)")
+                                        ui.space()
+                                        def _requeue(bid=b.batch_id):
+                                            with _sf() as s:
+                                                with s.begin():
+                                                    n = pq_svc.requeue_batch_identifiers(s, bid)
+                                            if n:
+                                                ui.notify(f"Added {n} code(s) to the print queue.",
+                                                          type="positive")
+                                            else:
+                                                ui.notify("All reserved codes from this batch "
+                                                          "are already in the queue.", type="info")
+                                            _refresh_queue()
+                                        ui.button("Add to print queue", icon="playlist_add",
+                                                  on_click=_requeue) \
+                                            .props("flat dense no-caps size=sm color=secondary")
                                     codes = _with_session(
                                         lambda s, bid=b.batch_id: id_svc.codes_for_batch(s, bid)
                                     )

@@ -82,3 +82,34 @@ def test_build_pdf_smoke(session):
     _enqueue_identifier_batch(session, 2, group_id=gid, source=pq.SOURCE_IDENTIFIERS)
     pdf = pq.build_pdf(session, printed_at="2026-06-12 14:30")
     assert pdf[:4] == b"%PDF"
+
+
+def test_requeue_after_clear_recovers_codes(session):
+    """Generate → clear queue → re-queue: reserved codes are never lost (user req)."""
+    batch_id, codes = reserve_sequential_codes(session, "TEST", 4)
+    for lc in session.query(LabelCode).filter(LabelCode.batch_id == batch_id).all():
+        pq.enqueue_identifier(session, lc.id, print_group_id=1,
+                              source=pq.SOURCE_IDENTIFIERS)
+    session.flush()
+    assert pq.queue_summary(session).total == 4
+
+    pq.clear_queue(session)              # cleared WITHOUT printing
+    assert pq.queue_summary(session).total == 0
+    # codes still exist, still reserved
+    assert (session.query(LabelCode)
+            .filter(LabelCode.batch_id == batch_id,
+                    LabelCode.status == "reserved").count()) == 4
+
+    added = pq.requeue_batch_identifiers(session, batch_id)
+    assert added == 4
+    assert pq.queue_summary(session).total == 4
+
+
+def test_requeue_is_dedup_safe(session):
+    """Re-queuing a batch that's already queued adds nothing (no duplicates)."""
+    batch_id, _ = reserve_sequential_codes(session, "TEST", 3)
+    first = pq.requeue_batch_identifiers(session, batch_id)
+    assert first == 3
+    again = pq.requeue_batch_identifiers(session, batch_id)
+    assert again == 0
+    assert pq.queue_summary(session).total == 3
