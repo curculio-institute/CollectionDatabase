@@ -56,7 +56,7 @@ _CSS = """<style>
 .ex-h-genus { margin-top: 11px; }
 .ex-h-genus .ex-name { font-size: 1.08rem; font-weight: 700; font-style: italic; }
 .ex-h-subgenus { margin-top: 3px; }
-.ex-h-subgenus .ex-name { font-size: .96rem; font-weight: 600; font-style: italic; }
+.ex-h-subgenus .ex-name { font-size: .9rem; font-weight: 600; font-style: italic; }
 .ex-auth { font-weight: 400; font-style: normal; color: var(--tp-base-soft, #888); font-size: .78em; }
 .ex-sp-row { display: flex; align-items: center; gap: 8px; }
 .ex-sp   { font-style: italic; font-size: .9rem; }
