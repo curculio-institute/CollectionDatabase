@@ -1759,8 +1759,27 @@ def index():
 
                 # ── checklist card ───────────────────────────────────────
                 with ui.card().classes("w-full shadow-sm"):
-                    with ui.row().classes("items-center gap-2 mb-3"):
+                    _collapsed = {"on": False}   # tree starts fully expanded
+                    with ui.row().classes("items-center gap-2 mb-3 w-full"):
                         ui.label("Checklist").classes("section-label")
+                        ui.space()
+                        _collapse_btn = (
+                            ui.button("Collapse all", icon="unfold_less")
+                            .props("flat dense")
+                        )
+
+                        async def _toggle_collapse():
+                            _collapsed["on"] = not _collapsed["on"]
+                            if _collapsed["on"]:
+                                await tax_tree.run_method("collapseAll")
+                                _collapse_btn.set_text("Expand all")
+                                _collapse_btn.props("icon=unfold_more")
+                            else:
+                                await tax_tree.run_method("expandAll")
+                                _collapse_btn.set_text("Collapse all")
+                                _collapse_btn.props("icon=unfold_less")
+
+                        _collapse_btn.on_click(_toggle_collapse)
 
                     # Filter select — searchable across all rank levels
                     checklist_opts = _with_session(tax_svc.checklist_options)
@@ -1893,6 +1912,10 @@ def index():
                     async def _expand():
                         await asyncio.sleep(0.15)
                         await tax_tree.run_method("expandAll")
+                        # a re-expand (filter/tab change) resets the toggle state
+                        _collapsed["on"] = False
+                        _collapse_btn.set_text("Collapse all")
+                        _collapse_btn.props("icon=unfold_less")
 
                     async def _on_filter_change(e):
                         key = e.value or ""
