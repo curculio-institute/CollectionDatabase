@@ -559,6 +559,9 @@ def index():
       .tax-move-hint { opacity:0; transition:opacity .12s; margin-left:4px;
                        color:var(--tp-base-soft); cursor:default; }
       .checklist-tree .q-tree__node-header:hover .tax-move-hint { opacity:.45; }
+      .rank-order,
+      .rank-suborder,
+      .rank-infraorder,
       .rank-superfamily { font-size:1.45rem; font-weight:700;
                         text-transform:uppercase; letter-spacing:.05em; }
       .rank-family    { font-size:1.35rem; font-weight:800;
@@ -1827,7 +1830,7 @@ def index():
                           <span v-if="props.node.synonym"
                                 style="color:var(--tp-base-soft); font-size:.8rem;
                                        font-style:normal; margin-right:-2px;">=</span>
-                          <span class="tax-rank">{{ ['superfamily','family','subfamily','tribe','subtribe','genus','subgenus'].includes(props.node.rank) ? props.node.rank : '' }}</span>
+                          <span class="tax-rank">{{ ['order','suborder','infraorder','superfamily','family','subfamily','tribe','subtribe','genus','subgenus'].includes(props.node.rank) ? props.node.rank : '' }}</span>
                           <span :class="'rank-' + props.node.rank">{{ props.node.name }}</span>
                           <span v-if="props.node.auth"
                                 style="font-style:normal; font-size:.78rem;
