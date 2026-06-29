@@ -387,13 +387,17 @@ def build_records_tab(session_factory, *, on_saved: callable | None = None) -> N
                         with session_factory() as s:
                             with s.begin():
                                 new_id = ev_svc.copy_and_relink_event(s, co_id)
-                        ui.notify(
-                            f"Detached — new Event #{new_id} created for this specimen.",
-                            type="positive",
-                        )
-                        _load_specimen(co_id)
                     except Exception as exc:
                         ui.notify(f"Failed: {exc}", type="negative")
+                        return
+                    # Post-commit cleanup OUTSIDE the try (#59): the new event is
+                    # already created+relinked; a hiccup in the reload must not be
+                    # reported as a failure (a retry would detach a SECOND copy).
+                    ui.notify(
+                        f"Detached — new Event #{new_id} created for this specimen.",
+                        type="positive",
+                    )
+                    _load_specimen(co_id)
 
                 def _unlock_shared(e):
                     if ev_ce:
@@ -566,12 +570,16 @@ def build_records_tab(session_factory, *, on_saved: callable | None = None) -> N
                                 **event_ids,
                                 **ev_fields,
                             )
-                ui.notify("Changes saved.", type="positive")
-                if on_saved:
-                    on_saved()
-                _load_specimen(co_id)
             except Exception as exc:
                 ui.notify(f"Save failed: {exc}", type="negative")
+                return
+            # Post-commit cleanup goes OUTSIDE the try: the data is already
+            # committed, so a hiccup in on_saved()/reload must not be reported as a
+            # "Save failed" (which would prompt a duplicate re-save). #59
+            ui.notify("Changes saved.", type="positive")
+            if on_saved:
+                on_saved()
+            _load_specimen(co_id)
 
         with ui.row().classes("w-full items-center gap-4 px-1"):
             ui.space()
@@ -666,12 +674,17 @@ def build_records_tab(session_factory, *, on_saved: callable | None = None) -> N
                             **event_ids,
                             **ev_ce["collect_fields"](),
                         )
-                ui.notify(f"Event #{ev_id} saved.", type="positive")
-                _ev_baseline["v"] = _ev_values()   # saved → no longer dirty
-                if on_saved:
-                    on_saved()
             except Exception as exc:
                 ui.notify(f"Save failed: {exc}", type="negative")
+                return
+            # Post-commit cleanup OUTSIDE the try (#59): committed already, so
+            # reset the dirty baseline + refresh tabs without risking a spurious
+            # "Save failed". Clearing the baseline also drops the unsaved-changes
+            # banner that otherwise stayed lit after a successful event save.
+            ui.notify(f"Event #{ev_id} saved.", type="positive")
+            _ev_baseline["v"] = _ev_values()   # saved → no longer dirty
+            if on_saved:
+                on_saved()
 
         with ui.row().classes("w-full items-center gap-4 px-1 mt-2"):
             ui.space()
