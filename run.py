@@ -13,8 +13,14 @@ app.add_static_files('/static', Path(__file__).parent / 'app' / 'static')
 # the page handler reads it to show a blocking banner on integrity failure.
 from app.database import get_engine
 import app.services.db_safety as db_safety
+import app.services.db_bootstrap as db_bootstrap
 
+# Snapshot + integrity-check the pre-migration state first, then bring the schema
+# up to head. On a fresh GitHub checkout there is no DB yet (data/ is gitignored),
+# so this is what builds the schema; on an existing install it applies only the
+# migrations added since last launch. Idempotent when already current.
 db_safety.run_startup_safety(get_engine())
+db_bootstrap.upgrade_to_head()
 
 import app.ui.main  # registers the @ui.page('/') route  # noqa: F401
 

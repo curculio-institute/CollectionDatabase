@@ -2556,9 +2556,19 @@ def index():
                         for r in repo_svc.list_repositories(s)
                     }
 
+            # The configured collection_code may not (yet) exist as a repository row
+            # — e.g. a fresh checkout / wiped DB where config.json still carries a
+            # default. ui.select rejects a value that isn't among its options, so
+            # only seed it when it actually matches one (otherwise leave it unset).
+            _repo_initial_opts = _repo_opts()
+            _repo_initial_val = (
+                cfg_now_id.collection_code
+                if cfg_now_id.collection_code in _repo_initial_opts
+                else None
+            )
             default_collection_sel = ui.select(
-                options=_repo_opts(),
-                value=cfg_now_id.collection_code or None,
+                options=_repo_initial_opts,
+                value=_repo_initial_val,
                 label="Default collection (from Collections vocabulary)",
                 with_input=True,
             ).classes("w-full mt-1")
