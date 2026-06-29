@@ -19,7 +19,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from sqlalchemy import text
+from sqlalchemy import func, text
 from sqlalchemy.orm import Session
 
 from app.models.base import _utcnow
@@ -80,11 +80,16 @@ class Vocabulary:
 
         Safe to call repeatedly in one transaction — the flush in ``create``
         makes the new row visible so a second call finds it instead of hitting
-        the unique constraint."""
+        the unique constraint.
+
+        Matching is **case-insensitive** so a geocoder's ``"Germany"`` and a
+        hand-typed ``"germany"`` resolve to the same canonical row instead of
+        creating a case-variant duplicate (#73). The first-created spelling
+        stays canonical; later differently-cased inputs reuse it."""
         clean = (name or "").strip()
         existing = (
             session.query(self.model)
-            .filter(self._name_col() == clean)
+            .filter(func.lower(self._name_col()) == clean.lower())
             .first()
         )
         if existing:
