@@ -69,6 +69,11 @@ def parse_dwc_date(
         if not allow_interval:
             return ("", "Date ranges are not allowed here — use a single date.")
         parts = raw.split("/", 1)
+        if not parts[0].strip() or not parts[1].strip():
+            # An open-ended range (one side blank) is not a valid ISO 8601
+            # interval — refuse it rather than storing a malformed "start/" (#69).
+            return ("", "A date range needs both a start and an end "
+                        "(e.g. 2024-06-15/2024-06-20).")
         left,  l_err = parse_dwc_date(parts[0].strip(), no_future=no_future)
         right, r_err = parse_dwc_date(parts[1].strip(), no_future=no_future)
         if l_err:
