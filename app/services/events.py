@@ -148,7 +148,10 @@ def update_collecting_event(session: Session, event_id: int, **fields) -> Collec
             try:
                 val = float(val)
             except (TypeError, ValueError):
-                val = None
+                # Bad number (typo like "48,1"): refuse the save so the user
+                # fixes it, rather than silently NULLing a good coordinate (#62).
+                raise ValueError(
+                    f"{attr.replace('_', ' ')} must be a number (got {val!r}).")
         setattr(ev, attr, val)
     ev.updated_at = _utcnow()
     session.flush()
@@ -200,7 +203,9 @@ def create_collecting_event(session: Session, **fields) -> CollectingEvent:
             try:
                 val = float(val)
             except (TypeError, ValueError):
-                continue
+                # Never skip a bad number silently — refuse the save (#62).
+                raise ValueError(
+                    f"{attr.replace('_', ' ')} must be a number (got {val!r}).")
         setattr(ce, attr, val)
     session.add(ce)
     session.flush()
