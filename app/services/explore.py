@@ -158,21 +158,31 @@ class SpecimenRow:
 
 
 def _apply_filters(session: Session, q, filters: list[dict], idx: dict[int, Taxon]):
-    """Apply AND facet filters to a query over (CollectionObject join det/event)."""
+    """Apply facet filters to a query over (CollectionObject join det/event).
+
+    Facets of the **same kind** are OR-combined (pick two countries → specimens
+    from *either*), facets of **different kinds** are AND-combined (country +
+    collector → specimens matching both). A specimen has only one
+    country/collector, so AND-combining same-kind facets could never match (#66).
+    """
     children: dict[int, list[int]] = defaultdict(list)
     for t in idx.values():
         if t.parent_name_usage_id:
             children[t.parent_name_usage_id].append(t.id)
+    by_kind: dict[str, list] = defaultdict(list)
     for f in filters:
-        kind = f["kind"]
+        by_kind[f["kind"]].append(f["key"])
+    for kind, keys in by_kind.items():
         if kind == "taxon":
-            ids = _descendant_ids(int(f["key"]), children)
+            ids: list[int] = []
+            for k in keys:
+                ids.extend(_descendant_ids(int(k), children))
             q = q.filter(TaxonDetermination.taxon_id.in_(ids))
         elif kind in _GEO_FACETS:
             _model, attr = _GEO_FACETS[kind]
-            q = q.filter(getattr(CollectingEvent, attr) == int(f["key"]))
+            q = q.filter(getattr(CollectingEvent, attr).in_([int(k) for k in keys]))
         elif kind == "collector":
-            q = q.filter(Person.full_name == f["key"])
+            q = q.filter(Person.full_name.in_(keys))
     return q
 
 
@@ -192,7 +202,14 @@ def query_specimens(session: Session, filters: list[dict] | None = None) -> list
     q = q.order_by(CollectionObject.id.desc())
 
     rows: list[SpecimenRow] = []
+    seen: set[int] = set()
     for co, td, ev in q.all():
+        # A specimen should have one current determination, but is_current
+        # uniqueness isn't DB-enforced — guard against a stray second current row
+        # joining the specimen twice (double-counting it across two taxa) (#66).
+        if co.id in seen:
+            continue
+        seen.add(co.id)
         t = idx.get(td.taxon_id) if td else None
         rank = (t.taxon_rank if t else None)
         # Biological associations of this specimen (subject role): identity for the
