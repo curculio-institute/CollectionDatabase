@@ -475,7 +475,7 @@ erDiagram
       <tr><td><span class="badge badge-TEXT">TEXT</span></td><td class="col-dwc"><a href="https://dwc.tdwg.org/list/#dwc_dateIdentified">dwc:dateIdentified</a></td><td>ISO 8601</td></tr>
       <tr><td><span class="badge badge-TEXT">TEXT</span></td><td class="col-dwc"><a href="https://dwc.tdwg.org/list/#dwc_identificationQualifier">dwc:identificationQualifier</a></td><td>cf. / aff. / ?</td></tr>
       <tr><td><span class="badge badge-TEXT">TEXT</span></td><td class="col-dwc"><a href="https://dwc.tdwg.org/list/#dwc_identificationRemarks">dwc:identificationRemarks</a></td><td></td></tr>
-      <tr><td><span class="badge badge-INTEGER">INTEGER</span></td><td class="col-local">is_current</td><td>CHECK 0/1; default 1</td></tr>
+      <tr><td><span class="badge badge-INTEGER">INTEGER</span></td><td class="col-local">is_current</td><td>CHECK 0/1; default 1. Partial UNIQUE index <code>uq_td_one_current_per_co</code> on <code>collection_object_id</code> WHERE <code>is_current = 1</code> — at most one current determination per specimen (migration 0046, #74); history rows (is_current=0) unconstrained</td></tr>
       <tr><td><span class="badge badge-TEXT">TEXT</span></td><td class="col-local">created_at / updated_at</td><td></td></tr>
     </tbody>
   </table>

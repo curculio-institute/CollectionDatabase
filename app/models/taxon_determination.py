@@ -1,6 +1,6 @@
 from __future__ import annotations
 from typing import Optional, TYPE_CHECKING
-from sqlalchemy import Integer, String, ForeignKey, CheckConstraint
+from sqlalchemy import Integer, String, ForeignKey, CheckConstraint, Index, text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from .base import Base, TimestampMixin
 
@@ -33,6 +33,14 @@ class TaxonDetermination(Base, TimestampMixin):
 
     __table_args__ = (
         CheckConstraint("is_current IN (0, 1)", name="ck_td_is_current_bool"),
+        # At most one current determination per specimen (#74). Partial unique
+        # index so the is_current=0 history rows stay unconstrained.
+        Index(
+            "uq_td_one_current_per_co",
+            "collection_object_id",
+            unique=True,
+            sqlite_where=text("is_current = 1"),
+        ),
     )
 
     collection_object: Mapped["CollectionObject"] = relationship("CollectionObject", back_populates="determinations")
