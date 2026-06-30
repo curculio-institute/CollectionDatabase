@@ -620,6 +620,16 @@ Re-verify if targeting a different TW release.
   before diffing.
 - **Updates/deletes are not in the v1 API.** Keep sync one-directional; treat any
   update/delete as a manual exception.
+- **No `/repositories` or `/namespaces` endpoint** (verified absent at TW `aadf21a`,
+  2024-10-07; re-check on a newer release). The two TW ids on the `repository` table —
+  `taxonworks_institution_id` (=TW **Repository**) and `taxonworks_collection_id` (=TW
+  **Namespace**) — therefore **cannot be looked up by name via the public API**. They appear
+  only as foreign-key integers on other records: `repository_id` on
+  `/api/v1/collection_objects/:id` (id only — not resolvable to a name in v1), and
+  `namespace_id` on `/api/v1/identifiers/:id` (resolvable: `extend=[namespace]` embeds
+  `id/name/short_name/institution`). So **populate these two columns by hand** (or read them
+  back off an already-uploaded record to verify) — **do not plan an automated "fetch the TW
+  ids" step** unless a future TW release adds the endpoints.
 - **TW synonym detection:** use `cached_is_valid` (reliable) and `cached_valid_taxon_name_id`
   (reliable) from `/api/v1/taxon_names`. Do NOT use `valid_taxon_name_id` alone — it returns
   `null` for valid names, making it ambiguous. `fetch_full_classification()` in
