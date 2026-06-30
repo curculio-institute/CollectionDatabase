@@ -188,7 +188,7 @@ def build_records_tab(session_factory, *, on_saved: callable | None = None) -> N
                 "individual_count":  co.individual_count,
                 "preparations":      co.preparation.name if co.preparation else None,
                 "life_stage":        co.life_stage,
-                "disposition":       co.disposition,
+                "disposition":       co.disposition.name if co.disposition else None,
                 "basis_of_record":   co.basis_of_record,
                 "occurrence_remarks":co.occurrence_remarks,
                 "confidential":      co.confidential,
@@ -346,7 +346,7 @@ def build_records_tab(session_factory, *, on_saved: callable | None = None) -> N
         count_in     = spec["count_in"]
         prep_field   = spec["prep_field"]
         stage_sel    = spec["stage_sel"]
-        disp_sel     = spec["disp_sel"]
+        disp_field   = spec["disp_field"]
         basis_sel    = spec["basis_sel"]
         rem_in       = spec["rem_in"]
         conf_chk     = spec["conf_chk"]
@@ -546,7 +546,7 @@ def build_records_tab(session_factory, *, on_saved: callable | None = None) -> N
                 "individual_count":  int(count_in.value or 1),
                 "preparation_id":    prep_field["commit"](session),
                 "life_stage":        stage_sel.value,
-                "disposition":       disp_sel.value,
+                "disposition_id":    disp_field["commit"](session),
                 "basis_of_record":   basis_sel.value,
                 "occurrence_remarks":rem_in.value,
                 "confidential":      1 if conf_chk.value else 0,
@@ -604,7 +604,7 @@ def build_records_tab(session_factory, *, on_saved: callable | None = None) -> N
                 "individual_count":   int(count_in.value or 1),
                 "preparations":       prep_field["get_value"](),
                 "life_stage":         stage_sel.value,
-                "disposition":        disp_sel.value,
+                "disposition":        disp_field["get_value"](),
                 "basis_of_record":    basis_sel.value,
                 "occurrence_remarks": rem_in.value,
                 "confidential":       1 if conf_chk.value else 0,

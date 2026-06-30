@@ -190,7 +190,7 @@ erDiagram
         INTEGER individualCount
         TEXT lifeStage
         TEXT sex
-        TEXT disposition
+        INTEGER disposition_id FK
         TEXT ownerInstitutionCode
         INTEGER preparation_id FK
         TEXT typeStatus
@@ -198,6 +198,11 @@ erDiagram
     }
 
     preparation {
+        INTEGER id PK
+        TEXT name UK
+    }
+
+    disposition {
         INTEGER id PK
         TEXT name UK
     }
@@ -317,6 +322,7 @@ erDiagram
     biological_association |o--o{ external_identifier : "other party (arc)"
     collection_object ||--o{ life_stage_record : "earlier life stages"
     preparation |o--o{ collection_object : "prepared as"
+    disposition |o--o{ collection_object : "held as"
     repository ||--o{ collection_object : "belongs to"
     habitat |o--o{ collecting_event : "habitat of"
     sampling_protocol |o--o{ collecting_event : "method of"
@@ -439,7 +445,8 @@ erDiagram
     <code>UNIQUE (repository_id, dwc:catalogNumber)</code>. The old denormalised
     <code>collectionCode</code>/<code>institutionCode</code> text columns were dropped — codes
     resolve through the repository at export.
-    <code>dwc:disposition</code>: "in collection" | "on loan" | "donated" | "exchanged" | "missing" | "destroyed".</div>
+    <code>disposition_id</code> FK → an editable controlled vocab (migration 0048, #76; was a
+    fixed-CHECK <code>dwc:disposition</code> TEXT).</div>
   <table>
     <thead><tr><th>Type</th><th>Column</th><th>Notes</th></tr></thead>
     <tbody>
@@ -451,7 +458,7 @@ erDiagram
       <tr><td><span class="badge badge-INTEGER">INTEGER</span></td><td class="col-dwc"><a href="https://dwc.tdwg.org/list/#dwc_individualCount">dwc:individualCount</a></td><td>CHECK ≥ 0; default 1</td></tr>
       <tr><td><span class="badge badge-TEXT">TEXT</span></td><td class="col-dwc"><a href="https://dwc.tdwg.org/list/#dwc_lifeStage">dwc:lifeStage</a></td><td>adult / larva / pupa / egg</td></tr>
       <tr><td><span class="badge badge-TEXT">TEXT</span></td><td class="col-dwc"><a href="https://dwc.tdwg.org/list/#dwc_sex">dwc:sex</a></td><td></td></tr>
-      <tr><td><span class="badge badge-TEXT">TEXT</span></td><td class="col-dwc"><a href="https://dwc.tdwg.org/list/#dwc_disposition">dwc:disposition</a></td><td>holding workflow</td></tr>
+      <tr><td><span class="badge badge-INTEGER">INTEGER</span></td><td class="col-local">disposition_id</td><td><span class="tag tag-FK">FK</span> → disposition(id) ON DELETE RESTRICT; editable controlled vocab (was dwc:disposition TEXT + a closed CHECK, migration 0048, #76; seeded with the former six values). DwC <code>disposition</code> resolved from disposition.name at export</td></tr>
       <tr><td><span class="badge badge-TEXT">TEXT</span></td><td class="col-dwc"><a href="https://dwc.tdwg.org/list/#dwc_ownerInstitutionCode">dwc:ownerInstitutionCode</a></td><td>legal owner; differs on loan/donation</td></tr>
       <tr><td><span class="badge badge-INTEGER">INTEGER</span></td><td class="col-local">preparation_id</td><td><span class="tag tag-FK">FK</span> → preparation(id) ON DELETE RESTRICT; controlled vocab (was dwc:preparations TEXT, migration 0039). DwC <code>preparations</code> resolved from preparation.name at export</td></tr>
       <tr><td><span class="badge badge-TEXT">TEXT</span></td><td class="col-dwc"><a href="https://dwc.tdwg.org/list/#dwc_typeStatus">dwc:typeStatus</a></td><td></td></tr>
@@ -660,7 +667,6 @@ erDiagram
       <tr><td class="col-local">ck_ce_habitat_ambiguous_bool</td><td class="col-local">collecting_event</td><td><code>habitat_ambiguous</code> is empty, or 0 / 1</td></tr>
       <tr><td class="col-local">ck_co_individual_count_non_negative</td><td class="col-local">collection_object</td><td><code>individualCount</code> ≥ 0</td></tr>
       <tr><td class="col-local">ck_co_basis_of_record</td><td class="col-local">collection_object</td><td><code>basisOfRecord</code> ∈ {PreservedSpecimen, FossilSpecimen, HumanObservation}</td></tr>
-      <tr><td class="col-local">ck_co_disposition</td><td class="col-local">collection_object</td><td><code>disposition</code> is empty, or ∈ {in collection, on loan, donated, exchanged, missing, destroyed}</td></tr>
       <tr><td class="col-local">ck_co_confidential</td><td class="col-local">collection_object</td><td><code>confidential</code> is 0 or 1 (privacy flag, migration 0043)</td></tr>
       <tr><td class="col-local">ck_ce_confidential</td><td class="col-local">collecting_event</td><td><code>confidential</code> is 0 or 1 (privacy flag, migration 0043)</td></tr>
       <tr><td class="col-local">ck_person_confidential</td><td class="col-local">person</td><td><code>confidential</code> is 0 or 1 (privacy flag, migration 0043)</td></tr>
@@ -693,8 +699,8 @@ erDiagram
       <tr><td><span class="tag tag-FK">FK</span></td><td class="col-local">taxon_determination</td><td><code>collection_object_id</code> → collection_object ON DELETE CASCADE; <code>taxon_id</code> → taxon ON DELETE RESTRICT</td></tr>
       <tr><td><span class="tag tag-FK">FK</span></td><td class="col-local">collection_object</td><td><code>repository_id</code> → repository(id) ON DELETE RESTRICT — owning collection, NOT NULL (migration 0047, #75); blocks deleting a collection that still has specimens</td></tr>
       <tr><td><span class="tag tag-FK">FK</span></td><td class="col-local">person references</td><td>all <code>person</code> FKs (recordedBy, identifiedBy, defaults) are ON DELETE RESTRICT</td></tr>
-      <tr><td><span class="tag tag-UQ">UQ</span></td><td class="col-local">single-name vocabs</td><td>UNIQUE (<code>name</code>) on preparation / habitat / sampling_protocol (migs 0039–0040; sampling_protocol seeded) and the geography vocabs country / state_province / administrative_region / county / island (mig 0041)</td></tr>
-      <tr><td><span class="tag tag-FK">FK</span></td><td class="col-local">collection_object / collecting_event</td><td><code>preparation_id</code>, and on collecting_event <code>habitat_id</code> / <code>sampling_protocol_id</code> / <code>country_id</code> / <code>state_province_id</code> / <code>administrative_region_id</code> / <code>county_id</code> / <code>island_id</code> — all → their vocab table ON DELETE RESTRICT (delete-safe; re-pointed by the generic vocab merge)</td></tr>
+      <tr><td><span class="tag tag-UQ">UQ</span></td><td class="col-local">single-name vocabs</td><td>UNIQUE (<code>name</code>) on preparation / disposition (mig 0048, seeded) / habitat / sampling_protocol (migs 0039–0040; sampling_protocol seeded) and the geography vocabs country / state_province / administrative_region / county / island (mig 0041)</td></tr>
+      <tr><td><span class="tag tag-FK">FK</span></td><td class="col-local">collection_object / collecting_event</td><td><code>preparation_id</code> / <code>disposition_id</code>, and on collecting_event <code>habitat_id</code> / <code>sampling_protocol_id</code> / <code>country_id</code> / <code>state_province_id</code> / <code>administrative_region_id</code> / <code>county_id</code> / <code>island_id</code> — all → their vocab table ON DELETE RESTRICT (delete-safe; re-pointed by the generic vocab merge)</td></tr>
       <tr><td><span class="tag tag-UQ">UQ</span></td><td class="col-local">media</td><td>UNIQUE (<code>sha256</code>) — content-addressed de-duplication key</td></tr>
       <tr><td><span class="tag tag-FK">FK</span></td><td class="col-local">media</td><td><code>rights_holder_id</code> → person ON DELETE RESTRICT (delete-safe; re-pointed by merge_persons)</td></tr>
       <tr><td><span class="tag tag-FK">FK</span></td><td class="col-local">media_attachment</td><td><code>media_id</code> → media, and each arc FK (<code>collection_object_id</code> / <code>collecting_event_id</code> / <code>biological_association_id</code>) → its table, all ON DELETE CASCADE</td></tr>

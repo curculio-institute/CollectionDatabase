@@ -9,6 +9,7 @@ from .label_code import LabelCode
 from .print_queue import PrintQueue
 from .person import Person
 from .preparation import Preparation
+from .disposition import Disposition
 from .habitat import Habitat
 from .sampling_protocol import SamplingProtocol
 from .geography import Country, StateProvince, County, Island, AdministrativeRegion
@@ -31,6 +32,7 @@ __all__ = [
     "PrintQueue",
     "Person",
     "Preparation",
+    "Disposition",
     "Habitat",
     "SamplingProtocol",
     "Country",

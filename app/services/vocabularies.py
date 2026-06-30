@@ -11,6 +11,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from app.models.preparation import Preparation
+from app.models.disposition import Disposition
 from app.models.habitat import Habitat
 from app.models.sampling_protocol import SamplingProtocol
 from app.models.geography import (
@@ -30,6 +31,7 @@ class VocabSpec:
 
 
 preparation_vocab = Vocabulary(Preparation, ref_table="preparation", noun="preparation")
+disposition_vocab = Vocabulary(Disposition, ref_table="disposition", noun="disposition")
 habitat_vocab = Vocabulary(Habitat, ref_table="habitat", noun="habitat")
 sampling_protocol_vocab = Vocabulary(
     SamplingProtocol, ref_table="sampling_protocol", noun="sampling protocol")
@@ -41,6 +43,15 @@ PREPARATION = VocabSpec(
     help="Values used in the specimen preparations field (e.g. pinned, in ethanol).",
     add_label="Add preparation",
     field_label="preparations",
+)
+
+DISPOSITION = VocabSpec(
+    key="disposition",
+    vocab=disposition_vocab,
+    title="Dispositions",
+    help="Holding status of a specimen (e.g. in collection, on loan, loaned to Jeffrey).",
+    add_label="Add disposition",
+    field_label="disposition",
 )
 
 HABITAT = VocabSpec(
@@ -99,6 +110,6 @@ ISLAND = VocabSpec(
 
 # Ordered list consumed by the Controlled Vocabularies tab.
 VOCAB_REGISTRY: list[VocabSpec] = [
-    PREPARATION, HABITAT, SAMPLING_PROTOCOL,
+    PREPARATION, DISPOSITION, HABITAT, SAMPLING_PROTOCOL,
     COUNTRY, STATE_PROVINCE, ADMINISTRATIVE_REGION, COUNTY, ISLAND,
 ]

@@ -1299,7 +1299,7 @@ def index():
                         "individual_count":  int(active["count_in"].value or 1),
                         "preparation_id":    active["prep_field"]["commit"](session),
                         "life_stage":        active["stage_sel"].value,
-                        "disposition":       active["disp_sel"].value,
+                        "disposition_id":    active["disp_field"]["commit"](session),
                         "basis_of_record":   active["basis_sel"].value,
                         "occurrence_remarks":active["rem_in"].value,
                         "confidential":      1 if active["conf_chk"].value else 0,
