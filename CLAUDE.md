@@ -457,6 +457,7 @@ canonical value). Current single-name vocabularies (more may follow — built on
 | Field | Column | Table | Migration | Note |
 |-------|--------|-------|-----------|------|
 | preparations | `collection_object.preparation_id` | `preparation` | 0039 | was `dwc:preparations` TEXT |
+| disposition | `collection_object.disposition_id` | `disposition` | 0048 | was `dwc:disposition` TEXT + a **closed** CHECK; opened up (#76) so holdings like "loaned to Jeffrey" are recordable. **Seeded** with the former six values. DwC `[Not mapped]` by TW |
 | habitat | `collecting_event.habitat_id` | `habitat` | 0040 | was `dwc:habitat` TEXT |
 | samplingProtocol | `collecting_event.sampling_protocol_id` | `sampling_protocol` | 0040 | was a hardcoded UI list; table **seeded** with the curated set |
 | country | `collecting_event.country_id` | `country` | 0041 | English name (pycountry); `dwc:countryCode` stays per-event |
@@ -467,8 +468,12 @@ canonical value). Current single-name vocabularies (more may follow — built on
 
 **Which fields qualify:** *open, user-coined* vocabularies where consistency tooling (merge)
 helps. **Closed standard vocabularies stay fixed CHECK-constrained lists, NOT editable tables**
-— `sex`, `basisOfRecord`, `disposition`, `identificationQualifier`, `license` (editability
-would create `Male`/`male` duplicates or values TW rejects).
+— `sex`, `basisOfRecord`, `identificationQualifier`, `license` (editability would create
+`Male`/`male` duplicates or values TW rejects). **`disposition` was on this closed list but
+moved to an editable vocab (#76, migration 0048):** it is genuinely user-coined (the user needs
+arbitrary holdings like "loaned to Jeffrey"), and DwC `disposition` is `[Not mapped]` by TW, so
+freeform values never reach TaxonWorks — the duplicate/reject risk that keeps the others closed
+doesn't apply.
 
 **Geography is the exception that proves the rule (revised, #40):** the administrative levels
 *are* controlled vocabs — even though they come from geocoding, the geocoder yields

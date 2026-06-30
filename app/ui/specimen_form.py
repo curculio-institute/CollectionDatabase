@@ -29,10 +29,10 @@ from nicegui import ui
 
 from app.config import get_config
 import app.services.identifiers as id_svc
-from app.services.vocabularies import preparation_vocab
+from app.services.vocabularies import preparation_vocab, disposition_vocab
 from app.ui.vocab_field import build_vocab_field
 from app.vocab import (
-    LIFE_STAGE_OPTIONS, BASIS_OPTIONS, DISPOSITION_OPTIONS, NEW_SPECIMEN_DEFAULTS,
+    LIFE_STAGE_OPTIONS, BASIS_OPTIONS, NEW_SPECIMEN_DEFAULTS,
 )
 
 
@@ -56,7 +56,7 @@ def build_specimen_form(
     Handle keys:
       card             — the ui.card element (for visibility toggling)
       policy           — the identifier_policy string
-      cat_num, count_in, stage_sel, disp_sel, basis_sel,
+      cat_num, count_in, stage_sel, disp_field, basis_sel,
       inst_code_disp, coll_code_disp, rem_in   — the field widgets.
       prep_field       — the preparations controlled-vocab field handle (a dict
                         with get_value/set_value/commit; commit(session)→preparation_id).
@@ -155,7 +155,12 @@ def build_specimen_form(
         with ui.expansion("More fields").classes("w-full mt-2"):
             with ui.grid(columns=4).classes("w-full gap-3"):
                 stage_sel = ui.select(LIFE_STAGE_OPTIONS, label="lifeStage", value=v_stage).classes("col-span-1")
-                disp_sel  = ui.select(DISPOSITION_OPTIONS, label="disposition", value=v_disp).classes("col-span-1")
+                # disposition is an open controlled vocab (#76) — same custom-dropdown
+                # UX as preparations; commit(session) → disposition_id at save time.
+                disp_field = build_vocab_field(
+                    session_factory, disposition_vocab, "disposition",
+                    initial_value=v_disp or None, classes="col-span-1",
+                )
                 basis_sel = ui.select(BASIS_OPTIONS, label="basisOfRecord", value=v_basis).classes("col-span-1")
                 if is_standard:
                     _cfg_disp = get_config()
@@ -283,7 +288,7 @@ def build_specimen_form(
         count_in.value  = NEW_SPECIMEN_DEFAULTS["individual_count"]
         prep_field["set_value"](None)
         stage_sel.value = NEW_SPECIMEN_DEFAULTS["life_stage"]
-        disp_sel.value  = NEW_SPECIMEN_DEFAULTS["disposition"]
+        disp_field["set_value"](NEW_SPECIMEN_DEFAULTS["disposition"])
         basis_sel.value = NEW_SPECIMEN_DEFAULTS["basis_of_record"]
         rem_in.value    = ""
         conf_chk.value  = False
@@ -295,7 +300,7 @@ def build_specimen_form(
         "count_in":       count_in,
         "prep_field":     prep_field,
         "stage_sel":      stage_sel,
-        "disp_sel":       disp_sel,
+        "disp_field":     disp_field,
         "basis_sel":      basis_sel,
         "inst_code_disp": inst_code_disp,
         "coll_code_disp": coll_code_disp,

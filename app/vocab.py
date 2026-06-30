@@ -12,9 +12,11 @@ mounting_session.py, identification_list.py, specimen_form.py and labels.py
 Convention: the empty-string sentinel ("") is always **last** so the blank option
 renders at the bottom of every ui.select (see CLAUDE.md → UI conventions).
 
-Note: BASIS_OPTIONS and DISPOSITION_OPTIONS mirror values constrained by DB CHECKs
-(migration 0019). They MUST stay a subset of those constraints or saving raises an
-IntegrityError. Keep them in sync if a future migration changes the allowed values.
+Note: BASIS_OPTIONS mirrors values constrained by a DB CHECK (migration 0019). It
+MUST stay a subset of that constraint or saving raises an IntegrityError. Keep it in
+sync if a future migration changes the allowed values. (disposition was a similar
+fixed list until migration 0048 (#76) turned it into an editable controlled
+vocabulary — see vocabularies.disposition_vocab.)
 """
 from __future__ import annotations
 
@@ -34,13 +36,6 @@ LIFE_STAGE_OPTIONS = ["adult", "larva", "pupa", "egg", ""]
 # only PreservedSpecimen/FossilSpecimen — HumanObservation is local-only, see
 # CLAUDE.md §5b — but it is a valid DB value and may be selected here.)
 BASIS_OPTIONS = ["PreservedSpecimen", "FossilSpecimen", "HumanObservation"]
-
-# Must match ck_co_disposition (migration 0019): these six, or NULL. The trailing
-# "" maps to NULL on save.
-DISPOSITION_OPTIONS = [
-    "in collection", "on loan", "donated",
-    "exchanged", "missing", "destroyed", "",
-]
 
 # SUPERSEDED: samplingProtocol is now a DB-backed controlled vocabulary
 # (sampling_protocol table, migration 0040 seeded it with this set). This constant

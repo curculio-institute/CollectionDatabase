@@ -28,7 +28,7 @@ import app.services.person_defaults as pd_svc
 from app.ui.date_input import attach_date_validation, append_year_pin
 from app.ui.person_field import build_person_field
 from app.ui.vocab_field import build_vocab_field
-from app.services.vocabularies import preparation_vocab
+from app.services.vocabularies import preparation_vocab, disposition_vocab
 from app.ui.taxon_search import build_taxon_search
 from app.ui.type_status_field import build_type_status_field
 from app.services.taxa import compose_scientific_name
@@ -394,7 +394,8 @@ def build_mounting_session_section(
                                 "preparation_id":    (preparation_vocab.get_or_create(s, row["preparations"]).id
                                                       if (row["preparations"] or "").strip() else None),
                                 "life_stage":        row["life_stage"] or None,
-                                "disposition":       NEW_SPECIMEN_DEFAULTS["disposition"],
+                                "disposition_id":    disposition_vocab.get_or_create(
+                                                         s, NEW_SPECIMEN_DEFAULTS["disposition"]).id,
                                 "basis_of_record":   NEW_SPECIMEN_DEFAULTS["basis_of_record"],
                             },
                             determination_fields={

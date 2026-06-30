@@ -30,8 +30,12 @@ class CollectionObject(Base, TimestampMixin):
     basis_of_record: Mapped[str] = mapped_column("dwc:basisOfRecord", String, nullable=False, default="PreservedSpecimen")
     individual_count: Mapped[int] = mapped_column("dwc:individualCount", Integer, nullable=False, default=1)
     life_stage: Mapped[Optional[str]] = mapped_column("dwc:lifeStage", String, nullable=True)
-    # "in collection" | "on loan" | "donated" | "exchanged" | "missing" | "destroyed"
-    disposition: Mapped[Optional[str]] = mapped_column("dwc:disposition", String, nullable=True)
+    # disposition is an open controlled vocabulary (FK → disposition), not a fixed
+    # CHECK list — so the user can record arbitrary holdings ("loaned to Jeffrey")
+    # and edit/merge them like persons (migration 0048, #76). DwC `disposition` is
+    # resolved from disposition.name at export (TW marks it [Not mapped] anyway).
+    disposition_id: Mapped[Optional[int]] = mapped_column(
+        Integer, ForeignKey("disposition.id", ondelete="RESTRICT"), nullable=True)
     # preparations is a controlled vocabulary (FK → preparation), not free text —
     # so it can be edited/merged like persons. The DwC `preparations` string is
     # resolved from preparation.name at export time (mirrors recordedBy/identifiedBy).
@@ -52,17 +56,13 @@ class CollectionObject(Base, TimestampMixin):
             "\"dwc:basisOfRecord\" IN ('PreservedSpecimen', 'FossilSpecimen', 'HumanObservation')",
             name="ck_co_basis_of_record",
         ),
-        CheckConstraint(
-            "\"dwc:disposition\" IS NULL OR \"dwc:disposition\" IN "
-            "('in collection', 'on loan', 'donated', 'exchanged', 'missing', 'destroyed')",
-            name="ck_co_disposition",
-        ),
         CheckConstraint("confidential IN (0, 1)", name="ck_co_confidential"),
     )
 
     collecting_event: Mapped[Optional["CollectingEvent"]] = relationship("CollectingEvent", back_populates="collection_objects")
     repository: Mapped["Repository"] = relationship("Repository")
     preparation: Mapped[Optional["Preparation"]] = relationship("Preparation")
+    disposition: Mapped[Optional["Disposition"]] = relationship("Disposition")
     determinations: Mapped[List["TaxonDetermination"]] = relationship(
         "TaxonDetermination", back_populates="collection_object", cascade="all, delete-orphan")
     subject_associations: Mapped[List["BiologicalAssociation"]] = relationship(
