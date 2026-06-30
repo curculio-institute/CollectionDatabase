@@ -1302,6 +1302,7 @@ def index():
                         "disposition_id":    active["disp_field"]["commit"](session),
                         "basis_of_record":   active["basis_sel"].value,
                         "occurrence_remarks":active["rem_in"].value,
+                        "other_catalog_numbers": active["othercat_in"].value,
                         "confidential":      1 if active["conf_chk"].value else 0,
                     }
 

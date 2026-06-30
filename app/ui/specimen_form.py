@@ -91,12 +91,14 @@ def build_specimen_form(
         v_disp  = init.get("disposition")
         v_basis = init.get("basis_of_record")
         v_rem   = init.get("occurrence_remarks") or ""
+        v_other = init.get("other_catalog_numbers") or ""
     else:
         v_count, v_preps = NEW_SPECIMEN_DEFAULTS["individual_count"], ""
         v_stage = NEW_SPECIMEN_DEFAULTS["life_stage"]
         v_disp  = NEW_SPECIMEN_DEFAULTS["disposition"]
         v_basis = NEW_SPECIMEN_DEFAULTS["basis_of_record"]
         v_rem = ""
+        v_other = ""
 
     # Defaults; reassigned per policy below.
     cat_num = inst_code_disp = coll_code_disp = None
@@ -187,6 +189,12 @@ def build_specimen_form(
                         .tooltip("Change only when re-homing this specimen to "
                                  "another collection (gifting). catalogNumber is fixed.")
                     )
+            othercat_in = (
+                ui.input("otherCatalogNumbers", value=v_other)
+                .classes("w-full mt-3")
+                .tooltip("Catalog numbers this specimen carried at previous owning "
+                         "collections (free text). Its own catalogNumber is fixed.")
+            )
             rem_in = ui.input("materialEntityRemarks", value=v_rem).classes("w-full mt-3")
 
         # Footer: the Confidential flag (left) shares one line with the caller's
@@ -264,7 +272,8 @@ def build_specimen_form(
             return False
         if cat_num is not None and (cat_num.value or ""):
             return True
-        if (prep_field["get_value"]() or "").strip() or (rem_in.value or "").strip():
+        if ((prep_field["get_value"]() or "").strip() or (rem_in.value or "").strip()
+                or (othercat_in.value or "").strip()):
             return True
         try:
             if int(count_in.value or 1) != NEW_SPECIMEN_DEFAULTS["individual_count"]:
@@ -290,8 +299,9 @@ def build_specimen_form(
         stage_sel.value = NEW_SPECIMEN_DEFAULTS["life_stage"]
         disp_field["set_value"](NEW_SPECIMEN_DEFAULTS["disposition"])
         basis_sel.value = NEW_SPECIMEN_DEFAULTS["basis_of_record"]
-        rem_in.value    = ""
-        conf_chk.value  = False
+        rem_in.value      = ""
+        othercat_in.value = ""
+        conf_chk.value    = False
 
     return {
         "card":           card,
@@ -305,6 +315,7 @@ def build_specimen_form(
         "inst_code_disp": inst_code_disp,
         "coll_code_disp": coll_code_disp,
         "rem_in":         rem_in,
+        "othercat_in":    othercat_in,
         "conf_chk":       conf_chk,
         "get_identifier_fields": get_identifier_fields,
         "refresh_codes":  refresh_codes,

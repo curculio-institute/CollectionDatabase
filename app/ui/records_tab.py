@@ -191,6 +191,7 @@ def build_records_tab(session_factory, *, on_saved: callable | None = None) -> N
                 "disposition":       co.disposition.name if co.disposition else None,
                 "basis_of_record":   co.basis_of_record,
                 "occurrence_remarks":co.occurrence_remarks,
+                "other_catalog_numbers": co.other_catalog_numbers,
                 "confidential":      co.confidential,
             }
 
@@ -349,6 +350,7 @@ def build_records_tab(session_factory, *, on_saved: callable | None = None) -> N
         disp_field   = spec["disp_field"]
         basis_sel    = spec["basis_sel"]
         rem_in       = spec["rem_in"]
+        othercat_in  = spec["othercat_in"]
         conf_chk     = spec["conf_chk"]
         coll_code_in = spec["coll_code_disp"]
 
@@ -549,6 +551,7 @@ def build_records_tab(session_factory, *, on_saved: callable | None = None) -> N
                 "disposition_id":    disp_field["commit"](session),
                 "basis_of_record":   basis_sel.value,
                 "occurrence_remarks":rem_in.value,
+                "other_catalog_numbers": othercat_in.value,
                 "confidential":      1 if conf_chk.value else 0,
             }
 
@@ -607,6 +610,7 @@ def build_records_tab(session_factory, *, on_saved: callable | None = None) -> N
                 "disposition":        disp_field["get_value"](),
                 "basis_of_record":    basis_sel.value,
                 "occurrence_remarks": rem_in.value,
+                "other_catalog_numbers": othercat_in.value,
                 "confidential":       1 if conf_chk.value else 0,
             }
             ev = dict(_collect_ev_fields())

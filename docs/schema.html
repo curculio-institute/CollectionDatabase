@@ -195,6 +195,7 @@ erDiagram
         INTEGER preparation_id FK
         TEXT typeStatus
         TEXT occurrenceRemarks
+        TEXT otherCatalogNumbers
     }
 
     preparation {
@@ -463,6 +464,7 @@ erDiagram
       <tr><td><span class="badge badge-INTEGER">INTEGER</span></td><td class="col-local">preparation_id</td><td><span class="tag tag-FK">FK</span> → preparation(id) ON DELETE RESTRICT; controlled vocab (was dwc:preparations TEXT, migration 0039). DwC <code>preparations</code> resolved from preparation.name at export</td></tr>
       <tr><td><span class="badge badge-TEXT">TEXT</span></td><td class="col-dwc"><a href="https://dwc.tdwg.org/list/#dwc_typeStatus">dwc:typeStatus</a></td><td></td></tr>
       <tr><td><span class="badge badge-TEXT">TEXT</span></td><td class="col-dwc"><a href="https://dwc.tdwg.org/list/#dwc_occurrenceRemarks">dwc:occurrenceRemarks</a></td><td></td></tr>
+      <tr><td><span class="badge badge-TEXT">TEXT</span></td><td class="col-dwc"><a href="https://dwc.tdwg.org/list/#dwc_otherCatalogNumbers">dwc:otherCatalogNumbers</a></td><td>free text — prior catalog numbers from previous owning institutions (migration 0049, #77)</td></tr>
       <tr><td><span class="badge badge-INTEGER">INTEGER</span></td><td class="col-local">confidential</td><td>NOT NULL DEFAULT 0; privacy flag (migration 0043) — a confidential specimen is dropped from the DwC export. Local-only, never pushed.</td></tr>
       <tr><td><span class="badge badge-TEXT">TEXT</span></td><td class="col-local">created_at / updated_at</td><td></td></tr>
     </tbody>
