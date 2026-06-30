@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from sqlalchemy import and_
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 
 from app.models import (
     CollectionObject,
@@ -44,15 +44,13 @@ def create_collection_object(
     *,
     collecting_event_id: int | None,
     catalog_number: str,
-    collection_code: str,
-    institution_code: str,
+    repository_id: int,
     **fields,
 ) -> CollectionObject:
     co = CollectionObject(
         collecting_event_id=collecting_event_id,
         catalog_number=catalog_number,
-        collection_code=collection_code,
-        institution_code=institution_code,
+        repository_id=repository_id,
         created_at=_utcnow(),
         updated_at=_utcnow(),
     )
@@ -190,20 +188,21 @@ def finalize_specimen(
 def update_collection_object(session: Session, co_id: int, **fields) -> CollectionObject:
     """Update mutable fields on a CollectionObject.
 
-    catalog_number and institution_code are immutable. collection_code MAY change
-    (a specimen can be re-homed to another collection when gifted), but is NOT NULL,
-    so an attempt to blank it is rejected loudly rather than silently skipped.
+    catalog_number is immutable. repository_id MAY change — re-homing a specimen to
+    another collection (gift/exchange) re-points the FK (the in-app equivalent of
+    editing ownerInstitutionCode; #75). It is NOT NULL, so an attempt to blank it is
+    rejected loudly rather than silently skipped.
     """
     co = session.get(CollectionObject, co_id)
     if co is None:
         raise ValueError(f"CollectionObject {co_id} not found")
     for attr, val in fields.items():
-        if attr in ("catalog_number", "institution_code"):
+        if attr == "catalog_number":
             continue  # immutable
-        if attr == "collection_code":
-            if not val:  # NOT NULL — refuse to blank the namespace
-                raise ValueError("collection_code cannot be blank (NOT NULL).")
-            co.collection_code = val
+        if attr == "repository_id":
+            if not val:  # NOT NULL — refuse to blank the owning collection
+                raise ValueError("repository_id cannot be blank (NOT NULL).")
+            co.repository_id = val
             continue
         if val == "":
             val = None
@@ -307,6 +306,7 @@ def recent_specimens(session: Session, limit: int = 200) -> list[RecentRow]:
     """Latest `limit` specimens with their current determination and event."""
     rows = (
         session.query(CollectionObject, TaxonDetermination, CollectingEvent, Taxon)
+        .options(joinedload(CollectionObject.repository))
         .outerjoin(
             TaxonDetermination,
             and_(
@@ -324,7 +324,7 @@ def recent_specimens(session: Session, limit: int = 200) -> list[RecentRow]:
         RecentRow(
             collection_object_id=co.id,
             catalog_number=co.catalog_number,
-            collection_code=co.collection_code,
+            collection_code=co.repository.collection_code,
             scientific_name=(t.scientific_name or "") if t else "",
             authorship=(t.scientific_name_authorship if t else None),
             sex=td.sex if td else None,

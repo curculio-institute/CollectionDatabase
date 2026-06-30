@@ -14,6 +14,7 @@ from app.models import (
     BiologicalAssociation,
 )
 from app.models.base import _utcnow
+from tests.helpers import ensure_repo
 
 
 # ---------------------------------------------------------------------------
@@ -49,7 +50,7 @@ def _obj(session, collecting_event=None, cat_num: str | None = None, coll_code: 
     co = CollectionObject(
         collecting_event_id=collecting_event.id if collecting_event else None,
         catalog_number=cat_num or f"T-{_obj_counter:04d}",
-        collection_code=coll_code,  # institution_code has a server_default of ""
+        repository_id=ensure_repo(session, coll_code),
         created_at=_utcnow(),
         updated_at=_utcnow(),
     )
@@ -298,10 +299,11 @@ def test_ba_object_both_set_rejected(session):
 
 
 def test_catalog_number_unique_within_namespace(session):
-    """Same catalogNumber in the same namespace must be rejected."""
+    """Same catalogNumber in the same repository must be rejected."""
+    rid = ensure_repo(session, "COLL1")
     for _ in range(2):
         co = CollectionObject(
-            collection_code="COLL1",
+            repository_id=rid,
             catalog_number="0001",
             created_at=_utcnow(), updated_at=_utcnow(),
         )
@@ -311,11 +313,11 @@ def test_catalog_number_unique_within_namespace(session):
 
 
 def test_catalog_number_same_number_different_collection_allowed(session):
-    """Same catalogNumber under different collectionCodes is fine — uniqueness is
+    """Same catalogNumber under different repositories is fine — uniqueness is
     scoped per collection, so foreign datasets keep their own numbering."""
     for cc in ("COLL1", "COLL2"):
         session.add(CollectionObject(
-            collection_code=cc, catalog_number="0001",
+            repository_id=ensure_repo(session, cc), catalog_number="0001",
             created_at=_utcnow(), updated_at=_utcnow(),
         ))
     session.flush()  # must not raise
@@ -324,7 +326,7 @@ def test_catalog_number_same_number_different_collection_allowed(session):
 def test_catalog_number_required(session):
     """Inserting a collection_object without catalogNumber must be rejected."""
     co = CollectionObject(
-        collection_code="COLL1",
+        repository_id=ensure_repo(session, "COLL1"),
         created_at=_utcnow(), updated_at=_utcnow(),
     )
     session.add(co)

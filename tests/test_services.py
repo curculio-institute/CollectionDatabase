@@ -18,6 +18,7 @@ from app.services.identifiers import (
     reserve_sequential_codes, _next_sequential_number,
 )
 from app.models import LabelCode, LabelBatch
+from tests.helpers import ensure_repo
 
 
 # ---------------------------------------------------------------------------
@@ -307,8 +308,7 @@ def test_save_specimen_entry_creates_three_rows(session):
         event_id=ce.id,
         event_fields={},
         specimen_fields={
-            "catalog_number": "0001", "collection_code": "TEST",
-            "institution_code": "TEST",
+            "catalog_number": "0001", "repository_id": ensure_repo(session, "TEST"),
             "sex": "male", "individual_count": 1,
         },
         determination_fields={},
@@ -331,7 +331,7 @@ def test_save_specimen_entry_creates_new_event_when_no_event_id(session):
         taxon_id=t.id,
         event_id=None,
         event_fields={"country": "France", "locality": "Camargue", "event_date": "2024-07-01"},
-        specimen_fields={"catalog_number": "0002", "collection_code": "TEST", "institution_code": "TEST"},
+        specimen_fields={"catalog_number": "0002", "repository_id": ensure_repo(session, "TEST")},
         determination_fields={},
     )
     session.flush()
@@ -342,34 +342,35 @@ def test_save_specimen_entry_creates_new_event_when_no_event_id(session):
     assert ce.locality == "Camargue"
 
 
-def test_update_collection_object_gifting_collection_code(session):
-    """collection_code may change (gifting); catalog_number/institution_code stay
-    immutable; an empty collection_code is rejected loudly (NOT NULL)."""
+def test_update_collection_object_gifting_repository(session):
+    """repository_id may change (re-homing on a gift, #75); catalog_number stays
+    immutable; a blank repository_id is rejected loudly (NOT NULL)."""
     t = _taxon(session)
     ce = _event(session)
+    home = ensure_repo(session, "TEST")
     co = save_specimen_entry(
         session,
         taxon_id=t.id, event_id=ce.id, event_fields={},
-        specimen_fields={"catalog_number": "G001", "collection_code": "TEST",
-                         "institution_code": "TEST"},
+        specimen_fields={"catalog_number": "G001", "repository_id": home},
         determination_fields={},
     )
     session.flush()
 
-    # collection_code changes (re-homed on gifting)
-    update_collection_object(session, co.id, collection_code="NHMW")
-    assert co.collection_code == "NHMW"
+    # repository changes (re-homed on gifting) — the catalog number keeps its
+    # original prefix, so it may now differ from the new collection.
+    nhmw = ensure_repo(session, "NHMW")
+    update_collection_object(session, co.id, repository_id=nhmw)
+    assert co.repository_id == nhmw
+    assert co.repository.collection_code == "NHMW"
 
-    # catalog_number and institution_code are immutable — ignored
-    update_collection_object(session, co.id,
-                             catalog_number="ZZZZ", institution_code="OTHER")
+    # catalog_number is immutable — ignored
+    update_collection_object(session, co.id, catalog_number="ZZZZ")
     assert co.catalog_number == "G001"
-    assert co.institution_code == "TEST"
 
-    # empty collection_code is rejected, not silently blanked (NOT NULL column)
+    # a blank repository_id is rejected, not silently applied (NOT NULL column)
     with pytest.raises(ValueError):
-        update_collection_object(session, co.id, collection_code="")
-    assert co.collection_code == "NHMW"
+        update_collection_object(session, co.id, repository_id=None)
+    assert co.repository_id == nhmw
 
 
 def _seed_code(session, code: str) -> None:
@@ -416,7 +417,7 @@ def test_recent_specimens_newest_first(session):
             session,
             taxon_id=t.id, event_id=ce.id,
             event_fields={},
-            specimen_fields={"catalog_number": num, "collection_code": "TEST", "institution_code": "TEST"},
+            specimen_fields={"catalog_number": num, "repository_id": ensure_repo(session, "TEST")},
             determination_fields={},
         )
     session.flush()
@@ -432,7 +433,7 @@ def test_recent_specimens_returns_only_current_determination(session):
     ce = _event(session)
 
     co = create_object = CollectionObject(
-        collecting_event_id=ce.id, catalog_number="X001", collection_code="TEST", institution_code="TEST",
+        collecting_event_id=ce.id, catalog_number="X001", repository_id=ensure_repo(session, "TEST"),
         created_at=_utcnow(), updated_at=_utcnow(),
     )
     session.add(co)
@@ -470,8 +471,7 @@ def _saved_co_with_code(session, *, catalog="A001", code="A001"):
     ce = _event(session)
     co = save_specimen_entry(
         session, taxon_id=t.id, event_id=ce.id, event_fields={},
-        specimen_fields={"catalog_number": catalog, "collection_code": "TEST",
-                         "institution_code": "TEST"},
+        specimen_fields={"catalog_number": catalog, "repository_id": ensure_repo(session, "TEST")},
         determination_fields={},
     )
     _seed_code(session, code)

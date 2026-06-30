@@ -4,6 +4,7 @@ from sqlalchemy.orm import sessionmaker
 
 import app.services.external_ids as ext_svc
 from app.models import ExternalIdentifier, CollectingEvent, CollectionObject
+from tests.helpers import ensure_repo
 
 
 @pytest.fixture
@@ -14,7 +15,7 @@ def s(engine):
 
 
 def test_add_list_count_delete(s):
-    co = CollectionObject(catalog_number="JJPC-50001", collection_code="JJPC")
+    co = CollectionObject(catalog_number="JJPC-50001", repository_id=ensure_repo(s, "JJPC"))
     s.add(co); s.flush()
     # The user supplies just the URI; source is left unset.
     ext_svc.add_identifier(s, target_kind="collection_object", target_id=co.id,
@@ -32,7 +33,7 @@ def test_add_list_count_delete(s):
 
 
 def test_blank_value_rejected(s):
-    co = CollectionObject(catalog_number="JJPC-50002", collection_code="JJPC")
+    co = CollectionObject(catalog_number="JJPC-50002", repository_id=ensure_repo(s, "JJPC"))
     s.add(co); s.flush()
     with pytest.raises(ValueError):
         ext_svc.add_identifier(s, target_kind="collection_object", target_id=co.id,

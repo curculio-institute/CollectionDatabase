@@ -185,7 +185,7 @@ erDiagram
         INTEGER id PK
         INTEGER collecting_event_id FK
         TEXT catalogNumber
-        TEXT catalogNamespace
+        INTEGER repository_id FK
         TEXT basisOfRecord
         INTEGER individualCount
         TEXT lifeStage
@@ -317,6 +317,7 @@ erDiagram
     biological_association |o--o{ external_identifier : "other party (arc)"
     collection_object ||--o{ life_stage_record : "earlier life stages"
     preparation |o--o{ collection_object : "prepared as"
+    repository ||--o{ collection_object : "belongs to"
     habitat |o--o{ collecting_event : "habitat of"
     sampling_protocol |o--o{ collecting_event : "method of"
     country |o--o{ collecting_event : "in country"
@@ -434,7 +435,10 @@ erDiagram
   <h2>collection_object</h2>
   <div class="desc">One physical specimen or lot.
     <code>dwc:catalogNumber</code> is NOT NULL — the pin-label identity and DwC sync key.
-    UNIQUE (catalogNamespace, dwc:catalogNumber).
+    Collection membership is the <code>repository_id</code> FK (NOT NULL, migration 0047, #75);
+    <code>UNIQUE (repository_id, dwc:catalogNumber)</code>. The old denormalised
+    <code>collectionCode</code>/<code>institutionCode</code> text columns were dropped — codes
+    resolve through the repository at export.
     <code>dwc:disposition</code>: "in collection" | "on loan" | "donated" | "exchanged" | "missing" | "destroyed".</div>
   <table>
     <thead><tr><th>Type</th><th>Column</th><th>Notes</th></tr></thead>
@@ -442,7 +446,7 @@ erDiagram
       <tr><td><span class="badge badge-INTEGER">INTEGER</span></td><td class="col-local">id</td><td><span class="tag tag-PK">PK</span></td></tr>
       <tr><td><span class="badge badge-INTEGER">INTEGER</span></td><td class="col-local">collecting_event_id</td><td><span class="tag tag-FK">FK</span> → collecting_event</td></tr>
       <tr><td><span class="badge badge-TEXT">TEXT</span></td><td class="col-dwc"><a href="https://dwc.tdwg.org/list/#dwc_catalogNumber">dwc:catalogNumber</a></td><td><span class="tag tag-NN">NN</span> <span class="tag tag-UQ">UQ</span></td></tr>
-      <tr><td><span class="badge badge-TEXT">TEXT</span></td><td class="col-local">catalogNamespace</td><td><span class="tag tag-NN">NN</span> TW namespace</td></tr>
+      <tr><td><span class="badge badge-INTEGER">INTEGER</span></td><td class="col-local">repository_id</td><td><span class="tag tag-NN">NN</span> <span class="tag tag-FK">FK</span> → repository(id) ON DELETE RESTRICT; owning collection — single source for collectionCode/institutionCode/ownerInstitutionCode at export (migration 0047, #75; replaced the catalogNamespace/collectionCode + institutionCode text columns)</td></tr>
       <tr><td><span class="badge badge-TEXT">TEXT</span></td><td class="col-dwc"><a href="https://dwc.tdwg.org/list/#dwc_basisOfRecord">dwc:basisOfRecord</a></td><td>default 'PreservedSpecimen'</td></tr>
       <tr><td><span class="badge badge-INTEGER">INTEGER</span></td><td class="col-dwc"><a href="https://dwc.tdwg.org/list/#dwc_individualCount">dwc:individualCount</a></td><td>CHECK ≥ 0; default 1</td></tr>
       <tr><td><span class="badge badge-TEXT">TEXT</span></td><td class="col-dwc"><a href="https://dwc.tdwg.org/list/#dwc_lifeStage">dwc:lifeStage</a></td><td>adult / larva / pupa / egg</td></tr>
@@ -684,9 +688,10 @@ erDiagram
   <table>
     <thead><tr><th>Kind</th><th>Where</th><th>Rule</th></tr></thead>
     <tbody>
-      <tr><td><span class="tag tag-UQ">UQ</span></td><td class="col-local">collection_object</td><td>UNIQUE (<code>collectionCode</code>, <code>catalogNumber</code>) — the immutable sync join key</td></tr>
+      <tr><td><span class="tag tag-UQ">UQ</span></td><td class="col-local">collection_object</td><td>UNIQUE (<code>repository_id</code>, <code>catalogNumber</code>) — catalog number unique within its owning collection (migration 0047, #75; was <code>(collectionCode, catalogNumber)</code>)</td></tr>
       <tr><td><span class="tag tag-UQ">UQ</span></td><td class="col-local">biological_relationship</td><td>UNIQUE (<code>name</code>)</td></tr>
       <tr><td><span class="tag tag-FK">FK</span></td><td class="col-local">taxon_determination</td><td><code>collection_object_id</code> → collection_object ON DELETE CASCADE; <code>taxon_id</code> → taxon ON DELETE RESTRICT</td></tr>
+      <tr><td><span class="tag tag-FK">FK</span></td><td class="col-local">collection_object</td><td><code>repository_id</code> → repository(id) ON DELETE RESTRICT — owning collection, NOT NULL (migration 0047, #75); blocks deleting a collection that still has specimens</td></tr>
       <tr><td><span class="tag tag-FK">FK</span></td><td class="col-local">person references</td><td>all <code>person</code> FKs (recordedBy, identifiedBy, defaults) are ON DELETE RESTRICT</td></tr>
       <tr><td><span class="tag tag-UQ">UQ</span></td><td class="col-local">single-name vocabs</td><td>UNIQUE (<code>name</code>) on preparation / habitat / sampling_protocol (migs 0039–0040; sampling_protocol seeded) and the geography vocabs country / state_province / administrative_region / county / island (mig 0041)</td></tr>
       <tr><td><span class="tag tag-FK">FK</span></td><td class="col-local">collection_object / collecting_event</td><td><code>preparation_id</code>, and on collecting_event <code>habitat_id</code> / <code>sampling_protocol_id</code> / <code>country_id</code> / <code>state_province_id</code> / <code>administrative_region_id</code> / <code>county_id</code> / <code>island_id</code> — all → their vocab table ON DELETE RESTRICT (delete-safe; re-pointed by the generic vocab merge)</td></tr>

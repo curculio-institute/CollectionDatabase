@@ -6,6 +6,7 @@ from app.services.identifiers import reserve_sequential_codes
 
 # Reuse the specimen/event/taxon builders from the service tests.
 from tests.test_services import _taxon, _event
+from tests.helpers import ensure_repo
 
 
 def _enqueue_identifier_batch(session, n, *, group_id, source):
@@ -31,8 +32,8 @@ def test_queued_groups_mounting_aligns_columns(session):
     for code in codes:
         co = save_specimen_entry(
             session, taxon_id=t.id, event_id=ce.id, event_fields={},
-            specimen_fields={"catalog_number": code, "collection_code": "TEST",
-                             "institution_code": "TEST"},
+            specimen_fields={"catalog_number": code,
+                             "repository_id": ensure_repo(session, "TEST")},
             determination_fields={},
         )
         finalize_specimen(session, collection_object_id=co.id, code=code,

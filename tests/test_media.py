@@ -93,8 +93,9 @@ def test_attach_stored_staged_commit(media_env):
     committed onto the saved specimen via attach_stored (carrying metadata)."""
     s, _ = media_env
     from app.models import Person, CollectionObject
+    from tests.helpers import ensure_repo
     p = Person(full_name="Cam Photographer"); s.add(p); s.flush()
-    co = CollectionObject(catalog_number="JJPC-99999", collection_code="JJPC")
+    co = CollectionObject(catalog_number="JJPC-99999", repository_id=ensure_repo(s, "JJPC"))
     s.add(co); s.flush()
 
     meta = media_svc.store_bytes(b"\x89PNG staged", "field.png")  # stored while "staging"

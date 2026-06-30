@@ -12,6 +12,7 @@ import app.services.persons as persons_svc
 from app.services.events import create_collecting_event, update_collecting_event
 from app.services.specimens import create_collection_object, update_collection_object
 from app.models import Person, CollectionObject, CollectingEvent
+from tests.helpers import ensure_repo
 
 
 def test_person_confidential_round_trip(session):
@@ -30,7 +31,7 @@ def test_person_defaults_not_confidential(session):
 def test_specimen_confidential_round_trip(session):
     co = create_collection_object(
         session, collecting_event_id=None,
-        catalog_number="cf01", collection_code="Test", institution_code="Test",
+        catalog_number="cf01", repository_id=ensure_repo(session, "Test"),
         confidential=1,
     )
     assert session.get(CollectionObject, co.id).confidential == 1
@@ -70,7 +71,7 @@ def test_person_consent_xor_confidential_db_check(session):
 def test_confidential_check_rejects_out_of_range(session):
     co = create_collection_object(
         session, collecting_event_id=None,
-        catalog_number="cf02", collection_code="Test", institution_code="Test",
+        catalog_number="cf02", repository_id=ensure_repo(session, "Test"),
     )
     session.flush()
     with pytest.raises(IntegrityError):

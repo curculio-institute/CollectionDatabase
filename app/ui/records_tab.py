@@ -10,6 +10,7 @@ import app.services.specimens as sp_svc
 import app.services.events as ev_svc
 import app.services.identifiers as id_svc
 import app.services.biological as bio_svc
+import app.services.repositories as repo_svc
 from app.services.taxa import (
     compose_scientific_name,
     format_scientific_name,
@@ -183,7 +184,7 @@ def build_records_tab(session_factory, *, on_saved: callable | None = None) -> N
 
             co_snap = {
                 "catalog_number":    co.catalog_number,
-                "collection_code": co.collection_code,
+                "collection_code": co.repository.collection_code,
                 "individual_count":  co.individual_count,
                 "preparations":      co.preparation.name if co.preparation else None,
                 "life_stage":        co.life_stage,
@@ -269,7 +270,7 @@ def build_records_tab(session_factory, *, on_saved: callable | None = None) -> N
                 return
             n   = ev_svc.count_co_at_event(s, ev_id)
             cos = [
-                (c.id, c.collection_code, c.catalog_number)
+                (c.id, c.repository.collection_code, c.catalog_number)
                 for c in ev.collection_objects[:30]
             ]
             ev_snap = {
@@ -535,10 +536,13 @@ def build_records_tab(session_factory, *, on_saved: callable | None = None) -> N
             # session: resolves the preparations controlled-vocab name → preparation_id
             # (get_or_create), like the person fields.
             return {
-                # collection_code may change (gifting); _save rejects an empty value
-                # up front (NOT NULL) and update_collection_object never touches
-                # catalog_number.
-                "collection_code":   (coll_code_in.value or "").strip(),
+                # Re-homing to another collection (gifting) re-points the repository
+                # FK (#75) — the in-app equivalent of editing ownerInstitutionCode.
+                # _save rejects an empty code up front; resolve_id get-or-creates the
+                # target repository; catalog_number is never touched.
+                "repository_id":     repo_svc.resolve_id(
+                    session, collection_code=(coll_code_in.value or "").strip()
+                ),
                 "individual_count":  int(count_in.value or 1),
                 "preparation_id":    prep_field["commit"](session),
                 "life_stage":        stage_sel.value,

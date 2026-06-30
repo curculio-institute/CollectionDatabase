@@ -8,12 +8,13 @@ from .base import Base, TimestampMixin
 class CollectionObject(Base, TimestampMixin):
     """One physical specimen or lot. DwC columns carry dwc: prefix.
 
-    dwc:catalogNumber is NOT NULL — the stable sync join key with TaxonWorks.
-    dwc:collectionCode is NOT NULL — the TW catalog-number namespace (e.g. "Jilg").
-    dwc:institutionCode is NOT NULL — stored per row; configured in Settings.
-      Together institutionCode + collectionCode identify the TW namespace: TW looks up
-      (institutionCode, collectionCode) → Namespace → stores identifier as
-      "[namespace.short_name] [catalogNumber]" (e.g. "Jilg ab12").
+    dwc:catalogNumber is NOT NULL — the stable, immutable sync join key with TaxonWorks.
+    repository_id is NOT NULL — the FK to the owning collection/institution (migration
+      0047, #75). It is the single source of truth for collectionCode / institutionCode /
+      ownerInstitutionCode (resolved through the repository at DwC export time); the old
+      denormalised dwc:collectionCode + dwc:institutionCode text columns were dropped.
+      Re-homing a specimen to another collection (gift/exchange) re-points this FK; the
+      catalog number never changes, so its code prefix may then differ from the repository.
     """
 
     __tablename__ = "collection_object"
@@ -23,8 +24,8 @@ class CollectionObject(Base, TimestampMixin):
         Integer, ForeignKey("collecting_event.id", ondelete="RESTRICT"), nullable=True)
 
     catalog_number: Mapped[str] = mapped_column("dwc:catalogNumber", String, nullable=False)
-    collection_code: Mapped[str] = mapped_column("dwc:collectionCode", String, nullable=False)
-    institution_code: Mapped[str] = mapped_column("dwc:institutionCode", String, nullable=False, server_default="")
+    repository_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("repository.id", ondelete="RESTRICT"), nullable=False)
 
     basis_of_record: Mapped[str] = mapped_column("dwc:basisOfRecord", String, nullable=False, default="PreservedSpecimen")
     individual_count: Mapped[int] = mapped_column("dwc:individualCount", Integer, nullable=False, default=1)
@@ -42,11 +43,10 @@ class CollectionObject(Base, TimestampMixin):
     confidential: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
 
     __table_args__ = (
-        # Catalog number is unique per collection, not globally — foreign datasets
-        # may reuse numbers under their own collectionCode. (Was an unnamed UNIQUE in
-        # the live schema, undeclared in the model — that gap dropped it in migration
-        # 0029 until this was added. See CLAUDE.md migration discipline.)
-        UniqueConstraint("dwc:collectionCode", "dwc:catalogNumber", name="uq_co_collection_catalog"),
+        # Catalog number is unique per owning collection, not globally — foreign datasets
+        # may reuse numbers under their own repository (migration 0047, #75; replaced the
+        # former UNIQUE(collectionCode, catalogNumber) when membership became an FK).
+        UniqueConstraint("repository_id", "dwc:catalogNumber", name="uq_co_repository_catalog"),
         CheckConstraint('"dwc:individualCount" >= 0', name="ck_co_individual_count_non_negative"),
         CheckConstraint(
             "\"dwc:basisOfRecord\" IN ('PreservedSpecimen', 'FossilSpecimen', 'HumanObservation')",
@@ -61,6 +61,7 @@ class CollectionObject(Base, TimestampMixin):
     )
 
     collecting_event: Mapped[Optional["CollectingEvent"]] = relationship("CollectingEvent", back_populates="collection_objects")
+    repository: Mapped["Repository"] = relationship("Repository")
     preparation: Mapped[Optional["Preparation"]] = relationship("Preparation")
     determinations: Mapped[List["TaxonDetermination"]] = relationship(
         "TaxonDetermination", back_populates="collection_object", cascade="all, delete-orphan")
