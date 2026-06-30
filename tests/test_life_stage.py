@@ -4,6 +4,7 @@ from sqlalchemy.orm import sessionmaker
 
 import app.services.life_stage as ls_svc
 from app.models import CollectionObject, LifeStageRecord
+from tests.helpers import ensure_repo
 
 
 @pytest.fixture
@@ -14,7 +15,7 @@ def s(engine):
 
 
 def _co(s, cat="JJPC-60001", life_stage="adult", basis="PreservedSpecimen"):
-    co = CollectionObject(catalog_number=cat, collection_code="JJPC",
+    co = CollectionObject(catalog_number=cat, repository_id=ensure_repo(s, "JJPC"),
                           life_stage=life_stage, basis_of_record=basis)
     s.add(co); s.flush()
     return co

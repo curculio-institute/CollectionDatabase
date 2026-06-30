@@ -19,6 +19,7 @@ import app.services.taxonworks as tw_svc
 import app.services.taxa as taxa_svc
 import app.services.identifiers as id_svc
 import app.services as svc
+import app.services.repositories as repo_svc
 from app.config import get_config
 import app.services.person_defaults as pd_svc
 from app.ui.taxon_search import build_taxon_search
@@ -531,8 +532,12 @@ def build_import_assign_tab(session_factory, refreshers: dict, on_saved=None) ->
                             event_fields=event_fields,
                             specimen_fields={
                                 "catalog_number":    code,
-                                "collection_code":   get_config().collection_code,
-                                "institution_code":  get_config().institution_code,
+                                # Own collection: resolve config code → repository FK (#75).
+                                "repository_id":     repo_svc.resolve_id(
+                                    session,
+                                    collection_code=get_config().collection_code,
+                                    institution_code=get_config().institution_code,
+                                ),
                                 "individual_count":  int(count_in.value or 1),
                                 "preparation_id":    prep_field["commit"](session),
                                 "life_stage":        stage_sel.value,

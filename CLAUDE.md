@@ -288,7 +288,7 @@ attributes. Mermaid diagrams use plain camelCase. Do not deviate from this patte
 
 | Table | Purpose |
 |-------|---------|
-| `collection_object` | One physical specimen or lot. `catalog_number` (NOT NULL) is the stable sync join key. `dwc:basisOfRecord`, `dwc:sex`, `dwc:typeStatus`, etc. `preparation_id` FK → `preparation` (controlled vocab, not free text — migration 0039; see "Controlled vocabularies"). |
+| `collection_object` | One physical specimen or lot. `catalog_number` (NOT NULL) is the stable, immutable sync join key. `repository_id` FK → `repository` (NOT NULL, ON DELETE RESTRICT — migration 0047, #75) is the **single source of truth for collection membership**; the old denormalised `dwc:collectionCode` + `dwc:institutionCode` text columns were dropped (codes resolve through the repository at export; `UNIQUE(repository_id, catalogNumber)`). `dwc:basisOfRecord`, `dwc:sex`, `dwc:typeStatus`, etc. `preparation_id` FK → `preparation` (controlled vocab, not free text — migration 0039; see "Controlled vocabularies"). |
 | `collecting_event` | Where/when collected; shared by many specimens. Full DwC locality + coordinate block. `dwc:eventDate` supports ISO 8601 intervals (`2024-06-15/2024-06-20`). `dwc:recordedBy` FK → `person(full_name)`. `habitat_id` + `sampling_protocol_id` (migration 0040) and the geography hierarchy `country_id` / `state_province_id` / `administrative_region_id` / `county_id` / `island_id` (migration 0041) are all controlled-vocab FKs (see "Controlled vocabularies"). `municipality` + `locality` stay free text; `dwc:countryCode` stays a per-event column. |
 | `taxon` | Local OTU analogue. DwC parent-link model (GBIF best practices). Columns: `name_element` (atomic source of truth — this rank's own epithet/uninomial, e.g. `crypticus`; migration 0032, Epic #30), `dwc:scientificName` (the *composed* full name without authorship, e.g. `Otiorhynchus crypticus`, maintained from `name_element` + the parent chain), `dwc:taxonRank`, `dwc:scientificNameAuthorship`, `dwc:parentNameUsageID` (self-FK, encodes hierarchy), `dwc:acceptedNameUsageID` (self-FK, marks synonyms — its presence *is* synonym status; `taxonomicStatus` is derived at export, not stored, see below), `taxonworksOtuID`. No denormalised rank columns. |
 | `taxon_determination` | `collection_object` → `taxon` link. `is_current` flag. `taxon_id` may reference a synonym row (deliberate design). `dwc:identifiedBy` FK → `person(full_name)`. |
@@ -738,7 +738,7 @@ arrow-key event, chip styling) is design.md's concern → "Digitize layout modes
 | `life_stage.py` | Reared-specimen life-stage history CRUD + `life_stage_facets()` export projection (Phase 3) |
 | `vocab.py` | Generic single-name controlled-vocabulary service (`Vocabulary`: list/options/get_or_create/update/delete/merge, dynamic FK re-pointing) |
 | `vocabularies.py` | Vocabulary instances + `VOCAB_REGISTRY` (the Controlled Vocabularies tab renders one section per entry) |
-| `repositories.py` | Collections/institutions CRUD (multi-column vocab, #56) + `name_map` (collectionCode→full name) for the identifier label |
+| `repositories.py` | Collections/institutions CRUD (multi-column vocab, #56) + `name_map` (collectionCode→full name) for the identifier label + `resolve_id` (get-or-create the repository for a code, the save-time seam for `collection_object.repository_id`, #75) + `delete_repository` guard (blocked while specimens reference it, #72) |
 | `explore.py` | Explore-tab querying (#40): `search_facets`, `query_specimens(filters)`, `checklist(filters)` (drawer-order taxa+lots), `events(filters)`, `to_csv`, `counts` |
 
 ### Taxon search widget (`app/ui/taxon_search.py`)
@@ -933,8 +933,11 @@ Summary:
 - **Tier 2 — one-click default.** Field starts empty; a `push_pin` button adjacent to it
   inserts the configured default (`identifiedBy`, `recordedBy`, `dateIdentified`). Never
   applied silently — the user must click.
-- **Tier 3 — background invisible default.** Written silently into every saved record, never
-  shown as an editable field (`institutionCode`, `collectionCode`). Configured once in Settings.
+- **Tier 3 — background invisible default.** Applied silently to every saved record, never
+  shown as an editable field. The configured default collection code (`config.collection_code`,
+  set once in Settings) is resolved to the specimen's `repository_id` FK at save time
+  (`repositories.resolve_id`); `collectionCode` / `institutionCode` are no longer stored on the
+  specimen (migration 0047, #75) — they derive from the repository.
 
 ### TaxonWorks namespace: institutionCode + collectionCode (verified)
 
@@ -956,18 +959,35 @@ Instead, the DwC import dataset must be pre-configured with a mapping
 catalog-number identifier as `"[namespace.short_name] [catalogNumber]"`, e.g. `"Jilg ab12"`.
 The four-character code is the `catalogNumber` as-is; the namespace label comes from TW.
 
-**DB mapping:**
-- `dwc:catalogNumber` (Python: `catalog_number`) — the 4-char code; immutable once assigned.
-- `dwc:collectionCode` (Python: `collection_code`) — the namespace short name (e.g. `"Jilg"`);
-  stored per-row. **Mutable**: a specimen may be re-homed to another collection when gifted,
-  so the Records edit tab allows changing it (`update_collection_object` permits
-  `collection_code` but never blanks it — NOT NULL). `catalog_number` remains the immutable
-  join key; do not mutate it once assigned.
-- `dwc:institutionCode` — **not stored in DB**; injected from `config.institution_code` at
-  DwC export time.
+**DB mapping (revised — migration 0047, #75):**
+- `dwc:catalogNumber` (Python: `catalog_number`) — the 4-char/sequential code; immutable once
+  assigned, never mutated.
+- **`collection_object.repository_id`** (FK → `repository`, NOT NULL, ON DELETE RESTRICT) is
+  the **single source of truth** for collection membership. `collectionCode` /
+  `institutionCode` / `ownerInstitutionCode` are **resolved from the repository at DwC export
+  time** (the exact DwC term TW reads is settled when the export tool is built; deferred) —
+  there is **no `dwc:collectionCode` or `dwc:institutionCode` column on `collection_object`
+  any more** (both dropped in 0047). The catalog-number uniqueness scope is
+  `UNIQUE(repository_id, catalogNumber)`.
+- **Re-homing** a specimen to another collection (gift/exchange) re-points `repository_id`
+  (`update_collection_object`, never blanks it — NOT NULL); the in-app equivalent of "editing
+  ownerInstitutionCode". The catalog number keeps its original code **prefix**, so after a
+  re-home the prefix may no longer match the owning repository — that's expected: the prefix
+  is frozen in the immutable identifier, membership is the FK. The identifier *label* still
+  resolves its collection name by the code **prefix** (frozen at print time; re-homing never
+  reprints the pinned label), so `labels.py` / `name_map` are unaffected.
+- **Save-time resolution:** `repositories.resolve_id(session, collection_code=…)` get-or-creates
+  the repository by code inside the save transaction (mirrors person / vocab `commit`). Standard
+  digitize / Mounting / Import resolve `config.collection_code` (own collection); "Digitize other
+  collection" (visiting) and the Records re-home field resolve a freely-typed code.
 
-For this single-collection setup `institution_code` and `collection_code` are both `"Jilg"`.
-Configure the TW import dataset to map `("Jilg", "Jilg") → "Jilg"` namespace before import.
+For this single-collection setup the default repository's `collection_code` and
+`institution_code` are both `"Jilg"`. Configure the TW import dataset to map
+`("Jilg", "Jilg") → "Jilg"` namespace before import.
+
+> **Rule (revised):** never re-introduce `dwc:collectionCode` / `dwc:institutionCode` as
+> columns on `collection_object`. Membership is the `repository_id` FK; codes are resolved
+> through the repository.
 
 ---
 

@@ -20,6 +20,7 @@ from nicegui import ui
 import app.services as svc
 import app.services.identifiers as id_svc
 import app.services.print_queue as pq_svc
+import app.services.repositories as repo_svc
 from app.config import get_config
 from app.services.dates import parse_dwc_date
 from app.services.validation import validate_event_fields
@@ -361,6 +362,13 @@ def build_mounting_session_section(
                         s, cfg.collection_code, len(rows)
                     )
 
+                    # Own collection: resolve config's collection code → repository_id
+                    # once for the whole session (#75).
+                    repository_id = repo_svc.resolve_id(
+                        s, collection_code=cfg.collection_code,
+                        institution_code=cfg.institution_code,
+                    )
+
                     # One print group for the whole session → the sheet prints
                     # these specimens together under a "Mounting Session" header.
                     group_id = pq_svc.next_print_group_id(s)
@@ -381,8 +389,7 @@ def build_mounting_session_section(
                             event_fields=ev_fields,
                             specimen_fields={
                                 "catalog_number":    code,
-                                "collection_code":   cfg.collection_code,
-                                "institution_code":  cfg.institution_code,
+                                "repository_id":     repository_id,
                                 "individual_count":  row["n"],
                                 "preparation_id":    (preparation_vocab.get_or_create(s, row["preparations"]).id
                                                       if (row["preparations"] or "").strip() else None),

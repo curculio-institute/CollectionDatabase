@@ -18,7 +18,7 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 
 from sqlalchemy import func
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 
 from app.models import (
     CollectionObject, CollectingEvent, TaxonDetermination, Taxon, Person,
@@ -192,6 +192,7 @@ def query_specimens(session: Session, filters: list[dict] | None = None) -> list
     idx = _taxon_index(session)
     q = (
         session.query(CollectionObject, TaxonDetermination, CollectingEvent)
+        .options(joinedload(CollectionObject.repository))
         .outerjoin(TaxonDetermination,
                    (TaxonDetermination.collection_object_id == CollectionObject.id)
                    & (TaxonDetermination.is_current == 1))
@@ -221,7 +222,7 @@ def query_specimens(session: Session, filters: list[dict] | None = None) -> list
         rows.append(SpecimenRow(
             co_id=co.id,
             catalog=co.catalog_number,
-            collection_code=co.collection_code,
+            collection_code=co.repository.collection_code,
             taxon_id=(t.id if t else None),
             taxon_label=(format_scientific_name(t) if t else "— undetermined —"),
             needs_attention=(t is None or rank not in ("species", "subspecies", "variety", "form")),

@@ -3,6 +3,7 @@ from app.models import Taxon, CollectingEvent, CollectionObject, TaxonDeterminat
 from app.models.base import _utcnow
 import app.services.events as ev_svc
 import app.services.explore as ex
+from tests.helpers import ensure_repo
 
 
 def _taxon(session, name, rank, parent=None, auth=""):
@@ -14,8 +15,8 @@ def _taxon(session, name, rank, parent=None, auth=""):
 
 
 def _specimen(session, taxon, event, catalog):
-    co = CollectionObject(catalog_number=catalog, collection_code="Jilg",
-                          institution_code="Jilg", individual_count=1,
+    co = CollectionObject(catalog_number=catalog, repository_id=ensure_repo(session, "Jilg"),
+                          individual_count=1,
                           collecting_event_id=event.id, created_at=_utcnow(), updated_at=_utcnow())
     session.add(co); session.flush()
     session.add(TaxonDetermination(collection_object_id=co.id, taxon_id=taxon.id,

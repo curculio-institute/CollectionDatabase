@@ -5,11 +5,12 @@ import pytest
 from app.models import CollectionObject, Preparation
 from app.models.base import _utcnow
 from app.services.vocabularies import preparation_vocab as V
+from tests.helpers import ensure_repo
 
 
 def _co(session, *, catalog, preparation_id=None):
     co = CollectionObject(
-        catalog_number=catalog, collection_code="Jilg", institution_code="Jilg",
+        catalog_number=catalog, repository_id=ensure_repo(session, "Jilg"),
         preparation_id=preparation_id, created_at=_utcnow(), updated_at=_utcnow(),
     )
     session.add(co)

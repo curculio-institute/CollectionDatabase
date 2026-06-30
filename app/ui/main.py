@@ -1288,8 +1288,14 @@ def index():
                     ident = active["get_identifier_fields"]()
                     return {
                         "catalog_number":    ident["catalog_number"],
-                        "collection_code":   ident["collection_code"],
-                        "institution_code":  ident["institution_code"],
+                        # Membership is the repository FK (#75): resolve the collection
+                        # code (config-backed standard / typed visiting) → repository_id,
+                        # get-or-creating the host repository for a visiting specimen.
+                        "repository_id":     repo_svc.resolve_id(
+                            session,
+                            collection_code=ident["collection_code"],
+                            institution_code=ident["institution_code"],
+                        ),
                         "individual_count":  int(active["count_in"].value or 1),
                         "preparation_id":    active["prep_field"]["commit"](session),
                         "life_stage":        active["stage_sel"].value,
