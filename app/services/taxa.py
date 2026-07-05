@@ -13,7 +13,8 @@ TAXON_RANKS: list[str] = [
     "kingdom", "phylum", "subphylum", "class", "subclass",
     "superorder", "order", "suborder", "superfamily",
     "family", "subfamily", "supertribe", "tribe", "subtribe",
-    "genus", "subgenus", "species", "subspecies", "variety", "form",
+    "genus", "subgenus", "species", "subspecies",
+    "variety", "subvariety", "form", "subform",
 ]
 
 # Display order for rank-selection dropdowns: the ranks used daily for beetle
@@ -22,7 +23,7 @@ TAXON_RANKS: list[str] = [
 # high→low order because hierarchy validation relies on TAXON_RANKS.index().
 TAXON_RANKS_BY_USE: list[str] = [
     "subspecies", "species", "subgenus", "genus",
-    "variety", "form",
+    "variety", "subvariety", "form", "subform",
     "subtribe", "tribe", "supertribe",
     "subfamily", "family", "superfamily",
     "suborder", "order", "superorder",
@@ -105,7 +106,10 @@ def render_identification(name: str, qualifier: str | None = None) -> str:
 
 # Infraspecific connectors: ICN (botany/mycology) uses connecting terms; ICZN
 # (zoology) writes a bare trinomial with no connector.
-_ICN_INFRA_CONNECTOR = {"subspecies": "subsp.", "variety": "var.", "form": "f."}
+_ICN_INFRA_CONNECTOR = {
+    "subspecies": "subsp.", "variety": "var.", "subvariety": "subvar.",
+    "form": "f.", "subform": "subf.",
+}
 
 
 def _infra_connector(rank: str, nomenclatural_code: str | None) -> str:
@@ -155,7 +159,7 @@ def compose_scientific_name(session: Session, taxon: Taxon) -> str:
     if rank == "species":
         return f"{genus}{sub} {element}".strip() if genus else element
 
-    if rank in ("subspecies", "variety", "form"):
+    if rank in ("subspecies", "variety", "subvariety", "form", "subform"):
         head = f"{genus}{sub} {species_epithet}".strip() if genus else (species_epithet or "")
         connector = _infra_connector(rank, taxon.nomenclatural_code)
         parts = [p for p in (head, connector, element) if p]
@@ -247,7 +251,7 @@ def element_from_name(scientific_name: str, taxon_rank: str) -> str:
     rank = (taxon_rank or "").lower()
     if not name:
         return ""
-    if rank in ("species", "subspecies", "variety", "form"):
+    if rank in ("species", "subspecies", "variety", "subvariety", "form", "subform"):
         return name.split()[-1]
     if rank == "subgenus":
         # Stored as "Genus (Subgenus)" or bare "Subgenus"; the element is the
