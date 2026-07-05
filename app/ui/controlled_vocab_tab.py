@@ -78,7 +78,7 @@ def build_controlled_vocab_tab(session_factory, *, on_person_changed=None) -> No
         with ui.dialog() as edit_dialog, ui.card().classes("w-96"):
             ui.label("Edit person").classes("section-label mb-2")
             dlg_full  = ui.input("Full name *").classes("w-full")
-            dlg_abbr  = ui.input("Abbreviated name", placeholder="J. Jilg").classes("w-full mt-2")
+            dlg_abbr  = ui.input("Abbreviated name", placeholder="J. Doe").classes("w-full mt-2")
             dlg_orcid = ui.input("ORCID", placeholder="https://orcid.org/0000-0000-0000-0000").classes("w-full mt-2")
             dlg_consent = (
                 ui.checkbox("Consented — export with name")
@@ -321,7 +321,7 @@ def build_controlled_vocab_tab(session_factory, *, on_person_changed=None) -> No
 
         with ui.grid(columns=3).classes("w-full gap-3"):
             add_full  = ui.input("Full name *").classes("col-span-1")
-            add_abbr  = ui.input("Abbreviated name", placeholder="J. Jilg").classes("col-span-1")
+            add_abbr  = ui.input("Abbreviated name", placeholder="J. Doe").classes("col-span-1")
             add_orcid = ui.input("ORCID", placeholder="https://orcid.org/0000-0000-0000-0000").classes("col-span-1")
         with ui.row().classes("items-center gap-4 mt-1"):
             add_consent = (
@@ -445,7 +445,7 @@ def _build_repository_card(session_factory) -> None:
         with ui.dialog() as edit_dialog, ui.card().classes("w-[460px]"):
             ui.label("Edit collection").classes("section-label mb-2")
             e_ccode = ui.input("dwc:collectionCode *", placeholder="JJPC").classes("w-full")
-            e_cname = ui.input("Collection full name *", placeholder="Jakob Jilg Personal Collection").classes("w-full mt-2")
+            e_cname = ui.input("Collection full name *", placeholder="John Doe Personal Collection").classes("w-full mt-2")
             e_icode = ui.input("dwc:institutionCode").classes("w-full mt-2")
             e_iname = ui.input("Institution full name").classes("w-full mt-2")
             with ui.row().classes("w-full gap-2 mt-2"):
@@ -503,7 +503,7 @@ def _build_repository_card(session_factory) -> None:
         ui.label("Add collection").classes("text-sm font-semibold mb-2")
         with ui.grid(columns=2).classes("w-full gap-3"):
             a_ccode = ui.input("dwc:collectionCode *", placeholder="JJPC")
-            a_cname = ui.input("Collection full name *", placeholder="Jakob Jilg Personal Collection")
+            a_cname = ui.input("Collection full name *", placeholder="John Doe Personal Collection")
             a_icode = ui.input("dwc:institutionCode")
             a_iname = ui.input("Institution full name")
             a_twi = ui.input("TW institution id")

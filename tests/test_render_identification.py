@@ -71,7 +71,7 @@ def test_determination_freezes_name_against_reclassification(session):
 
     co = create_collection_object(
         session, collecting_event_id=None,
-        catalog_number="aa01", repository_id=ensure_repo(session, "Jilg"),
+        catalog_number="aa01", repository_id=ensure_repo(session, "Doe"),
     )
     det = create_determination(
         session, collection_object_id=co.id, taxon_id=sp.id,
@@ -98,7 +98,7 @@ def test_determination_genus_only_renders_sp(session):
     genus = _sp(session, element="Otiorhynchus", rank="genus")
     co = create_collection_object(
         session, collecting_event_id=None,
-        catalog_number="aa02", repository_id=ensure_repo(session, "Jilg"),
+        catalog_number="aa02", repository_id=ensure_repo(session, "Doe"),
     )
     det = create_determination(
         session, collection_object_id=co.id, taxon_id=genus.id,

@@ -38,7 +38,7 @@ def _page_line_count(page) -> int:
 # --------------------------------------------------------------------------
 
 def test_fits_one_line_short_true():
-    assert _fits_one_line("det. Jakob Jilg  2025")
+    assert _fits_one_line("det. John Doe  2025")
 
 
 def test_fits_one_line_long_false():
@@ -51,7 +51,7 @@ def test_fits_one_line_long_false():
 # Determiner — full when it fits, abbreviated when too long
 # --------------------------------------------------------------------------
 
-@pytest.mark.parametrize("name", ["Jakob Jilg", "T. Schirok", "Müller", "Anna Klein",
+@pytest.mark.parametrize("name", ["John Doe", "T. Schirok", "Müller", "Anna Klein",
                                   "Maximilian Schuster"])  # the user's regression case
 def test_determiner_kept_full_when_it_fits(name):
     out = _det_line3(DeterminationLabel(determiner=name, year="2025"))
@@ -73,7 +73,7 @@ def test_determiner_abbreviated_when_too_long(name, surname):
 # Collector (leg.) on the locality label — same rule, for consistency
 # --------------------------------------------------------------------------
 
-@pytest.mark.parametrize("name", ["Jakob Jilg", "Müller"])
+@pytest.mark.parametrize("name", ["John Doe", "Müller"])
 def test_collector_full_when_it_fits(name):
     out = _data_line2(DataLabel(recorded_by=name, event_date="2025-06-14"))
     assert name in out
@@ -143,7 +143,7 @@ def test_long_name_text_is_preserved():
     lbl = DeterminationLabel(
         genus="Trichosirocalus", specific_epithet="troglodytes",
         authorship="(Fabricius, 1787) sensu lato auctorum",
-        determiner="Jakob Jilg", year="2025",
+        determiner="John Doe", year="2025",
     )
     h = _det_name_html(lbl)
     for token in ("Trichosirocalus", "troglodytes", "Fabricius", "auctorum"):
@@ -156,7 +156,7 @@ def test_long_name_text_is_preserved():
         determiner="Verylongsingletokensurnameindeed", year="2025")]),
     (data_sheet, [DataLabel(country="United Kingdom", country_code="GB",
         locality="A very long locality string that will certainly wrap several times over",
-        recorded_by="Jakob Jilg", event_date="2025-06-14")]),
+        recorded_by="John Doe", event_date="2025-06-14")]),
 ])
 def test_pathological_labels_render_without_error(sheet_fn, labels):
     pdf = sheet_fn(labels)
@@ -167,9 +167,9 @@ def test_grouped_sheet_renders_mixed_lengths():
     specs = [
         SpecimenLabels(
             data=DataLabel(country="Germany", country_code="DE", locality="Kramerplateau",
-                           recorded_by="Jakob Jilg", event_date="2025-06-14"),
+                           recorded_by="John Doe", event_date="2025-06-14"),
             determination=DeterminationLabel(genus="Sitona", specific_epithet="lineatus",
-                authorship="(Linnaeus, 1758)", determiner="Jakob Jilg", year="2025"),
+                authorship="(Linnaeus, 1758)", determiner="John Doe", year="2025"),
             id_code="JJPRC-00001"),
         SpecimenLabels(
             determination=DeterminationLabel(genus="Ceutorhynchus", specific_epithet="chalybaeus",
@@ -192,7 +192,7 @@ def _multipage_groups(n_groups=50, per=6):
     for g in range(n_groups):
         specs = [SpecimenLabels(
             determination=DeterminationLabel(genus="Sitona", specific_epithet="lineatus",
-                authorship="(Linnaeus, 1758)", determiner="J. Jilg", year="2025"),
+                authorship="(Linnaeus, 1758)", determiner="J. Doe", year="2025"),
             id_code=f"JJPRC-{g:02d}{i:02d}") for i in range(per)]
         groups.append(LabelGroup(source=f"Batch {g + 1}", specimens=specs))
     return groups

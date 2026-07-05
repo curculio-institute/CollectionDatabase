@@ -1317,10 +1317,10 @@ def index():
                         if not ident["institution_code"]:
                             return "Enter the institutionCode (host institution)."
                     else:  # standard
-                        if not ident["institution_code"]:
-                            return "institutionCode is not configured. Open Settings to set it."
+                        # Membership derives from the default collection's code
+                        # (#83); institutionCode is optional metadata on the repo.
                         if not ident["collection_code"]:
-                            return "collectionCode is not configured. Open Settings to set it."
+                            return "No default collection set. Open Settings to choose one."
                         if not ident["catalog_number"]:
                             return "Select an identifier code first."
                     if not det_state["get_dets"]():
@@ -2369,9 +2369,17 @@ def index():
 
                     def _generate_id_labels():
                         n = int(count_input.value or 1)
-                        coll_code = get_config().collection_code
                         with _sf() as session:
                             with session.begin():
+                                # The catalog-number prefix comes from the default
+                                # collection (#83), not a config string.
+                                _default_repo = repo_svc.get_default(session)
+                                if _default_repo is None:
+                                    ui.notify(
+                                        "No default collection set — open Settings "
+                                        "to choose one.", type="negative")
+                                    return
+                                coll_code = _default_repo.collection_code
                                 batch_id, codes = id_svc.reserve_sequential_codes(session, coll_code, n)
                                 # One print group for this reservation → prints
                                 # under a "New identifiers" header on the sheet.
@@ -2545,17 +2553,18 @@ def index():
 
             ui.separator().classes("my-3")
 
-            # ── Collection identity ──────────────────────────────────────
-            ui.label("Collection identity").classes("text-sm font-medium mb-1")
+            # ── Default collection ───────────────────────────────────────
+            ui.label("Default collection").classes("text-sm font-medium mb-1")
             ui.label(
-                "Written into every new record. Required before saving a specimen."
+                "The home collection stamped on every new specimen (its "
+                "repository_id) and used for the catalog-number prefix. Pick one "
+                "from the Collections vocabulary; edit a collection's codes in "
+                "Controlled Vocabularies."
             ).classes("text-xs mb-2").style("color:var(--tp-base-soft)")
-            cfg_now_id = get_config()
 
-            # Default collection — pick from the Collections vocabulary; selecting a
-            # row fills institutionCode + collectionCode below (which stay editable as
-            # the stored values). Keeps the new-specimen default in sync with the
-            # collection's metadata + the printed label (#56).
+            # The default is a flag on the repository vocab (repository.is_default,
+            # #83), not a string in config.json — so membership and the printed label
+            # derive from one chosen row (same DB-integrity rule as person defaults).
             def _repo_opts() -> dict:
                 with _sf() as s:
                     return {
@@ -2563,46 +2572,40 @@ def index():
                         for r in repo_svc.list_repositories(s)
                     }
 
-            # The configured collection_code may not (yet) exist as a repository row
-            # — e.g. a fresh checkout / wiped DB where config.json still carries a
-            # default. ui.select rejects a value that isn't among its options, so
-            # only seed it when it actually matches one (otherwise leave it unset).
+            with _sf() as _s_def:
+                _cur_default = repo_svc.get_default(_s_def)
+                _default_code0 = _cur_default.collection_code if _cur_default else None
+                _default_inst0 = (_cur_default.institution_code or "") if _cur_default else ""
+
             _repo_initial_opts = _repo_opts()
-            _repo_initial_val = (
-                cfg_now_id.collection_code
-                if cfg_now_id.collection_code in _repo_initial_opts
-                else None
-            )
             default_collection_sel = ui.select(
                 options=_repo_initial_opts,
-                value=_repo_initial_val,
+                value=_default_code0 if _default_code0 in _repo_initial_opts else None,
                 label="Default collection (from Collections vocabulary)",
                 with_input=True,
             ).classes("w-full mt-1")
             ui.timer(2.0, lambda: default_collection_sel.set_options(_repo_opts()))
 
+            # Read-only echo of the selected collection's codes — edited in the
+            # Collections vocabulary card, never here.
             institution_code_in = ui.input(
-                "institutionCode",
-                value=cfg_now_id.institution_code,
-                placeholder="e.g. Jilg",
-            ).classes("w-full mt-1")
+                "institutionCode", value=_default_inst0,
+            ).props("readonly outlined dense").classes("w-full mt-1")
             collection_code_in = ui.input(
-                "collectionCode",
-                value=cfg_now_id.collection_code,
-                placeholder="e.g. Jilg",
-            ).classes("w-full mt-2")
+                "collectionCode", value=_default_code0 or "",
+            ).props("readonly outlined dense").classes("w-full mt-2")
 
             def _on_default_collection(e):
                 code = e.value
                 if not code:
+                    institution_code_in.value = ""
+                    collection_code_in.value = ""
                     return
                 with _sf() as s:
                     r = next((x for x in repo_svc.list_repositories(s)
                               if x.collection_code == code), None)
                 if r is not None:
                     collection_code_in.value = r.collection_code
-                    # Only fill institutionCode if the row actually has one — don't
-                    # invent it from the collection code.
                     institution_code_in.value = r.institution_code or ""
             default_collection_sel.on_value_change(_on_default_collection)
 
@@ -2699,13 +2702,20 @@ def index():
                 cfg.tw_base               = tw_base_in.value.strip() or cfg.tw_base
                 cfg.tw_token              = tw_token_in.value.strip()
                 cfg.taxonpages_base       = tp_base_in.value.strip() or cfg.taxonpages_base
-                cfg.institution_code      = institution_code_in.value.strip()
-                cfg.collection_code       = collection_code_in.value.strip()
                 cfg.map_default_layer     = map_layer_sel.value or "street"
                 cfg.digitize_layout       = digitize_layout_toggle.value or "normal"
                 cfg.default_license       = default_license_sel.value or ""
                 with _sf() as _s:
                     with _s.begin():
+                        # The default collection is a flag on the repository vocab
+                        # (#83), persisted in the DB, not in config.json.
+                        _sel_code = default_collection_sel.value
+                        if _sel_code:
+                            _sel_repo = next(
+                                (x for x in repo_svc.list_repositories(_s)
+                                 if x.collection_code == _sel_code), None)
+                            if _sel_repo is not None:
+                                repo_svc.set_default(_s, _sel_repo.id)
                         idby_id = idby_state["commit"](_s)
                         recby_id = recby_state_cfg["commit"](_s)
                         rights_id = rights_state_cfg["commit"](_s)
@@ -2736,10 +2746,15 @@ def index():
         tw_base_in.value        = cfg.tw_base
         tw_token_in.value       = cfg.tw_token
         tp_base_in.value        = cfg.taxonpages_base
-        institution_code_in.value = cfg.institution_code
-        collection_code_in.value  = cfg.collection_code
+        # Collection identity comes from the flagged default repository (#83).
+        with _sf() as _s_d:
+            _def = repo_svc.get_default(_s_d)
+            _def_code = _def.collection_code if _def else None
+            _def_inst = (_def.institution_code or "") if _def else ""
         default_collection_sel.set_options(_repo_opts())
-        default_collection_sel.value = cfg.collection_code or None
+        default_collection_sel.value = _def_code
+        institution_code_in.value = _def_inst
+        collection_code_in.value  = _def_code or ""
         map_layer_sel.value     = cfg.map_default_layer or "street"
         digitize_layout_toggle.value = cfg.digitize_layout or "normal"
         default_license_sel.value = cfg.default_license or ""

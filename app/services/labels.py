@@ -271,7 +271,7 @@ def _data_line2(lbl: DataLabel) -> str:
 
     full = _build(lbl.recorded_by)
     # Full collector name when it fits one line; otherwise abbreviate it
-    # ("Jakob Jilg" -> "J. Jilg"). Same rule as the determiner (_det_line3).
+    # ("John Doe" -> "J. Doe"). Same rule as the determiner (_det_line3).
     if not lbl.recorded_by or _fits_one_line(full):
         return full
     return _build(abbreviate_name(lbl.recorded_by))
@@ -367,7 +367,7 @@ def _det_line3(lbl: DeterminationLabel) -> str:
 
     full = _build(lbl.determiner)
     # Full determiner name when it fits the label on one line; otherwise
-    # abbreviate it ("Jakob Jilg" -> "J. Jilg").
+    # abbreviate it ("John Doe" -> "J. Doe").
     if not lbl.determiner or _fits_one_line(full):
         return full
     return _build(abbreviate_name(lbl.determiner))

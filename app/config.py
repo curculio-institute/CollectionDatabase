@@ -20,13 +20,12 @@ class AppConfig:
     tw_token: str = ""
     taxonpages_base: str = "https://catalog.curculionoidea.org"
 
-    # Collection identity — injected as background defaults into every DwC export row.
-    # institution_code: maps to dwc:institutionCode (TW Repository lookup key).
-    # collection_code:  maps to dwc:collectionCode (TW catalog-number namespace lookup key).
-    # TW uses (institutionCode, collectionCode) together to find the namespace that
-    # prefixes the catalogNumber in TW's internal identifier, e.g. "Jilg ab12".
-    institution_code: str = "Jilg"
-    collection_code: str = "Jilg"
+    # NOTE: the collection identity (collectionCode / institutionCode) is NOT stored here.
+    # It is a property of the repositories vocab — the repository flagged is_default
+    # (migration 0050, #83) is the user's own collection, and both the catalog-number
+    # prefix and a new specimen's repository_id derive from it. A configurable default that
+    # references a DB entity belongs in the DB, never as a flat string here (same rule as
+    # person defaults; see CLAUDE.md "Why person defaults live in the DB").
 
     # Nomenclatural codes shown in the biological-association object search by default.
     # DwC values: "ICN" (plants/fungi), "ICZN" (animals).
