@@ -15,7 +15,7 @@ def _taxon(session, name, rank, parent=None, auth=""):
 
 
 def _specimen(session, taxon, event, catalog):
-    co = CollectionObject(catalog_number=catalog, repository_id=ensure_repo(session, "Jilg"),
+    co = CollectionObject(catalog_number=catalog, repository_id=ensure_repo(session, "Doe"),
                           individual_count=1,
                           collecting_event_id=event.id, created_at=_utcnow(), updated_at=_utcnow())
     session.add(co); session.flush()

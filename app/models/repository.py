@@ -1,6 +1,6 @@
 from __future__ import annotations
 from typing import Optional
-from sqlalchemy import Integer, String, UniqueConstraint
+from sqlalchemy import CheckConstraint, Integer, String, UniqueConstraint, Index, text
 from sqlalchemy.orm import Mapped, mapped_column
 from .base import Base, TimestampMixin
 
@@ -24,7 +24,15 @@ class Repository(Base, TimestampMixin):
     collection_full_name:      Mapped[str]           = mapped_column(String, nullable=False)
     taxonworks_institution_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     taxonworks_collection_id:  Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    # The user's own/home collection — used to stamp new specimens and generate
+    # catalog numbers. At most one repository is the default (migration 0050, #83);
+    # the default is held *here*, in the vocab, not as a code string in config.json.
+    is_default:                Mapped[int]           = mapped_column(Integer, nullable=False, server_default="0")
 
     __table_args__ = (
         UniqueConstraint("dwc:collectionCode", name="uq_repository_collection_code"),
+        CheckConstraint("is_default IN (0, 1)", name="ck_repository_is_default"),
+        # At most one default collection at a time (partial unique index, #83).
+        Index("uq_repository_one_default", "is_default",
+              unique=True, sqlite_where=text("is_default = 1")),
     )

@@ -27,8 +27,8 @@ from __future__ import annotations
 
 from nicegui import ui
 
-from app.config import get_config
 import app.services.identifiers as id_svc
+import app.services.repositories as repo_svc
 from app.services.vocabularies import preparation_vocab, disposition_vocab
 from app.ui.vocab_field import build_vocab_field
 from app.vocab import (
@@ -51,7 +51,7 @@ def build_specimen_form(
     initial:        edit-mode snapshot with keys individual_count, preparations,
                     life_stage, disposition, basis_of_record, occurrence_remarks,
                     and collection_code (seeds the editable collectionCode input).
-    identity_label: edit-mode read-only header text, e.g. "#12  Jilg ab12".
+    identity_label: edit-mode read-only header text, e.g. "#12  Doe ab12".
 
     Handle keys:
       card             — the ui.card element (for visibility toggling)
@@ -81,6 +81,14 @@ def build_specimen_form(
 
     def _reserved_opts() -> dict:
         return _with_session(id_svc.reserved_codes)
+
+    def _default_repo_codes() -> tuple[str, str]:
+        """(collection_code, institution_code) of the flagged default collection, or
+        ('', '') if none is set (#83). Standard mode stamps a new specimen with the
+        default repository; an empty code makes the caller fail loud rather than stub one."""
+        with session_factory() as s:
+            r = repo_svc.get_default(s)
+            return (r.collection_code, r.institution_code or "") if r else ("", "")
 
     # Field seed values.  Edit mode mirrors the record (empty stays empty);
     # standard/visiting apply create defaults.
@@ -165,18 +173,20 @@ def build_specimen_form(
                 )
                 basis_sel = ui.select(BASIS_OPTIONS, label="basisOfRecord", value=v_basis).classes("col-span-1")
                 if is_standard:
-                    _cfg_disp = get_config()
+                    _coll0, _inst0 = _default_repo_codes()
                     inst_code_disp = (
-                        ui.input("institutionCode", value=_cfg_disp.institution_code)
+                        ui.input("institutionCode", value=_inst0)
                         .props("readonly outlined dense")
                         .classes("col-span-1")
-                        .tooltip("Set in Settings — applies to every new record")
+                        .tooltip("The default collection (set in Settings) — "
+                                 "applies to every new record")
                     )
                     coll_code_disp = (
-                        ui.input("collectionCode", value=_cfg_disp.collection_code)
+                        ui.input("collectionCode", value=_coll0)
                         .props("readonly outlined dense")
                         .classes("col-span-1")
-                        .tooltip("Set in Settings — applies to every new record")
+                        .tooltip("The default collection (set in Settings) — "
+                                 "applies to every new record")
                     )
                 elif is_edit:
                     # collectionCode is editable: a specimen may be re-homed to
@@ -219,9 +229,9 @@ def build_specimen_form(
             def _refresh_identity_display():
                 if not card.visible:   # hidden in Mounting / Visiting mode
                     return
-                cfg = get_config()
-                inst_code_disp.value = cfg.institution_code
-                coll_code_disp.value = cfg.collection_code
+                coll, inst = _default_repo_codes()
+                inst_code_disp.value = inst
+                coll_code_disp.value = coll
             ui.timer(2.0, _refresh_identity_display)
 
     def get_identifier_fields() -> dict:
@@ -249,11 +259,11 @@ def build_specimen_form(
                 "collection_code":  (coll_code_disp.value or "").strip(),
                 "institution_code": (inst_code_disp.value or "").strip(),
             }
-        cfg = get_config()  # standard
+        coll, inst = _default_repo_codes()  # standard: stamp with the default collection
         return {
             "catalog_number":   cat_num.value or "",
-            "collection_code":  cfg.collection_code,
-            "institution_code": cfg.institution_code,
+            "collection_code":  coll,
+            "institution_code": inst,
         }
 
     def refresh_codes() -> None:

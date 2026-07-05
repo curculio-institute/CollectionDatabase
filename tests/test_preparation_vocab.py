@@ -10,7 +10,7 @@ from tests.helpers import ensure_repo
 
 def _co(session, *, catalog, preparation_id=None):
     co = CollectionObject(
-        catalog_number=catalog, repository_id=ensure_repo(session, "Jilg"),
+        catalog_number=catalog, repository_id=ensure_repo(session, "Doe"),
         preparation_id=preparation_id, created_at=_utcnow(), updated_at=_utcnow(),
     )
     session.add(co)

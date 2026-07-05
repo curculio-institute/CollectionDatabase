@@ -14,10 +14,10 @@ _COUNTRY_THRESHOLD = 10
 def abbreviate_name(full_name: str | None) -> str | None:
     """Abbreviate a collector name to initial + surname(s).
 
-    'Jakob Jilg'         → 'J. Jilg'
+    'John Doe'         → 'J. Doe'
     'Johann Karl Müller' → 'J. Müller'
     'Müller'             → 'Müller'   (single token, unchanged)
-    'J. Jilg'            → 'J. Jilg'  (already abbreviated)
+    'J. Doe'            → 'J. Doe'  (already abbreviated)
     """
     if not full_name:
         return None

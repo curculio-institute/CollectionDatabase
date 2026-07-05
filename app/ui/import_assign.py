@@ -20,7 +20,6 @@ import app.services.taxa as taxa_svc
 import app.services.identifiers as id_svc
 import app.services as svc
 import app.services.repositories as repo_svc
-from app.config import get_config
 import app.services.person_defaults as pd_svc
 from app.ui.taxon_search import build_taxon_search
 from app.ui.taxon_editor import open_new_taxon_dialog
@@ -45,14 +44,14 @@ _EXAMPLE_CSV = (
     "minimumElevationInMeters,maximumElevationInMeters,habitat,samplingProtocol,"
     "sex,individualCount,preparations,identifiedBy,dateIdentified,materialEntityRemarks\n"
     "Otiorhynchus sulcatus,Otiorhynchus,sulcatus,\"(Fabricius, 1775)\",Curculionidae,"
-    "2024-06-15,J. Jilg,Germany,DE,Bavaria,Berchtesgadener Land,"
+    "2024-06-15,J. Doe,Germany,DE,Bavaria,Berchtesgadener Land,"
     "\"Berchtesgaden, Königssee trail\","
     "47.5976,13.0055,50,620,,broadleaf forest edge,hand collecting,"
-    "female,3,pinned,J. Jilg,2024-07-01,\n"
+    "female,3,pinned,J. Doe,2024-07-01,\n"
     "Curculio nucum,Curculio,nucum,\"Linnaeus, 1758\",Curculionidae,"
-    "2024-05-20,J. Jilg,Austria,AT,Styria,,\"Grazer Bergland, Schöckel\","
+    "2024-05-20,J. Doe,Austria,AT,Styria,,\"Grazer Bergland, Schöckel\","
     "47.1833,15.4667,100,1250,,Fagus-Quercus forest,beating,"
-    ",1,pinned,J. Jilg,2024-06-10,reared from hazel nuts\n"
+    ",1,pinned,J. Doe,2024-06-10,reared from hazel nuts\n"
 )
 
 
@@ -514,6 +513,12 @@ def build_import_assign_tab(session_factory, refreshers: dict, on_saved=None) ->
             try:
                 with session_factory() as session:
                     with session.begin():
+                        # Own collection: the flagged default repository is the
+                        # membership source for a new specimen (#83/#75).
+                        default_repo = repo_svc.get_default(session)
+                        if default_repo is None:
+                            raise ValueError(
+                                "No default collection set — open Settings.")
                         idby_id = id_by_state["commit"](session)
                         # habitat + samplingProtocol are controlled vocabularies:
                         # resolve the parsed text → FK ids (get_or_create), like the
@@ -532,12 +537,7 @@ def build_import_assign_tab(session_factory, refreshers: dict, on_saved=None) ->
                             event_fields=event_fields,
                             specimen_fields={
                                 "catalog_number":    code,
-                                # Own collection: resolve config code → repository FK (#75).
-                                "repository_id":     repo_svc.resolve_id(
-                                    session,
-                                    collection_code=get_config().collection_code,
-                                    institution_code=get_config().institution_code,
-                                ),
+                                "repository_id":     default_repo.id,
                                 "individual_count":  int(count_in.value or 1),
                                 "preparation_id":    prep_field["commit"](session),
                                 "life_stage":        stage_sel.value,

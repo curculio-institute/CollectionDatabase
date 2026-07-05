@@ -50,7 +50,7 @@ def _taxon(session, genus="Carabus", species="coriaceus", authorship="Linnaeus, 
 
 
 def _event(session, country="Germany", state="Bavaria", locality="Berchtesgaden",
-           event_date="2024-06-15", recorded_by="J. Jilg"):
+           event_date="2024-06-15", recorded_by="J. Doe"):
     # Geography is FK-backed now; create_collecting_event resolves name → id.
     recorded_by_id = _person(session, recorded_by).id if recorded_by else None
     return create_collecting_event(
@@ -268,9 +268,9 @@ def test_search_events_by_country(session):
 
 
 def test_search_events_by_recorded_by(session):
-    _event(session, recorded_by="J. Jilg")
+    _event(session, recorded_by="J. Doe")
     _event(session, recorded_by="A. Müller")
-    results = search_collecting_events(session, "jilg")
+    results = search_collecting_events(session, "doe")
     assert len(results) == 1
 
 
@@ -439,7 +439,7 @@ def test_recent_specimens_returns_only_current_determination(session):
     session.add(co)
     session.flush()
 
-    jilg = _person(session, "J. Jilg")
+    doe = _person(session, "J. Doe")
     # old determination (not current)
     old = TaxonDetermination(
         collection_object_id=co.id, taxon_id=t1.id, is_current=0,
@@ -448,7 +448,7 @@ def test_recent_specimens_returns_only_current_determination(session):
     # current determination
     current = TaxonDetermination(
         collection_object_id=co.id, taxon_id=t2.id, is_current=1,
-        identified_by_id=jilg.id, created_at=_utcnow(), updated_at=_utcnow(),
+        identified_by_id=doe.id, created_at=_utcnow(), updated_at=_utcnow(),
     )
     session.add_all([old, current])
     session.flush()
@@ -458,7 +458,7 @@ def test_recent_specimens_returns_only_current_determination(session):
     assert len(matching) == 1
     assert "violaceus" in matching[0].scientific_name
     assert "coriaceus" not in matching[0].scientific_name
-    assert matching[0].identified_by == "J. Jilg"
+    assert matching[0].identified_by == "J. Doe"
 
 
 # ---------------------------------------------------------------------------

@@ -949,10 +949,11 @@ Summary:
   inserts the configured default (`identifiedBy`, `recordedBy`, `dateIdentified`). Never
   applied silently — the user must click.
 - **Tier 3 — background invisible default.** Applied silently to every saved record, never
-  shown as an editable field. The configured default collection code (`config.collection_code`,
-  set once in Settings) is resolved to the specimen's `repository_id` FK at save time
-  (`repositories.resolve_id`); `collectionCode` / `institutionCode` are no longer stored on the
-  specimen (migration 0047, #75) — they derive from the repository.
+  shown as an editable field. The **default collection** — the `repository` row flagged
+  `is_default` (migration 0050, #83; chosen once in Settings) — supplies the specimen's
+  `repository_id` at save time (`repositories.get_default`, **not** a config string); if none
+  is flagged the save is refused. `collectionCode` / `institutionCode` are no longer stored on
+  the specimen (migration 0047, #75) — they derive from the repository.
 
 ### TaxonWorks namespace: institutionCode + collectionCode (verified)
 
@@ -971,7 +972,7 @@ Verified against `occurrence.rb` in `~/Downloads/neu/software/taxonworks/`
 TW does NOT prepend `institutionCode`+`collectionCode` directly onto the catalog number.
 Instead, the DwC import dataset must be pre-configured with a mapping
 `(institutionCode, collectionCode) → TW Namespace`. TW then stores the specimen's
-catalog-number identifier as `"[namespace.short_name] [catalogNumber]"`, e.g. `"Jilg ab12"`.
+catalog-number identifier as `"[namespace.short_name] [catalogNumber]"`, e.g. `"Doe ab12"`.
 The four-character code is the `catalogNumber` as-is; the namespace label comes from TW.
 
 **DB mapping (revised — migration 0047, #75):**
@@ -991,14 +992,26 @@ The four-character code is the `catalogNumber` as-is; the namespace label comes 
   is frozen in the immutable identifier, membership is the FK. The identifier *label* still
   resolves its collection name by the code **prefix** (frozen at print time; re-homing never
   reprints the pinned label), so `labels.py` / `name_map` are unaffected.
+- **The own/home collection is a flag on the vocab, not a config string (migration 0050,
+  #83).** Exactly one `repository` row carries `is_default = 1` (partial-unique index
+  `uq_repository_one_default`; service `repositories.get_default` / `set_default`). Standard
+  digitize / Mounting / Import read that row and take **both** the catalog-number prefix
+  (`collection_code`) and the new specimen's `repository_id` from it — and **refuse to save
+  if none is set** ("No default collection set — open Settings"), never stubbing a placeholder.
+  The Settings "Default collection" picker flags an existing repository; `config.json` stores
+  **no** collection code (same DB-integrity rule as person defaults — a configurable default
+  that references a DB entity belongs in the DB, never a flat string).
 - **Save-time resolution:** `repositories.resolve_id(session, collection_code=…)` get-or-creates
-  the repository by code inside the save transaction (mirrors person / vocab `commit`). Standard
-  digitize / Mounting / Import resolve `config.collection_code` (own collection); "Digitize other
-  collection" (visiting) and the Records re-home field resolve a freely-typed code.
+  the repository by a **freely-typed** code inside the save transaction (mirrors person / vocab
+  `commit`). It is used **only** for "Digitize other collection" (visiting) and the Records
+  re-home field — the own-collection paths use `get_default` instead, so there is no string to
+  silently stub from.
 
-For this single-collection setup the default repository's `collection_code` and
-`institution_code` are both `"Jilg"`. Configure the TW import dataset to map
-`("Jilg", "Jilg") → "Jilg"` namespace before import.
+For a single-collection setup, add one repository in Controlled Vocabularies and flag it as
+the default in Settings; give it a real `collection_full_name`. Its `collection_code` /
+`institution_code` (e.g. a fictional `"Doe"`) then drive catalog numbers and the identifier
+label. Configure the TW import dataset to map `(institutionCode, collectionCode) → TW
+Namespace` before import.
 
 > **Rule (revised):** never re-introduce `dwc:collectionCode` / `dwc:institutionCode` as
 > columns on `collection_object`. Membership is the `repository_id` FK; codes are resolved

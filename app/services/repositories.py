@@ -123,6 +123,33 @@ def resolve_id(
     return r.id
 
 
+def get_default(session: Session) -> Repository | None:
+    """The repository flagged as the user's default/home collection, or None (#83).
+
+    The default lives on the vocab (``repository.is_default``), not as a code string in
+    config.json — so digitize derives both the catalog-number prefix and ``repository_id``
+    from one chosen row, and there is no string to silently stub a placeholder from.
+    """
+    return (
+        session.query(Repository)
+        .filter(Repository.is_default == 1)
+        .one_or_none()
+    )
+
+
+def set_default(session: Session, repo_id: int) -> None:
+    """Make ``repo_id`` the sole default collection. Clears the old default first so the
+    partial-unique ``one default`` index never trips mid-statement."""
+    if session.get(Repository, repo_id) is None:
+        raise ValueError(f"Repository {repo_id} not found")
+    now = _utcnow()
+    session.query(Repository).filter(Repository.is_default == 1).update(
+        {"is_default": 0, "updated_at": now})
+    session.query(Repository).filter(Repository.id == repo_id).update(
+        {"is_default": 1, "updated_at": now})
+    session.flush()
+
+
 def name_map(session: Session) -> dict[str, str]:
     """``{collection_code: collection_full_name}`` for the label resolver."""
     return {
