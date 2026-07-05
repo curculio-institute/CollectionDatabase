@@ -17,7 +17,7 @@ from sqlalchemy.exc import DatabaseError
 from app.models import Taxon
 from app.models.base import _utcnow
 from app.services.taxa import (
-    synonymize, make_accepted, reparent, verify_taxon_consistency,
+    synonymize, make_accepted, reparent, verify_taxon_consistency, update_taxon,
 )
 
 
@@ -162,13 +162,72 @@ def test_reparent_leaves_synonyms_alone(session):
     assert s.parent_name_usage_id == g1.id     # synonym kept its own parent
 
 
-def test_reparent_refuses_synonym(session):
-    genus = mk(session, "Otiorhynchus", rank="genus")
-    a = mk(session, "Otiorhynchus a", parent=genus)
-    s = mk(session, "Otiorhynchus s", parent=genus)
-    synonymize(session, name_id=s.id, accepted_id=a.id)
-    with pytest.raises(ValueError):
-        reparent(session, taxon_id=s.id, new_parent_id=genus.id)
+def test_reparent_moves_synonym_within_its_own_lineage(session):
+    """#71: a synonym carries its own lineage, so its parent IS editable. reparent
+    moves the synonym and recomposes its own name, without touching its accepted link."""
+    curculio = mk(session, "Curculio", rank="genus")
+    otio = mk(session, "Otiorhynchus", rank="genus")
+    acc = mk(session, "Otiorhynchus fortis", parent=otio)
+    syn = Taxon(scientific_name="Curculio forticollis", name_element="forticollis",
+                taxon_rank="species", parent_name_usage_id=curculio.id,
+                nomenclatural_code="ICZN", created_at=_utcnow(), updated_at=_utcnow())
+    session.add(syn); session.flush()
+    synonymize(session, name_id=syn.id, accepted_id=acc.id)
+
+    reparent(session, taxon_id=syn.id, new_parent_id=otio.id)
+
+    session.refresh(syn)
+    assert syn.parent_name_usage_id == otio.id
+    assert syn.accepted_name_usage_id == acc.id                 # still a synonym of fortis
+    assert syn.scientific_name == "Otiorhynchus forticollis"    # recomposed under new genus
+
+
+def test_reparent_rejects_clearing_parent_of_species(session):
+    """#71: blanking an accepted species' parent would collapse its name to the bare
+    epithet — reject it (no-fallback rule). A uninomial genus CAN be a root."""
+    genus = mk(session, "Sitona", rank="genus")
+    sp = mk(session, "Sitona lineatus", parent=genus)
+    with pytest.raises(ValueError, match="requires a parent"):
+        reparent(session, taxon_id=sp.id, new_parent_id=None)
+    # a genus (uninomial) may legitimately have no parent
+    reparent(session, taxon_id=genus.id, new_parent_id=None)
+    session.refresh(genus)
+    assert genus.parent_name_usage_id is None
+
+
+def test_update_taxon_rejects_clearing_species_parent(session):
+    """#71 (entry point): the editor must not accept a blank parent for a species."""
+    genus = mk(session, "Sitona", rank="genus")
+    sp = mk(session, "Sitona lineatus", parent=genus)
+    with pytest.raises(ValueError, match="requires a parent"):
+        update_taxon(
+            session, sp.id, taxon_rank="species", scientific_name_authorship=None,
+            parent_name_usage_id=None, accepted_name_usage_id=None,
+            nomenclatural_code="ICZN", taxonworks_otu_id=None, name_element="lineatus")
+
+
+def test_update_taxon_applies_synonym_parent_edit(session):
+    """#71 (entry point): editing a synonym's parent via update_taxon is applied,
+    not silently dropped by the synonymize branch."""
+    curculio = mk(session, "Curculio", rank="genus")
+    otio = mk(session, "Otiorhynchus", rank="genus")
+    acc = mk(session, "Otiorhynchus fortis", parent=otio)
+    syn = Taxon(scientific_name="Curculio forticollis", name_element="forticollis",
+                taxon_rank="species", parent_name_usage_id=curculio.id,
+                nomenclatural_code="ICZN", created_at=_utcnow(), updated_at=_utcnow())
+    session.add(syn); session.flush()
+    synonymize(session, name_id=syn.id, accepted_id=acc.id)
+
+    update_taxon(
+        session, syn.id, taxon_rank="species", scientific_name_authorship=None,
+        parent_name_usage_id=otio.id, accepted_name_usage_id=acc.id,
+        nomenclatural_code="ICZN", taxonworks_otu_id=None, name_element="forticollis",
+    )
+
+    session.refresh(syn)
+    assert syn.parent_name_usage_id == otio.id                  # applied, not dropped
+    assert syn.accepted_name_usage_id == acc.id
+    assert syn.scientific_name == "Otiorhynchus forticollis"
 
 
 # ---------------------------------------------------------------------------

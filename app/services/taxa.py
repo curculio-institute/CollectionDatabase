@@ -13,7 +13,8 @@ TAXON_RANKS: list[str] = [
     "kingdom", "phylum", "subphylum", "class", "subclass",
     "superorder", "order", "suborder", "superfamily",
     "family", "subfamily", "supertribe", "tribe", "subtribe",
-    "genus", "subgenus", "species", "subspecies", "variety", "form",
+    "genus", "subgenus", "species", "subspecies",
+    "variety", "subvariety", "form", "subform",
 ]
 
 # Display order for rank-selection dropdowns: the ranks used daily for beetle
@@ -22,7 +23,7 @@ TAXON_RANKS: list[str] = [
 # high→low order because hierarchy validation relies on TAXON_RANKS.index().
 TAXON_RANKS_BY_USE: list[str] = [
     "subspecies", "species", "subgenus", "genus",
-    "variety", "form",
+    "variety", "subvariety", "form", "subform",
     "subtribe", "tribe", "supertribe",
     "subfamily", "family", "superfamily",
     "suborder", "order", "superorder",
@@ -105,7 +106,10 @@ def render_identification(name: str, qualifier: str | None = None) -> str:
 
 # Infraspecific connectors: ICN (botany/mycology) uses connecting terms; ICZN
 # (zoology) writes a bare trinomial with no connector.
-_ICN_INFRA_CONNECTOR = {"subspecies": "subsp.", "variety": "var.", "form": "f."}
+_ICN_INFRA_CONNECTOR = {
+    "subspecies": "subsp.", "variety": "var.", "subvariety": "subvar.",
+    "form": "f.", "subform": "subf.",
+}
 
 
 def _infra_connector(rank: str, nomenclatural_code: str | None) -> str:
@@ -155,7 +159,7 @@ def compose_scientific_name(session: Session, taxon: Taxon) -> str:
     if rank == "species":
         return f"{genus}{sub} {element}".strip() if genus else element
 
-    if rank in ("subspecies", "variety", "form"):
+    if rank in ("subspecies", "variety", "subvariety", "form", "subform"):
         head = f"{genus}{sub} {species_epithet}".strip() if genus else (species_epithet or "")
         connector = _infra_connector(rank, taxon.nomenclatural_code)
         parts = [p for p in (head, connector, element) if p]
@@ -247,7 +251,7 @@ def element_from_name(scientific_name: str, taxon_rank: str) -> str:
     rank = (taxon_rank or "").lower()
     if not name:
         return ""
-    if rank in ("species", "subspecies", "variety", "form"):
+    if rank in ("species", "subspecies", "variety", "subvariety", "form", "subform"):
         return name.split()[-1]
     if rank == "subgenus":
         # Stored as "Genus (Subgenus)" or bare "Subgenus"; the element is the
@@ -697,17 +701,15 @@ def update_taxon(
     t.taxonworks_otu_id = taxonworks_otu_id
     t.updated_at = _utcnow()
     session.flush()
-    # Synonymy and parent are routed through the chokepoint ops. Making it a
-    # synonym only sets the accepted link (own lineage + name untouched);
-    # making it accepted clears the link and re-homes its own parent (reparent
-    # recomposes the subtree). The final recompose catches an element/rank edit
-    # on the synonym path, where neither op touches the name.
+    # Synonymy and parent are routed through the chokepoint ops. Set the
+    # synonym/accepted status first, then apply the (own-lineage) parent for BOTH
+    # cases — a synonym carries its own parent, so its parent edit must be applied
+    # too, not silently dropped (#71). reparent recomposes the subtree.
     if accepted_name_usage_id is not None:
         synonymize(session, name_id=taxon_id, accepted_id=accepted_name_usage_id)
     else:
         make_accepted(session, taxon_id)
-        reparent(session, taxon_id=taxon_id, new_parent_id=parent_name_usage_id)
-    recompose_subtree(session, t)
+    reparent(session, taxon_id=taxon_id, new_parent_id=parent_name_usage_id)
     return t
 
 
@@ -809,18 +811,39 @@ def make_accepted(session: Session, taxon_id: int) -> "Taxon":
     return t
 
 
-def reparent(session: Session, *, taxon_id: int, new_parent_id: int | None) -> "Taxon":
-    """Re-parent an accepted name. Synonyms are NOT touched.
+def _rank_requires_parent(rank: str | None) -> bool:
+    """True for ranks whose composed name is built from an ancestor (subgenus and
+    everything below genus). For these a missing parent collapses the name to a
+    bare epithet, so they may never be roots. Genus and higher are uninomials and
+    may legitimately have no parent."""
+    r = (rank or "").lower()
+    if r not in TAXON_RANKS:
+        return False
+    return TAXON_RANKS.index(r) > TAXON_RANKS.index("genus")
 
-    In the atomic model each name carries its own lineage, so a synonym's parent
-    is independent of its accepted name — re-homing an accepted name leaves its
-    synonyms exactly where they are.
+
+def reparent(session: Session, *, taxon_id: int, new_parent_id: int | None) -> "Taxon":
+    """Re-home a name under a new parent *within its own lineage*, then recompose
+    its subtree.
+
+    Works for accepted names **and synonyms** (#71): in the atomic model every
+    name carries its own lineage, so a synonym's parent is independent of its
+    accepted name and is legitimately editable — e.g. moving the synonym
+    ``Curculio forticollis`` under its correct genus. Re-homing an *accepted*
+    name still leaves its synonyms exactly where they are (they carry their own
+    parent); this only ever moves the one row passed in.
     """
     t = session.get(Taxon, taxon_id)
     if t is None:
         raise ValueError(f"Taxon {taxon_id} not found")
-    if t.accepted_name_usage_id is not None:
-        raise ValueError("cannot reparent a synonym directly — reparent its accepted name")
+    # No-fallback rule (#71): blanking the parent of a rank that composes from an
+    # ancestor (e.g. a species) would collapse its name to a bare epithet and leave
+    # a rootless non-root taxon. Refuse it loudly rather than silently corrupt.
+    if new_parent_id is None and _rank_requires_parent(t.taxon_rank):
+        raise ValueError(
+            f"a {t.taxon_rank} ('{t.scientific_name}') requires a parent — clearing it "
+            f"would collapse the name to a bare epithet. Set the correct parent instead."
+        )
     t.parent_name_usage_id = new_parent_id
     t.updated_at = _utcnow()
     session.flush()

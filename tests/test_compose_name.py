@@ -115,3 +115,14 @@ def test_reparent_recomposes_subtree(session, tree):
     session.refresh(tree["sp_plain"]); session.refresh(tree["ssp"])
     assert tree["sp_plain"].scientific_name == "Curculio crypticus"
     assert tree["ssp"].scientific_name == "Curculio crypticus alpinus"
+
+
+def test_compose_icn_subvariety_and_subform(session):
+    """#71: POWO ICN sub-ranks (subvariety/subform) compose as proper trinomials
+    with the right connector — previously they fell through to the bare epithet."""
+    genus = _add(session, element="Achillea", rank="genus", code="ICN")
+    sp = _add(session, element="millefolium", rank="species", parent=genus, code="ICN")
+    subvar = _add(session, element="alpina", rank="subvariety", parent=sp, code="ICN")
+    subform = _add(session, element="minor", rank="subform", parent=sp, code="ICN")
+    assert compose_scientific_name(session, subvar) == "Achillea millefolium subvar. alpina"
+    assert compose_scientific_name(session, subform) == "Achillea millefolium subf. minor"
