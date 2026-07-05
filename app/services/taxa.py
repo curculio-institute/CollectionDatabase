@@ -697,17 +697,15 @@ def update_taxon(
     t.taxonworks_otu_id = taxonworks_otu_id
     t.updated_at = _utcnow()
     session.flush()
-    # Synonymy and parent are routed through the chokepoint ops. Making it a
-    # synonym only sets the accepted link (own lineage + name untouched);
-    # making it accepted clears the link and re-homes its own parent (reparent
-    # recomposes the subtree). The final recompose catches an element/rank edit
-    # on the synonym path, where neither op touches the name.
+    # Synonymy and parent are routed through the chokepoint ops. Set the
+    # synonym/accepted status first, then apply the (own-lineage) parent for BOTH
+    # cases — a synonym carries its own parent, so its parent edit must be applied
+    # too, not silently dropped (#71). reparent recomposes the subtree.
     if accepted_name_usage_id is not None:
         synonymize(session, name_id=taxon_id, accepted_id=accepted_name_usage_id)
     else:
         make_accepted(session, taxon_id)
-        reparent(session, taxon_id=taxon_id, new_parent_id=parent_name_usage_id)
-    recompose_subtree(session, t)
+    reparent(session, taxon_id=taxon_id, new_parent_id=parent_name_usage_id)
     return t
 
 
@@ -810,17 +808,19 @@ def make_accepted(session: Session, taxon_id: int) -> "Taxon":
 
 
 def reparent(session: Session, *, taxon_id: int, new_parent_id: int | None) -> "Taxon":
-    """Re-parent an accepted name. Synonyms are NOT touched.
+    """Re-home a name under a new parent *within its own lineage*, then recompose
+    its subtree.
 
-    In the atomic model each name carries its own lineage, so a synonym's parent
-    is independent of its accepted name — re-homing an accepted name leaves its
-    synonyms exactly where they are.
+    Works for accepted names **and synonyms** (#71): in the atomic model every
+    name carries its own lineage, so a synonym's parent is independent of its
+    accepted name and is legitimately editable — e.g. moving the synonym
+    ``Curculio forticollis`` under its correct genus. Re-homing an *accepted*
+    name still leaves its synonyms exactly where they are (they carry their own
+    parent); this only ever moves the one row passed in.
     """
     t = session.get(Taxon, taxon_id)
     if t is None:
         raise ValueError(f"Taxon {taxon_id} not found")
-    if t.accepted_name_usage_id is not None:
-        raise ValueError("cannot reparent a synonym directly — reparent its accepted name")
     t.parent_name_usage_id = new_parent_id
     t.updated_at = _utcnow()
     session.flush()
