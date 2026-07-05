@@ -58,12 +58,15 @@ LICENSE_OPTIONS = [
 # Seed values for a brand-new specimen (create mode). Single source of truth for
 # the Digitize standard form (specimen_form) and the Mounting Session, so the
 # create contract lives in one place rather than being duplicated as literals.
-# NOTE: `preparations` is intentionally NOT here — it defaults to "" in standard
-# digitizing but to "pinned" in a Mounting Session (where specimens are, by
-# definition, being pinned). That divergence is per-workflow, not an oversight.
+# NOTE: `preparations` is intentionally NOT here — in standard digitizing it pre-fills
+# with the flagged default preparation (preparation.is_default, migration 0052; empty if
+# none is flagged), while a Mounting Session forces "pinned" (specimens are, by definition,
+# being pinned). That divergence is per-workflow, not an oversight.
+# NOTE: `disposition` is intentionally NOT here either — a new specimen's disposition
+# starts EMPTY and is set manually (or in bulk via the Batch tools tab). The former
+# hardcoded "in collection" default was dropped.
 NEW_SPECIMEN_DEFAULTS = {
     "individual_count": 1,
     "life_stage":       "adult",
-    "disposition":      "in collection",
     "basis_of_record":  "PreservedSpecimen",
 }

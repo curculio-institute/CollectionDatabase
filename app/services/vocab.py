@@ -39,18 +39,22 @@ class Vocabulary:
 
     Parameters
     ----------
-    model:     the SQLAlchemy model (must have ``id`` and a single name column).
-    ref_table: the model's __tablename__ (the FK target table name).
-    name_attr: the model's name attribute (default ``"name"``).
-    noun:      singular human label for messages (e.g. ``"preparation"``).
+    model:      the SQLAlchemy model (must have ``id`` and a single name column).
+    ref_table:  the model's __tablename__ (the FK target table name).
+    name_attr:  the model's name attribute (default ``"name"``).
+    noun:       singular human label for messages (e.g. ``"preparation"``).
+    has_default: whether the model carries an ``is_default`` flag column (at most one
+                row flagged; a partial-unique index enforces it). Enables ``get_default``
+                / ``set_default`` for a Tier-1 autofill default (mirrors repository #83).
     """
 
     def __init__(self, model, *, ref_table: str, name_attr: str = "name",
-                 noun: str = "entry"):
+                 noun: str = "entry", has_default: bool = False):
         self.model = model
         self.ref_table = ref_table
         self.name_attr = name_attr
         self.noun = noun
+        self.has_default = has_default
 
     # ── name helpers ──────────────────────────────────────────────────────────
 
@@ -63,6 +67,38 @@ class Vocabulary:
 
     def _name_col(self):
         return getattr(self.model, self.name_attr)
+
+    # ── default flag (Tier-1 autofill) ────────────────────────────────────────
+
+    def get_default(self, session: Session):
+        """The flagged default entry, or None. Returns None if the vocab has no
+        default flag (``has_default`` is False)."""
+        if not self.has_default:
+            return None
+        return (session.query(self.model)
+                .filter(self.model.is_default == 1).one_or_none())
+
+    def get_default_name(self, session: Session) -> str | None:
+        """The flagged default entry's name, or None."""
+        obj = self.get_default(session)
+        return self._name(obj) if obj else None
+
+    def set_default(self, session: Session, obj_id: int | None) -> None:
+        """Make ``obj_id`` the sole default (or clear the default when None).
+
+        Clears the old default first so the partial-unique index never trips
+        mid-statement (same guard as repositories.set_default)."""
+        if not self.has_default:
+            raise ValueError(f"{self.noun} vocabulary has no default flag")
+        now = _utcnow()
+        session.query(self.model).filter(self.model.is_default == 1).update(
+            {"is_default": 0, "updated_at": now})
+        if obj_id is not None:
+            if session.get(self.model, obj_id) is None:
+                raise ValueError(f"{self.noun} {obj_id} not found")
+            session.query(self.model).filter(self.model.id == obj_id).update(
+                {"is_default": 1, "updated_at": now})
+        session.flush()
 
     # ── reads ─────────────────────────────────────────────────────────────────
 

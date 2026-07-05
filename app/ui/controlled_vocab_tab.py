@@ -566,7 +566,9 @@ def _build_vocab_section(session_factory, spec) -> None:
 
         def _load_rows() -> list[dict]:
             with session_factory() as s:
-                return [{"id": str(o.id), "name": vocab.display(o)} for o in vocab.list(s)]
+                return [{"id": str(o.id), "name": vocab.display(o),
+                         "is_default": bool(getattr(o, "is_default", 0))}
+                        for o in vocab.list(s)]
 
         table = ui.table(
             columns=[
@@ -577,8 +579,17 @@ def _build_vocab_section(session_factory, spec) -> None:
             row_key="id",
         ).classes("w-full").props("flat dense")
 
-        table.add_slot("body-cell-actions", """
+        # A star to flag the autofill default (Tier-1), only for vocabs that support it.
+        _star_btn = ("""
+                <q-btn flat dense round size="xs"
+                    :icon="props.row.is_default ? 'star' : 'star_border'"
+                    :color="props.row.is_default ? 'amber' : 'grey-5'"
+                    @click="$parent.$emit('set_default', props.row)"
+                    :title="props.row.is_default ? 'Autofill default for new specimens (click to clear)' : 'Set as autofill default'" />
+        """ if spec.supports_default else "")
+        table.add_slot("body-cell-actions", f"""
             <q-td :props="props">
+                {_star_btn}
                 <q-btn flat dense round icon="edit" size="xs"
                     @click="$parent.$emit('edit', props.row)" />
                 <q-btn flat dense round icon="merge_type" size="sm"
@@ -755,6 +766,21 @@ def _build_vocab_section(session_factory, spec) -> None:
         table.on("merge",  lambda e: _open_merge(e.args))
         table.on("edit",   lambda e: _open_edit(e.args))
         table.on("delete", lambda e: _delete_row(e.args))
+
+        if spec.supports_default:
+            def _set_default(row: dict):
+                try:
+                    rid = int(row["id"])
+                    with session_factory() as s:
+                        with s.begin():
+                            cur = vocab.get_default(s)
+                            # Clicking the current default clears it (toggle).
+                            vocab.set_default(s, None if (cur and cur.id == rid) else rid)
+                    _refresh_table()
+                    ui.notify("Autofill default updated.", type="positive")
+                except Exception as exc:
+                    ui.notify(f"Failed: {exc}", type="negative")
+            table.on("set_default", lambda e: _set_default(e.args))
 
         # ── Add entry ─────────────────────────────────────────────────────
         ui.separator().classes("my-3")

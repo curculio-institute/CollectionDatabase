@@ -101,9 +101,13 @@ def build_specimen_form(
         v_rem   = init.get("occurrence_remarks") or ""
         v_other = init.get("other_catalog_numbers") or ""
     else:
-        v_count, v_preps = NEW_SPECIMEN_DEFAULTS["individual_count"], ""
+        v_count = NEW_SPECIMEN_DEFAULTS["individual_count"]
+        # preparations pre-fills with the flagged Tier-1 default preparation (empty if
+        # none is flagged) — data-driven via the vocab (migration 0052), editable.
+        with session_factory() as _s:
+            v_preps = preparation_vocab.get_default_name(_s) or ""
         v_stage = NEW_SPECIMEN_DEFAULTS["life_stage"]
-        v_disp  = NEW_SPECIMEN_DEFAULTS["disposition"]
+        v_disp  = None   # disposition starts empty; set manually or in bulk (Batch tools)
         v_basis = NEW_SPECIMEN_DEFAULTS["basis_of_record"]
         v_rem = ""
         v_other = ""
@@ -282,8 +286,12 @@ def build_specimen_form(
             return False
         if cat_num is not None and (cat_num.value or ""):
             return True
-        if ((prep_field["get_value"]() or "").strip() or (rem_in.value or "").strip()
-                or (othercat_in.value or "").strip()):
+        # preparations is now a Tier-1 default (the flagged preparation, seeded as
+        # v_preps) — count it only when the user changed it away from that default,
+        # so a freshly loaded form doesn't falsely report unsaved changes.
+        if (prep_field["get_value"]() or "").strip() != (v_preps or "").strip():
+            return True
+        if (rem_in.value or "").strip() or (othercat_in.value or "").strip():
             return True
         try:
             if int(count_in.value or 1) != NEW_SPECIMEN_DEFAULTS["individual_count"]:
@@ -305,9 +313,10 @@ def build_specimen_form(
             coll_code_disp.value = ""
             inst_code_disp.value = ""
         count_in.value  = NEW_SPECIMEN_DEFAULTS["individual_count"]
-        prep_field["set_value"](None)
+        with session_factory() as _s:
+            prep_field["set_value"](preparation_vocab.get_default_name(_s) or None)
         stage_sel.value = NEW_SPECIMEN_DEFAULTS["life_stage"]
-        disp_field["set_value"](NEW_SPECIMEN_DEFAULTS["disposition"])
+        disp_field["set_value"](None)   # disposition starts empty; set manually
         basis_sel.value = NEW_SPECIMEN_DEFAULTS["basis_of_record"]
         rem_in.value      = ""
         othercat_in.value = ""
