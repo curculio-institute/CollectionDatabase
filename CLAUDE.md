@@ -714,6 +714,7 @@ manually in the TW UI. This constrains the sync direction to insert-only forever
 | **Labels** | Generate identifier label batches (4-char codes). Preview + download PDF. Reprint a whole batch if unused. Staged-codes dashboard. |
 | **Print queue** | Preview and print all staged labels in one grouped PDF (per queue addition; data/identifier/determination column-aligned per specimen). Saves the PDF to `printed_pdf_dir` on print, then clears the queue. |
 | **Import & Assign** | Upload a DwC CSV; live-filter rows; assign taxon + per-specimen fields; save to DB. |
+| **Batch tools** | Build a **collection-scoped** specimen set — by taxon (all specimens of a taxon + descendants in the working collection) or by a pasted catalog-number list — then bulk-apply one op: set disposition, or reassign to another collection (#78). Working collection defaults to the home collection; an extra click switches to another. Cross-collection specimens can **never** be listed or modified (see below). Service: `app/services/batch_ops.py`. |
 
 #### Digitize layout modes (decided)
 
@@ -758,6 +759,7 @@ arrow-key event, chip styling) is design.md's concern → "Digitize layout modes
 | `vocabularies.py` | Vocabulary instances + `VOCAB_REGISTRY` (the Controlled Vocabularies tab renders one section per entry) |
 | `repositories.py` | Collections/institutions CRUD (multi-column vocab, #56) + `name_map` (collectionCode→full name) for the identifier label + `resolve_id` (get-or-create the repository for a code, the save-time seam for `collection_object.repository_id`, #75) + `delete_repository` guard (blocked while specimens reference it, #72) |
 | `explore.py` | Explore-tab querying (#40): `search_facets`, `query_specimens(filters)`, `checklist(filters)` (drawer-order taxa+lots), `events(filters)`, `to_csv`, `counts` |
+| `batch_ops.py` | Batch tools (#78): `fetch_by_taxon` / `match_catalog_numbers` (both **scoped to a working `repository_id`**) + `apply_disposition` / `apply_repository`. **Cross-collection safety is structural** — `_load_in_scope` re-asserts every specimen belongs to the working collection before any write, so a bulk op can never touch a specimen held in another collection. `catalog_number` is never changed. |
 
 ### Taxon search widget (`app/ui/taxon_search.py`)
 
