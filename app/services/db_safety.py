@@ -5,19 +5,22 @@ any page. Three steps, in order:
 
 1. **Checkpoint the WAL** (``PRAGMA wal_checkpoint(TRUNCATE)``) so the main
    ``.db`` file holds the full committed state. This is required before both the
-   snapshot copy and the integrity check — otherwise either could see a stale
+   integrity check and the snapshot copy — otherwise either could see a stale
    file (the WAL caveat documented in CLAUDE.md §8).
-2. **Snapshot** the ``.db`` to ``data/snapshots/collection-<timestamp>.db`` and
-   prune to the most recent ``keep`` copies. Recovery insurance: the integrity
-   check only *detects* a damaged file; the snapshot is what lets you roll back
-   to a recent good copy. Cheap at this project's scale (a single-collection DB
-   is a few MB; 30 k specimens ≈ tens of MB).
-3. **Integrity check** (``PRAGMA integrity_check``) — the thorough structural
+2. **Integrity check** (``PRAGMA integrity_check``) — the thorough structural
    verification (B-tree, page, and index-vs-table cross-checks). Returns ``ok``
    on a sound file, otherwise a list of specific problems. On anything but
    ``ok`` we surface a loud, blocking banner in the UI rather than silently
    opening a damaged file and writing more into it (CLAUDE.md §2: a loud failure
    beats a silent wrong value).
+3. **Snapshot** — *only when the file is known-good* (#70). Copy the ``.db`` to
+   ``data/snapshots/collection-<timestamp>.db`` and prune to the most recent
+   ``keep`` copies. Recovery insurance: the integrity check only *detects* a
+   damaged file; the snapshot is what lets you roll back to a recent good copy.
+   The snapshot follows the check (not the reverse) so a corrupt file never
+   rotates a good backup out — otherwise repeated corrupt launches would fill all
+   ``keep`` slots with corrupt copies and erase the recovery point they exist for.
+   Cheap at this project's scale (a single-collection DB is a few MB).
 
 The result is cached in ``LAST_RESULT`` so the ``@ui.page`` handler can read it
 and render a banner without re-running the check per page load.
@@ -118,7 +121,7 @@ def _prune(snap_dir: Path, stem: str, keep: int) -> None:
 
 
 def run_startup_safety(engine, *, keep: int = DEFAULT_KEEP) -> DbSafetyResult:
-    """Checkpoint → snapshot → integrity check. Cache and return the result.
+    """Checkpoint → integrity check → snapshot (only if healthy). Cache and return.
 
     Never raises: a failure to run the checks is captured in ``error`` and logged
     so startup proceeds, but an actual integrity failure sets ``ok=False`` so the
@@ -129,15 +132,30 @@ def run_startup_safety(engine, *, keep: int = DEFAULT_KEEP) -> DbSafetyResult:
         LAST_RESULT = DbSafetyResult(skipped=True)
         return LAST_RESULT
 
-    # Checkpoint and snapshot are best-effort and must not abort the run: if the
-    # file is so damaged that the checkpoint raises, the integrity check below
-    # still runs and reports it (integrity_check swallows its own errors into a
-    # problem). The snapshot of even a damaged file is harmless — earlier good
-    # snapshots are retained for recovery.
+    # Checkpoint is best-effort and must not abort the run: if the file is so
+    # damaged that the checkpoint raises, the integrity check below still runs and
+    # reports it (integrity_check swallows its own errors into a problem).
     try:
         checkpoint(engine)
     except Exception:
         log.warning("WAL checkpoint failed at startup (file may be damaged)")
+
+    # Integrity check BEFORE snapshotting/pruning (#70). Snapshots exist to recover
+    # from corruption, so a corrupt file must never rotate a good backup out: under
+    # repeated corrupt launches the old order (snapshot+prune, then check) filled all
+    # `keep` slots with corrupt copies and evicted every good one. We only snapshot +
+    # prune once the current file is known-good; a bad file leaves existing snapshots
+    # untouched and just trips the banner.
+    problems = integrity_check(engine)
+
+    if problems:
+        log.error("DB integrity check FAILED: %s", "; ".join(problems))
+        log.error("Skipping snapshot to preserve existing good backups (#70).")
+        LAST_RESULT = DbSafetyResult(ok=False, integrity_problems=problems)
+        return LAST_RESULT
+
+    # Known-good → safe to snapshot + prune (recovery insurance captured before any
+    # migration db_bootstrap runs next).
     snap = None
     snap_err = None
     try:
@@ -145,14 +163,6 @@ def run_startup_safety(engine, *, keep: int = DEFAULT_KEEP) -> DbSafetyResult:
     except Exception as exc:
         log.exception("Startup snapshot failed")
         snap_err = str(exc)
-
-    problems = integrity_check(engine)
-
-    if problems:
-        log.error("DB integrity check FAILED: %s", "; ".join(problems))
-        LAST_RESULT = DbSafetyResult(
-            ok=False, integrity_problems=problems, snapshot_path=snap, error=snap_err)
-    else:
-        log.info("DB integrity OK — snapshot %s", snap.name if snap else "(none)")
-        LAST_RESULT = DbSafetyResult(ok=True, snapshot_path=snap, error=snap_err)
+    log.info("DB integrity OK — snapshot %s", snap.name if snap else "(none)")
+    LAST_RESULT = DbSafetyResult(ok=True, snapshot_path=snap, error=snap_err)
     return LAST_RESULT
