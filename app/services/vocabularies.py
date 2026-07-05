@@ -28,9 +28,11 @@ class VocabSpec:
     help: str           # one-line description under the heading
     add_label: str      # the "Add …" button label
     field_label: str    # the data-entry field label in forms
+    supports_default: bool = False   # show a "set as autofill default" affordance (#83-style)
 
 
-preparation_vocab = Vocabulary(Preparation, ref_table="preparation", noun="preparation")
+preparation_vocab = Vocabulary(Preparation, ref_table="preparation",
+                               noun="preparation", has_default=True)
 disposition_vocab = Vocabulary(Disposition, ref_table="disposition", noun="disposition")
 habitat_vocab = Vocabulary(Habitat, ref_table="habitat", noun="habitat")
 sampling_protocol_vocab = Vocabulary(
@@ -40,9 +42,11 @@ PREPARATION = VocabSpec(
     key="preparations",
     vocab=preparation_vocab,
     title="Preparations",
-    help="Values used in the specimen preparations field (e.g. pinned, in ethanol).",
+    help="Values used in the specimen preparations field (e.g. pinned, in ethanol). "
+         "Flag one (★) to auto-fill it on new specimens.",
     add_label="Add preparation",
     field_label="preparations",
+    supports_default=True,
 )
 
 DISPOSITION = VocabSpec(

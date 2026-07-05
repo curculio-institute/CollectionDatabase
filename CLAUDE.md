@@ -502,10 +502,15 @@ The shared mechanism:
   **re-discover referencing FK columns dynamically** via `PRAGMA foreign_key_list` (same
   mechanism as `merge_persons`), so any FK at the vocab table — present or future — is handled
   with no hardcoded list. `delete` is blocked while referenced (and the FK is `ON DELETE
-  RESTRICT` as a DB backstop).
+  RESTRICT` as a DB backstop). **Optional default flag:** a vocab constructed with
+  `has_default=True` (its table needs an `is_default` column + partial-unique index) gets
+  `get_default` / `get_default_name` / `set_default` — a single flaggable **Tier-1 autofill
+  default** (mirrors repository `is_default`, #83). `preparation` uses it (migration 0052);
+  the Controlled-Vocab card shows a ★ toggle when `VocabSpec.supports_default`.
 - **`app/services/vocabularies.py`** — instances + a `VOCAB_REGISTRY` of `VocabSpec`s (display
-  metadata). **Adding a vocab = a model + a migration + one registry entry**; it then appears
-  in the Controlled Vocabularies tab and gets a dropdown field automatically.
+  metadata; `supports_default` opts a vocab into the ★ default affordance). **Adding a vocab =
+  a model + a migration + one registry entry**; it then appears in the Controlled Vocabularies
+  tab and gets a dropdown field automatically.
 - **`app/ui/vocab_field.py` → `build_vocab_field`** — the data-entry widget, the *same*
   custom-dropdown UX as the person field (`✚ add <typed>` + existing matches, no free-text
   escape; reuses person_field's CSS/nav). `get_value()` is the name; **`commit(session)`
@@ -948,8 +953,14 @@ tabs (Digitize, Records, Import & Assign). **The full template — field tables,
 template — lives in `docs/design.md` → "Auto-fill tiers". Use it when adding any new field.**
 Summary:
 
-- **Tier 1 — auto-filled, editable.** Pre-filled with a sensible constant the user can change
-  before saving (`basisOfRecord` = `"PreservedSpecimen"`, `disposition` = `"in collection"`).
+- **Tier 1 — auto-filled, editable.** Pre-filled with a sensible default the user can change
+  before saving (`basisOfRecord` = `"PreservedSpecimen"`; `lifeStage` = `"adult"`). The
+  constant defaults live in one place, `app/vocab.py::NEW_SPECIMEN_DEFAULTS`. **`preparations`
+  is a *data-driven* Tier-1 default:** the `preparation` row flagged `is_default` (★ in the
+  Preparations vocab card; migration 0052, `Vocabulary.get_default`) pre-fills new specimens
+  (Digitize standard/visiting, Import), or empty if none is flagged — Mounting still forces
+  `"pinned"`. **`disposition` has NO create default** — it starts empty and is set manually or
+  in bulk (Batch tools); the former hardcoded `"in collection"` was dropped.
 - **Tier 2 — one-click default.** Field starts empty; a `push_pin` button adjacent to it
   inserts the configured default (`identifiedBy`, `recordedBy`, `dateIdentified`). Never
   applied silently — the user must click.
