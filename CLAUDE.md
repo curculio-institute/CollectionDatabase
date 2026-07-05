@@ -524,9 +524,12 @@ The shared mechanism:
   TaxonWorks ids (institution=Repository, collection=Namespace). DwC-mapping columns carry the
   `dwc:` prefix; the rest are local. It is the source for the identifier label's full
   collection name (`repositories.name_map`, resolved by the code prefix `JJPC-00304`→`JJPC`)
-  and for the Settings "Default collection" (which fills `config.institutionCode`/
-  `collectionCode` for new specimens). Its own Controlled-Vocabularies card (not the generic
-  single-name one). Migration 0045.
+  and for the **default collection** (`is_default` flag, migration 0050, #83 — the home
+  collection that stamps new specimens' `repository_id` + catalog-number prefix; see the
+  namespace section). Carries an optional **contact/owner `person_id`** (FK → `person`, ON
+  DELETE RESTRICT, nullable — migration 0051, #79; a single person per collection, no roles;
+  `merge_persons`/delete re-point/block it via the dynamic PRAGMA FK discovery). Its own
+  Controlled-Vocabularies card (not the generic single-name one). Migration 0045.
 
 ### Removed from original design
 

@@ -6,6 +6,7 @@ from nicegui import ui
 import app.services.persons as persons_svc
 import app.services.repositories as repo_svc
 from app.services.vocabularies import VOCAB_REGISTRY
+from app.ui.person_field import build_person_field
 
 
 def build_controlled_vocab_tab(session_factory, *, on_person_changed=None) -> None:
@@ -400,6 +401,7 @@ def _build_repository_card(session_factory) -> None:
 
         def _rows() -> list[dict]:
             with session_factory() as s:
+                pmap = {p.id: p.full_name for p in persons_svc.list_persons(s)}
                 return [
                     {
                         "id":        str(r.id),
@@ -407,6 +409,7 @@ def _build_repository_card(session_factory) -> None:
                         "cname":     r.collection_full_name,
                         "icode":     r.institution_code or "",
                         "iname":     r.institution_full_name or "",
+                        "person":    pmap.get(r.person_id, ""),
                         "tw_inst":   "" if r.taxonworks_institution_id is None else str(r.taxonworks_institution_id),
                         "tw_coll":   "" if r.taxonworks_collection_id is None else str(r.taxonworks_collection_id),
                     }
@@ -417,6 +420,7 @@ def _build_repository_card(session_factory) -> None:
             columns=[
                 {"name": "ccode", "label": "dwc:collectionCode", "field": "ccode", "align": "left", "sortable": True},
                 {"name": "cname", "label": "Collection full name", "field": "cname", "align": "left"},
+                {"name": "person", "label": "Contact / owner", "field": "person", "align": "left"},
                 {"name": "icode", "label": "dwc:institutionCode", "field": "icode", "align": "left"},
                 {"name": "iname", "label": "Institution full name", "field": "iname", "align": "left"},
                 {"name": "tw_inst", "label": "TW institution id", "field": "tw_inst", "align": "right"},
@@ -446,6 +450,9 @@ def _build_repository_card(session_factory) -> None:
             ui.label("Edit collection").classes("section-label mb-2")
             e_ccode = ui.input("dwc:collectionCode *", placeholder="JJPC").classes("w-full")
             e_cname = ui.input("Collection full name *", placeholder="John Doe Personal Collection").classes("w-full mt-2")
+            with ui.row().classes("w-full mt-2"):
+                e_person = build_person_field(
+                    session_factory, "Contact / owner (person)", classes="w-full")
             e_icode = ui.input("dwc:institutionCode").classes("w-full mt-2")
             e_iname = ui.input("Institution full name").classes("w-full mt-2")
             with ui.row().classes("w-full gap-2 mt-2"):
@@ -467,6 +474,7 @@ def _build_repository_card(session_factory) -> None:
                                 institution_full_name=e_iname.value or None,
                                 taxonworks_institution_id=_int_or_none(e_twi.value),
                                 taxonworks_collection_id=_int_or_none(e_twc.value),
+                                person_id=e_person["commit"](s),
                             )
                     edit_dialog.close()
                     _refresh()
@@ -483,6 +491,7 @@ def _build_repository_card(session_factory) -> None:
             e_ccode.value = row["ccode"]; e_cname.value = row["cname"]
             e_icode.value = row["icode"]; e_iname.value = row["iname"]
             e_twi.value = row["tw_inst"]; e_twc.value = row["tw_coll"]
+            e_person["set_value"](row.get("person") or None)
             edit_dialog.open()
 
         def _delete(row: dict):
@@ -504,6 +513,8 @@ def _build_repository_card(session_factory) -> None:
         with ui.grid(columns=2).classes("w-full gap-3"):
             a_ccode = ui.input("dwc:collectionCode *", placeholder="JJPC")
             a_cname = ui.input("Collection full name *", placeholder="John Doe Personal Collection")
+            a_person = build_person_field(
+                session_factory, "Contact / owner (person)", classes="w-full")
             a_icode = ui.input("dwc:institutionCode")
             a_iname = ui.input("Institution full name")
             a_twi = ui.input("TW institution id")
@@ -524,9 +535,11 @@ def _build_repository_card(session_factory) -> None:
                             institution_full_name=a_iname.value or None,
                             taxonworks_institution_id=_int_or_none(a_twi.value),
                             taxonworks_collection_id=_int_or_none(a_twc.value),
+                            person_id=a_person["commit"](s),
                         )
                 for w in (a_ccode, a_cname, a_icode, a_iname, a_twi, a_twc):
                     w.value = ""
+                a_person["set_value"](None)
                 _refresh()
                 ui.notify("Collection added.", type="positive")
             except Exception as exc:
