@@ -182,6 +182,30 @@ def test_reparent_moves_synonym_within_its_own_lineage(session):
     assert syn.scientific_name == "Otiorhynchus forticollis"    # recomposed under new genus
 
 
+def test_reparent_rejects_clearing_parent_of_species(session):
+    """#71: blanking an accepted species' parent would collapse its name to the bare
+    epithet — reject it (no-fallback rule). A uninomial genus CAN be a root."""
+    genus = mk(session, "Sitona", rank="genus")
+    sp = mk(session, "Sitona lineatus", parent=genus)
+    with pytest.raises(ValueError, match="requires a parent"):
+        reparent(session, taxon_id=sp.id, new_parent_id=None)
+    # a genus (uninomial) may legitimately have no parent
+    reparent(session, taxon_id=genus.id, new_parent_id=None)
+    session.refresh(genus)
+    assert genus.parent_name_usage_id is None
+
+
+def test_update_taxon_rejects_clearing_species_parent(session):
+    """#71 (entry point): the editor must not accept a blank parent for a species."""
+    genus = mk(session, "Sitona", rank="genus")
+    sp = mk(session, "Sitona lineatus", parent=genus)
+    with pytest.raises(ValueError, match="requires a parent"):
+        update_taxon(
+            session, sp.id, taxon_rank="species", scientific_name_authorship=None,
+            parent_name_usage_id=None, accepted_name_usage_id=None,
+            nomenclatural_code="ICZN", taxonworks_otu_id=None, name_element="lineatus")
+
+
 def test_update_taxon_applies_synonym_parent_edit(session):
     """#71 (entry point): editing a synonym's parent via update_taxon is applied,
     not silently dropped by the synonymize branch."""

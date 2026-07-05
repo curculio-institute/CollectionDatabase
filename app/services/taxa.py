@@ -807,6 +807,17 @@ def make_accepted(session: Session, taxon_id: int) -> "Taxon":
     return t
 
 
+def _rank_requires_parent(rank: str | None) -> bool:
+    """True for ranks whose composed name is built from an ancestor (subgenus and
+    everything below genus). For these a missing parent collapses the name to a
+    bare epithet, so they may never be roots. Genus and higher are uninomials and
+    may legitimately have no parent."""
+    r = (rank or "").lower()
+    if r not in TAXON_RANKS:
+        return False
+    return TAXON_RANKS.index(r) > TAXON_RANKS.index("genus")
+
+
 def reparent(session: Session, *, taxon_id: int, new_parent_id: int | None) -> "Taxon":
     """Re-home a name under a new parent *within its own lineage*, then recompose
     its subtree.
@@ -821,6 +832,14 @@ def reparent(session: Session, *, taxon_id: int, new_parent_id: int | None) -> "
     t = session.get(Taxon, taxon_id)
     if t is None:
         raise ValueError(f"Taxon {taxon_id} not found")
+    # No-fallback rule (#71): blanking the parent of a rank that composes from an
+    # ancestor (e.g. a species) would collapse its name to a bare epithet and leave
+    # a rootless non-root taxon. Refuse it loudly rather than silently corrupt.
+    if new_parent_id is None and _rank_requires_parent(t.taxon_rank):
+        raise ValueError(
+            f"a {t.taxon_rank} ('{t.scientific_name}') requires a parent — clearing it "
+            f"would collapse the name to a bare epithet. Set the correct parent instead."
+        )
     t.parent_name_usage_id = new_parent_id
     t.updated_at = _utcnow()
     session.flush()
