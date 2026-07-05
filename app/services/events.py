@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from sqlalchemy import inspect as sa_inspect
 from sqlalchemy.orm import Session
 
 from app.models import CollectingEvent
@@ -141,6 +142,7 @@ def update_collecting_event(session: Session, event_id: int, **fields) -> Collec
     if ev is None:
         raise ValueError(f"CollectingEvent {event_id} not found")
     _resolve_geo_fields(session, fields)
+    _reject_unknown_event_keys(fields)
     for attr, val in fields.items():
         if val == "":
             val = None
@@ -191,11 +193,27 @@ def copy_and_relink_event(session: Session, co_id: int) -> int:
     return new_ev.id
 
 
+def _reject_unknown_event_keys(fields: dict) -> None:
+    """Fail loudly on any key that is not a real collecting_event column (after geo
+    name→id resolution). A NAME key that a caller forgot to resolve — e.g.
+    ``recorded_by`` instead of ``recorded_by_id`` — would otherwise be silently
+    dropped by the setattr loop, losing data with no warning (#61; "never skip
+    silently")."""
+    valid = {c.key for c in sa_inspect(CollectingEvent).mapper.column_attrs}
+    unknown = set(fields) - valid
+    if unknown:
+        raise ValueError(
+            "unknown collecting_event field(s): " + ", ".join(sorted(unknown))
+            + " — resolve any name key to its FK id (e.g. recorded_by → recorded_by_id) "
+            "before saving.")
+
+
 def create_collecting_event(session: Session, **fields) -> CollectingEvent:
     """Insert a new collecting_event. Coerces '' -> None and str -> float for
     numeric columns. ISO-8601 date strings are stored as-is."""
     ce = CollectingEvent(created_at=_utcnow(), updated_at=_utcnow())
     _resolve_geo_fields(session, fields)
+    _reject_unknown_event_keys(fields)
     for attr, val in fields.items():
         if val is None or val == "":
             continue

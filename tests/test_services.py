@@ -274,6 +274,19 @@ def test_search_events_by_recorded_by(session):
     assert len(results) == 1
 
 
+def test_create_event_rejects_unresolved_recorded_by(session):
+    """#61: a raw recordedBy NAME key must fail loudly, not be silently dropped by
+    the setattr loop (which is how Import & Assign lost the collector)."""
+    with pytest.raises(ValueError, match="recorded_by"):
+        create_collecting_event(session, locality="Berchtesgaden", recorded_by="J. Doe")
+
+
+def test_create_event_with_recorded_by_id_persists_collector(session):
+    p = _person(session, "J. Doe")
+    ev = create_collecting_event(session, locality="Berchtesgaden", recorded_by_id=p.id)
+    assert ev.recorded_by_id == p.id
+
+
 def test_search_events_by_locality(session):
     _event(session, locality="Berchtesgaden")
     results = search_collecting_events(session, "Berchtesgaden")
