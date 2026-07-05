@@ -24,4 +24,8 @@ __pycache__/
 .env
 
 # Misc
+# Ignore stray PNGs (screenshots etc.) but keep the app's own static assets:
+# the UI background and the favicon are referenced by the app and must ship.
 *.png
+!app/static/beetle_white.png
+!app/static/collection_icon.png
