@@ -50,3 +50,17 @@ def test_no_cross_column_remap_for_occurrence_remarks():
     assert row_to_specimen_prefill(rows[0])["occurrence_remarks"] == ""
     rows = parse_csv("scientificName,materialEntityRemarks\nSitona lineatus,on nettle\n")
     assert row_to_specimen_prefill(rows[0])["occurrence_remarks"] == "on nettle"
+
+
+def test_event_field_keys_are_all_resolvable_or_columns():
+    """#61 drift-guard: every key row_to_event_fields emits must be either a real
+    CollectingEvent column or one the import resolves before saving
+    (recorded_by/habitat/sampling + geo names). Otherwise the create_collecting_event
+    unknown-key guard would reject a legitimate import (or silently drop the field)."""
+    from sqlalchemy import inspect
+    from app.models import CollectingEvent
+    cols = {c.key for c in inspect(CollectingEvent).mapper.column_attrs}
+    resolved = {"recorded_by", "habitat", "sampling_protocol",
+                "country", "state_province", "administrative_region", "county", "island"}
+    unknown = set(row_to_event_fields({})) - cols - resolved
+    assert not unknown, f"unresolved/unknown collecting_event keys: {sorted(unknown)}"

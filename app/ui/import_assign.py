@@ -21,6 +21,7 @@ import app.services.identifiers as id_svc
 import app.services as svc
 import app.services.repositories as repo_svc
 import app.services.person_defaults as pd_svc
+import app.services.persons as persons_svc
 from app.ui.taxon_search import build_taxon_search
 from app.ui.taxon_editor import open_new_taxon_dialog
 from app.ui.date_input import attach_date_validation
@@ -530,6 +531,13 @@ def build_import_assign_tab(session_factory, refreshers: dict, on_saved=None) ->
                             habitat_vocab.get_or_create(session, _hab).id if _hab else None)
                         event_fields["sampling_protocol_id"] = (
                             sampling_protocol_vocab.get_or_create(session, _samp).id if _samp else None)
+                        # recordedBy is a person FK like everywhere else — resolve the
+                        # parsed name → recorded_by_id inside the save transaction, or the
+                        # collector is silently dropped by create_collecting_event (#61).
+                        _rec = (event_fields.pop("recorded_by", None) or "").strip()
+                        event_fields["recorded_by_id"] = (
+                            persons_svc.get_or_create_person(session, full_name=_rec).id
+                            if _rec else None)
                         co = svc.save_specimen_entry(
                             session,
                             taxon_id=state["taxon_id"],
