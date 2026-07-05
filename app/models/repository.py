@@ -1,6 +1,6 @@
 from __future__ import annotations
 from typing import Optional
-from sqlalchemy import CheckConstraint, Integer, String, UniqueConstraint, Index, text
+from sqlalchemy import CheckConstraint, ForeignKey, Integer, String, UniqueConstraint, Index, text
 from sqlalchemy.orm import Mapped, mapped_column
 from .base import Base, TimestampMixin
 
@@ -28,6 +28,10 @@ class Repository(Base, TimestampMixin):
     # catalog numbers. At most one repository is the default (migration 0050, #83);
     # the default is held *here*, in the vocab, not as a code string in config.json.
     is_default:                Mapped[int]           = mapped_column(Integer, nullable=False, server_default="0")
+    # Optional contact/owner person for the collection (migration 0051, #79). No roles —
+    # a single person per repository. merge_persons/delete re-point this FK dynamically.
+    person_id:                 Mapped[Optional[int]] = mapped_column(
+        Integer, ForeignKey("person.id", ondelete="RESTRICT"), nullable=True)
 
     __table_args__ = (
         UniqueConstraint("dwc:collectionCode", name="uq_repository_collection_code"),

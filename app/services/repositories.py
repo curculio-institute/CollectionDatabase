@@ -24,6 +24,7 @@ def create_repository(
     institution_full_name: str | None = None,
     taxonworks_institution_id: int | None = None,
     taxonworks_collection_id: int | None = None,
+    person_id: int | None = None,
 ) -> Repository:
     r = Repository(
         collection_code=collection_code.strip(),
@@ -32,6 +33,7 @@ def create_repository(
         institution_full_name=(institution_full_name or "").strip() or None,
         taxonworks_institution_id=taxonworks_institution_id,
         taxonworks_collection_id=taxonworks_collection_id,
+        person_id=person_id,
         created_at=_utcnow(),
         updated_at=_utcnow(),
     )
@@ -50,6 +52,7 @@ def update_repository(
     institution_full_name: str | None = None,
     taxonworks_institution_id: int | None = None,
     taxonworks_collection_id: int | None = None,
+    person_id: int | None = None,
 ) -> Repository:
     r = session.get(Repository, repo_id)
     if r is None:
@@ -60,6 +63,7 @@ def update_repository(
     r.institution_full_name = (institution_full_name or "").strip() or None
     r.taxonworks_institution_id = taxonworks_institution_id
     r.taxonworks_collection_id = taxonworks_collection_id
+    r.person_id = person_id
     r.updated_at = _utcnow()
     session.flush()
     return r

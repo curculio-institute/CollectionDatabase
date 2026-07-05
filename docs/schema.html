@@ -638,6 +638,7 @@ erDiagram
       <tr><td><span class="badge badge-INTEGER">INTEGER</span></td><td class="col-local">taxonworks_institution_id</td><td>TW Repository id (nullable)</td></tr>
       <tr><td><span class="badge badge-INTEGER">INTEGER</span></td><td class="col-local">taxonworks_collection_id</td><td>TW Namespace id (nullable)</td></tr>
       <tr><td><span class="badge badge-INTEGER">INTEGER</span></td><td class="col-local">is_default</td><td>NOT NULL DEFAULT 0, CHECK IN (0,1) — the user's own/home collection; partial-UNIQUE so at most one row is 1 (migration 0050, #83). Digitize/Mounting/Import read it for repository_id + catalog-number prefix and refuse to save if none is set</td></tr>
+      <tr><td><span class="badge badge-INTEGER">INTEGER</span></td><td class="col-local">person_id</td><td><span class="tag tag-FK">FK</span> → person(id) ON DELETE RESTRICT, nullable — optional contact/owner person for the collection (migration 0051, #79). merge_persons/delete re-point/block it dynamically</td></tr>
       <tr><td><span class="badge badge-TEXT">TEXT</span></td><td class="col-local">created_at / updated_at</td><td></td></tr>
     </tbody>
   </table>
@@ -703,7 +704,7 @@ erDiagram
       <tr><td><span class="tag tag-UQ">UQ</span></td><td class="col-local">biological_relationship</td><td>UNIQUE (<code>name</code>)</td></tr>
       <tr><td><span class="tag tag-FK">FK</span></td><td class="col-local">taxon_determination</td><td><code>collection_object_id</code> → collection_object ON DELETE CASCADE; <code>taxon_id</code> → taxon ON DELETE RESTRICT</td></tr>
       <tr><td><span class="tag tag-FK">FK</span></td><td class="col-local">collection_object</td><td><code>repository_id</code> → repository(id) ON DELETE RESTRICT — owning collection, NOT NULL (migration 0047, #75); blocks deleting a collection that still has specimens</td></tr>
-      <tr><td><span class="tag tag-FK">FK</span></td><td class="col-local">person references</td><td>all <code>person</code> FKs (recordedBy, identifiedBy, defaults) are ON DELETE RESTRICT</td></tr>
+      <tr><td><span class="tag tag-FK">FK</span></td><td class="col-local">person references</td><td>all <code>person</code> FKs (recordedBy, identifiedBy, defaults, media rightsHolder, repository contact/owner) are ON DELETE RESTRICT</td></tr>
       <tr><td><span class="tag tag-UQ">UQ</span></td><td class="col-local">single-name vocabs</td><td>UNIQUE (<code>name</code>) on preparation / disposition (mig 0048, seeded) / habitat / sampling_protocol (migs 0039–0040; sampling_protocol seeded) and the geography vocabs country / state_province / administrative_region / county / island (mig 0041)</td></tr>
       <tr><td><span class="tag tag-FK">FK</span></td><td class="col-local">collection_object / collecting_event</td><td><code>preparation_id</code> / <code>disposition_id</code>, and on collecting_event <code>habitat_id</code> / <code>sampling_protocol_id</code> / <code>country_id</code> / <code>state_province_id</code> / <code>administrative_region_id</code> / <code>county_id</code> / <code>island_id</code> — all → their vocab table ON DELETE RESTRICT (delete-safe; re-pointed by the generic vocab merge)</td></tr>
       <tr><td><span class="tag tag-UQ">UQ</span></td><td class="col-local">media</td><td>UNIQUE (<code>sha256</code>) — content-addressed de-duplication key</td></tr>
