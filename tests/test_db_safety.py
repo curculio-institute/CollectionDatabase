@@ -89,3 +89,32 @@ def test_run_startup_safety_detects_corruption(tmp_path):
     assert res.ok is False
     assert res.integrity_problems  # non-empty list of reported problems
     engine2.dispose()
+
+
+def test_corruption_does_not_snapshot_or_evict_good_backups(tmp_path):
+    """#70: a corrupt launch must not snapshot/prune, or repeated corrupt relaunches
+    would fill every slot with corrupt copies and erase the good recovery points."""
+    db_file = tmp_path / "c.db"
+    engine = _make_db(db_file, rows=2000)
+    db_safety.checkpoint(engine)
+    # Three pre-existing GOOD snapshots (keep=3 → all slots full).
+    good = [db_safety.snapshot(engine, keep=3) for _ in range(3)]
+    engine.dispose()
+    snap_dir = tmp_path / "snapshots"
+    before = sorted(snap_dir.glob("c-*.db"))
+    assert len(before) == 3
+
+    # Now corrupt the main file and relaunch.
+    data = bytearray(db_file.read_bytes())
+    for i in range(4096, len(data)):
+        data[i] = (data[i] + 137) % 256
+    db_file.write_bytes(data)
+
+    engine2 = create_engine(f"sqlite:///{db_file}")
+    res = db_safety.run_startup_safety(engine2, keep=3)
+    engine2.dispose()
+
+    assert res.ok is False
+    assert res.snapshot_path is None            # no snapshot taken of the bad file
+    after = sorted(snap_dir.glob("c-*.db"))
+    assert after == before                       # good snapshots untouched (none pruned)
