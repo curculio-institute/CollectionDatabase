@@ -22,7 +22,7 @@ import app.services as svc
 import app.services.repositories as repo_svc
 import app.services.person_defaults as pd_svc
 import app.services.persons as persons_svc
-from app.ui.taxon_search import build_taxon_search
+from app.ui.taxon_search import build_taxon_search, _render_tw_label
 from app.ui.taxon_editor import open_new_taxon_dialog
 from app.ui.date_input import attach_date_validation
 from app.ui.person_field import build_person_field
@@ -226,7 +226,7 @@ def build_import_assign_tab(session_factory, refreshers: dict, on_saved=None) ->
                     with_input=True,
                     clearable=True,
                     label="identifier *",
-                ).classes("w-32")
+                ).classes("w-48")   # wide enough for a full code, e.g. JJPC-00304
                 sex_sel   = ui.select(SEX_OPTIONS, label="sex").classes("w-28")
                 count_in  = ui.number("n", value=1, min=0, precision=0).classes("w-20")
                 prep_field = build_vocab_field(
@@ -336,14 +336,7 @@ def build_import_assign_tab(session_factory, refreshers: dict, on_saved=None) ->
             # 1. Check local DB
             local = _with_session(lambda s: taxa_svc.find_taxon_by_name(s, name))
             if local:
-                state["taxon_id"] = local.id
-                with taxon_section:
-                    with ui.row().classes("items-center gap-2"):
-                        ui.icon("check_circle", size="sm").style("color:#16a34a")
-                        ui.label(taxa_svc.format_scientific_name(local)) \
-                          .classes("text-sm italic")
-                        ui.label("resolved locally") \
-                          .classes("text-xs").style("color:var(--tp-base-soft)")
+                _set_taxon(local.id, "resolved locally")
                 return
 
             # 2. Search TaxonWorks
@@ -356,13 +349,25 @@ def build_import_assign_tab(session_factory, refreshers: dict, on_saved=None) ->
             except Exception:
                 results = []
 
+            # Fetch full records for each result + its valid name so synonyms render
+            # "syn ❌ = valid ✓" (same as the shared taxon-search widget).
+            detail: dict[int, dict] = {}
+            ids = list({tid for r in results
+                        for tid in (r["id"], r.get("valid_taxon_name_id")) if tid})
+            if ids:
+                try:
+                    _recs = await asyncio.gather(*[tw_svc.fetch_taxon_name(i) for i in ids])
+                    detail = {i: (d or {}) for i, d in zip(ids, _recs)}
+                except Exception:
+                    detail = {}
+
             taxon_section.clear()
 
             if results:
                 with taxon_section:
                     ui.label("Not found locally. Select from TaxonWorks:") \
                       .classes("text-xs mb-1").style("color:var(--tp-base-soft)")
-                    _build_tw_results(taxon_section, results)
+                    _build_tw_results(taxon_section, results, detail)
                     with ui.row().classes("items-center gap-2 mt-2"):
                         ui.label("or").classes("text-xs").style("color:var(--tp-base-soft)")
                         ui.button("Add manually", icon="add").props("flat dense size=sm") \
@@ -385,16 +390,24 @@ def build_import_assign_tab(session_factory, refreshers: dict, on_saved=None) ->
                     on_select=lambda tid: _set_taxon(tid),
                 )
 
-        def _build_tw_results(container, results: list[dict]):
-            """Show clickable TaxonWorks autocomplete results."""
+        def _build_tw_results(container, results: list[dict], detail: dict | None = None):
+            """Show clickable TaxonWorks autocomplete results.
+
+            Uses the SHARED renderer (_render_tw_label) so synonyms display cleanly with
+            their valid name ("… ❌ = Valid name ✓"), same as the taxon-search widget —
+            instead of dumping the raw label_html (which showed rank/original-combination
+            badges as garbled inline text and never resolved the valid name)."""
+            detail = detail or {}
             with container:
                 for r in results:
-                    lhtml = r.get("label_html") or r.get("label", "")
+                    vid = r.get("valid_taxon_name_id")
+                    valid_name = (detail.get(vid, {}).get("cached", "")
+                                  if vid and vid != r.get("id") else "")
                     item = ui.element("div").classes("tw-result tw-dropdown-item") \
                         .style("padding:6px 10px; cursor:pointer; border-radius:4px; "
                                "border:1px solid var(--tp-base-border); margin-bottom:3px;")
                     with item:
-                        ui.html(lhtml)
+                        ui.html(_render_tw_label(r, valid_name))
                     item.on("click", lambda _, r=r: asyncio.ensure_future(_import_tw(r)))
 
         async def _import_tw(r: dict):
@@ -421,19 +434,9 @@ def build_import_assign_tab(session_factory, refreshers: dict, on_saved=None) ->
             except Exception as exc:
                 ui.notify(f"DB error: {exc}", type="negative")
                 return
-            _set_taxon(tid)
+            _set_taxon(tid, "imported from TaxonWorks")
             for msg in mismatches:
                 ui.notify(f"Taxonomy mismatch: {msg}", type="warning", timeout=8000)
-            taxon_section.clear()
-            with taxon_section:
-                with ui.row().classes("items-center gap-2"):
-                    ui.icon("check_circle", size="sm").style("color:#16a34a")
-                    with session_factory() as s:
-                        t = s.get(taxa_svc.Taxon, tid)
-                        label = taxa_svc.format_scientific_name(t) if t else f"taxon #{tid}"
-                    ui.label(label).classes("text-sm italic")
-                    ui.label("imported from TaxonWorks") \
-                      .classes("text-xs").style("color:var(--tp-base-soft)")
 
         def _open_manual_dialog(row: dict):
             """Open the shared New Taxon dialog, prefilled from this DwC row.
@@ -452,22 +455,36 @@ def build_import_assign_tab(session_factory, refreshers: dict, on_saved=None) ->
             )
 
         def _on_manual_created(tid: int):
-            _set_taxon(tid)
+            _set_taxon(tid, "added manually")
+            if "taxonomy_stats" in refreshers:
+                refreshers["taxonomy_stats"]()
+
+        def _set_taxon(tid: int, caption: str = "selected") -> None:
+            state["taxon_id"] = tid
             with session_factory() as s:
                 t = s.get(taxa_svc.Taxon, tid)
                 label = taxa_svc.format_scientific_name(t) if t else f"taxon #{tid}"
             taxon_section.clear()
             with taxon_section:
-                with ui.row().classes("items-center gap-2"):
+                with ui.row().classes("items-center gap-2 flex-wrap"):
                     ui.icon("check_circle", size="sm").style("color:#16a34a")
                     ui.label(label).classes("text-sm italic")
-                    ui.label("added manually") \
-                      .classes("text-xs").style("color:var(--tp-base-soft)")
-            if "taxonomy_stats" in refreshers:
-                refreshers["taxonomy_stats"]()
+                    ui.label(caption).classes("text-xs").style("color:var(--tp-base-soft)")
+                    # A selected taxon must be undoable (#import-assign UX) — Change
+                    # clears it and opens the full local+TW search to pick another.
+                    ui.button("Change", icon="edit").props("flat dense size=sm no-caps") \
+                      .on_click(_change_taxon)
 
-        def _set_taxon(tid: int):
-            state["taxon_id"] = tid
+        def _change_taxon() -> None:
+            state["taxon_id"] = None
+            taxon_section.clear()
+            with taxon_section:
+                ui.label("Search for the correct taxon:").classes("text-xs mb-1") \
+                  .style("color:var(--tp-base-soft)")
+                build_taxon_search(
+                    session_factory,
+                    on_select=lambda tid: _set_taxon(tid, "selected"),
+                )
 
         # ================================================================
         # Logic: validate + save
