@@ -233,7 +233,20 @@ def build_import_assign_tab(session_factory, refreshers: dict, on_saved=None) ->
                     session_factory, preparation_vocab, "preparations",
                     classes="flex-1 min-w-40",
                 )
-            ui.timer(2.0, lambda: cat_num.set_options({c: c for c in _reserved_opts()}))
+            # Keep the identifier options live, but push a new set only when it
+            # actually CHANGED (A4): an unconditional set_options every tick resets
+            # Quasar's in-progress client-side filter, clobbering the
+            # type→arrow-keys→enter→tab code-selection workflow.
+            _last_codes: list[str] = list(_reserved_opts())
+
+            def _sync_code_opts():
+                nonlocal _last_codes
+                codes = list(_reserved_opts())
+                if codes != _last_codes:
+                    _last_codes = codes
+                    cat_num.set_options({c: c for c in codes})
+
+            ui.timer(2.0, _sync_code_opts)
 
             with ui.row().classes("w-full flex-wrap gap-3 items-end mt-3"):
                 stage_sel = ui.select(LIFE_STAGE_OPTIONS, label="lifeStage", value="adult").classes("w-32")

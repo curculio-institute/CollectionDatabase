@@ -114,6 +114,10 @@ def build_specimen_form(
 
     # Defaults; reassigned per policy below.
     cat_num = inst_code_disp = coll_code_disp = None
+    # Last reserved-code set pushed to the identifier select. The live-refresh
+    # (timer) and refresh_codes() both re-push only when this CHANGES — see A4
+    # note on refresh_codes().
+    _last_codes: list[str] | None = None
 
     with ui.card().classes("w-full shadow-sm") as card:
         with ui.row().classes("items-center gap-2 mb-1 w-full"):
@@ -148,22 +152,24 @@ def build_specimen_form(
         else:
             with ui.row().classes("w-full flex-wrap gap-3 items-end"):
                 if is_standard:
+                    _last_codes = list(_reserved_opts())
                     cat_num = ui.select(
-                        options={c: c for c in _reserved_opts()},
+                        options={c: c for c in _last_codes},
                         with_input=True,
                         clearable=True,
                         label="identifier *",
-                    ).classes("w-32")
+                    ).classes("w-48")   # wide enough for a full code, e.g. JJPC-00304
                 count_in = ui.number("n", value=v_count, min=0, precision=0).classes("w-20")
                 prep_field = build_vocab_field(
                     session_factory, preparation_vocab, "preparations",
                     initial_value=v_preps or None, classes="flex-1 min-w-40",
                 )
             if is_standard:
-                # Skip the DB read while the card is hidden (Mounting / Visiting mode).
+                # Skip the DB read while the card is hidden (Mounting / Visiting mode);
+                # refresh_codes() itself only re-pushes when the set changed (A4).
                 def _refresh_code_opts():
                     if card.visible:
-                        cat_num.set_options({c: c for c in _reserved_opts()})
+                        refresh_codes()
                 ui.timer(2.0, _refresh_code_opts)
 
         with ui.expansion("More fields").classes("w-full mt-2"):
@@ -271,8 +277,18 @@ def build_specimen_form(
         }
 
     def refresh_codes() -> None:
-        if is_standard:
-            cat_num.set_options({c: c for c in _reserved_opts()})
+        """Re-query reserved codes into the identifier select — but push new options
+        only when the set actually CHANGED. A4: calling set_options every timer tick
+        resets Quasar's in-progress client-side filter, clobbering the
+        type→arrow-keys→enter→tab selection workflow. Reserved codes rarely change
+        mid-session, so the filter stays put while the user types."""
+        nonlocal _last_codes
+        if not is_standard:
+            return
+        codes = list(_reserved_opts())
+        if codes != _last_codes:
+            _last_codes = codes
+            cat_num.set_options({c: c for c in codes})
 
     def has_content() -> bool:
         """True if the user has entered uncommitted data in this card.
