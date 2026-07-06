@@ -45,3 +45,6 @@ python run.py              # starts the app at http://127.0.0.1:8080
 For convenience, it is best to have a bash scrip that activates the conda environemnt and starts the program with one click. You can add launch.sh to your systems task bar or start menu, but you may have to adjust paths in the file to make it run on your system.
 
 On Windows it will also run, but I have not tested to figure out how.
+
+## First steps
+In settings, add the TaxonWorks and TaxonPages URLs and the API token. Add a
