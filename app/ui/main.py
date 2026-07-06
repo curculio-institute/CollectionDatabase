@@ -180,6 +180,76 @@ def index():
     }, true);
     </script>""")
 
+    # ── Enter-to-select on filterable selects (identifier code field) ────
+    # The custom person/vocab dropdowns auto-highlight their top match and let
+    # Enter pick it + advance (person_field._NAV_SCRIPT). Native Quasar q-selects
+    # with typed input (with_input=True — the identifier code picker) do NOT: no
+    # option is highlighted and Enter does nothing. Mirror the custom behaviour so
+    # the whole form is keyboard-drivable (type → Enter → next field). Scoped to
+    # `.q-select--with-input` so plain fixed-list selects (sex, basisOfRecord,
+    # lifeStage) are untouched.
+    ui.add_head_html("""
+    <script>
+    (function(){
+      var FOCUS_CLS = 'q-manual-focusable--focused';
+      function openMenu(){
+        var menus = document.querySelectorAll('.q-menu');
+        for (var i=0;i<menus.length;i++){
+          var s = window.getComputedStyle(menus[i]);
+          if (s.display!=='none' && s.visibility!=='hidden' && s.opacity!=='0') return menus[i];
+        }
+        return null;
+      }
+      function visibleItems(menu){
+        var items = menu.querySelectorAll('.q-item--clickable');
+        if (items.length===0) items = menu.querySelectorAll('.q-item');
+        var out=[];
+        for (var j=0;j<items.length;j++){
+          var s=window.getComputedStyle(items[j]);
+          if (s.display!=='none' && s.visibility!=='hidden') out.push(items[j]);
+        }
+        return out;
+      }
+      // Highlight the first filtered option as the user types, so it is visibly the
+      // one Enter will take (Quasar leaves nothing highlighted until ArrowDown).
+      document.addEventListener('input', function(e){
+        var qs = e.target && e.target.closest && e.target.closest('.q-select--with-input');
+        if (!qs) return;
+        setTimeout(function(){
+          var m = openMenu(); if (!m) return;
+          var vis = visibleItems(m); if (!vis.length) return;
+          if (!vis.some(function(it){return it.classList.contains(FOCUS_CLS);}))
+            vis[0].classList.add(FOCUS_CLS);
+        }, 60);
+      }, true);
+      // Enter: take the highlighted option (else the first visible), then advance
+      // focus to the next field — the same "type → Enter → next" flow as the
+      // custom dropdowns.
+      document.addEventListener('keydown', function(e){
+        if (e.key !== 'Enter') return;
+        var active = document.activeElement;
+        var qs = active && active.closest && active.closest('.q-select--with-input');
+        if (!qs) return;
+        var m = openMenu(); if (!m) return;
+        var vis = visibleItems(m); if (!vis.length) return;
+        var target = vis.find(function(it){return it.classList.contains(FOCUS_CLS);}) || vis[0];
+        e.preventDefault(); e.stopPropagation();
+        target.click();
+        setTimeout(function(){
+          var FOCUSABLE = 'a[href], button:not([disabled]), input:not([disabled]), ' +
+            'select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
+          var all = Array.from(document.querySelectorAll(FOCUSABLE)).filter(function(el){
+            var s = window.getComputedStyle(el);
+            return s.display!=='none' && s.visibility!=='hidden';
+          });
+          var last=-1;
+          for (var k=0;k<all.length;k++){ if (qs.contains(all[k])) last=k; }
+          if (last>=0 && last+1<all.length) all[last+1].focus();
+        }, 30);
+      }, true);
+    })();
+    </script>""")
+
     # ── Digitize single-card stepper: chip styling + arrow-key nav ───────
     # The stepper header (.tp-stepper-bar) is shown only in single-card mode;
     # ←/→ move between cards, but only when the bar is visible and the user is
