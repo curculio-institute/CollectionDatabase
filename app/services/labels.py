@@ -560,12 +560,14 @@ def _id_label_inner(code: str, collection_name: str = "") -> str:
 # regardless of what wraps it. QR left; a centred name / prefix / number stack right.
 _ID_TEXT_CSS = """
 .id-label {
-    display: flex; flex-direction: row; align-items: center; gap: 1mm;
+    display: flex; flex-direction: row; align-items: center; gap: 0.6mm;
     min-height: 6.5mm; width: 100%;
     font-family: 'Fira Sans Compressed', 'Fira Sans Condensed', 'Arial Narrow', sans-serif;
 }
 .id-qr { width: 5.5mm; height: 5.5mm; flex-shrink: 0; image-rendering: pixelated; }
-.id-text { flex: 1; min-width: 0; text-align: center; line-height: 1.05; overflow: hidden; }
+/* left-aligned so the name / prefix / number hug the QR instead of floating in the
+   centre of the wide column. */
+.id-text { flex: 1; min-width: 0; text-align: left; line-height: 1.05; overflow: hidden; }
 .id-collname {
     font-size: 2.5pt; font-weight: 600; letter-spacing: 0;
     white-space: nowrap; overflow: hidden;
