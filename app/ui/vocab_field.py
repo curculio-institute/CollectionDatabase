@@ -112,10 +112,20 @@ def build_vocab_field(
         dropdown.clear()
         real = term.strip()
         f = real.lower()
-        has_items = False
+        items: list = []
         with dropdown:
+            # Existing matches first, so the auto-highlighted top row is the best
+            # match — Enter takes it directly (no ArrowDown needed).
+            for name in sorted(_known):
+                if not f or f in name.lower():
+                    item = ui.element("div").classes("pf-item")
+                    with item:
+                        ui.label(name)
+                    item.on("click", lambda _, n=name: _enter_selected(_html.escape(n), n))
+                    items.append(item)
+            # "✚ add <typed>" LAST — only when the text isn't already a known name;
+            # it becomes the sole (highlighted) row when nothing matches.
             if real and real not in _known:
-                has_items = True
                 add_html = (
                     f'<span class="pf-new-badge">✚ add</span> {_html.escape(real)}'
                 )
@@ -123,14 +133,11 @@ def build_vocab_field(
                 with item:
                     ui.html(add_html)
                 item.on("click", lambda _, r=real, h=add_html: _enter_selected(h, r))
-            for name in sorted(_known):
-                if not f or f in name.lower():
-                    has_items = True
-                    item = ui.element("div").classes("pf-item")
-                    with item:
-                        ui.label(name)
-                    item.on("click", lambda _, n=name: _enter_selected(_html.escape(n), n))
-        dropdown.style("display:block" if has_items else "display:none")
+                items.append(item)
+        # Highlight the first row so Enter selects it without pressing ArrowDown.
+        if items:
+            items[0].classes("dropdown-item--active")
+        dropdown.style("display:block" if items else "display:none")
 
     def _on_input_change(e) -> None:
         term = (e.value or "").strip()

@@ -1,12 +1,19 @@
 """Import & Assign tab.
 
-Workflow:
-  1. User uploads a DwC CSV → held in per-connection state, never bulk-written.
-  2. User types any text to search the in-memory rows (date, locality, taxon, …).
-  3. User clicks a row → full preview shown.
-  4. Taxon resolved: local DB → TaxonWorks autocomplete → manual entry.
-  5. User fills per-specimen fields (identifier, sex, n, preps) and reviews.
-  6. Validation + "Save & Assign" → creates event + collection_object + determination.
+Retroactive digitisation (Workflow 1) is a *rapid* loop over large batches (~1700
+specimens): the CSV row already carries every datum, so per specimen the user only:
+  1. finds the matching reference row (one autocomplete selector),
+  2. glances at a condensed read-only summary to confirm it's the beetle in hand,
+  3. stamps the pre-printed identifier (+ a couple of quick specimen fields),
+  4. Save → next.
+
+Everything else (event fields, determination meta, lifeStage, remarks) is saved
+straight from the CSV, never shown — see `_on_assign`. The taxon auto-resolves in the
+background (local DB → TaxonWorks) and only surfaces a picker when resolution fails.
+
+Design decision (2026-07-07): the tab is deliberately condensed to this fast path
+rather than a full editable form — the reference table is the source of the data; the
+user's job is confirm-and-stamp. See CLAUDE.md Workflow 1.
 """
 from __future__ import annotations
 
@@ -20,19 +27,15 @@ import app.services.taxa as taxa_svc
 import app.services.identifiers as id_svc
 import app.services as svc
 import app.services.repositories as repo_svc
-import app.services.person_defaults as pd_svc
 import app.services.persons as persons_svc
 from app.ui.taxon_search import build_taxon_search, _render_tw_label
 from app.ui.taxon_editor import open_new_taxon_dialog
-from app.ui.date_input import attach_date_validation
-from app.ui.person_field import build_person_field
 from app.ui.vocab_field import build_vocab_field
 from app.services.vocabularies import (
     preparation_vocab, habitat_vocab, sampling_protocol_vocab,
 )
-from app.ui.type_status_field import build_type_status_field
 # Controlled vocabularies — single source of truth (app/vocab.py).
-from app.vocab import SEX_OPTIONS, LIFE_STAGE_OPTIONS, NEW_SPECIMEN_DEFAULTS
+from app.vocab import SEX_OPTIONS, NEW_SPECIMEN_DEFAULTS
 
 # ---------------------------------------------------------------------------
 # Example CSV — downloadable from the upload card
@@ -57,20 +60,6 @@ _EXAMPLE_CSV = (
 
 
 # ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-def _field_row(label: str, value: str) -> None:
-    """Render one key–value pair in the preview grid."""
-    if not value:
-        return
-    with ui.row().classes("gap-2 items-baseline"):
-        ui.label(label).classes("text-xs font-medium w-28 shrink-0") \
-          .style("color:var(--tp-base-soft)")
-        ui.label(value).classes("text-sm")
-
-
-# ---------------------------------------------------------------------------
 # Main builder
 # ---------------------------------------------------------------------------
 
@@ -81,16 +70,12 @@ def build_import_assign_tab(session_factory, refreshers: dict, on_saved=None) ->
     used to clear the unsaved-changes guard (see main.py _mark_form_clean).
 
     Returns a handle with ``has_content()`` for value-based unsaved-changes
-    detection (#47): True while an assign card is open (a row is staged for
-    assignment but not yet saved); the card hides on save, so it clears itself."""
+    detection (#47): True while a row is staged for assignment but not yet saved
+    (the form area is visible); it clears itself on save."""
 
     def _with_session(fn):
         with session_factory() as s:
             return fn(s)
-
-    def _default_idby() -> str | None:
-        with session_factory() as s:
-            return pd_svc.get_defaults(s)[0]
 
     # ── per-connection state ────────────────────────────────────────────
     state: dict = {
@@ -100,233 +85,170 @@ def build_import_assign_tab(session_factory, refreshers: dict, on_saved=None) ->
         "taxon_id":   None,     # resolved local taxon id
     }
 
-    with ui.column().classes("w-full max-w-5xl mx-auto px-4 pt-6 pb-16 gap-4"):
+    def _option_label(row: dict) -> str:
+        """One-line, search-rich label for a reference row in the selector.
+
+        Includes taxon · date · locality · collector · coords so Quasar's
+        client-side substring filter can find a row by any of them."""
+        ev = dwc_svc.row_to_event_fields(row)
+        bits = [
+            dwc_svc.row_scientific_name(row),
+            ev["event_date"] or ev["verbatim_event_date"],
+            ev["locality"] or ev["verbatim_locality"]
+            or ev["state_province"] or ev["country"],
+            f"leg. {ev['recorded_by']}" if ev["recorded_by"] else "",
+        ]
+        lat, lon = ev["decimal_latitude"], ev["decimal_longitude"]
+        if lat and lon:
+            bits.append(f"{lat},{lon}")
+        return "  ·  ".join(b for b in bits if b) or "(empty row)"
+
+    def _row_options() -> dict:
+        return {i: _option_label(r) for i, r in enumerate(state["rows"])}
+
+    with ui.column().classes("w-full max-w-4xl mx-auto px-4 pt-6 pb-16 gap-4"):
 
         # ================================================================
-        # CARD 1 — Upload
-        # ================================================================
-        with ui.card().classes("w-full shadow-sm"):
-            with ui.row().classes("items-center gap-3 mb-2"):
-                ui.label("Spreadsheet").classes("section-label")
-                ui.space()
-                ui.button("Download example CSV", icon="download") \
-                    .props("flat dense size=sm") \
-                    .on_click(lambda: ui.download(
-                        _EXAMPLE_CSV.encode("utf-8"),
-                        filename="dwc_example.csv",
-                        media_type="text/csv",
-                    )) \
-                    .tooltip("Download a two-row sample showing expected column names")
-
-            ui.label(
-                "Upload a Darwin Core CSV. Columns are matched by name "
-                "(case-insensitive, underscores and spaces ignored). "
-                "The file is held in memory for this session only."
-            ).classes("text-sm mb-3").style("color:var(--tp-base-soft)")
-
-            upload_status = ui.label("No file loaded.").classes("text-sm italic") \
-                .style("color:var(--tp-base-soft)")
-
-            def _on_upload(e):
-                try:
-                    rows = dwc_svc.parse_csv(e.content.read())
-                except Exception as exc:
-                    ui.notify(f"Could not parse file: {exc}", type="negative")
-                    return
-                state["rows"]     = rows
-                state["filename"] = e.name
-                state["selected"] = None
-                state["taxon_id"] = None
-                upload_status.set_text(
-                    f"✓  {len(rows)} row{'s' if len(rows) != 1 else ''} loaded "
-                    f"from {e.name}"
-                )
-                upload_status.style("color:var(--tp-secondary)")
-                _refresh_search("")
-                search_card.set_visibility(True)
-                assign_card.set_visibility(False)
-
-            ui.upload(
-                label="Choose CSV…",
-                on_upload=_on_upload,
-                auto_upload=True,
-            ).props("accept=.csv,text/csv flat").classes("mt-2")
-
-        # ================================================================
-        # CARD 2 — Search rows
-        # ================================================================
-        search_card = ui.card().classes("w-full shadow-sm")
-        search_card.set_visibility(False)
-
-        with search_card:
-            ui.label("Find record").classes("section-label mb-3")
-
-            search_inp = (
-                ui.input(placeholder="Type date, locality, taxon, collector…")
-                .classes("w-full mb-3")
-                .props("clearable outlined dense")
-            )
-
-            results_col = ui.column().classes("w-full gap-1")
-            results_status = ui.label("").classes("text-xs italic mt-1") \
-                .style("color:var(--tp-base-soft)")
-
-        def _refresh_search(term: str):
-            hits = dwc_svc.search_rows(state["rows"], term)
-            results_col.clear()
-            results_status.set_text(
-                f"{len(hits)} match{'es' if len(hits) != 1 else ''}"
-                + (" (showing first 100)" if len(hits) == 100 else "")
-            )
-            with results_col:
-                for row in hits:
-                    summary = dwc_svc.row_summary(row)
-                    btn = (
-                        ui.button(summary)
-                        .props("flat no-caps align=left")
-                        .classes("w-full text-left text-sm")
-                        .style("justify-content:flex-start; font-size:.82rem; "
-                               "padding:4px 8px; border-radius:4px; "
-                               "color:var(--tp-base-content)")
-                    )
-                    btn.on_click(lambda _, r=row: _select_row(r))
-
-        search_inp.on_value_change(lambda e: _refresh_search(e.value or ""))
-
-        # ================================================================
-        # CARD 3 — Preview & Assign
+        # CARD 1 — Find & assign (the rapid loop; on top so no scrolling
+        # past the uploader each specimen). Upload card is built last, below.
         # ================================================================
         assign_card = ui.card().classes("w-full shadow-sm")
         assign_card.set_visibility(False)
 
         with assign_card:
-            ui.label("Preview & assign").classes("section-label mb-3")
+            # ── Selector: type → dropdown of matching rows → Enter picks ──
+            # A native `with_input` q-select, so it inherits the global
+            # highlight-first + Enter-select + advance-focus behaviour from
+            # main.py (scoped to `.q-select--with-input`) — the same keyboard
+            # flow as the identifier picker. Type → Enter → Tab → type code →
+            # Enter → Enter (save) drives the whole loop without the mouse.
+            row_sel = ui.select(
+                options={},
+                with_input=True,
+                clearable=True,
+                label="Find specimen record  (taxon, date, locality, collector…)",
+            ).classes("w-full")
+            row_sel.on_value_change(
+                lambda e: _select_row(state["rows"][e.value])
+                if e.value is not None else _clear_form())
 
-            # ── Event data preview (read-only) ──────────────────────────
-            with ui.expansion("Event data", value=True).classes("w-full mb-2"):
-                event_preview = ui.column().classes("w-full gap-0 pl-2")
+            # ── Everything below appears only once a row is selected ──────
+            form_area = ui.column().classes("w-full gap-2 mt-2")
+            form_area.set_visibility(False)
 
-            # ── Taxon resolution ────────────────────────────────────────
-            with ui.card().classes("w-full shadow-sm mb-2").style(
-                "border-left:3px solid var(--tp-secondary) !important"
-            ):
-                taxon_header = ui.label("Taxon").classes("section-label mb-2")
-                taxon_section = ui.column().classes("w-full gap-2")
+            with form_area:
+                # Taxon auto-resolution status (✓ name, or a picker on failure) —
+                # the headline confirmation, shown first.
+                ui.separator().classes("my-1")
+                taxon_status = ui.column().classes("w-full gap-2")
+                # Condensed read-only summary of the chosen row.
+                summary_box = ui.column().classes("w-full gap-1 pl-1")
 
-            # ── Per-specimen fields ─────────────────────────────────────
-            ui.separator().classes("my-2")
-            ui.label("Specimen").classes("section-label mb-2")
+                # Assign fields: identifier (required) + a couple of quick,
+                # CSV-prefilled overrides. Everything else is saved from the CSV.
+                ui.separator().classes("my-1")
 
-            def _reserved_opts() -> dict:
-                return _with_session(id_svc.reserved_codes)
+                def _reserved_opts() -> dict:
+                    return _with_session(id_svc.reserved_codes)
 
-            with ui.row().classes("w-full flex-wrap gap-3 items-end"):
-                cat_num = ui.select(
-                    options={c: c for c in _reserved_opts()},
-                    with_input=True,
-                    clearable=True,
-                    label="identifier *",
-                ).classes("w-48")   # wide enough for a full code, e.g. JJPC-00304
-                sex_sel   = ui.select(SEX_OPTIONS, label="sex").classes("w-28")
-                count_in  = ui.number("n", value=1, min=0, precision=0).classes("w-20")
-                prep_field = build_vocab_field(
-                    session_factory, preparation_vocab, "preparations",
-                    classes="flex-1 min-w-40",
-                )
-            # Keep the identifier options live, but push a new set only when it
-            # actually CHANGED (A4): an unconditional set_options every tick resets
-            # Quasar's in-progress client-side filter, clobbering the
-            # type→arrow-keys→enter→tab code-selection workflow.
-            _last_codes: list[str] = list(_reserved_opts())
-
-            def _sync_code_opts():
-                nonlocal _last_codes
-                codes = list(_reserved_opts())
-                if codes != _last_codes:
-                    _last_codes = codes
-                    cat_num.set_options({c: c for c in codes})
-
-            ui.timer(2.0, _sync_code_opts)
-
-            with ui.row().classes("w-full flex-wrap gap-3 items-end mt-3"):
-                stage_sel = ui.select(LIFE_STAGE_OPTIONS, label="lifeStage", value="adult").classes("w-32")
-                rem_in    = ui.input("materialEntityRemarks").classes("flex-1 min-w-40")
-
-            # ── Determination meta ──────────────────────────────────────
-            ui.separator().classes("my-2")
-            ui.label("Determination").classes("section-label mb-2")
-            with ui.row().classes("w-full flex-wrap gap-3 items-end"):
-                with ui.row().classes("flex-1 min-w-40 items-center gap-1"):
-                    id_by_state = build_person_field(
-                        session_factory, "identifiedBy",
-                        default_fn=_default_idby,
+                with ui.row().classes("w-full flex-wrap gap-3 items-end"):
+                    cat_num = ui.select(
+                        options={c: c for c in _reserved_opts()},
+                        with_input=True,
+                        clearable=True,
+                        label="identifier *",
+                    ).classes("w-48")   # wide enough for a full code, e.g. JJPC-00304
+                    count_in  = ui.number("n", value=1, min=0, precision=0).classes("w-20")
+                    sex_sel   = ui.select(SEX_OPTIONS, label="sex").classes("w-28")
+                    prep_field = build_vocab_field(
+                        session_factory, preparation_vocab, "preparations",
+                        classes="flex-1 min-w-40",
                     )
-                dt_id  = ui.input("dateIdentified",
-                                  placeholder="YYYY-MM-DD").classes("w-36")
-                attach_date_validation(dt_id, no_future=True)
-                type_sel = build_type_status_field(classes="w-36")
-                qual   = ui.input("qualifier",
-                                  placeholder="cf. / aff.").classes("w-28")
+                    assign_btn = ui.button("Save & assign", icon="save") \
+                        .classes("btn-save")
 
-            # ── Save bar ────────────────────────────────────────────────
-            ui.separator().classes("my-3")
-            with ui.row().classes("w-full items-center gap-4"):
-                assign_status = ui.label("").classes("text-sm italic flex-1") \
+                # Keep the identifier options live, but push a new set only when it
+                # actually CHANGED (A4): an unconditional set_options every tick resets
+                # Quasar's in-progress client-side filter, clobbering the
+                # type→arrow-keys→enter→tab code-selection workflow.
+                _last_codes: list[str] = list(_reserved_opts())
+
+                def _sync_code_opts():
+                    nonlocal _last_codes
+                    codes = list(_reserved_opts())
+                    if codes != _last_codes:
+                        _last_codes = codes
+                        cat_num.set_options({c: c for c in codes})
+
+                ui.timer(2.0, _sync_code_opts)
+
+                assign_status = ui.label("").classes("text-xs italic mt-1") \
                     .style("color:var(--tp-base-soft)")
-                assign_btn = ui.button("Save & assign", icon="save") \
-                    .classes("btn-save")
 
         # ================================================================
-        # Logic: select a row
+        # Logic: select / clear a row
         # ================================================================
+
+        def _clear_form():
+            state["selected"] = None
+            state["taxon_id"] = None
+            form_area.set_visibility(False)
+
+        def _summary_line(label: str, value: str) -> None:
+            if not value:
+                return
+            with ui.row().classes("gap-2 items-baseline"):
+                ui.label(label).classes("text-xs font-medium w-24 shrink-0") \
+                  .style("color:var(--tp-base-soft)")
+                ui.label(value).classes("text-sm")
 
         def _select_row(row: dict):
             state["selected"] = row
             state["taxon_id"] = None
-            assign_card.set_visibility(True)
+            form_area.set_visibility(True)
             assign_status.set_text("")
 
-            # Fill event preview
-            ev = dwc_svc.row_to_event_fields(row)
-            event_preview.clear()
-            with event_preview:
-                _field_row("Country",    ev["country"])
-                _field_row("State",      ev["state_province"])
-                _field_row("County",     ev["county"])
-                _field_row("Island",     ev["island"])
-                _field_row("Locality",         ev["locality"])
-                _field_row("Verbatim locality", ev["verbatim_locality"])
-                _field_row("Date",          ev["event_date"])
-                _field_row("Verbatim date", ev["verbatim_event_date"])
-                _field_row("Collector",  ev["recorded_by"])
-                lat = ev["decimal_latitude"]
-                lon = ev["decimal_longitude"]
-                if lat and lon:
-                    _field_row("Coords", f"{lat}, {lon}")
-                _field_row("Elevation",  ev["minimum_elevation_in_meters"])
-                _field_row("Habitat",    ev["habitat"])
-                _field_row("Protocol",   ev["sampling_protocol"])
-
-            # Pre-fill per-specimen fields from spreadsheet
-            sp = dwc_svc.row_to_specimen_prefill(row)
-            count_in.value  = int(sp["individual_count"] or 1)
-            prep_field["set_value"](sp["preparations"] or None)
-            stage_sel.value = sp["life_stage"] or "adult"
-            rem_in.value    = sp["occurrence_remarks"]
-
-            # Pre-fill determination meta
+            # Condensed read-only summary — enough to confirm the specimen.
+            ev  = dwc_svc.row_to_event_fields(row)
             det = dwc_svc.row_to_determination_fields(row)
-            sex_sel.value = det["sex"]
-            type_sel["set_value"](det.get("type_status") or None)
-            id_by_state["set_value"](det["identified_by"] or None)
-            dt_id.value = det["date_identified"]
+            sp  = dwc_svc.row_to_specimen_prefill(row)
+            summary_box.clear()
+            with summary_box:
+                loc = " ".join(p for p in (
+                    ev["locality"] or ev["verbatim_locality"],
+                    f"({ev['county']})" if ev["county"] else "",
+                ) if p) or ev["state_province"] or ev["country"]
+                _summary_line("Locality", loc)
+                _summary_line("Date", ev["event_date"] or ev["verbatim_event_date"])
+                _summary_line("Collector", ev["recorded_by"])
+                # Identification meta (saved from the CSV; shown read-only so the
+                # determination can be confirmed at a glance).
+                ident = " · ".join(p for p in (
+                    f"det. {det['identified_by']}" if det["identified_by"] else "",
+                    det["date_identified"],
+                    f"type: {det['type_status']}" if det["type_status"] else "",
+                ) if p)
+                _summary_line("Identified", ident)
+                lat, lon = ev["decimal_latitude"], ev["decimal_longitude"]
+                extra = " · ".join(p for p in (
+                    det["sex"],
+                    f"{lat}, {lon}" if lat and lon else "",
+                    sp["preparations"],
+                    sp["occurrence_remarks"],
+                ) if p)
+                _summary_line("", extra)
 
-            # Refresh identifier dropdown
+            # Quick specimen overrides, pre-filled from the CSV.
+            count_in.value = int(sp["individual_count"] or 1)
+            sex_sel.value  = det["sex"] or None
+            prep_field["set_value"](sp["preparations"] or None)
+
+            # Refresh identifier dropdown; leave it empty for the user to pick.
             cat_num.options = {c: c for c in _reserved_opts()}
             cat_num.update()
             cat_num.value = None
 
-            # Resolve taxon
+            # Resolve taxon in the background (shown in the summary).
             asyncio.ensure_future(_resolve_taxon(row))
 
         # ================================================================
@@ -335,16 +257,14 @@ def build_import_assign_tab(session_factory, refreshers: dict, on_saved=None) ->
 
         async def _resolve_taxon(row: dict):
             name = dwc_svc.row_scientific_name(row)
-            taxon_section.clear()
+            taxon_status.clear()
 
             if not name:
-                with taxon_section:
+                with taxon_status:
                     ui.label("No scientificName in this row — select manually below.") \
                       .classes("text-sm italic").style("color:var(--tp-base-soft)")
-                    _build_tw_search(taxon_section, row)
+                    _build_tw_search(taxon_status, row)
                 return
-
-            taxon_header.set_text(f"Taxon — {name}")
 
             # 1. Check local DB
             local = _with_session(lambda s: taxa_svc.find_taxon_by_name(s, name))
@@ -353,7 +273,7 @@ def build_import_assign_tab(session_factory, refreshers: dict, on_saved=None) ->
                 return
 
             # 2. Search TaxonWorks
-            with taxon_section:
+            with taxon_status:
                 searching_lbl = ui.label(f'Searching TaxonWorks for \"{name}\"…') \
                     .classes("text-sm italic").style("color:var(--tp-base-soft)")
 
@@ -374,19 +294,19 @@ def build_import_assign_tab(session_factory, refreshers: dict, on_saved=None) ->
                 except Exception:
                     detail = {}
 
-            taxon_section.clear()
+            taxon_status.clear()
 
             if results:
-                with taxon_section:
+                with taxon_status:
                     ui.label("Not found locally. Select from TaxonWorks:") \
                       .classes("text-xs mb-1").style("color:var(--tp-base-soft)")
-                    _build_tw_results(taxon_section, results, detail)
+                    _build_tw_results(taxon_status, results, detail)
                     with ui.row().classes("items-center gap-2 mt-2"):
                         ui.label("or").classes("text-xs").style("color:var(--tp-base-soft)")
                         ui.button("Add manually", icon="add").props("flat dense size=sm") \
                           .on_click(lambda: _open_manual_dialog(row))
             else:
-                with taxon_section:
+                with taxon_status:
                     with ui.row().classes("items-center gap-2 mb-2"):
                         ui.icon("warning", size="sm").style("color:#d97706")
                         ui.label(f'"{name}" not found in TaxonWorks.') \
@@ -477,8 +397,8 @@ def build_import_assign_tab(session_factory, refreshers: dict, on_saved=None) ->
             with session_factory() as s:
                 t = s.get(taxa_svc.Taxon, tid)
                 label = taxa_svc.format_scientific_name(t) if t else f"taxon #{tid}"
-            taxon_section.clear()
-            with taxon_section:
+            taxon_status.clear()
+            with taxon_status:
                 with ui.row().classes("items-center gap-2 flex-wrap"):
                     ui.icon("check_circle", size="sm").style("color:#16a34a")
                     ui.label(label).classes("text-sm italic")
@@ -490,8 +410,8 @@ def build_import_assign_tab(session_factory, refreshers: dict, on_saved=None) ->
 
         def _change_taxon() -> None:
             state["taxon_id"] = None
-            taxon_section.clear()
-            with taxon_section:
+            taxon_status.clear()
+            with taxon_status:
                 ui.label("Search for the correct taxon:").classes("text-xs mb-1") \
                   .style("color:var(--tp-base-soft)")
                 build_taxon_search(
@@ -550,7 +470,16 @@ def build_import_assign_tab(session_factory, refreshers: dict, on_saved=None) ->
                         if default_repo is None:
                             raise ValueError(
                                 "No default collection set — open Settings.")
-                        idby_id = id_by_state["commit"](session)
+                        # Hidden determination + specimen fields are saved straight
+                        # from the CSV row (only identifier / n / sex / preparations
+                        # are surfaced in the fast path). identifiedBy is a person FK,
+                        # resolved like recordedBy.
+                        det = dwc_svc.row_to_determination_fields(row)
+                        sp  = dwc_svc.row_to_specimen_prefill(row)
+                        _idby = (det.get("identified_by") or "").strip()
+                        idby_id = (
+                            persons_svc.get_or_create_person(session, full_name=_idby).id
+                            if _idby else None)
                         # habitat + samplingProtocol are controlled vocabularies:
                         # resolve the parsed text → FK ids (get_or_create), like the
                         # event form's commit does for the interactive tabs.
@@ -578,16 +507,16 @@ def build_import_assign_tab(session_factory, refreshers: dict, on_saved=None) ->
                                 "repository_id":     default_repo.id,
                                 "individual_count":  int(count_in.value or 1),
                                 "preparation_id":    prep_field["commit"](session),
-                                "life_stage":        stage_sel.value,
+                                "life_stage":        sp["life_stage"] or NEW_SPECIMEN_DEFAULTS["life_stage"],
                                 "basis_of_record":   NEW_SPECIMEN_DEFAULTS["basis_of_record"],
-                                "occurrence_remarks":rem_in.value,
+                                "occurrence_remarks":sp["occurrence_remarks"],
                             },
                             determination_fields={
                                 "sex":                      sex_sel.value or None,
-                                "type_status":              type_sel["get_value"]() or None,
+                                "type_status":              det.get("type_status") or None,
                                 "identified_by_id":         idby_id,
-                                "date_identified":          dt_id.value,
-                                "identification_qualifier": qual.value,
+                                "date_identified":          det.get("date_identified") or None,
+                                "identification_qualifier": None,
                                 "verbatim_identification":  dwc_svc.row_scientific_name(row),
                             },
                         )
@@ -607,14 +536,15 @@ def build_import_assign_tab(session_factory, refreshers: dict, on_saved=None) ->
                 return
 
             ui.notify(f"Saved — specimen #{saved_id}  [{code}]", type="positive")
-            assign_status.set_text(f"✓ Saved as #{saved_id}")
 
-            # Reset for next specimen
+            # Reset for the next specimen: clear the selection + fields and drop
+            # focus back on the row selector so the loop is keyboard-continuous.
             cat_num.options = {c: c for c in _reserved_opts()}
             cat_num.update()
-            cat_num.value  = None
-            state["taxon_id"] = None
-            assign_card.set_visibility(False)
+            cat_num.value = None
+            row_sel.set_value(None)          # fires _clear_form via on_value_change
+            _clear_form()
+            row_sel.run_method("focus")
 
             if on_saved:
                 on_saved()
@@ -623,11 +553,63 @@ def build_import_assign_tab(session_factory, refreshers: dict, on_saved=None) ->
 
         assign_btn.on_click(_on_assign)
 
-    # Value-based unsaved-changes signal (#47): an open assign card means a row is
-    # staged for assignment and not yet saved. _on_assign hides the card on success,
-    # so this clears itself. (More precise than the old DOM-event detection, which
-    # also fired on searching/uploading.)
+        # ================================================================
+        # CARD 2 — Upload (kept at the bottom: a once-per-session action,
+        # out of the way of the rapid find→assign loop above).
+        # ================================================================
+        with ui.card().classes("w-full shadow-sm"):
+            with ui.row().classes("items-center gap-3 mb-2"):
+                ui.label("Spreadsheet").classes("section-label")
+                ui.space()
+                ui.button("Download example CSV", icon="download") \
+                    .props("flat dense size=sm") \
+                    .on_click(lambda: ui.download(
+                        _EXAMPLE_CSV.encode("utf-8"),
+                        filename="dwc_example.csv",
+                        media_type="text/csv",
+                    )) \
+                    .tooltip("Download a two-row sample showing expected column names")
+
+            ui.label(
+                "Upload a Darwin Core CSV. Columns are matched by name "
+                "(case-insensitive, underscores and spaces ignored). "
+                "The file is held in memory for this session only."
+            ).classes("text-sm mb-3").style("color:var(--tp-base-soft)")
+
+            upload_status = ui.label("No file loaded.").classes("text-sm italic") \
+                .style("color:var(--tp-base-soft)")
+
+            def _on_upload(e):
+                try:
+                    rows = dwc_svc.parse_csv(e.content.read())
+                except Exception as exc:
+                    ui.notify(f"Could not parse file: {exc}", type="negative")
+                    return
+                state["rows"]     = rows
+                state["filename"] = e.name
+                state["selected"] = None
+                state["taxon_id"] = None
+                upload_status.set_text(
+                    f"✓  {len(rows)} row{'s' if len(rows) != 1 else ''} loaded "
+                    f"from {e.name}"
+                )
+                upload_status.style("color:var(--tp-secondary)")
+                row_sel.set_options(_row_options())
+                row_sel.set_value(None)
+                assign_card.set_visibility(True)
+                form_area.set_visibility(False)
+
+            ui.upload(
+                label="Choose CSV…",
+                on_upload=_on_upload,
+                auto_upload=True,
+            ).props("accept=.csv,text/csv flat").classes("mt-2")
+
+    # Value-based unsaved-changes signal (#47): a visible form_area means a row is
+    # staged for assignment and not yet saved. _on_assign clears it on success, so
+    # this clears itself. (More precise than the old DOM-event detection, which also
+    # fired on searching/uploading.)
     def _has_content() -> bool:
-        return bool(assign_card.visible)
+        return bool(form_area.visible)
 
     return {"has_content": _has_content}
