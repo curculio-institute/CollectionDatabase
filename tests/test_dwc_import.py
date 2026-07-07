@@ -4,9 +4,38 @@ The importer expects valid Darwin Core: headers are DwC terms, normalised only
 for casing/separators. It does NOT accept informal synonyms or remap one DwC
 term onto a different column.
 """
+import pytest
+
 from app.services.dwc_import import (
     _ALIASES, _norm_key, parse_csv, row_to_event_fields, row_to_specimen_prefill,
 )
+
+
+def test_surplus_columns_row_refuses_loudly():
+    """A row with more values than headers (usually an unescaped comma) shifts
+    every field after it, so the row is untrustworthy — parse_csv refuses the
+    whole import with a clear, row-identifying error rather than crashing in
+    _norm_key(None) (#68) or silently keeping shifted data (#62)."""
+    csv_text = (
+        "scientificName,locality\n"
+        "Sitona lineatus,near river\n"                 # good row
+        "Otiorhynchus norici,Berchtesgaden, Bavaria\n"  # unescaped comma → surplus
+    )
+    with pytest.raises(ValueError) as exc:
+        parse_csv(csv_text)
+    msg = str(exc.value)
+    assert "more values than there are columns" in msg
+    assert "Bavaria" in msg          # names the surplus value
+    assert "line 3" in msg           # names the offending row
+
+
+def test_trailing_empty_delimiters_are_tolerated():
+    """Trailing commas produce empty surplus values — harmless, not a misaligned
+    row — so they are dropped and the import proceeds."""
+    rows = parse_csv("scientificName,locality\nSitona lineatus,near river,,\n")
+    assert len(rows) == 1
+    assert rows[0]["scientificName"] == "Sitona lineatus"
+    assert rows[0]["locality"] == "near river"
 
 
 def test_alias_keys_are_all_normalised_no_dead_entries():
