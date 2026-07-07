@@ -3,11 +3,15 @@
 Reproduces the original two-column ODT template format using Fira Sans Compressed
 as a substitute for Context Condensed SSi.
 
-Three label types — all ≤ 18 mm wide:
+Three label types — all 18 mm wide; heights are *minimums* that grow with text:
 
-  data_sheet(rows)            18 × 2.5 mm   — locality / date / collector
-  determination_sheet(rows)   18 × 4.9 mm   — taxon name + determiner
-  identifier_sheet(codes)     18 × 5.5 mm   — QR code + 4-char identifier
+  data_sheet(rows)            18 × 2.5 mm min  — locality / date / collector
+  determination_sheet(rows)   18 × 4.9 mm min  — taxon name + determiner
+  identifier_sheet(codes)     18 × 7.0 mm min  — QR + collection name + big number
+
+Labels tile edge-to-edge (border-collapse), so a single cut per shared edge
+separates neighbours (no leftover strip). Each type's border ("black" cut-guide
+line or "none") is a config choice — see AppConfig.label_border_* / _border_rule.
 
 All return raw PDF bytes.
 
@@ -52,6 +56,45 @@ _FONT       = "'Fira Sans Compressed', 'Fira Sans Condensed', Arial Narrow, sans
 _FONT_SIZE  = "4pt"
 _LINE_H     = "1.41mm"   # 0.0555 in
 _PAD        = "0.19mm 0.53mm"   # top/bottom  left/right
+_TILE_PER_ROW = 10       # 18mm labels per row on A4 (10 × 18 = 180 mm < 200 mm)
+
+
+def _border_rule(choice: str) -> str:
+    """CSS `border` shorthand for a per-label-type border config choice.
+
+    ``"black"`` → a thin solid cut-guide line; anything else (``"none"``) → no
+    border. Default is black everywhere (see AppConfig.label_border_*)."""
+    return "0.15mm solid #000" if choice == "black" else "none"
+
+
+def _tiled_sheet(inner_htmls: list[str], *, border: str,
+                 cell_extra: str = "", extra_css: str = "") -> bytes:
+    """Render inner-label HTMLs as a single ``border-collapse`` table so the
+    labels **touch** — one cut per shared edge separates two neighbours, with no
+    gap/leftover strip (decided 2026-07-07). Cells are a fixed 18 mm wide and
+    wrap every ``_TILE_PER_ROW``. ``border`` picks the per-type border via
+    ``_border_rule``; ``cell_extra`` adds a per-type ``.tcell`` rule (e.g. a
+    min-height floor)."""
+    rule = _border_rule(border)
+    rows: list[str] = []
+    for start in range(0, len(inner_htmls), _TILE_PER_ROW):
+        chunk = inner_htmls[start:start + _TILE_PER_ROW]
+        tds = "".join(f'<td class="tcell">{h}</td>' for h in chunk)
+        rows.append(f"<tr>{tds}</tr>")
+    css = f"""
+    @page {{ size: A4; margin: 5mm; }}
+    * {{ box-sizing: border-box; margin: 0; padding: 0; }}
+    body {{ font-family: {_FONT}; font-size: {_FONT_SIZE}; line-height: {_LINE_H}; }}
+    em {{ font-style: italic; }}
+    .tsheet {{ border-collapse: collapse; }}
+    .tcell {{ width: {_W}; border: {rule}; padding: {_PAD};
+              vertical-align: top; overflow: hidden; page-break-inside: avoid; }}
+    {cell_extra}
+    {extra_css}
+    """
+    html = (f"<html><head><meta charset='utf-8'><style>{css}</style></head>"
+            f'<body><table class="tsheet">{"".join(rows)}</table></body></html>')
+    return HTML(string=html).write_pdf()
 
 
 # ---------------------------------------------------------------------------
@@ -277,17 +320,11 @@ def _data_line2(lbl: DataLabel) -> str:
     return _build(abbreviate_name(lbl.recorded_by))
 
 
-_DATA_CSS = _BASE_CSS + ".label { min-height: 2.5mm; }"
-
-
-def data_sheet(rows: list[DataLabel]) -> bytes:
-    """PDF sheet of data/locality labels (18 × 2.5 mm)."""
-    items = []
-    for lbl in rows:
-        items.append(f'<div class="label">{_data_inner_html(lbl)}</div>')
-    html = (f"<html><head><style>{_DATA_CSS}</style></head>"
-            f'<body><div class="sheet">{"".join(items)}</div></body></html>')
-    return HTML(string=html).write_pdf()
+def data_sheet(rows: list[DataLabel], *, border: str = "black") -> bytes:
+    """PDF sheet of data/locality labels (18 × 2.5 mm min, grows with text)."""
+    inners = [_data_inner_html(lbl) for lbl in rows]
+    return _tiled_sheet(inners, border=border,
+                        cell_extra=".tcell { min-height: 2.5mm; }")
 
 
 # ---------------------------------------------------------------------------
@@ -389,10 +426,6 @@ def _det_name_html(lbl: DeterminationLabel) -> str:
     return f"<div>{name}</div>" if name else ""           # tight → flow + grow
 
 
-# min-height keeps the historical 4.9 mm floor; overflow:visible lets a long name
-# wrap and grow the label instead of being clipped (overriding _BASE_CSS).
-_DET_CSS = _BASE_CSS + ".label { min-height: 4.9mm; overflow: visible; }"
-
 # Self-contained CSS for fit measurement: a plain *block* box at the label's
 # content width + font. Deliberately independent of the sheet/.label layout (which
 # is inline-block for pagination) so the line-box count reflects only text
@@ -428,14 +461,11 @@ def _fits_one_line(inner_html: str) -> bool:
         return True
 
 
-def determination_sheet(rows: list[DeterminationLabel]) -> bytes:
-    """PDF sheet of determination labels (18 × 4.9 mm)."""
-    items = []
-    for lbl in rows:
-        items.append(f'<div class="label">{_det_inner_html(lbl)}</div>')
-    html = (f"<html><head><style>{_DET_CSS}</style></head>"
-            f'<body><div class="sheet">{"".join(items)}</div></body></html>')
-    return HTML(string=html).write_pdf()
+def determination_sheet(rows: list[DeterminationLabel], *, border: str = "black") -> bytes:
+    """PDF sheet of determination labels (18 × 4.9 mm min, grows with text)."""
+    inners = [_det_inner_html(lbl) for lbl in rows]
+    return _tiled_sheet(inners, border=border,
+                        cell_extra=".tcell { min-height: 4.9mm; overflow: visible; }")
 
 
 # ---------------------------------------------------------------------------
@@ -465,55 +495,57 @@ def _split_identifier_code(code: str) -> tuple[str, str]:
 
 
 def _id_label_inner(code: str, collection_name: str = "") -> str:
-    """Inner HTML for one identifier label: QR image + the code column.
+    """Inner HTML for one identifier label: tiny full collection-name line, then a
+    row with the QR on the left and — to its right — the collection-code prefix
+    (``JJPC``, small) stacked *over* the sequence number (``00304``, large + bold).
 
-    Layout (#56): a self-contained vertical block — a tiny full-width collection-name
-    header (if known) on top, then a row with the QR on the left and the full code
-    ``JJPC-00304`` on one line, centred, to its right. Self-contained (``.id-label``
-    owns the whole layout) so it renders identically in the Labels sheet AND inside
-    the Print-queue grouped cell, regardless of the wrapping container.
+    Splitting the prefix onto its own line lets the number print big and legible
+    (redesign 2026-07-07); the QR still encodes the whole ``JJPC-00304``. The tiny
+    full-name line is kept (#56). Self-contained (``.id-label`` owns the whole
+    layout, including its 7 mm min-height floor) so it renders identically in the
+    Labels batch sheet AND inside the Print-queue grouped cell.
     """
+    prefix, num = _split_identifier_code(code)     # ('JJPC-', '00304')
+    prefix = prefix.rstrip("-")
     qr = _qr_data_url(code)
     name_html = (
         f'<div class="id-collname">{_e(collection_name)}</div>'
         if collection_name else ""
     )
+    prefix_html = f'<div class="id-prefix">{_e(prefix)}</div>' if prefix else ""
     return (
         f'<div class="id-label">'
         f'{name_html}'
         f'<div class="id-row">'
         f'<img src="{qr}">'
-        f'<div class="id-text"><div class="id-code">{_e(code)}</div></div>'
+        f'<div class="id-text">{prefix_html}'
+        f'<div class="id-number">{_e(num)}</div></div>'
         f'</div>'
         f'</div>'
     )
 
 
-# Shared CSS for the identifier label — included in every identifier-label CSS block.
-# ``.id-label`` is the whole self-contained block (vertical: name header over a
-# QR+code row); it fills whatever container holds it (.label / .lbl-id), so both
-# sheets render the same compact label.
+# Shared CSS for the identifier label — included in both the batch sheet and the
+# grouped cell. ``.id-label`` is the whole self-contained block and owns its 7 mm
+# min-height floor (no ``height:100%`` dependency on the container), so it renders
+# the same regardless of what wraps it.
 _ID_TEXT_CSS = """
 .id-label {
     display: flex; flex-direction: column; justify-content: center;
-    width: 100%; height: 100%;
-    font-family: 'Fira Code', 'DejaVu Sans Mono', monospace; font-weight: bold;
+    min-height: 7mm; width: 100%;
+    font-family: 'Fira Code', 'DejaVu Sans Mono', monospace;
 }
 .id-collname {
-    font-size: 2.5pt; font-weight: 600; letter-spacing: 0;
+    font-size: 2.7pt; font-weight: 600; letter-spacing: 0;
     line-height: 1.0; text-align: center; width: 100%;
-    white-space: nowrap; overflow: hidden;
+    white-space: nowrap; overflow: hidden; margin-bottom: 0.3mm;
+    font-family: 'Fira Sans Compressed', 'Fira Sans Condensed', sans-serif;
 }
 .id-row { display: flex; align-items: center; gap: 0.9mm; width: 100%; }
-.id-row img { width: 4.5mm; height: 4.5mm; flex-shrink: 0; image-rendering: pixelated; }
-.id-text { flex: 1; min-width: 0; text-align: center; overflow: hidden; }
-.id-code { font-size: 5pt; letter-spacing: 0.1pt; white-space: nowrap; }
-"""
-
-_ID_CSS = _BASE_CSS + _ID_TEXT_CSS + """
-/* .label stays inline-block (from _BASE_CSS) so labels tile across the sheet; the
-   self-contained .id-label inside owns the vertical layout. */
-.label { height: 6.5mm; padding: 0.45mm 0.5mm 0.35mm; }
+.id-row img { width: 5mm; height: 5mm; flex-shrink: 0; image-rendering: pixelated; }
+.id-text { flex: 1; min-width: 0; text-align: center; line-height: 1.0; overflow: hidden; }
+.id-prefix { font-size: 3pt; font-weight: 600; letter-spacing: 0.3pt; }
+.id-number { font-size: 10pt; font-weight: bold; letter-spacing: 0.3pt; white-space: nowrap; }
 """
 
 
@@ -525,19 +557,18 @@ def _collection_of(code: str, names: dict[str, str] | None) -> str:
     return names.get(prefix.rstrip("-"), "")
 
 
-def identifier_sheet(codes: list[str], names: dict[str, str] | None = None) -> bytes:
-    """PDF sheet of identifier-only labels (18 × 7 mm).
+def identifier_sheet(codes: list[str], names: dict[str, str] | None = None,
+                     *, border: str = "black") -> bytes:
+    """PDF sheet of identifier labels (18 × 7 mm min), tiled edge-to-edge.
 
     ``names`` maps a collection code (the code prefix) → its full name, printed in
     tiny letters above the code (see repositories.name_map). Unknown prefixes just
-    omit the name line."""
-    items = [
-        f'<div class="label">{_id_label_inner(c, _collection_of(c, names))}</div>'
-        for c in codes
-    ]
-    html = (f"<html><head><style>{_ID_CSS}</style></head>"
-            f'<body><div class="sheet">{"".join(items)}</div></body></html>')
-    return HTML(string=html).write_pdf()
+    omit the name line. ``border`` ∈ {"black", "none"} (AppConfig.label_border_identifier)."""
+    inners = [_id_label_inner(c, _collection_of(c, names)) for c in codes]
+    return _tiled_sheet(
+        inners, border=border, extra_css=_ID_TEXT_CSS,
+        cell_extra=".tcell { vertical-align: middle; padding: 0.35mm 0.5mm; }",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -586,28 +617,37 @@ class LabelGroup:
 # (columns stretch or wrap across group boundaries), but table layout is solid.
 # Each group is an inline-block box that wraps with a large margin; inside it a
 # fixed-layout table has one column per specimen and one row per band (data /
-# identifier / determination). `border-spacing` gives the small inter-specimen
-# gap with zero vertical gap, so a specimen's column stays together for cutting.
-_GROUPED_CSS = _BASE_CSS + _ID_TEXT_CSS + f"""
+# identifier / determination). The chunk table is `border-collapse: collapse`, so
+# every label in a group **touches its neighbours** (one cut per shared edge, no
+# leftover strip); the large `_GROUP_GAP` between groups keeps different queue
+# actions separable (decided 2026-07-07: touch within a group, gap between groups).
+# Per-band borders come from config (AppConfig.label_border_*).
+
+def _grouped_css(borders: dict[str, str] | None = None) -> str:
+    borders = borders or {}
+    bd = _border_rule(borders.get("data", "black"))
+    bt = _border_rule(borders.get("determination", "black"))
+    bi = _border_rule(borders.get("identifier", "black"))
+    return _BASE_CSS + _ID_TEXT_CSS + f"""
 .printed-at {{ font-size: 5pt; color: #666; margin-bottom: 3mm; }}
 .group {{ display: inline-block; vertical-align: top; line-height: {_LINE_H}; margin: 0 {_GROUP_GAP} {_GROUP_GAP} 0; }}
 .group-header {{ font-size: 5pt; color: #666; margin-bottom: 0.4mm; letter-spacing: 0.2pt; }}
-.chunk {{ table-layout: fixed; border-collapse: separate; border-spacing: {_SPEC_GAP} 0; page-break-inside: avoid; }}
+.chunk {{ table-layout: fixed; border-collapse: collapse; page-break-inside: avoid; }}
 .chunk + .chunk {{ margin-top: {_CHUNK_GAP}; }}
 .cell {{ width: 18mm; padding: 0; vertical-align: top; }}
 .lbl-data {{
     min-height: 2.5mm;
-    border: 0.1mm dashed #aaa; padding: 0.19mm 0.53mm; overflow: hidden;
+    border: {bd}; padding: 0.19mm 0.53mm; overflow: hidden;
     font-size: {_FONT_SIZE};
 }}
 .lbl-det {{
     min-height: 4.9mm;
-    border: 0.1mm dashed #aaa; padding: 0.19mm 0.53mm; overflow: visible;
+    border: {bt}; padding: 0.19mm 0.53mm; overflow: visible;
     font-size: {_FONT_SIZE};
 }}
 .lbl-id {{
-    height: 6.5mm;
-    border: 0.1mm dashed #aaa; padding: 0.3mm 0.5mm;
+    min-height: 7mm;
+    border: {bi}; padding: 0.3mm 0.5mm;
     overflow: hidden;
 }}
 """
@@ -660,18 +700,22 @@ def _group_html(group: LabelGroup, names: dict[str, str] | None = None) -> str:
 
 
 def _grouped_html(groups: list[LabelGroup], printed_at: str,
-                  names: dict[str, str] | None = None) -> str:
+                  names: dict[str, str] | None = None,
+                  borders: dict[str, str] | None = None) -> str:
     body = "".join(_group_html(g, names) for g in groups if g.specimens)
     stamp = f'<div class="printed-at">Printed: {_e(printed_at)}</div>'
-    return (f"<html><head><style>{_GROUPED_CSS}</style></head>"
+    return (f"<html><head><style>{_grouped_css(borders)}</style></head>"
             f'<body>{stamp}<div class="sheet">{body}</div></body></html>')
 
 
 def grouped_sheet(groups: list[LabelGroup], printed_at: str,
-                  names: dict[str, str] | None = None) -> bytes:
+                  names: dict[str, str] | None = None,
+                  borders: dict[str, str] | None = None) -> bytes:
     """Render queued labels as a grouped, column-aligned sheet (see module note).
 
-    ``names`` maps collection code → full name for the identifier band (#56)."""
-    return HTML(string=_grouped_html(groups, printed_at, names)).write_pdf()
+    ``names`` maps collection code → full name for the identifier band (#56).
+    ``borders`` maps ``"data"``/``"determination"``/``"identifier"`` → ``"black"``
+    | ``"none"`` (AppConfig.label_border_*); default black."""
+    return HTML(string=_grouped_html(groups, printed_at, names, borders)).write_pdf()
 
 

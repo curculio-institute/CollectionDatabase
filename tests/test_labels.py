@@ -240,3 +240,57 @@ def test_event_preview_includes_db_id():
     ev = CollectingEvent(locality="Kramerplateau", event_date="2025-06-14")
     ev.id = 42
     assert "#42" in format_event_preview_html(ev)
+
+
+# ---------------------------------------------------------------------------
+# Identifier redesign + per-type borders + touching layout (2026-07-07)
+# ---------------------------------------------------------------------------
+from app.services.labels import (  # noqa: E402
+    _id_label_inner, _border_rule, _grouped_css, identifier_sheet,
+)
+
+
+def test_identifier_splits_prefix_over_number():
+    """The code prints as a small collection prefix line over a big number, not
+    one inline 'JJPC-00304' string — so the number can be large and legible."""
+    html = _id_label_inner("JJPC-00304", "Jakob Jilg Private Collection")
+    assert '<div class="id-prefix">JJPC</div>' in html
+    assert '<div class="id-number">00304</div>' in html
+    assert "Jakob Jilg Private Collection" in html       # tiny full-name line kept
+    assert "JJPC-00304" not in html                       # not one inline string
+
+
+def test_identifier_legacy_code_without_hyphen():
+    """A hyphen-less legacy code has no prefix line; the whole code is the number."""
+    html = _id_label_inner("abcd", "")
+    assert 'id-prefix' not in html
+    assert '<div class="id-number">abcd</div>' in html
+
+
+def test_border_rule_choices():
+    assert _border_rule("black") == "0.15mm solid #000"
+    assert _border_rule("none") == "none"
+    assert _border_rule("anything-else") == "none"
+
+
+def test_grouped_css_threads_per_type_borders():
+    css = _grouped_css({"data": "none", "determination": "black", "identifier": "black"})
+    # data band → no border; det + id bands → solid black.
+    assert ".lbl-data {" in css and "border: none;" in css
+    assert "0.15mm solid #000" in css                     # det/id borders present
+    # labels within a group touch (single shared cut edge)
+    assert "border-collapse: collapse;" in css
+
+
+def test_grouped_css_default_is_black_everywhere():
+    css = _grouped_css(None)
+    assert "border: none;" not in css
+    assert css.count("0.15mm solid #000") >= 3            # all three bands
+
+
+def test_identifier_sheet_border_toggle_changes_output():
+    codes = ["JJPC-00304", "JJPC-00305"]
+    black = identifier_sheet(codes, border="black")
+    none = identifier_sheet(codes, border="none")
+    assert black != none                                  # border choice reaches the PDF
+    assert isinstance(black, bytes) and black[:4] == b"%PDF"

@@ -349,8 +349,16 @@ def set_override_for_identical(session: Session, queue_id: int, text: str | None
 def build_pdf(session: Session, printed_at: str | None = None) -> bytes:
     """Render all queued labels into a single grouped PDF (see `queued_groups`)."""
     from app.services import repositories as repo_svc
+    from app.config import get_config
     groups = queued_groups(session)
-    return lbl.grouped_sheet(groups, printed_at or _utcnow(), repo_svc.name_map(session))
+    cfg = get_config()
+    borders = {
+        "data":          cfg.label_border_data,
+        "determination": cfg.label_border_determination,
+        "identifier":    cfg.label_border_identifier,
+    }
+    return lbl.grouped_sheet(
+        groups, printed_at or _utcnow(), repo_svc.name_map(session), borders)
 
 
 def clear_queue(session: Session) -> int:

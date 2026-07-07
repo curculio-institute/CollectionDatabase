@@ -962,8 +962,20 @@ external-id buttons; returns `{button, refresh, has_content, commit, clear, stag
 CatalogNumber format: `"collectionCode" + "-" + 5-digit zero-padded ascending number`
 (e.g. `JJPC-00001`, `JJPC-03963`). Generated via `id_svc.reserve_sequential_codes()`.
 
-Code label layout: one QR-code; collection code prefix on one line; the 5-digit number on
-the next line in a larger size.
+Code label layout (18 × 7 mm min): a tiny full collection-name line on top; below it a
+row with the QR on the left and — to its right — the collection-code **prefix** (`JJPC`,
+small) stacked *over* the **number** (`00304`, large + bold, 10 pt). Splitting the prefix
+onto its own line lets the number print big and legible; the QR still encodes the whole
+`JJPC-00304`. Built by `labels._id_label_inner` + `_ID_TEXT_CSS`, shared verbatim by the
+Labels-tab batch sheet and the print-queue grouped cell.
+
+**Touching layout + borders.** All label sheets tile **edge-to-edge** (`border-collapse:
+collapse`), so a single cut per shared edge separates neighbours with no leftover strip —
+labels within a group touch; different groups keep a gap (`_GROUP_GAP`). Each label type's
+border is a config choice — `"black"` (a thin solid cut-guide line) or `"none"` —
+independently per type (`AppConfig.label_border_data` / `_determination` / `_identifier`,
+default black; `labels._border_rule`), set in Settings and passed into `identifier_sheet` /
+`grouped_sheet`.
 
 ### CatalogNumber lifecycle
 
@@ -1051,10 +1063,13 @@ sheet** (`labels.py::grouped_sheet`, fed by `print_queue.py::queued_groups`):
   `next_print_group_id(session)` (columns added in migration 0028). Groups flow as
   inline-block boxes that wrap, separated by a large gap.
 - **Within a group, one column per specimen**, with bands stacked top→bottom: **data /
-  identifier / determination**. A specimen's own labels touch (no gap) so they stay
-  associated while cutting; specimens are separated by a small gap. Built as an HTML
-  `<table>` per chunk (WeasyPrint's grid/inline-block sizing is unreliable; tables are not).
-  Wide groups wrap at `_LABELS_PER_ROW` columns. Gap/border metrics are named constants in
+  identifier / determination**. The chunk `<table>` is `border-collapse: collapse`, so
+  **every label in a group touches its neighbours** — one cut per shared edge, no leftover
+  strip (decided 2026-07-07: touch within a group, gap between groups; only same-group
+  labels need cutting in one run). Built as an HTML `<table>` per chunk (WeasyPrint's
+  grid/inline-block sizing is unreliable; tables are not). Wide groups wrap at
+  `_LABELS_PER_ROW` columns. Per-type borders come from config (`AppConfig.label_border_*`,
+  default black; see "Code label layout" above); other gap metrics are named constants in
   `labels.py` — tune by eye against a real PDF.
 - **Column reconstruction:** a data/determination row joins its column by
   `collection_object_id`; an identifier row joins by its label code's `collection_object_id`

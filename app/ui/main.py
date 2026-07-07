@@ -2498,7 +2498,9 @@ def index():
                             ui.notify("No reserved codes left in this batch.", type="warning")
                             return
                         names = _with_session(repo_svc.name_map)
-                        pdf = lbl_svc.identifier_sheet(codes, names)
+                        pdf = lbl_svc.identifier_sheet(
+                            codes, names,
+                            border=get_config().label_border_identifier)
                         ui.download(pdf, filename=f"identifiers_reprint_batch{bid}.pdf",
                                     media_type="application/pdf")
                         id_status.set_text(f"✓ Reprinted {len(codes)} codes from batch {bid}")
@@ -2718,6 +2720,30 @@ def index():
 
             ui.separator().classes("my-3")
 
+            # ── Printed-label borders (per type) ──────────────────────────
+            ui.label("Printed-label borders").classes("text-sm font-medium mb-1")
+            ui.label(
+                "A thin black cut-guide line around each label, or none. Set per "
+                "label type. Applies to the Labels-tab batch sheet and the print queue."
+            ).classes("text-xs mb-2").style("color:var(--tp-base-soft)")
+            _cfg_lb = get_config()
+            _border_opts = {"black": "Black", "none": "None"}
+            with ui.row().classes("gap-4 items-center flex-wrap"):
+                with ui.column().classes("gap-0"):
+                    ui.label("Data").classes("text-xs").style("color:var(--tp-base-soft)")
+                    label_border_data_tog = ui.toggle(
+                        _border_opts, value=_cfg_lb.label_border_data).props("no-caps dense")
+                with ui.column().classes("gap-0"):
+                    ui.label("Determination").classes("text-xs").style("color:var(--tp-base-soft)")
+                    label_border_det_tog = ui.toggle(
+                        _border_opts, value=_cfg_lb.label_border_determination).props("no-caps dense")
+                with ui.column().classes("gap-0"):
+                    ui.label("Identifier").classes("text-xs").style("color:var(--tp-base-soft)")
+                    label_border_id_tog = ui.toggle(
+                        _border_opts, value=_cfg_lb.label_border_identifier).props("no-caps dense")
+
+            ui.separator().classes("my-3")
+
             # ── Default names ─────────────────────────────────────────────
             ui.label("Default names").classes("text-sm font-medium mb-1")
             ui.label(
@@ -2784,6 +2810,9 @@ def index():
                 cfg.map_default_layer     = map_layer_sel.value or "street"
                 cfg.digitize_layout       = digitize_layout_toggle.value or "normal"
                 cfg.default_license       = default_license_sel.value or ""
+                cfg.label_border_data          = label_border_data_tog.value or "black"
+                cfg.label_border_determination = label_border_det_tog.value or "black"
+                cfg.label_border_identifier    = label_border_id_tog.value or "black"
                 with _sf() as _s:
                     with _s.begin():
                         # The default collection is a flag on the repository vocab
