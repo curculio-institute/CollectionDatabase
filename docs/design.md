@@ -962,17 +962,15 @@ external-id buttons; returns `{button, refresh, has_content, commit, clear, stag
 CatalogNumber format: `"collectionCode" + "-" + 5-digit zero-padded ascending number`
 (e.g. `JJPC-00001`, `JJPC-03963`). Generated via `id_svc.reserve_sequential_codes()`.
 
-Code label layout (18 × 7 mm min): a tiny full collection-name line on top; below it a
-row with the **number on the left** and the **QR on the right**. The number is the
-collection-code **prefix** with its hyphen (`JJPC-`, small) stacked *over* the sequence
-**number** (`00304`, large + bold). Splitting the prefix onto its own line lets the number
-print big; it is **auto-sized** (`_id_number_font_pt`) so a longer code (6+ digits) shrinks
-to fit instead of overflowing (4–5 digits hit the ~10 pt cap). The prefix keeps its hyphen
-because the DB codes are `JJPC-00304`; the QR still encodes the whole code. **Number left /
-QR right is deliberate:** the specimen is pinned through the label's centre-right, so a
-readable digit there would be destroyed — the pin pierces the error-tolerant QR instead.
-Built by `labels._id_label_inner` + `_ID_TEXT_CSS`, shared verbatim by the Labels-tab batch
-sheet and the print-queue grouped cell.
+Code label layout (18 × 7 mm min; follows the user's own template): the **QR on the left**,
+and to its right a **centred stack of three lines** — the full collection name (tiny), the
+collection-code **prefix with its hyphen** (`JJPC-`, since the DB codes are `JJPC-00304`),
+and the sequence **number** (large + bold). The number is **auto-sized** (`_id_number_font_pt`,
+condensed-font digit advance measured at 0.182 mm/pt/char) so a longer code (6+ digits, e.g.
+`000023`) shrinks to fit the fixed text column instead of overflowing; 4–5 digit codes hit the
+~10.5 pt cap. The whole label uses the condensed label font (Fira Sans Compressed). The QR
+encodes the whole `JJPC-00304`. Built by `labels._id_label_inner` + `_ID_TEXT_CSS`, shared
+verbatim by the Labels-tab batch sheet and the print-queue grouped cell.
 
 **Cutting layout + borders.** All label sheets tile with a small `_LABEL_GAP` between
 labels (`border-collapse: separate`), so each label keeps its **own complete border** and
