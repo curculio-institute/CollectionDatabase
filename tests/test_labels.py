@@ -251,20 +251,28 @@ from app.services.labels import (  # noqa: E402
 
 
 def test_identifier_splits_prefix_over_number():
-    """The code prints as a small collection prefix line over a big number, not
-    one inline 'JJPC-00304' string — so the number can be large and legible."""
+    """The code prints as a small collection prefix line (with its hyphen, since the
+    DB codes are 'JJPC-00304') over a big auto-sized number — not one inline string."""
     html = _id_label_inner("JJPC-00304", "Jakob Jilg Private Collection")
-    assert '<div class="id-prefix">JJPC</div>' in html
-    assert '<div class="id-number">00304</div>' in html
+    assert '<div class="id-prefix">JJPC-</div>' in html   # hyphen kept
+    assert '<div class="id-number" style="font-size:' in html and ">00304</div>" in html
     assert "Jakob Jilg Private Collection" in html       # tiny full-name line kept
     assert "JJPC-00304" not in html                       # not one inline string
+
+
+def test_identifier_number_autosizes_down_for_long_codes():
+    """A 6+ digit number shrinks below the 4–5 digit cap so it never overflows."""
+    from app.services.labels import _id_number_font_pt
+    assert _id_number_font_pt("00304") == _id_number_font_pt("42931")   # 5-digit at cap
+    assert _id_number_font_pt("100000") < _id_number_font_pt("00304")   # 6-digit smaller
+    assert _id_number_font_pt("1234567") < _id_number_font_pt("100000") # 7-digit smaller still
 
 
 def test_identifier_legacy_code_without_hyphen():
     """A hyphen-less legacy code has no prefix line; the whole code is the number."""
     html = _id_label_inner("abcd", "")
     assert 'id-prefix' not in html
-    assert '<div class="id-number">abcd</div>' in html
+    assert 'class="id-number"' in html and ">abcd</div>" in html
 
 
 def test_border_rule_choices():

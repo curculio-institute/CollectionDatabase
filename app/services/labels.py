@@ -499,32 +499,58 @@ def _split_identifier_code(code: str) -> tuple[str, str]:
     return code[:idx + 1], code[idx + 1:]
 
 
+# Available width (mm) for the number beside the QR, and the monospace advance in
+# mm per point per character (~0.6 em × 0.35278 mm/pt). Used to auto-size the number
+# so a longer code (e.g. 6-digit 100000) shrinks to fit instead of overflowing.
+_ID_NUM_AVAIL_MM = 10.6
+_MONO_ADVANCE_MM_PER_PT = 0.212
+_ID_NUM_MAX_PT = 10.5
+_ID_NUM_MIN_PT = 6.0
+
+
+def _id_number_font_pt(num: str) -> float:
+    """Point size for the big number so it fits the fixed text column beside the QR.
+
+    Monospace advance is proportional to font size, so the width of ``n`` chars is
+    ``n × pt × _MONO_ADVANCE_MM_PER_PT``; solve for the pt that fills the available
+    width, then clamp. 4–5 digit codes hit the cap (~10.5 pt); 6+ digits shrink."""
+    n = max(len(num), 1)
+    pt = _ID_NUM_AVAIL_MM / (n * _MONO_ADVANCE_MM_PER_PT)
+    return round(max(_ID_NUM_MIN_PT, min(_ID_NUM_MAX_PT, pt)), 1)
+
+
 def _id_label_inner(code: str, collection_name: str = "") -> str:
     """Inner HTML for one identifier label: tiny full collection-name line, then a
     row with the QR on the left and — to its right — the collection-code prefix
-    (``JJPC``, small) stacked *over* the sequence number (``00304``, large + bold).
+    (``JJPC-``, small) stacked *over* the sequence number (``00304``, large + bold,
+    auto-sized to fit).
 
     Splitting the prefix onto its own line lets the number print big and legible
-    (redesign 2026-07-07); the QR still encodes the whole ``JJPC-00304``. The tiny
-    full-name line is kept (#56). Self-contained (``.id-label`` owns the whole
-    layout, including its 7 mm min-height floor) so it renders identically in the
-    Labels batch sheet AND inside the Print-queue grouped cell.
+    (redesign 2026-07-07); the QR still encodes the whole ``JJPC-00304``. The prefix
+    keeps its trailing hyphen (the DB codes are ``JJPC-00304``, so the two lines read
+    ``JJPC-`` / ``00304``). The tiny full-name line is kept (#56).
+
+    **Number LEFT, QR RIGHT**: the specimen is pinned through the centre-right of the
+    label, which would pierce (and ruin) the readable number if it sat on the right.
+    Keeping the number on the left puts the pin through the QR instead — a QR tolerates
+    a small hole (error correction), a digit does not. Self-contained so it renders
+    identically in the Labels batch sheet AND the Print-queue grouped cell.
     """
     prefix, num = _split_identifier_code(code)     # ('JJPC-', '00304')
-    prefix = prefix.rstrip("-")
     qr = _qr_data_url(code)
     name_html = (
         f'<div class="id-collname">{_e(collection_name)}</div>'
         if collection_name else ""
     )
     prefix_html = f'<div class="id-prefix">{_e(prefix)}</div>' if prefix else ""
+    num_pt = _id_number_font_pt(num)
     return (
         f'<div class="id-label">'
         f'{name_html}'
         f'<div class="id-row">'
-        f'<img src="{qr}">'
         f'<div class="id-text">{prefix_html}'
-        f'<div class="id-number">{_e(num)}</div></div>'
+        f'<div class="id-number" style="font-size:{num_pt}pt">{_e(num)}</div></div>'
+        f'<img src="{qr}">'
         f'</div>'
         f'</div>'
     )
@@ -550,7 +576,8 @@ _ID_TEXT_CSS = """
 .id-row img { width: 5mm; height: 5mm; flex-shrink: 0; image-rendering: pixelated; }
 .id-text { flex: 1; min-width: 0; text-align: center; line-height: 1.0; overflow: hidden; }
 .id-prefix { font-size: 3pt; font-weight: 600; letter-spacing: 0.3pt; }
-.id-number { font-size: 10pt; font-weight: bold; letter-spacing: 0.3pt; white-space: nowrap; }
+/* font-size is set inline per label (auto-sized to fit; see _id_number_font_pt). */
+.id-number { font-weight: bold; letter-spacing: 0.3pt; white-space: nowrap; }
 """
 
 
