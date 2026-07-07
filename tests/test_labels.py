@@ -278,8 +278,10 @@ def test_grouped_css_threads_per_type_borders():
     # data band → no border; det + id bands → solid black.
     assert ".lbl-data {" in css and "border: none;" in css
     assert "0.15mm solid #000" in css                     # det/id borders present
-    # labels within a group touch (single shared cut edge)
-    assert "border-collapse: collapse;" in css
+    # labels within a group are separated by a small gap (each its own border),
+    # small enough for one cut per edge — not touching (bordered labels need space).
+    assert "border-collapse: separate;" in css
+    assert "border-spacing:" in css
 
 
 def test_grouped_css_default_is_black_everywhere():

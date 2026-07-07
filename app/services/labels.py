@@ -9,8 +9,9 @@ Three label types — all 18 mm wide; heights are *minimums* that grow with text
   determination_sheet(rows)   18 × 4.9 mm min  — taxon name + determiner
   identifier_sheet(codes)     18 × 7.0 mm min  — QR + collection name + big number
 
-Labels tile edge-to-edge (border-collapse), so a single cut per shared edge
-separates neighbours (no leftover strip). Each type's border ("black" cut-guide
+Labels tile with a small `_LABEL_GAP` between them (border-collapse: separate), so
+each keeps its own complete border yet a single cut down the gap separates two
+neighbours (no leftover strip, not two cuts). Each type's border ("black" cut-guide
 line or "none") is a config choice — see AppConfig.label_border_* / _border_rule.
 
 All return raw PDF bytes.
@@ -57,6 +58,10 @@ _FONT_SIZE  = "4pt"
 _LINE_H     = "1.41mm"   # 0.0555 in
 _PAD        = "0.19mm 0.53mm"   # top/bottom  left/right
 _TILE_PER_ROW = 10       # 18mm labels per row on A4 (10 × 18 = 180 mm < 200 mm)
+# Small gap between neighbouring labels: enough to *separate* a black border (each
+# label keeps its own complete rectangle), but small enough that a single cut down
+# the middle parts them with no leftover strip — not two cuts (decided 2026-07-07).
+_LABEL_GAP  = "0.6mm"
 
 
 def _border_rule(choice: str) -> str:
@@ -69,12 +74,12 @@ def _border_rule(choice: str) -> str:
 
 def _tiled_sheet(inner_htmls: list[str], *, border: str,
                  cell_extra: str = "", extra_css: str = "") -> bytes:
-    """Render inner-label HTMLs as a single ``border-collapse`` table so the
-    labels **touch** — one cut per shared edge separates two neighbours, with no
-    gap/leftover strip (decided 2026-07-07). Cells are a fixed 18 mm wide and
-    wrap every ``_TILE_PER_ROW``. ``border`` picks the per-type border via
-    ``_border_rule``; ``cell_extra`` adds a per-type ``.tcell`` rule (e.g. a
-    min-height floor)."""
+    """Render inner-label HTMLs as a table with a small ``_LABEL_GAP`` between
+    labels (``border-collapse: separate``): each label keeps its own complete
+    border and neighbours are separated, yet the gap is small enough for one cut
+    per edge with no leftover strip. Cells are a fixed 18 mm wide and wrap every
+    ``_TILE_PER_ROW``. ``border`` picks the per-type border via ``_border_rule``;
+    ``cell_extra`` adds a per-type ``.tcell`` rule (e.g. a min-height floor)."""
     rule = _border_rule(border)
     rows: list[str] = []
     for start in range(0, len(inner_htmls), _TILE_PER_ROW):
@@ -86,7 +91,7 @@ def _tiled_sheet(inner_htmls: list[str], *, border: str,
     * {{ box-sizing: border-box; margin: 0; padding: 0; }}
     body {{ font-family: {_FONT}; font-size: {_FONT_SIZE}; line-height: {_LINE_H}; }}
     em {{ font-style: italic; }}
-    .tsheet {{ border-collapse: collapse; }}
+    .tsheet {{ border-collapse: separate; border-spacing: {_LABEL_GAP}; }}
     .tcell {{ width: {_W}; border: {rule}; padding: {_PAD};
               vertical-align: top; overflow: hidden; page-break-inside: avoid; }}
     {cell_extra}
@@ -532,7 +537,7 @@ def _id_label_inner(code: str, collection_name: str = "") -> str:
 _ID_TEXT_CSS = """
 .id-label {
     display: flex; flex-direction: column; justify-content: center;
-    min-height: 7mm; width: 100%;
+    min-height: 6.5mm; width: 100%;
     font-family: 'Fira Code', 'DejaVu Sans Mono', monospace;
 }
 .id-collname {
@@ -567,7 +572,7 @@ def identifier_sheet(codes: list[str], names: dict[str, str] | None = None,
     inners = [_id_label_inner(c, _collection_of(c, names)) for c in codes]
     return _tiled_sheet(
         inners, border=border, extra_css=_ID_TEXT_CSS,
-        cell_extra=".tcell { vertical-align: middle; padding: 0.35mm 0.5mm; }",
+        cell_extra=".tcell { vertical-align: middle; padding: 0.2mm 0.5mm; }",
     )
 
 
@@ -617,11 +622,12 @@ class LabelGroup:
 # (columns stretch or wrap across group boundaries), but table layout is solid.
 # Each group is an inline-block box that wraps with a large margin; inside it a
 # fixed-layout table has one column per specimen and one row per band (data /
-# identifier / determination). The chunk table is `border-collapse: collapse`, so
-# every label in a group **touches its neighbours** (one cut per shared edge, no
-# leftover strip); the large `_GROUP_GAP` between groups keeps different queue
-# actions separable (decided 2026-07-07: touch within a group, gap between groups).
-# Per-band borders come from config (AppConfig.label_border_*).
+# identifier / determination). The chunk table is `border-collapse: separate` with
+# a small `_LABEL_GAP`, so every label keeps its own complete border and neighbours
+# are **separated by a thin gap** — small enough for one cut down the gap (no
+# leftover strip, not two cuts). The large `_GROUP_GAP` between groups keeps
+# different queue actions separable (decided 2026-07-07: small gap within a group,
+# large gap between groups). Per-band borders come from config (AppConfig.label_border_*).
 
 def _grouped_css(borders: dict[str, str] | None = None) -> str:
     borders = borders or {}
@@ -632,7 +638,7 @@ def _grouped_css(borders: dict[str, str] | None = None) -> str:
 .printed-at {{ font-size: 5pt; color: #666; margin-bottom: 3mm; }}
 .group {{ display: inline-block; vertical-align: top; line-height: {_LINE_H}; margin: 0 {_GROUP_GAP} {_GROUP_GAP} 0; }}
 .group-header {{ font-size: 5pt; color: #666; margin-bottom: 0.4mm; letter-spacing: 0.2pt; }}
-.chunk {{ table-layout: fixed; border-collapse: collapse; page-break-inside: avoid; }}
+.chunk {{ table-layout: fixed; border-collapse: separate; border-spacing: {_LABEL_GAP}; page-break-inside: avoid; }}
 .chunk + .chunk {{ margin-top: {_CHUNK_GAP}; }}
 .cell {{ width: 18mm; padding: 0; vertical-align: top; }}
 .lbl-data {{
@@ -646,8 +652,8 @@ def _grouped_css(borders: dict[str, str] | None = None) -> str:
     font-size: {_FONT_SIZE};
 }}
 .lbl-id {{
-    min-height: 7mm;
-    border: {bi}; padding: 0.3mm 0.5mm;
+    min-height: 6.5mm;
+    border: {bi}; padding: 0.2mm 0.5mm;
     overflow: hidden;
 }}
 """
