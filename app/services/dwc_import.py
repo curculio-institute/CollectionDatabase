@@ -86,6 +86,23 @@ def parse_csv(content: bytes | str) -> list[dict[str, str]]:
     reader = csv.DictReader(io.StringIO(text))
     rows = []
     for raw in reader:
+        # A row with more values than headers lands its surplus under
+        # csv.DictReader's restkey (None). That almost always means an
+        # unescaped comma inside a field, which shifts every column after it —
+        # the whole row is misaligned and its values can no longer be trusted.
+        # Refuse the import loudly, naming the row, rather than crash opaquely
+        # in _norm_key(None) (#68) or silently keep shifted data (never skip
+        # silently, #62). Trailing empty delimiters (harmless) are dropped.
+        surplus = raw.pop(None, None)
+        if surplus:
+            extra = [v for v in surplus if (v or "").strip()]
+            if extra:
+                raise ValueError(
+                    f"Row at line {reader.line_num} has more values than there "
+                    f"are columns (surplus: {extra}). This usually means an "
+                    f"unescaped comma inside a field — quote that field (or fix "
+                    f"the row) and re-upload. No rows were imported."
+                )
         norm = _normalise_row(raw)
         if any(v for v in norm.values()):
             rows.append(norm)
