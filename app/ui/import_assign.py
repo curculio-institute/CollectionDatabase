@@ -109,58 +109,8 @@ def build_import_assign_tab(session_factory, refreshers: dict, on_saved=None) ->
     with ui.column().classes("w-full max-w-4xl mx-auto px-4 pt-6 pb-16 gap-4"):
 
         # ================================================================
-        # CARD 1 — Upload
-        # ================================================================
-        with ui.card().classes("w-full shadow-sm"):
-            with ui.row().classes("items-center gap-3 mb-2"):
-                ui.label("Spreadsheet").classes("section-label")
-                ui.space()
-                ui.button("Download example CSV", icon="download") \
-                    .props("flat dense size=sm") \
-                    .on_click(lambda: ui.download(
-                        _EXAMPLE_CSV.encode("utf-8"),
-                        filename="dwc_example.csv",
-                        media_type="text/csv",
-                    )) \
-                    .tooltip("Download a two-row sample showing expected column names")
-
-            ui.label(
-                "Upload a Darwin Core CSV. Columns are matched by name "
-                "(case-insensitive, underscores and spaces ignored). "
-                "The file is held in memory for this session only."
-            ).classes("text-sm mb-3").style("color:var(--tp-base-soft)")
-
-            upload_status = ui.label("No file loaded.").classes("text-sm italic") \
-                .style("color:var(--tp-base-soft)")
-
-            def _on_upload(e):
-                try:
-                    rows = dwc_svc.parse_csv(e.content.read())
-                except Exception as exc:
-                    ui.notify(f"Could not parse file: {exc}", type="negative")
-                    return
-                state["rows"]     = rows
-                state["filename"] = e.name
-                state["selected"] = None
-                state["taxon_id"] = None
-                upload_status.set_text(
-                    f"✓  {len(rows)} row{'s' if len(rows) != 1 else ''} loaded "
-                    f"from {e.name}"
-                )
-                upload_status.style("color:var(--tp-secondary)")
-                row_sel.set_options(_row_options())
-                row_sel.set_value(None)
-                assign_card.set_visibility(True)
-                form_area.set_visibility(False)
-
-            ui.upload(
-                label="Choose CSV…",
-                on_upload=_on_upload,
-                auto_upload=True,
-            ).props("accept=.csv,text/csv flat").classes("mt-2")
-
-        # ================================================================
-        # CARD 2 — Find & assign (the rapid loop)
+        # CARD 1 — Find & assign (the rapid loop; on top so no scrolling
+        # past the uploader each specimen). Upload card is built last, below.
         # ================================================================
         assign_card = ui.card().classes("w-full shadow-sm")
         assign_card.set_visibility(False)
@@ -271,6 +221,14 @@ def build_import_assign_tab(session_factory, refreshers: dict, on_saved=None) ->
                 _summary_line("Locality", loc)
                 _summary_line("Date", ev["event_date"] or ev["verbatim_event_date"])
                 _summary_line("Collector", ev["recorded_by"])
+                # Identification meta (saved from the CSV; shown read-only so the
+                # determination can be confirmed at a glance).
+                ident = " · ".join(p for p in (
+                    f"det. {det['identified_by']}" if det["identified_by"] else "",
+                    det["date_identified"],
+                    f"type: {det['type_status']}" if det["type_status"] else "",
+                ) if p)
+                _summary_line("Identified", ident)
                 lat, lon = ev["decimal_latitude"], ev["decimal_longitude"]
                 extra = " · ".join(p for p in (
                     det["sex"],
@@ -594,6 +552,58 @@ def build_import_assign_tab(session_factory, refreshers: dict, on_saved=None) ->
                 fn()
 
         assign_btn.on_click(_on_assign)
+
+        # ================================================================
+        # CARD 2 — Upload (kept at the bottom: a once-per-session action,
+        # out of the way of the rapid find→assign loop above).
+        # ================================================================
+        with ui.card().classes("w-full shadow-sm"):
+            with ui.row().classes("items-center gap-3 mb-2"):
+                ui.label("Spreadsheet").classes("section-label")
+                ui.space()
+                ui.button("Download example CSV", icon="download") \
+                    .props("flat dense size=sm") \
+                    .on_click(lambda: ui.download(
+                        _EXAMPLE_CSV.encode("utf-8"),
+                        filename="dwc_example.csv",
+                        media_type="text/csv",
+                    )) \
+                    .tooltip("Download a two-row sample showing expected column names")
+
+            ui.label(
+                "Upload a Darwin Core CSV. Columns are matched by name "
+                "(case-insensitive, underscores and spaces ignored). "
+                "The file is held in memory for this session only."
+            ).classes("text-sm mb-3").style("color:var(--tp-base-soft)")
+
+            upload_status = ui.label("No file loaded.").classes("text-sm italic") \
+                .style("color:var(--tp-base-soft)")
+
+            def _on_upload(e):
+                try:
+                    rows = dwc_svc.parse_csv(e.content.read())
+                except Exception as exc:
+                    ui.notify(f"Could not parse file: {exc}", type="negative")
+                    return
+                state["rows"]     = rows
+                state["filename"] = e.name
+                state["selected"] = None
+                state["taxon_id"] = None
+                upload_status.set_text(
+                    f"✓  {len(rows)} row{'s' if len(rows) != 1 else ''} loaded "
+                    f"from {e.name}"
+                )
+                upload_status.style("color:var(--tp-secondary)")
+                row_sel.set_options(_row_options())
+                row_sel.set_value(None)
+                assign_card.set_visibility(True)
+                form_area.set_visibility(False)
+
+            ui.upload(
+                label="Choose CSV…",
+                on_upload=_on_upload,
+                auto_upload=True,
+            ).props("accept=.csv,text/csv flat").classes("mt-2")
 
     # Value-based unsaved-changes signal (#47): a visible form_area means a row is
     # staged for assignment and not yet saved. _on_assign clears it on success, so
