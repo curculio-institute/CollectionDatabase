@@ -11,7 +11,7 @@
   "media_dir": "",
   "default_license": "",
   "confidential_person_label": "Collector obscured (Privacy Policy)",
-  "label_border_data": "none",
-  "label_border_determination": "none",
-  "label_border_identifier": "none"
+  "label_border_data": "black",
+  "label_border_determination": "black",
+  "label_border_identifier": "black"
 }

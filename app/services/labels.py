@@ -7,7 +7,8 @@ Three label kinds — all 18 mm wide; heights are *minimums* that grow with text
 
   data           18 × 2.5 mm min  — locality / date / collector
   determination  18 × 4.9 mm min  — taxon name + determiner
-  identifier     18 × 7.0 mm min  — QR + collection name + big number
+  identifier     18 × ~6.1 mm     — QR + collection name + big number (sizes to
+                                    content; QR is the ~5.5 mm floor, stays under 7 mm)
 
 One output surface: ``grouped_sheet(...)`` — the composite Print-queue page:
 per-specimen columns of data / identifier / determination bands, plus a "New
@@ -520,21 +521,22 @@ def _id_label_inner(code: str, collection_name: str = "") -> str:
     )
 
 
-# Shared CSS for the identifier label — included in both the batch sheet and the
-# grouped cell. ``.id-label`` is the whole self-contained block and owns its min-height
-# floor (no ``height:100%`` dependency on the container), so it renders the same
-# regardless of what wraps it. QR left; a centred name / prefix / number stack right.
+# Shared CSS for the identifier label — the self-contained block inside the grouped
+# cell. QR left; a left-aligned name / prefix / number stack right. The block sizes
+# to its content (no min-height floor) so the border hugs the QR/text with no dead
+# vertical space — important for borderless labels, where any slack reads as a large
+# gap between one row's number and the next row's text.
 _ID_TEXT_CSS = """
 .id-label {
     display: flex; flex-direction: row; align-items: center; gap: 0.6mm;
-    min-height: 6.5mm; width: 100%;
+    width: 100%;
     font-family: 'Fira Sans Compressed', 'Fira Sans Condensed', 'Arial Narrow', sans-serif;
     font-weight: 400;
 }
 .id-qr { width: 5.5mm; height: 5.5mm; flex-shrink: 0; image-rendering: pixelated; }
 /* left-aligned so the name / prefix / number hug the QR instead of floating in the
    centre of the wide column. */
-.id-text { flex: 1; min-width: 0; text-align: left; line-height: 1.05; overflow: hidden; }
+.id-text { flex: 1; min-width: 0; text-align: left; line-height: 1.0; overflow: hidden; }
 /* All regular weight (not bold): at these micro sizes bold thickens/fills the digit
    counters on a real printer; regular stays cleaner (decided 2026-07-07). */
 .id-collname {
@@ -631,8 +633,9 @@ def _grouped_css(borders: dict[str, str] | None = None) -> str:
     font-size: {_FONT_SIZE};
 }}
 .lbl-id {{
-    min-height: 6.5mm;
-    border: {bi}; padding: 0.2mm 0.5mm;
+    /* tiny top space so the collection-name line doesn't touch the top border;
+       no bottom padding — the number's own line-box already leaves ~0.4mm there. */
+    border: {bi}; padding: 0.15mm 0.5mm 0 0.5mm;
     overflow: hidden;
 }}
 """
