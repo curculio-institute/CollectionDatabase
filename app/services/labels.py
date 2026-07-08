@@ -666,19 +666,33 @@ def _group_html(group: LabelGroup, names: dict[str, str] | None = None) -> str:
     has_det  = any(s.determination is not None for s in specs)
 
     chunks: list[str] = []
-    for start in range(0, len(specs), _LABELS_PER_ROW):
-        chunk = specs[start:start + _LABELS_PER_ROW]
-        rows: list[str] = []
-        # Band order top→bottom: data, identifier, determination. Each present
-        # band is a table row with one cell per column (empty <td> if missing)
-        # so columns stay aligned across bands.
-        if has_data:
-            rows.append("<tr>" + "".join(_data_cell(s.data) for s in chunk) + "</tr>")
-        if has_id:
-            rows.append("<tr>" + "".join(_id_cell(s.id_code, names) for s in chunk) + "</tr>")
-        if has_det:
-            rows.append("<tr>" + "".join(_det_cell(s.determination) for s in chunk) + "</tr>")
-        chunks.append(f'<table class="chunk">{"".join(rows)}</table>')
+    if has_id and not has_data and not has_det:
+        # Identifier-only group (e.g. "New identifiers"): tile every code into ONE
+        # multi-row table so the vertical gap between rows is a single border-spacing
+        # (~0.4 mm cut lane), matching the horizontal gap — a uniform grid like the
+        # Etikettenmuster reference. Wrapping each run into its own chunk table would
+        # instead stack two border-spacings + the chunk margin (~2.3 mm), which reads
+        # as far too much vertical space between rows.
+        id_rows = [
+            "<tr>" + "".join(_id_cell(s.id_code, names)
+                             for s in specs[start:start + _LABELS_PER_ROW]) + "</tr>"
+            for start in range(0, len(specs), _LABELS_PER_ROW)
+        ]
+        chunks.append(f'<table class="chunk">{"".join(id_rows)}</table>')
+    else:
+        for start in range(0, len(specs), _LABELS_PER_ROW):
+            chunk = specs[start:start + _LABELS_PER_ROW]
+            rows: list[str] = []
+            # Band order top→bottom: data, identifier, determination. Each present
+            # band is a table row with one cell per column (empty <td> if missing)
+            # so columns stay aligned across bands.
+            if has_data:
+                rows.append("<tr>" + "".join(_data_cell(s.data) for s in chunk) + "</tr>")
+            if has_id:
+                rows.append("<tr>" + "".join(_id_cell(s.id_code, names) for s in chunk) + "</tr>")
+            if has_det:
+                rows.append("<tr>" + "".join(_det_cell(s.determination) for s in chunk) + "</tr>")
+            chunks.append(f'<table class="chunk">{"".join(rows)}</table>')
 
     header = f'<div class="group-header">{_e(group.source)}</div>' if group.source else ""
     return f'<div class="group">{header}{"".join(chunks)}</div>'
