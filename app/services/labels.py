@@ -9,8 +9,8 @@ Three label types — all 18 mm wide; heights are *minimums* that grow with text
   determination_sheet(rows)   18 × 4.9 mm min  — taxon name + determiner
   identifier_sheet(codes)     18 × 7.0 mm min  — QR + collection name + big number
 
-Labels tile with a small `_LABEL_GAP` between them (border-collapse: separate), so
-each keeps its own complete border yet a single cut down the gap separates two
+Labels tile with a small gap between them (`_label_gap`, border-collapse: separate),
+so each keeps its own complete border yet a single cut down the gap separates two
 neighbours (no leftover strip, not two cuts). Each type's border ("black" cut-guide
 line or "none") is a config choice — see AppConfig.label_border_* / _border_rule.
 
@@ -58,29 +58,43 @@ _FONT_SIZE  = "4pt"
 _LINE_H     = "1.41mm"   # 0.0555 in
 _PAD        = "0.19mm 0.53mm"   # top/bottom  left/right
 _TILE_PER_ROW = 10       # 18mm labels per row on A4 (10 × 18 = 180 mm < 200 mm)
-# Small gap between neighbouring labels: enough to *separate* a black border (each
-# label keeps its own complete rectangle), but small enough that a single cut down
-# the middle parts them with no leftover strip — not two cuts (decided 2026-07-07).
-_LABEL_GAP  = "0.6mm"
+# Gap between neighbouring labels — matched to the mybioform "Etikettenmuster"
+# reference sheet (measured 2026-07-08: ~0.1 mm hairline borders, ~0.42–0.47 mm gap
+# on both axes). The gap is the cut lane: for a *bordered* sheet it must be wide
+# enough that a single blade pass drops between the two hairlines with no leftover
+# strip, so we track the reference ~0.4 mm. A *borderless* sheet has no lines to
+# preserve, so it can pack tighter — a thinner gap just keeps the labels visually
+# apart. (This is the all-or-none point: gap width follows whether borders are on.)
+_LABEL_GAP_BORDERED   = "0.4mm"
+_LABEL_GAP_BORDERLESS = "0.2mm"
+
+
+def _label_gap(border: str) -> str:
+    """Inter-label gap (border-spacing) for a sheet, sized to its border choice —
+    the reference ~0.4 mm cut lane when bordered, a tighter 0.2 mm when borderless."""
+    return _LABEL_GAP_BORDERED if border == "black" else _LABEL_GAP_BORDERLESS
 
 
 def _border_rule(choice: str) -> str:
     """CSS `border` shorthand for a per-label-type border config choice.
 
-    ``"black"`` → a thin solid cut-guide line; anything else (``"none"``) → no
-    border. Default is black everywhere (see AppConfig.label_border_*)."""
-    return "0.15mm solid #000" if choice == "black" else "none"
+    ``"black"`` → a thin hairline cut-guide line (~0.1 mm, matching the
+    Etikettenmuster reference); anything else (``"none"``) → no border. Default is
+    black everywhere (see AppConfig.label_border_*)."""
+    return "0.1mm solid #000" if choice == "black" else "none"
 
 
 def _tiled_sheet(inner_htmls: list[str], *, border: str,
                  cell_extra: str = "", extra_css: str = "") -> bytes:
-    """Render inner-label HTMLs as a table with a small ``_LABEL_GAP`` between
-    labels (``border-collapse: separate``): each label keeps its own complete
-    border and neighbours are separated, yet the gap is small enough for one cut
-    per edge with no leftover strip. Cells are a fixed 18 mm wide and wrap every
-    ``_TILE_PER_ROW``. ``border`` picks the per-type border via ``_border_rule``;
-    ``cell_extra`` adds a per-type ``.tcell`` rule (e.g. a min-height floor)."""
+    """Render inner-label HTMLs as a table with a small gap between labels
+    (``border-collapse: separate``): each label keeps its own complete border and
+    neighbours are separated, yet the gap is small enough for one cut per edge with
+    no leftover strip. The gap tracks the border choice (``_label_gap``) — the
+    reference ~0.4 mm cut lane when bordered, tighter when borderless. Cells are a
+    fixed 18 mm wide and wrap every ``_TILE_PER_ROW``. ``border`` picks the per-type
+    border via ``_border_rule``; ``cell_extra`` adds a per-type ``.tcell`` rule."""
     rule = _border_rule(border)
+    gap = _label_gap(border)
     rows: list[str] = []
     for start in range(0, len(inner_htmls), _TILE_PER_ROW):
         chunk = inner_htmls[start:start + _TILE_PER_ROW]
@@ -91,7 +105,7 @@ def _tiled_sheet(inner_htmls: list[str], *, border: str,
     * {{ box-sizing: border-box; margin: 0; padding: 0; }}
     body {{ font-family: {_FONT}; font-size: {_FONT_SIZE}; line-height: {_LINE_H}; }}
     em {{ font-style: italic; }}
-    .tsheet {{ border-collapse: separate; border-spacing: {_LABEL_GAP}; }}
+    .tsheet {{ border-collapse: separate; border-spacing: {gap}; }}
     .tcell {{ width: {_W}; border: {rule}; padding: {_PAD};
               vertical-align: top; overflow: hidden; page-break-inside: avoid; }}
     {cell_extra}
@@ -667,7 +681,7 @@ def _grouped_css(borders: dict[str, str] | None = None) -> str:
 .printed-at {{ font-size: 5pt; color: #666; margin-bottom: 3mm; }}
 .group {{ display: inline-block; vertical-align: top; line-height: {_LINE_H}; margin: 0 {_GROUP_GAP} {_GROUP_GAP} 0; }}
 .group-header {{ font-size: 5pt; color: #666; margin-bottom: 0.4mm; letter-spacing: 0.2pt; }}
-.chunk {{ table-layout: fixed; border-collapse: separate; border-spacing: {_LABEL_GAP}; page-break-inside: avoid; }}
+.chunk {{ table-layout: fixed; border-collapse: separate; border-spacing: {_LABEL_GAP_BORDERED}; page-break-inside: avoid; }}
 .chunk + .chunk {{ margin-top: {_CHUNK_GAP}; }}
 .cell {{ width: 18mm; padding: 0; vertical-align: top; }}
 .lbl-data {{

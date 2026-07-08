@@ -276,7 +276,7 @@ def test_identifier_legacy_code_without_hyphen():
 
 
 def test_border_rule_choices():
-    assert _border_rule("black") == "0.15mm solid #000"
+    assert _border_rule("black") == "0.1mm solid #000"
     assert _border_rule("none") == "none"
     assert _border_rule("anything-else") == "none"
 
@@ -285,7 +285,7 @@ def test_grouped_css_threads_per_type_borders():
     css = _grouped_css({"data": "none", "determination": "black", "identifier": "black"})
     # data band → no border; det + id bands → solid black.
     assert ".lbl-data {" in css and "border: none;" in css
-    assert "0.15mm solid #000" in css                     # det/id borders present
+    assert "0.1mm solid #000" in css                     # det/id borders present
     # labels within a group are separated by a small gap (each its own border),
     # small enough for one cut per edge — not touching (bordered labels need space).
     assert "border-collapse: separate;" in css
@@ -295,7 +295,7 @@ def test_grouped_css_threads_per_type_borders():
 def test_grouped_css_default_is_black_everywhere():
     css = _grouped_css(None)
     assert "border: none;" not in css
-    assert css.count("0.15mm solid #000") >= 3            # all three bands
+    assert css.count("0.1mm solid #000") >= 3            # all three bands
 
 
 def test_identifier_sheet_border_toggle_changes_output():
