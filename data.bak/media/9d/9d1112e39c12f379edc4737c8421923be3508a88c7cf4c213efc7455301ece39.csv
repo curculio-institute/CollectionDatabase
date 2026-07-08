@@ -1,0 +1,8 @@
+scientificName,genus,specificEpithet,scientificNameAuthorship,family,eventDate,recordedBy,country,countryCode,stateProvince,county,locality,decimalLatitude,decimalLongitude,coordinateUncertaintyInMeters,minimumElevationInMeters,maximumElevationInMeters,habitat,samplingProtocol,sex,individualCount,preparations,identifiedBy,dateIdentified,occurrenceRemarks
+Otiorhynchus sulcatus,Otiorhynchus,sulcatus,"(Fabricius, 1775)",Curculionidae,2024-06-15,J. Jilg,Germany,DE,Bavaria,Berchtesgadener Land,"Berchtesgaden, Königssee trail",47.5976,13.0055,50,620,,broadleaf forest edge,hand collecting,female,3,pinned,J. Jilg,2024-07-01,
+Curculio nucum,Curculio,nucum,"Linnaeus, 1758",Curculionidae,2024-05-20,J. Jilg,Austria,AT,Styria,,"Grazer Bergland, Schöckel",47.1833,15.4667,100,1250,,Fagus-Quercus forest,beating,,1,pinned,J. Jilg,2024-06-10,reared from hazel nuts
+Curculio rubidus,,,,,,,Poland,,,,,,,,,,,,,,,,,
+Otiorhynchus fantasticus,,,,,,,,,,,,,,,,,,,,,,,,
+Otiorhynchus crypticus,,,"(Meier, 1940)",,,,,,,,,,,,,,,,,,,,,
+Carabus auratus,,,"Meier, 1870",,,,,,,,,,,,,,,,,,,,,
+Pterostichus noricus,,,"Müller, 1982",,,,,,,,,,,,,,,,,,,,,

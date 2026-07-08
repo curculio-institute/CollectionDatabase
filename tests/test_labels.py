@@ -15,7 +15,7 @@ from app.services.labels import (
     DeterminationLabel, DataLabel,
     _det_line1, _det_name_html, _det_line3, _data_line2, _fits_one_line,
     _grouped_html,
-    determination_sheet, data_sheet, grouped_sheet, LabelGroup, SpecimenLabels,
+    grouped_sheet, LabelGroup, SpecimenLabels,
 )
 
 
@@ -150,16 +150,18 @@ def test_long_name_text_is_preserved():
         assert token in h
 
 
-@pytest.mark.parametrize("sheet_fn,labels", [
-    (determination_sheet, [DeterminationLabel(genus="Aaaaaaaaaaaa", specific_epithet="bbbbbbbbbbbb",
-        authorship="(Wxxxxxxxx & Yyyyyyyy, 2019) nec Zzzzzzzz",
-        determiner="Verylongsingletokensurnameindeed", year="2025")]),
-    (data_sheet, [DataLabel(country="United Kingdom", country_code="GB",
-        locality="A very long locality string that will certainly wrap several times over",
-        recorded_by="John Doe", event_date="2025-06-14")]),
-])
-def test_pathological_labels_render_without_error(sheet_fn, labels):
-    pdf = sheet_fn(labels)
+def test_pathological_labels_render_without_error():
+    # Pathologically long data + determination content must still render — they now
+    # render only as bands inside the grouped queue sheet.
+    specs = [SpecimenLabels(
+        data=DataLabel(country="United Kingdom", country_code="GB",
+            locality="A very long locality string that will certainly wrap several times over",
+            recorded_by="John Doe", event_date="2025-06-14"),
+        determination=DeterminationLabel(genus="Aaaaaaaaaaaa", specific_epithet="bbbbbbbbbbbb",
+            authorship="(Wxxxxxxxx & Yyyyyyyy, 2019) nec Zzzzzzzz",
+            determiner="Verylongsingletokensurnameindeed", year="2025"),
+        id_code="JJPRC-00001")]
+    pdf = grouped_sheet([LabelGroup(source="Mounting Session", specimens=specs)], "2026-06-15")
     assert pdf[:4] == b"%PDF" and len(pdf) > 1000
 
 

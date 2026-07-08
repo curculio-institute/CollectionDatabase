@@ -1,0 +1,17 @@
+{
+  "tw_base": "https://sfg.taxonworks.org/api/v1",
+  "tw_token": "Ots0-yen4dVefn0Etyxvgw",
+  "taxonpages_base": "https://catalog.curculionoidea.org",
+  "bio_assoc_default_codes": [
+    "ICN"
+  ],
+  "map_default_layer": "street",
+  "printed_pdf_dir": "",
+  "digitize_layout": "single_card",
+  "media_dir": "",
+  "default_license": "",
+  "confidential_person_label": "Collector obscured (Privacy Policy)",
+  "label_border_data": "none",
+  "label_border_determination": "none",
+  "label_border_identifier": "none"
+}

@@ -3,11 +3,23 @@
 Reproduces the original two-column ODT template format using Fira Sans Compressed
 as a substitute for Context Condensed SSi.
 
-Three label types — all 18 mm wide; heights are *minimums* that grow with text:
+Three label kinds — all 18 mm wide; heights are *minimums* that grow with text:
 
-  data_sheet(rows)            18 × 2.5 mm min  — locality / date / collector
-  determination_sheet(rows)   18 × 4.9 mm min  — taxon name + determiner
-  identifier_sheet(codes)     18 × 7.0 mm min  — QR + collection name + big number
+  data     18 × 2.5 mm min  — locality / date / collector
+  determination  18 × 4.9 mm min  — taxon name + determiner
+  identifier     18 × 7.0 mm min  — QR + collection name + big number
+
+Two output surfaces:
+
+  identifier_sheet(codes)     a standalone tiled sheet of identifier codes — the
+                              "Reprint a batch" download in the Labels tab.
+  grouped_sheet(...)          the composite Print-queue page: per-specimen columns
+                              of data / identifier / determination bands, plus the
+                              "New identifiers" group for freshly reserved codes.
+
+Data and determination labels are *only* rendered as bands inside grouped_sheet
+(via _data_inner_html / _det_inner_html); there is no standalone data/determination
+sheet — everything specimen-linked prints through the queue.
 
 Labels tile with a small gap between them (`_label_gap`, border-collapse: separate),
 so each keeps its own complete border yet a single cut down the gap separates two
@@ -339,13 +351,6 @@ def _data_line2(lbl: DataLabel) -> str:
     return _build(abbreviate_name(lbl.recorded_by))
 
 
-def data_sheet(rows: list[DataLabel], *, border: str = "black") -> bytes:
-    """PDF sheet of data/locality labels (18 × 2.5 mm min, grows with text)."""
-    inners = [_data_inner_html(lbl) for lbl in rows]
-    return _tiled_sheet(inners, border=border,
-                        cell_extra=".tcell { min-height: 2.5mm; }")
-
-
 # ---------------------------------------------------------------------------
 # Determination labels  (18 × 4.9 mm, 3 lines)
 # ---------------------------------------------------------------------------
@@ -478,13 +483,6 @@ def _fits_one_line(inner_html: str) -> bool:
         return lines <= 1
     except Exception:
         return True
-
-
-def determination_sheet(rows: list[DeterminationLabel], *, border: str = "black") -> bytes:
-    """PDF sheet of determination labels (18 × 4.9 mm min, grows with text)."""
-    inners = [_det_inner_html(lbl) for lbl in rows]
-    return _tiled_sheet(inners, border=border,
-                        cell_extra=".tcell { min-height: 4.9mm; overflow: visible; }")
 
 
 # ---------------------------------------------------------------------------
