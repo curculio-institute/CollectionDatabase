@@ -248,7 +248,7 @@ def test_event_preview_includes_db_id():
 # Identifier redesign + per-type borders + touching layout (2026-07-07)
 # ---------------------------------------------------------------------------
 from app.services.labels import (  # noqa: E402
-    _id_label_inner, _border_rule, _grouped_css, identifier_sheet,
+    _id_label_inner, _border_rule, _grouped_css,
 )
 
 
@@ -298,11 +298,3 @@ def test_grouped_css_default_is_black_everywhere():
     css = _grouped_css(None)
     assert "border: none;" not in css
     assert css.count("0.1mm solid #000") >= 3            # all three bands
-
-
-def test_identifier_sheet_border_toggle_changes_output():
-    codes = ["JJPC-00304", "JJPC-00305"]
-    black = identifier_sheet(codes, border="black")
-    none = identifier_sheet(codes, border="none")
-    assert black != none                                  # border choice reaches the PDF
-    assert isinstance(black, bytes) and black[:4] == b"%PDF"

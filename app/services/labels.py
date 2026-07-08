@@ -5,26 +5,20 @@ as a substitute for Context Condensed SSi.
 
 Three label kinds — all 18 mm wide; heights are *minimums* that grow with text:
 
-  data     18 × 2.5 mm min  — locality / date / collector
+  data           18 × 2.5 mm min  — locality / date / collector
   determination  18 × 4.9 mm min  — taxon name + determiner
   identifier     18 × 7.0 mm min  — QR + collection name + big number
 
-Two output surfaces:
+One output surface: ``grouped_sheet(...)`` — the composite Print-queue page:
+per-specimen columns of data / identifier / determination bands, plus a "New
+identifiers" group for freshly reserved codes. Everything printable flows through
+the print queue; there is no standalone per-kind sheet.
 
-  identifier_sheet(codes)     a standalone tiled sheet of identifier codes — the
-                              "Reprint a batch" download in the Labels tab.
-  grouped_sheet(...)          the composite Print-queue page: per-specimen columns
-                              of data / identifier / determination bands, plus the
-                              "New identifiers" group for freshly reserved codes.
-
-Data and determination labels are *only* rendered as bands inside grouped_sheet
-(via _data_inner_html / _det_inner_html); there is no standalone data/determination
-sheet — everything specimen-linked prints through the queue.
-
-Labels tile with a small gap between them (`_label_gap`, border-collapse: separate),
-so each keeps its own complete border yet a single cut down the gap separates two
-neighbours (no leftover strip, not two cuts). Each type's border ("black" cut-guide
-line or "none") is a config choice — see AppConfig.label_border_* / _border_rule.
+Within the grouped sheet, labels tile with a small gap (border-collapse: separate,
+``_LABEL_GAP_BORDERED``) so each keeps its own complete border yet a single cut down
+the gap separates two neighbours (no leftover strip, not two cuts). Each type's
+border ("black" cut-guide line or "none") is a config choice — see
+AppConfig.label_border_* / _border_rule.
 
 All return raw PDF bytes.
 
@@ -69,22 +63,12 @@ _FONT       = "'Fira Sans Compressed', 'Fira Sans Condensed', Arial Narrow, sans
 _FONT_SIZE  = "4pt"
 _LINE_H     = "1.41mm"   # 0.0555 in
 _PAD        = "0.19mm 0.53mm"   # top/bottom  left/right
-_TILE_PER_ROW = 10       # 18mm labels per row on A4 (10 × 18 = 180 mm < 200 mm)
-# Gap between neighbouring labels — matched to the mybioform "Etikettenmuster"
-# reference sheet (measured 2026-07-08: ~0.1 mm hairline borders, ~0.42–0.47 mm gap
-# on both axes). The gap is the cut lane: for a *bordered* sheet it must be wide
-# enough that a single blade pass drops between the two hairlines with no leftover
-# strip, so we track the reference ~0.4 mm. A *borderless* sheet has no lines to
-# preserve, so it can pack tighter — a thinner gap just keeps the labels visually
-# apart. (This is the all-or-none point: gap width follows whether borders are on.)
-_LABEL_GAP_BORDERED   = "0.4mm"
-_LABEL_GAP_BORDERLESS = "0.2mm"
-
-
-def _label_gap(border: str) -> str:
-    """Inter-label gap (border-spacing) for a sheet, sized to its border choice —
-    the reference ~0.4 mm cut lane when bordered, a tighter 0.2 mm when borderless."""
-    return _LABEL_GAP_BORDERED if border == "black" else _LABEL_GAP_BORDERLESS
+# Gap between neighbouring labels on the grouped sheet — matched to the mybioform
+# "Etikettenmuster" reference (measured 2026-07-08: ~0.1 mm hairline borders,
+# ~0.42–0.47 mm gap on both axes). The gap is the cut lane: it must be wide enough
+# that a single blade pass drops between two neighbouring hairlines with no leftover
+# strip, so we track the reference ~0.4 mm.
+_LABEL_GAP_BORDERED = "0.4mm"
 
 
 def _border_rule(choice: str) -> str:
@@ -94,38 +78,6 @@ def _border_rule(choice: str) -> str:
     Etikettenmuster reference); anything else (``"none"``) → no border. Default is
     black everywhere (see AppConfig.label_border_*)."""
     return "0.1mm solid #000" if choice == "black" else "none"
-
-
-def _tiled_sheet(inner_htmls: list[str], *, border: str,
-                 cell_extra: str = "", extra_css: str = "") -> bytes:
-    """Render inner-label HTMLs as a table with a small gap between labels
-    (``border-collapse: separate``): each label keeps its own complete border and
-    neighbours are separated, yet the gap is small enough for one cut per edge with
-    no leftover strip. The gap tracks the border choice (``_label_gap``) — the
-    reference ~0.4 mm cut lane when bordered, tighter when borderless. Cells are a
-    fixed 18 mm wide and wrap every ``_TILE_PER_ROW``. ``border`` picks the per-type
-    border via ``_border_rule``; ``cell_extra`` adds a per-type ``.tcell`` rule."""
-    rule = _border_rule(border)
-    gap = _label_gap(border)
-    rows: list[str] = []
-    for start in range(0, len(inner_htmls), _TILE_PER_ROW):
-        chunk = inner_htmls[start:start + _TILE_PER_ROW]
-        tds = "".join(f'<td class="tcell">{h}</td>' for h in chunk)
-        rows.append(f"<tr>{tds}</tr>")
-    css = f"""
-    @page {{ size: A4; margin: 5mm; }}
-    * {{ box-sizing: border-box; margin: 0; padding: 0; }}
-    body {{ font-family: {_FONT}; font-size: {_FONT_SIZE}; line-height: {_LINE_H}; }}
-    em {{ font-style: italic; }}
-    .tsheet {{ border-collapse: separate; border-spacing: {gap}; }}
-    .tcell {{ width: {_W}; border: {rule}; padding: {_PAD};
-              vertical-align: top; overflow: hidden; page-break-inside: avoid; }}
-    {cell_extra}
-    {extra_css}
-    """
-    html = (f"<html><head><meta charset='utf-8'><style>{css}</style></head>"
-            f'<body><table class="tsheet">{"".join(rows)}</table></body></html>')
-    return HTML(string=html).write_pdf()
 
 
 # ---------------------------------------------------------------------------
@@ -601,20 +553,6 @@ def _collection_of(code: str, names: dict[str, str] | None) -> str:
         return ""
     prefix, _ = _split_identifier_code(code)
     return names.get(prefix.rstrip("-"), "")
-
-
-def identifier_sheet(codes: list[str], names: dict[str, str] | None = None,
-                     *, border: str = "black") -> bytes:
-    """PDF sheet of identifier labels (18 × 7 mm min), tiled edge-to-edge.
-
-    ``names`` maps a collection code (the code prefix) → its full name, printed in
-    tiny letters above the code (see repositories.name_map). Unknown prefixes just
-    omit the name line. ``border`` ∈ {"black", "none"} (AppConfig.label_border_identifier)."""
-    inners = [_id_label_inner(c, _collection_of(c, names)) for c in codes]
-    return _tiled_sheet(
-        inners, border=border, extra_css=_ID_TEXT_CSS,
-        cell_extra=".tcell { vertical-align: middle; padding: 0.2mm 0.5mm; }",
-    )
 
 
 # ---------------------------------------------------------------------------

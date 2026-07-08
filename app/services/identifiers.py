@@ -6,7 +6,7 @@ the format change, but are no longer generated.
 
 Workflow:
   reserve_sequential_codes(session, coll_code, n) → create a batch of n sequential codes
-  batches_with_reserved(session)    → list of (batch_id, created_at, n_reserved) for UI
+  all_batches_with_reserved(session)→ batches with ≥1 reserved code, newest first (viewer)
   codes_for_batch(session, batch_id)→ reserved codes in a specific batch
   assign_code(session, code, co_id) → link a reserved code to a CollectionObject
   reserved_codes(session)           → flat list of all reserved codes (for digitize dropdown)
@@ -28,31 +28,6 @@ class BatchInfo:
     created_at: str
     n_reserved: int
     n_total: int
-
-
-def batches_with_reserved(session: Session) -> list[BatchInfo]:
-    """Return batches where every code is still reserved (none assigned), newest first.
-
-    A batch becomes ineligible for reprint the moment any of its codes is assigned
-    to a specimen — reprinting at that point risks producing duplicate labels.
-    """
-    from sqlalchemy import func
-    n_reserved = func.count(LabelCode.id).filter(LabelCode.status == "reserved")
-    n_total    = func.count(LabelCode.id)
-    rows = (
-        session.query(
-            LabelBatch.id,
-            LabelBatch.created_at,
-            n_reserved.label("n_reserved"),
-            n_total.label("n_total"),
-        )
-        .join(LabelCode, LabelCode.batch_id == LabelBatch.id)
-        .group_by(LabelBatch.id)
-        .having(n_reserved == n_total)   # all codes still unused
-        .order_by(LabelBatch.created_at.desc())
-        .all()
-    )
-    return [BatchInfo(r.id, r.created_at, r.n_reserved, r.n_total) for r in rows]
 
 
 @dataclass
@@ -77,11 +52,9 @@ def batch_stats(session: Session) -> BatchStats:
 
 
 def all_batches_with_reserved(session: Session) -> list[BatchInfo]:
-    """All batches that still have at least one reserved code, newest first.
-
-    Unlike batches_with_reserved, this includes batches where some codes are
-    already assigned — used for the viewer, not for reprinting.
-    """
+    """All batches that still have at least one reserved code, newest first —
+    including batches where some codes are already assigned. Drives the reserved-
+    codes viewer (each batch offers "Add to print queue")."""
     from sqlalchemy import func
     n_reserved = func.count(LabelCode.id).filter(LabelCode.status == "reserved")
     n_total    = func.count(LabelCode.id)
