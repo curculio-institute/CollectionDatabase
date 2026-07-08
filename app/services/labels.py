@@ -504,7 +504,9 @@ def _split_identifier_code(code: str) -> tuple[str, str]:
 # (e.g. 6-digit 000023 / 100000) shrinks to fit instead of overflowing. The cap also
 # respects the label height (name + prefix + number stack in ~6.5 mm).
 _ID_NUM_AVAIL_MM = 10.0
-_NUM_ADVANCE_MM_PER_PT = 0.182   # Fira Sans Compressed bold digit advance (measured)
+_NUM_ADVANCE_MM_PER_PT = 0.182   # Fira Sans Compressed digit advance (measured; the
+                                 # number now prints regular weight, slightly narrower than
+                                 # this bold-measured bound, so auto-sizing stays conservative)
 _ID_NUM_MAX_PT = 10.5
 _ID_NUM_MIN_PT = 6.5
 
@@ -563,18 +565,21 @@ _ID_TEXT_CSS = """
     display: flex; flex-direction: row; align-items: center; gap: 0.6mm;
     min-height: 6.5mm; width: 100%;
     font-family: 'Fira Sans Compressed', 'Fira Sans Condensed', 'Arial Narrow', sans-serif;
+    font-weight: 400;
 }
 .id-qr { width: 5.5mm; height: 5.5mm; flex-shrink: 0; image-rendering: pixelated; }
 /* left-aligned so the name / prefix / number hug the QR instead of floating in the
    centre of the wide column. */
 .id-text { flex: 1; min-width: 0; text-align: left; line-height: 1.05; overflow: hidden; }
+/* All regular weight (not bold): at these micro sizes bold thickens/fills the digit
+   counters on a real printer; regular stays cleaner (decided 2026-07-07). */
 .id-collname {
-    font-size: 2.5pt; font-weight: 600; letter-spacing: 0;
+    font-size: 2.5pt; font-weight: 400; letter-spacing: 0;
     white-space: nowrap; overflow: hidden;
 }
-.id-prefix { font-size: 3.4pt; font-weight: 600; letter-spacing: 0.3pt; }
+.id-prefix { font-size: 3.4pt; font-weight: 400; letter-spacing: 0.3pt; }
 /* font-size is set inline per label (auto-sized to fit; see _id_number_font_pt). */
-.id-number { font-weight: bold; letter-spacing: 0.2pt; white-space: nowrap; }
+.id-number { font-weight: 400; letter-spacing: 0.2pt; white-space: nowrap; }
 """
 
 
