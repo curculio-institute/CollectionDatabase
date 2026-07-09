@@ -347,3 +347,47 @@ def test_escaped_search_still_seeks_the_index(index):
     plan = " ".join(str(r[-1]) for r in index.execute(
         r"EXPLAIN QUERY PLAN SELECT name FROM name WHERE name LIKE 'Quer%' ESCAPE '\'"))
     assert "SEARCH" in plan and "ix_name_nocase" in plan, plan
+
+
+# ---------------------------------------------------------------------------
+# Update check (offline: the zip-prefix parse is the whole trick)
+# ---------------------------------------------------------------------------
+
+def test_meta_from_zip_prefix_reads_version_without_the_whole_archive(tmp_path):
+    """eml.xml is the archive's first entry, so ~32 KB suffices instead of 84 MB."""
+    archive = _archive(tmp_path, [_row("1", "Quercus robur")])
+    prefix = archive.read_bytes()[:32_768]
+    meta = wcvp.meta_from_zip_prefix(prefix)
+    assert meta.label == "WCVP v16.0 (2026-06-04)"
+
+
+def test_meta_from_zip_prefix_refuses_a_non_zip():
+    with pytest.raises(wcvp.WcvpError, match="not a zip archive"):
+        wcvp.meta_from_zip_prefix(b"<html>Just a moment...</html>")
+
+
+def test_meta_from_zip_prefix_refuses_when_eml_is_not_first(tmp_path):
+    """Reading a version out of the wrong member would silently report the wrong release."""
+    path = tmp_path / "reordered.zip"
+    with zipfile.ZipFile(path, "w") as zf:
+        zf.writestr("wcvp_taxon.csv", "x")
+        zf.writestr("eml.xml", _EML)
+    with pytest.raises(wcvp.WcvpError, match="first archive entry is 'wcvp_taxon.csv'"):
+        wcvp.meta_from_zip_prefix(path.read_bytes()[:32_768])
+
+
+def test_meta_from_zip_prefix_refuses_a_truncated_prefix(tmp_path):
+    archive = _archive(tmp_path, [_row("1", "Quercus robur")])
+    with pytest.raises(wcvp.WcvpError, match="too short"):
+        wcvp.meta_from_zip_prefix(archive.read_bytes()[:40])
+
+
+def test_meta_records_the_licence(tmp_path):
+    """CC BY 3.0: attribution is required wherever the data is redistributed."""
+    archive = _archive(tmp_path, [_row("1", "Quercus robur")])
+    db_path = tmp_path / "wcvp.sqlite"
+    wcvp.build_index(archive, db_path)
+    db = sqlite3.connect(db_path)
+    meta = dict(db.execute("SELECT key, value FROM meta"))
+    assert meta["license"] == "CC BY 3.0"
+    assert "doi" in meta["citation"].lower() or "Kew" in meta["citation"]

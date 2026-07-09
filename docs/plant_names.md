@@ -98,11 +98,15 @@ silently install a different release — the index records what it actually cont
 - **No network call at startup.** This is a local-first app; it must launch offline, and
   `db_safety` runs its checkpoint/integrity/snapshot before the UI serves. A hanging HTTP
   request there would block the app on a bad connection.
-- A **Settings card** shows the installed release, read from the index's own `meta` table
-  (no network): *"WCVP v16.0, published 2026-06-04, 1 448 984 names, CC BY 3.0."*
-- A **Check for a new release** button costs **16 KB, not 84 MB**: `eml.xml` is the first
+- A **Settings card** ("Plant names (WCVP)") shows the installed release, read from the
+  index's own `meta` table with no network:
+  *"WCVP v16.0 (2026-06-04) · 1,448,984 names · CC BY 3.0"*, or an instruction to build it.
+- Its **Check for a new release** button costs **~32 KB, not 85 MB**: `eml.xml` is the first
   entry in the zip (4.9 KB compressed) and Kew's server honours HTTP `Range`, so a ranged
-  request returns `206` and yields the version and pubDate.
+  request returns `206` and yields the version and pubDate (`wcvp.latest_release()`). It
+  re-reads the installed index first, so a rebuild while the app is running cannot make it
+  report an update that is already installed. If the first zip entry is not `eml.xml` it
+  refuses rather than reporting a version read out of the wrong member.
 - Rebuilding **replaces the index wholesale and atomically** (build to `wcvp.sqlite.building`,
   then `replace()`). A crash or a bad archive never leaves a half-built index; a rebuild never
   merges into old rows.

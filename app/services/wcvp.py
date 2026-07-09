@@ -57,6 +57,11 @@ _IPNI_PREFIX = "ipni:"
 # Every name in WCVP is governed by the ICN — a property of the source, not of the row.
 NOMENCLATURAL_CODE = "ICN"
 
+# The archive is CC BY 3.0 (declared in its eml.xml <intellectualRights>). Attribution is
+# required wherever the data is redistributed, including a DwC export derived from it, so the
+# licence and the versioned citation are recorded in the index's meta table.
+WCVP_LICENSE = "CC BY 3.0"
+
 # WCVP's taxonomicStatus vocabulary, partitioned by what our two-state taxon model can
 # represent. A name is a synonym iff acceptedNameUsageID is set, otherwise accepted; there
 # is no third state, and `taxonomicStatus` is *derived from that column at export*
@@ -272,6 +277,7 @@ def build_index(archive: Path, db_path: Path, *, batch: int = 50_000) -> BuildRe
                 ("citation", meta.citation),
                 ("label", meta.label),
                 ("source_url", WCVP_DWCA_URL),
+                ("license", WCVP_LICENSE),
                 ("nomenclatural_code", NOMENCLATURAL_CODE),
                 ("built_at", datetime.now(timezone.utc).isoformat(timespec="seconds")),
                 ("rows", str(n)),
@@ -558,3 +564,62 @@ def fields_from_wcvp(db: sqlite3.Connection, row: WcvpName) -> dict:
 
 
 _INFRA_RANKS = frozenset({"subspecies", "variety", "subvariety", "form", "subform"})
+
+
+# ---------------------------------------------------------------------------
+# Update check — 16 KB, not 84 MB
+# ---------------------------------------------------------------------------
+#
+# Never called at startup. This is a local-first app: it must launch offline, and
+# db_safety runs its checkpoint/integrity/snapshot before the UI serves, so a hanging
+# HTTP request there would block the app on a bad connection. The Settings card calls
+# this only when the user presses the button.
+
+_ZIP_LOCAL_HEADER = b"PK\x03\x04"
+_UPDATE_CHECK_BYTES = 32_768
+
+
+def meta_from_zip_prefix(prefix: bytes) -> ArchiveMeta:
+    """Read eml.xml out of the first bytes of the archive, without the other 84 MB.
+
+    eml.xml is the archive's first zip entry (~4.9 KB deflated), so its local file header
+    sits at offset 0 and a ranged request for the first few KB contains the whole entry.
+    Raises WcvpError if the archive no longer starts with eml.xml, rather than reporting a
+    version read out of the wrong member.
+    """
+    import struct
+    import zlib
+
+    if prefix[:4] != _ZIP_LOCAL_HEADER:
+        raise WcvpError("not a zip archive (no local file header)")
+    method, = struct.unpack("<H", prefix[8:10])
+    csize, _usize = struct.unpack("<II", prefix[18:26])
+    nlen, elen = struct.unpack("<HH", prefix[26:30])
+    name = prefix[30:30 + nlen].decode("utf-8", "replace")
+    if name != _EML_XML:
+        raise WcvpError(f"first archive entry is {name!r}, expected {_EML_XML!r}")
+
+    start = 30 + nlen + elen
+    blob = prefix[start:start + csize]
+    if len(blob) < csize:
+        raise WcvpError("archive prefix too short to contain eml.xml")
+    data = zlib.decompress(blob, -15) if method == 8 else blob
+
+    root = ElementTree.fromstring(data)
+    def _first(tag: str) -> str:
+        for el in root.iter():
+            if el.tag.rsplit("}", 1)[-1] == tag and (el.text or "").strip():
+                return el.text.strip()
+        raise WcvpError(f"eml.xml has no <{tag}>")
+    return ArchiveMeta(version=_first("version"), pub_date=_first("pubDate"),
+                       citation=_first("citation"))
+
+
+def latest_release(url: str = WCVP_DWCA_URL, *, timeout: float = 20.0) -> ArchiveMeta:
+    """What release Kew is currently serving. Costs ~32 KB; requires the network."""
+    import httpx
+
+    r = httpx.get(url, headers={"Range": f"bytes=0-{_UPDATE_CHECK_BYTES - 1}"},
+                  follow_redirects=True, timeout=timeout)
+    r.raise_for_status()
+    return meta_from_zip_prefix(r.content)
