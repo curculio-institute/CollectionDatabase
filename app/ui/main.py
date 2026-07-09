@@ -2668,18 +2668,15 @@ def index():
                     _wcvp_check_btn.enable()
 
                 _wcvp_refresh_installed()
-                # The taxon widgets opened (and cached) the index when the page was rendered,
-                # and this installer lives in a modal — closing it re-renders nothing. So the
-                # index cannot come into use until the app is restarted. Say so plainly rather
-                # than let the user try a plant search and conclude the install failed.
+                # No restart needed: the taxon widgets open the index per search rather than
+                # caching a handle (#104), so the next plant search picks this up.
                 _wcvp_remote.set_text(
                     f"Installed {report.meta.label} — {report.rows:,} names. "
-                    "Restart the application to use plant search."
+                    "Plant search is ready."
                 )
                 _wcvp_remote.style("color:var(--tp-base)")
                 ui.notify(
-                    f"WCVP installed ({report.rows:,} names). "
-                    "Restart the application to use plant search.",
+                    f"WCVP installed ({report.rows:,} names). Plant search is ready.",
                     type="positive", timeout=0, close_button="Got it",
                 )
 

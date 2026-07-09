@@ -218,6 +218,28 @@ def _rows(zf: zipfile.ZipFile) -> Iterator[tuple]:
             )
 
 
+def _replace_with_retry(src: Path, dst: Path, *, attempts: int = 10, delay: float = 0.2) -> None:
+    """Atomically move `src` onto `dst`, tolerating a reader that has `dst` briefly open.
+
+    POSIX replaces an open file happily. Windows raises PermissionError while any handle is
+    open, and readers here are short-lived (open → query → close), so a short retry closes the
+    race rather than failing an 85 MB install (#104).
+    """
+    import time
+
+    for attempt in range(attempts):
+        try:
+            src.replace(dst)
+            return
+        except PermissionError:
+            if attempt == attempts - 1:
+                raise WcvpError(
+                    f"could not replace {dst}: it is open in another program. Close any other "
+                    "window using this collection and try again."
+                ) from None
+            time.sleep(delay)
+
+
 def build_index(archive: Path, db_path: Path, *, batch: int = 50_000) -> BuildReport:
     """Build the SQLite lookup index from a WCVP Darwin Core Archive.
 
@@ -290,7 +312,7 @@ def build_index(archive: Path, db_path: Path, *, batch: int = 50_000) -> BuildRe
         finally:
             db.close()
 
-        tmp.replace(db_path)
+        _replace_with_retry(tmp, db_path)
 
     return BuildReport(
         meta=meta, rows=n, accepted=accepted, replaced=replaced, refused=refused,
@@ -344,18 +366,34 @@ class IndexMissing(WcvpError):
     """The WCVP index has not been built. Plant search is unavailable until it is."""
 
 
+def _read_only_uri(path: Path) -> str:
+    """A SQLite read-only URI for `path`, safe on every platform.
+
+    Interpolating the path straight into `f"file:{path}?mode=ro"` is wrong twice over: a `%`
+    in the path fails to open, and a `?` silently opens a *different*, empty database (the
+    rest is parsed as query parameters). On Windows it also emits raw backslashes and an
+    unescaped drive colon. pathname2url percent-escapes and yields `///C:/…` on Windows.
+    """
+    import urllib.request
+
+    return "file:" + urllib.request.pathname2url(str(path)) + "?mode=ro"
+
+
 def open_index(path: Path | None = None) -> sqlite3.Connection:
     """Open the index read-only. Raises IndexMissing if it has not been built.
 
-    Read-only by URI: the index is derived data, and nothing in the app may write to it.
+    Cheap: open + search + close measures ~1.5 ms. Callers open per query rather than holding
+    a handle, because a held handle locks the file on Windows (a rebuild then fails with
+    PermissionError) and pins a stale inode on POSIX (the app keeps serving the old index
+    after a rebuild). Read-only by URI: nothing in the app may write to the index.
     """
     from app import config
     path = path or config.wcvp_db_path()
     if not path.exists():
         raise IndexMissing(
-            f"no WCVP index at {path} — build it with scripts/build_wcvp_index.py"
+            f"no WCVP index at {path} — install it in Settings → Plant names (WCVP)"
         )
-    db = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+    db = sqlite3.connect(_read_only_uri(path), uri=True)
     db.row_factory = sqlite3.Row
     return db
 

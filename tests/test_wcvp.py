@@ -241,7 +241,7 @@ def index(tmp_path):
 
 
 def test_open_index_raises_when_not_built(tmp_path):
-    with pytest.raises(wcvp.IndexMissing, match="build it with"):
+    with pytest.raises(wcvp.IndexMissing, match="install it in Settings"):
         wcvp.open_index(tmp_path / "absent.sqlite")
 
 
@@ -452,3 +452,45 @@ def test_a_corrupt_archive_leaves_an_existing_index_untouched(tmp_path):
     with pytest.raises(wcvp.WcvpError):
         wcvp.install(folder, archive=bad)
     assert (folder / "wcvp.sqlite").read_bytes() == before
+
+
+# ---------------------------------------------------------------------------
+# Cross-platform: the read-only URI must survive odd paths and Windows (#104)
+# ---------------------------------------------------------------------------
+
+def test_read_only_uri_escapes_percent(tmp_path):
+    """f"file:{path}" fails to open a path containing '%'."""
+    d = tmp_path / "100%data"; d.mkdir()
+    db_path = d / "wcvp.sqlite"
+    wcvp.build_index(_archive(tmp_path, [_row("1", "Quercus robur")]), db_path)
+    assert wcvp.open_index(db_path).execute("select count(*) from name").fetchone()[0] == 1
+
+
+def test_read_only_uri_escapes_question_mark(tmp_path):
+    """f"file:{path}?mode=ro" on a path containing '?' silently opens a DIFFERENT database:
+    everything after the '?' is parsed as query parameters."""
+    d = tmp_path / "my?db"; d.mkdir()
+    db_path = d / "wcvp.sqlite"
+    wcvp.build_index(_archive(tmp_path, [_row("1", "Quercus robur")]), db_path)
+    assert wcvp.open_index(db_path).execute("select count(*) from name").fetchone()[0] == 1
+
+
+def test_windows_paths_become_a_valid_file_uri():
+    """On Windows, urllib.request.pathname2url is nturl2path.pathname2url. Exercise THAT,
+    since on Linux the posix implementation would merely percent-escape the backslashes and
+    prove nothing. The old f-string emitted `file:C:\\Users\\…` — backslashes and an
+    unescaped drive colon.
+    """
+    import nturl2path
+    url = nturl2path.pathname2url(r"C:\Users\jakob\data\wcvp\wcvp.sqlite")
+    uri = "file:" + url + "?mode=ro"
+    assert url == "///C:/Users/jakob/data/wcvp/wcvp.sqlite", url
+    assert "\\" not in uri
+    assert uri == "file:///C:/Users/jakob/data/wcvp/wcvp.sqlite?mode=ro"
+
+
+def test_index_is_opened_read_only_even_through_the_escaped_uri(tmp_path):
+    db_path = tmp_path / "wcvp.sqlite"
+    wcvp.build_index(_archive(tmp_path, [_row("1", "Quercus robur")]), db_path)
+    with pytest.raises(sqlite3.OperationalError, match="readonly"):
+        wcvp.open_index(db_path).execute("DELETE FROM name")
