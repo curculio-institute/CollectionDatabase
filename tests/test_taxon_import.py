@@ -20,7 +20,7 @@ from app.models.base import _utcnow
 from app.services.taxa import (
     create_taxon_direct,
     get_or_create_from_tw_data,
-    get_or_create_from_powo_data,
+    get_or_create_from_wcvp_data,
 )
 
 
@@ -80,44 +80,44 @@ def _tw_synonym(
     return d, otu_id
 
 
-def _powo_species(
+def _wcvp_species(
     scientific_name: str,
     genus: str,
     family: str,
     authorship: str = "L.",
-    is_synonym: bool = False,
-    nomenclatural_code: str = "ICN",
+    genus_authorship: str | None = None,
+    accepted: dict | None = None,
 ) -> dict:
-    """Return a powo_fields dict as produced by powo.fields_from_powo()."""
+    """A fields dict as produced by wcvp.fields_from_wcvp() for a species."""
     return {
         "scientific_name": scientific_name,
         "taxon_rank": "species",
         "scientific_name_authorship": authorship,
-        "nomenclatural_code": nomenclatural_code,
+        "nomenclatural_code": "ICN",
+        "ipni_id": None,
         "family": family,
         "genus": genus,
-        "ancestor_authorships": {},
-        "is_synonym": is_synonym,
+        "genus_authorship": genus_authorship,
+        "species_name": None,
+        "is_synonym": accepted is not None,
+        "accepted": accepted,
     }
 
 
-def _powo_genus(
-    scientific_name: str,
-    family: str,
-    authorship: str = "L.",
-    nomenclatural_code: str = "ICN",
-    ancestor_authorships: dict | None = None,
-) -> dict:
-    """Return a powo_fields dict for a genus picked directly from POWO."""
+def _wcvp_genus(scientific_name: str, family: str, authorship: str = "L.") -> dict:
+    """A fields dict for a genus picked directly from WCVP."""
     return {
         "scientific_name": scientific_name,
         "taxon_rank": "genus",
         "scientific_name_authorship": authorship,
-        "nomenclatural_code": nomenclatural_code,
+        "nomenclatural_code": "ICN",
+        "ipni_id": None,
         "family": family,
         "genus": None,
-        "ancestor_authorships": ancestor_authorships or {},
+        "genus_authorship": None,
+        "species_name": None,
         "is_synonym": False,
+        "accepted": None,
     }
 
 
@@ -428,14 +428,19 @@ def test_create_taxon_direct_accepts_explicit_element(session):
 
 
 # ---------------------------------------------------------------------------
-# POWO imports
+# WCVP imports
+#
+# Ported from the POWO tests when POWO was replaced (#98). The two POWO-only regressions
+# about the `ancestor_authorships` clobber are gone with the loop that caused them; the
+# behaviour they protected — a directly-imported taxon keeps its OWN authorship — is still
+# asserted below.
 # ---------------------------------------------------------------------------
 
-def test_powo_import_second_species_reuses_genus(plant_tree, session):
-    """POWO import of a new species in an existing genus creates exactly one new row."""
-    powo = _powo_species("Achillea ptarmica", genus="Achillea", family="Asteraceae")
+def test_wcvp_import_second_species_reuses_genus(plant_tree, session):
+    """A new species in an existing genus creates exactly one new row."""
+    fields = _wcvp_species("Achillea ptarmica", genus="Achillea", family="Asteraceae")
     before = session.query(Taxon).count()
-    result = get_or_create_from_powo_data(session, powo)
+    result = get_or_create_from_wcvp_data(session, fields)
     after = session.query(Taxon).count()
 
     assert result.scientific_name == "Achillea ptarmica"
@@ -443,145 +448,127 @@ def test_powo_import_second_species_reuses_genus(plant_tree, session):
     assert session.query(Taxon).filter(Taxon.scientific_name == "Achillea").count() == 1
 
 
-def test_powo_import_does_not_reparent_genus(plant_tree, session):
-    """POWO has no tribe knowledge, so it would want to set the genus parent to the
-    family directly.  Under the fill-NULL-only policy the existing tribe parent is
-    preserved and a mismatch is reported instead.
+def test_wcvp_import_does_not_reparent_genus(plant_tree, session):
+    """WCVP has no rank between family and genus, so it would want to parent the genus on
+    the family directly. Under the fill-NULL-only policy the existing tribe parent is
+    preserved and a mismatch is reported instead — the local DB is the source of truth.
     """
     assert plant_tree["genus"].parent_name_usage_id == plant_tree["tribe"].id
 
-    powo = _powo_species("Achillea ptarmica", genus="Achillea", family="Asteraceae")
+    fields = _wcvp_species("Achillea ptarmica", genus="Achillea", family="Asteraceae")
     mismatches: list[str] = []
-    get_or_create_from_powo_data(session, powo, mismatches=mismatches)
+    get_or_create_from_wcvp_data(session, fields, mismatches=mismatches)
     session.refresh(plant_tree["genus"])
 
     assert plant_tree["genus"].parent_name_usage_id == plant_tree["tribe"].id  # unchanged
     assert any("Achillea" in m and "parent" in m for m in mismatches)
 
 
-def test_powo_import_existing_species_no_duplicate(plant_tree, session):
-    """POWO import of a species already in the DB returns the existing row."""
-    powo = _powo_species(
-        "Achillea millefolium", genus="Achillea", family="Asteraceae", authorship="L.",
-    )
+def test_wcvp_import_existing_species_no_duplicate(plant_tree, session):
+    fields = _wcvp_species("Achillea millefolium", genus="Achillea", family="Asteraceae")
     before = session.query(Taxon).count()
-    result = get_or_create_from_powo_data(session, powo)
+    result = get_or_create_from_wcvp_data(session, fields)
     after = session.query(Taxon).count()
 
     assert after == before
     assert result.id == plant_tree["species"].id
 
 
-def test_powo_import_backfills_authorship(plant_tree, session):
-    """POWO fills in authorship on existing rows that have none.
-
-    The target taxon's authorship comes from `scientific_name_authorship`; the
-    backfill onto the existing (NULL-authorship) species row uses that value.
-    """
+def test_wcvp_import_backfills_authorship(plant_tree, session):
+    """Fills authorship on an existing row that has none."""
     assert plant_tree["species"].scientific_name_authorship is None
 
-    powo = _powo_species(
-        "Achillea millefolium", genus="Achillea", family="Asteraceae", authorship="L.",
-    )
-    # POWO classification includes the species itself as the last entry with author.
-    powo["ancestor_authorships"] = {"species": "L."}
-
-    get_or_create_from_powo_data(session, powo)
+    fields = _wcvp_species("Achillea millefolium", genus="Achillea", family="Asteraceae",
+                           authorship="L.")
+    get_or_create_from_wcvp_data(session, fields)
     session.refresh(plant_tree["species"])
 
     assert plant_tree["species"].scientific_name_authorship == "L."
 
 
-def test_powo_import_genus_directly_keeps_authorship(session):
-    """A genus imported directly from POWO retains its OWN authorship.
-
-    Regression: the ancestor-authorship loop reused the `auth` variable, so the
-    target genus was created with the loop's final value — ancestor_authorships
-    ['species'], which is absent for a genus record → None. A genus record's
-    classification carries family/genus authors but no species entry.
-    """
-    powo = _powo_genus(
-        "Achillea", family="Asteraceae", authorship="L.",
-        ancestor_authorships={"family": "Bercht. & J.Presl", "genus": "L."},
+def test_wcvp_import_genus_directly_keeps_its_own_authorship(session):
+    result = get_or_create_from_wcvp_data(
+        session, _wcvp_genus("Achillea", family="Asteraceae", authorship="L.")
     )
-    result = get_or_create_from_powo_data(session, powo)
-
     assert result.taxon_rank == "genus"
     assert result.scientific_name == "Achillea"
-    assert result.scientific_name_authorship == "L."   # was None before the fix
+    assert result.scientific_name_authorship == "L."
 
 
-def test_powo_import_species_keeps_own_authorship_without_species_classification(session):
-    """A directly-imported species keeps its own authorship even when the
-    classification map has no 'species' entry (guards the same clobber bug for
-    the species/infraspecific case)."""
-    powo = _powo_species(
-        "Achillea distans", genus="Achillea", family="Asteraceae", authorship="Waldst. & Kit.",
-    )
-    powo["ancestor_authorships"] = {"family": "Bercht. & J.Presl", "genus": "L."}
-    result = get_or_create_from_powo_data(session, powo)
+def test_wcvp_import_species_keeps_its_own_authorship(session):
+    """The target's authorship is never overwritten by an ancestor's."""
+    fields = _wcvp_species("Achillea distans", genus="Achillea", family="Asteraceae",
+                           authorship="Waldst. & Kit.", genus_authorship="L.")
+    result = get_or_create_from_wcvp_data(session, fields)
 
-    assert result.taxon_rank == "species"
-    assert result.scientific_name_authorship == "Waldst. & Kit."   # was None before the fix
+    assert result.scientific_name_authorship == "Waldst. & Kit."
+    genus = session.get(Taxon, result.parent_name_usage_id)
+    assert genus.scientific_name_authorship == "L."
 
 
-def test_powo_import_does_not_overwrite_existing_authorship(plant_tree, session):
-    """POWO never overwrites an authorship already present."""
+def test_wcvp_import_does_not_overwrite_existing_authorship(plant_tree, session):
     plant_tree["species"].scientific_name_authorship = "Local Author"
     session.flush()
 
-    powo = _powo_species(
-        "Achillea millefolium", genus="Achillea", family="Asteraceae", authorship="L.",
-    )
-    get_or_create_from_powo_data(session, powo)
+    fields = _wcvp_species("Achillea millefolium", genus="Achillea", family="Asteraceae",
+                           authorship="L.")
+    get_or_create_from_wcvp_data(session, fields)
     session.refresh(plant_tree["species"])
 
     assert plant_tree["species"].scientific_name_authorship == "Local Author"
 
 
-def test_powo_import_synonym_linked_to_existing_accepted(plant_tree, session):
-    """POWO synonym import creates the synonym row and links it to the existing accepted name."""
-    accepted_fields = _powo_species(
-        "Achillea millefolium", genus="Achillea", family="Asteraceae",
-    )
-    synonym_fields = _powo_species(
+def test_wcvp_import_synonym_linked_to_existing_accepted(plant_tree, session):
+    accepted = _wcvp_species("Achillea millefolium", genus="Achillea", family="Asteraceae")
+    synonym_fields = _wcvp_species(
         "Achillea lanulosa", genus="Achillea", family="Asteraceae",
-        authorship="Nutt.", is_synonym=True,
+        authorship="Nutt.", accepted=accepted,
     )
 
     before = session.query(Taxon).count()
-    synonym = get_or_create_from_powo_data(session, synonym_fields, accepted_fields=accepted_fields)
+    synonym = get_or_create_from_wcvp_data(session, synonym_fields)
     after = session.query(Taxon).count()
 
     assert after == before + 1  # only the synonym row is new
-    assert synonym.accepted_name_usage_id is not None
     assert synonym.accepted_name_usage_id == plant_tree["species"].id
 
 
-def test_powo_import_sets_name_element(session):
-    """POWO's full `name` is split into the atomic element; composition rebuilds
-    the same full string."""
-    powo = _powo_species(
-        "Achillea distans", genus="Achillea", family="Asteraceae", authorship="Waldst. & Kit.",
-    )
-    sp = get_or_create_from_powo_data(session, powo)
+def test_wcvp_import_sets_name_element(session):
+    """The full name is split into the atomic element; composition rebuilds the same string."""
+    fields = _wcvp_species("Achillea distans", genus="Achillea", family="Asteraceae",
+                           authorship="Waldst. & Kit.")
+    sp = get_or_create_from_wcvp_data(session, fields)
     assert sp.name_element == "distans"
     assert sp.scientific_name == "Achillea distans"
 
 
-def test_powo_import_synonym_both_new(session):
-    """POWO synonym import when neither name exists yet creates both rows."""
-    accepted_fields = _powo_species(
-        "Achillea ligustica", genus="Achillea", family="Asteraceae",
-    )
-    synonym_fields = _powo_species(
+def test_wcvp_import_synonym_both_new(session):
+    accepted = _wcvp_species("Achillea ligustica", genus="Achillea", family="Asteraceae")
+    synonym_fields = _wcvp_species(
         "Achillea crithmifolia", genus="Achillea", family="Asteraceae",
-        authorship="Waldst. & Kit.", is_synonym=True,
+        authorship="Waldst. & Kit.", accepted=accepted,
     )
 
-    synonym = get_or_create_from_powo_data(session, synonym_fields, accepted_fields=accepted_fields)
-    accepted = session.query(Taxon).filter_by(scientific_name="Achillea ligustica").first()
+    synonym = get_or_create_from_wcvp_data(session, synonym_fields)
+    acc_row = session.query(Taxon).filter_by(scientific_name="Achillea ligustica").first()
 
-    assert accepted is not None and accepted.accepted_name_usage_id is None
-    assert synonym.accepted_name_usage_id is not None
-    assert synonym.accepted_name_usage_id == accepted.id
+    assert acc_row is not None and acc_row.accepted_name_usage_id is None
+    assert synonym.accepted_name_usage_id == acc_row.id
+
+
+def test_wcvp_import_synonym_in_another_genus_keeps_its_own_lineage(session):
+    """Epic #30: the synonym stays under its own genus, so it is never renamed into — and
+    merged with — its accepted name. See docs/plant_names.md §5."""
+    accepted = _wcvp_species("Cytisus scoparius", genus="Cytisus", family="Fabaceae",
+                             authorship="(L.) Link")
+    synonym_fields = _wcvp_species(
+        "Sarothamnus scoparius", genus="Sarothamnus", family="Fabaceae",
+        authorship="(L.) Wimm.", accepted=accepted,
+    )
+    syn = get_or_create_from_wcvp_data(session, synonym_fields)
+    acc = session.get(Taxon, syn.accepted_name_usage_id)
+
+    assert syn.id != acc.id
+    assert syn.scientific_name == "Sarothamnus scoparius"
+    assert session.get(Taxon, syn.parent_name_usage_id).scientific_name == "Sarothamnus"
+    assert session.get(Taxon, acc.parent_name_usage_id).scientific_name == "Cytisus"

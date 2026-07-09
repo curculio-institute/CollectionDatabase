@@ -548,6 +548,7 @@ def fields_from_wcvp(db: sqlite3.Connection, row: WcvpName) -> dict:
         # name is certain and the author is not, so we stay silent rather than pick one.
         "genus": row.genus if rank != "genus" else None,
         "genus_authorship": genus_row.authorship if genus_row else None,
+        "genus_ipni_id": genus_row.ipni_id if genus_row else None,
         # Infraspecific names need their species parent. Accepted rows carry parent_id;
         # synonyms carry none, so cut it out of the name string.
         "species_name": _species_name_of(row.name) if rank in _INFRA_RANKS else None,

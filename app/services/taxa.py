@@ -591,6 +591,9 @@ def _ensure_parent_rows(
 
         auth = fields.get(auth_key)
         otu_id = fields.get(f"{field_key}_otu_id")
+        # Same threading as otu_id, for the other external identity we may know about an
+        # ancestor: WCVP resolves the genus row, so its IPNI id should not be dropped.
+        anc_ipni = fields.get(f"{field_key}_ipni_id")
 
         existing = None
         if otu_id:
@@ -612,6 +615,7 @@ def _ensure_parent_rows(
                 scientific_name_authorship=auth or None,
                 parent_name_usage_id=parent_id,
                 taxonworks_otu_id=otu_id,
+                ipni_id=anc_ipni,
                 nomenclatural_code=nomen_code,
                 created_at=_utcnow(),
                 updated_at=_utcnow(),
@@ -649,6 +653,9 @@ def _ensure_parent_rows(
                         f"{name}: authorship is {existing.scientific_name_authorship!r} locally, "
                         f"import says {auth!r}"
                     )
+            if anc_ipni and not existing.ipni_id:
+                existing.ipni_id = anc_ipni
+                dirty = True
             if otu_id:
                 if not existing.taxonworks_otu_id:
                     existing.taxonworks_otu_id = otu_id
@@ -1092,157 +1099,6 @@ def get_or_create_from_tw_data(
 
 
 # ---------------------------------------------------------------------------
-# POWO integration
-# ---------------------------------------------------------------------------
-
-def get_or_create_from_powo_data(
-    session: Session,
-    powo_fields: dict,
-    *,
-    accepted_fields: dict | None = None,
-    mismatches: list[str] | None = None,
-) -> Taxon:
-    """Find or create a local Taxon from a POWO-derived field dict.
-
-    powo_fields comes from powo.fields_from_powo(powo_record).
-    Creates family and genus ancestor rows if missing, then the species row.
-    nomenclatural_code is propagated to all rows from the POWO record.
-
-    Synonym handling: if powo_fields["is_synonym"] is True and accepted_fields
-    is provided, the accepted name is created first and the synonym row is
-    linked to it via accepted_name_usage_id.
-
-    Matching key: (composed scientific_name, taxon_rank) — same as TW imports.
-
-    Import policy: only fills NULL fields on existing rows.  Conflicts with
-    non-NULL local values are appended to mismatches (if provided).
-    """
-    sci_name   = powo_fields["scientific_name"]   # POWO's full name (input only)
-    rank       = (powo_fields.get("taxon_rank") or "species").lower()
-    auth       = powo_fields.get("scientific_name_authorship")
-    nomen_code = powo_fields.get("nomenclatural_code")
-    family     = powo_fields.get("family")
-    genus      = powo_fields.get("genus")
-    is_synonym = powo_fields.get("is_synonym", False)
-    # Atomic element: POWO's `name` is the full string, so split it (no subgenus
-    # for plants). The composed scientific_name is rebuilt below from the chain.
-    element = powo_fields.get("name_element") or element_from_name(sci_name, rank)
-
-    # Create the accepted name first so the synonym can link to it. In the atomic
-    # model the synonym keeps its OWN-lineage parent, independent of the accepted
-    # name (its genus is one of its own ancestors).
-    accepted_taxon: Taxon | None = None
-    if is_synonym and accepted_fields:
-        accepted_taxon = get_or_create_from_powo_data(
-            session, accepted_fields, mismatches=mismatches
-        )
-
-    # POWO gives family → genus → species (no subfamily/tribe available).
-    ancestor_fields: dict = {"taxon_rank": rank, "nomenclatural_code": nomen_code}
-    if family:
-        ancestor_fields["family"] = family
-    if genus and rank != "genus":
-        ancestor_fields["genus"] = genus
-
-    # Populate authorship for each ancestor rank using the classification-derived
-    # rank → author map from the POWO record. Use a separate variable: reusing
-    # `auth` here would clobber the *target* taxon's authorship captured above,
-    # leaving directly-imported genera (and mis-attributing infraspecific taxa)
-    # with the last-iterated ancestor's value instead of their own.
-    ancestor_authorships: dict[str, str] = powo_fields.get("ancestor_authorships") or {}
-    for rank_name, _field_key, auth_key in _RANK_CHAIN:
-        anc_auth = ancestor_authorships.get(rank_name)
-        if anc_auth:
-            ancestor_fields[auth_key] = anc_auth
-    # For infraspecific taxa, extract the parent species name so _ensure_parent_rows
-    # creates the species row as the immediate parent instead of stopping at genus.
-    if rank in ("subspecies", "variety", "subvariety", "form", "subform") and genus:
-        # sci_name format: "Genus epithet subsp./var./f. infraepithet"
-        # (or "Genus (Subgenus) epithet …"); grab the first lowercase word after the genus.
-        rest = sci_name[len(genus):].strip()
-        m = re.match(r"(?:\([^)]+\)\s+)?([a-z×][a-z\-]*)", rest)
-        if m:
-            ancestor_fields["species_name"] = f"{genus} {m.group(1)}"
-
-    parent_id = _ensure_parent_rows(
-        session, ancestor_fields, nomenclatural_code=nomen_code, mismatches=mismatches
-    )
-
-    # Compose the full name from the element + parent chain (matches the atomic
-    # model and the stored form used by every other writer).
-    composed_sci = _compose_transient(
-        session, name_element=element, taxon_rank=rank,
-        parent_id=parent_id, nomenclatural_code=nomen_code,
-    )
-
-    existing = (
-        session.query(Taxon)
-        .filter(Taxon.scientific_name == composed_sci, Taxon.taxon_rank == rank)
-        .first()
-    )
-    if existing:
-        dirty = False
-        if not existing.name_element:
-            existing.name_element = element
-            dirty = True
-        if auth:
-            if not existing.scientific_name_authorship:
-                existing.scientific_name_authorship = auth
-                dirty = True
-            elif existing.scientific_name_authorship != auth and mismatches is not None:
-                mismatches.append(
-                    f"{sci_name}: authorship is {existing.scientific_name_authorship!r} locally, "
-                    f"import says {auth!r}"
-                )
-        # Own-lineage parent backfill (accepted names and synonyms alike).
-        if parent_id is not None:
-            if existing.parent_name_usage_id is None:
-                existing.parent_name_usage_id = parent_id
-                dirty = True
-            elif existing.parent_name_usage_id != parent_id and mismatches is not None:
-                local_p = session.get(Taxon, existing.parent_name_usage_id)
-                import_p = session.get(Taxon, parent_id)
-                lname = local_p.scientific_name if local_p else f"id:{existing.parent_name_usage_id}"
-                iname = import_p.scientific_name if import_p else f"id:{parent_id}"
-                mismatches.append(
-                    f"{sci_name}: parent is {lname!r} locally, import says {iname!r}"
-                )
-        if nomen_code and not existing.nomenclatural_code:
-            existing.nomenclatural_code = nomen_code
-            dirty = True
-        if accepted_taxon:
-            if not existing.accepted_name_usage_id:
-                existing.accepted_name_usage_id = accepted_taxon.id
-                dirty = True
-            elif existing.accepted_name_usage_id != accepted_taxon.id and mismatches is not None:
-                local_acc = session.get(Taxon, existing.accepted_name_usage_id)
-                lname = local_acc.scientific_name if local_acc else f"id:{existing.accepted_name_usage_id}"
-                mismatches.append(
-                    f"{sci_name}: accepted name is {lname!r} locally, "
-                    f"import says {accepted_taxon.scientific_name!r}"
-                )
-        if dirty:
-            existing.updated_at = _utcnow()
-            session.flush()
-        return existing
-
-    t = Taxon(
-        name_element=element,
-        scientific_name=composed_sci,
-        taxon_rank=rank,
-        scientific_name_authorship=auth,
-        parent_name_usage_id=parent_id,
-        accepted_name_usage_id=accepted_taxon.id if accepted_taxon else None,
-        nomenclatural_code=nomen_code,
-        created_at=_utcnow(),
-        updated_at=_utcnow(),
-    )
-    session.add(t)
-    session.flush()
-    return t
-
-
-# ---------------------------------------------------------------------------
 # WCVP integration
 # ---------------------------------------------------------------------------
 
@@ -1294,6 +1150,8 @@ def get_or_create_from_wcvp_data(
         ancestor_fields["genus"] = fields["genus"]
     if fields.get("genus_authorship"):
         ancestor_fields["genus_authorship"] = fields["genus_authorship"]
+    if fields.get("genus_ipni_id"):
+        ancestor_fields["genus_ipni_id"] = fields["genus_ipni_id"]
     if fields.get("species_name"):
         ancestor_fields["species_name"] = fields["species_name"]
 

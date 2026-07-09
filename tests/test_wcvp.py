@@ -199,9 +199,9 @@ def test_rebuild_replaces_an_existing_index(tmp_path):
 # Query layer
 # ---------------------------------------------------------------------------
 
-def _genus(taxonid, name, *, auth, family, status="Accepted"):
+def _genus(taxonid, name, *, auth, family, status="Accepted", ipni=""):
     return _row(taxonid, name, auth=auth, rank="Genus", status=status,
-                family=family, genus=name)
+                family=family, genus=name, ipni=ipni)
 
 
 @pytest.fixture

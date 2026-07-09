@@ -19,7 +19,7 @@ from tests.test_wcvp import _archive, _genus, _row
 @pytest.fixture
 def index(tmp_path):
     archive = _archive(tmp_path, [
-        _genus("10", "Quercus", auth="L.", family="Fagaceae"),
+        _genus("10", "Quercus", auth="L.", family="Fagaceae", ipni="77210-1"),
         _row("11", "Quercus robur", accepted="11", parent="10", ipni="304293-2"),
         _row("12", "Quercus robur subsp. brutia", rank="Subspecies", auth="(Ten.) O.Schwarz",
              accepted="12", parent="11", family="Fagaceae", genus="Quercus"),
@@ -183,3 +183,12 @@ def test_a_synonym_can_never_become_its_own_accepted_name(session, index):
     fields["genus"] = "Cytisus"                      # the bug, injected
     with pytest.raises(ValueError, match="its own accepted name"):
         get_or_create_from_wcvp_data(session, fields)
+
+
+def test_genus_ipni_id_is_captured_on_the_ancestor_row(session, index):
+    """resolve_genus() knows the genus row; its identifier must not be dropped on the way
+    into the ancestor. The id can only be captured at import (#99)."""
+    sp = _import(session, index, "11")
+    genus = session.get(Taxon, sp.parent_name_usage_id)
+    assert genus.scientific_name == "Quercus"
+    assert genus.ipni_id == "77210-1"

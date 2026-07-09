@@ -4,11 +4,11 @@ States: Empty → Searching → Selected (see docs/design.md §4).
 
 Sources are queried in order; each always runs if listed.
 Default order: local DB → TaxonWorks.
-Bio-association order: local DB → TaxonWorks → POWO.
+Bio-association order: local DB → TaxonWorks → WCVP (plants; see docs/plant_names.md).
 
 State dict: {'taxon_id': int|None, 'label': str, 'clear': callable}
   taxon_id = None   — nothing selected
-  taxon_id = -1     — TW/POWO import in progress (do not read yet)
+  taxon_id = -1     — TW/WCVP import in progress (do not read yet)
   taxon_id = N > 0  — confirmed local DB id
 
 on_select(taxon_id: int) is called after the DB record is confirmed.
@@ -21,7 +21,7 @@ import re
 
 from nicegui import context as _nicegui_context, ui
 
-import app.services.powo as powo_svc
+import app.services.wcvp as wcvp_svc
 import app.services.taxonworks as tw_svc
 import app.services.taxa as svc_taxa
 import app.services.import_preview as import_preview_svc
@@ -66,31 +66,40 @@ def _local_item_html(
     return f"{n} &#10060;"
 
 
-def _powo_item_html(r: dict) -> str:
-    name    = r.get("name", "")
-    auth    = r.get("authors", "")
-    family  = r.get("family", "")
-    is_syn  = bool(r.get("synonym", False))
-    acc_raw = r.get("accepted") or {}
-    acc_name = acc_raw.get("name", "")
-    acc_auth = acc_raw.get("author", "")
+def _wcvp_item_html(row, accepted, reason: str) -> str:
+    """One WCVP row.
 
-    html = f'🌿 <i>{_html_mod.escape(name)}</i>'
-    if auth:
-        html += f' {_html_mod.escape(auth)}'
-    if is_syn and acc_name:
+    A refused name (Unplaced / Misapplied / an unmodelled rank) states its reason and must
+    NOT borrow the synonym form `Name ❌ = Accepted ✓` — that form asserts *synonym of*, and a
+    misapplication is precisely not a synonymy. See docs/plant_names.md §4.
+    """
+    e = _html_mod.escape
+    html = f'🌿 <i>{e(row.name)}</i>'
+    if row.authorship:
+        html += f' {e(row.authorship)}'
+
+    if row.is_refused:
+        # Name the reason, not the status. A name refused for its RANK is very often a
+        # perfectly ordinary synonym, and a "⊘ synonym" badge would say that synonyms cannot
+        # be imported — they can, and usually are.
+        badge = (f"rank {row.rank or 'none'}" if row.rank_unsupported
+                 else row.status.lower())
+        html += f' <span class="wcvp-blocked-badge">⊘ {e(badge)}</span>'
+        if reason:
+            html += (f'<div class="wcvp-blocked-reason">{e(reason)}</div>')
+        return html
+
+    if accepted is not None:
         html += (
             ' &#10060; = '
-            f'<i>{_html_mod.escape(acc_name)}</i>'
-            + (f' {_html_mod.escape(acc_auth)}' if acc_auth else "")
+            f'<i>{e(accepted.name)}</i>'
+            + (f' {e(accepted.authorship)}' if accepted.authorship else "")
             + ' &#10003;'
         )
-    elif is_syn:
-        html += ' &#10060;'
-    if family:
+    if row.family:
         html += (
             f' <span style="color:var(--tp-base-soft);font-size:.8rem">'
-            f'{_html_mod.escape(family)}</span>'
+            f'{e(row.family)}</span>'
         )
     return html
 
@@ -102,10 +111,16 @@ _TW_BADGE = (
     ' title="This taxon and its parent taxa were imported from TaxonWorks">'
     '✚ add</span>'
 )
-_POWO_BADGE = (
-    '<span class="powo-import-badge"'
-    ' title="This taxon was imported from Plants of the World Online (POWO)">'
+_WCVP_BADGE = (
+    '<span class="wcvp-import-badge"'
+    ' title="This taxon is imported from the World Checklist of Vascular Plants (WCVP)">'
     '✚ add</span>'
+)
+# A refused row carries no ✚ add badge: in this widget the badge *means* "clicking imports
+# this", so its absence is the primary signal, as it already is for local rows.
+_WCVP_BLOCKED_TITLE = (
+    "This name cannot be imported: the database records a name only as accepted, or as "
+    "replaced by another name. Create it deliberately in the taxon editor if you need it."
 )
 
 
@@ -194,21 +209,37 @@ _TW_CSS = """
                    letter-spacing:.02em; cursor:help; }
 .dark .tw-import-badge { background:rgba(14,165,233,.15); color:rgb(14,165,233); }
 
-/* POWO import items */
-.tw-dropdown-item--powo            { background:rgba(16,185,129,.04); }
-.dark .tw-dropdown-item--powo      { background:rgba(52,211,153,.06); }
-.tw-dropdown-item--powo:hover      { background:rgba(16,185,129,.10) !important; }
-.dark .tw-dropdown-item--powo:hover{ background:rgba(52,211,153,.13) !important; }
-.powo-section-label  { padding:4px 16px 2px; font-size:.72rem; font-weight:700;
+/* WCVP import items */
+.tw-dropdown-item--wcvp            { background:rgba(16,185,129,.04); }
+.dark .tw-dropdown-item--wcvp      { background:rgba(52,211,153,.06); }
+.tw-dropdown-item--wcvp:hover      { background:rgba(16,185,129,.10) !important; }
+.dark .tw-dropdown-item--wcvp:hover{ background:rgba(52,211,153,.13) !important; }
+.wcvp-section-label  { padding:4px 16px 2px; font-size:.72rem; font-weight:700;
                        letter-spacing:.08em; text-transform:uppercase;
                        color:rgb(16,185,129); border-bottom:1px solid rgb(243,244,246); }
-.dark .powo-section-label { border-color:rgb(48,48,48); color:rgb(52,211,153); }
-.powo-import-badge   { display:inline-flex; align-items:center; gap:2px;
+.dark .wcvp-section-label { border-color:rgb(48,48,48); color:rgb(52,211,153); }
+.wcvp-import-badge   { display:inline-flex; align-items:center; gap:2px;
                        background:rgba(16,185,129,.12); color:rgb(5,150,105);
                        border-radius:4px; padding:1px 6px; font-size:.72rem;
                        font-weight:600; margin-right:7px; vertical-align:middle;
                        cursor:help; }
-.dark .powo-import-badge { background:rgba(52,211,153,.15); color:rgb(52,211,153); }
+.dark .wcvp-import-badge { background:rgba(52,211,153,.15); color:rgb(52,211,153); }
+
+/* Refused names: shown so the user learns the name exists rather than inventing it by
+   hand, but never importable. Muted, no ✚ add badge, not clickable. */
+.tw-dropdown-item--blocked         { background:transparent; opacity:.62;
+                                     cursor:not-allowed; }
+.tw-dropdown-item--blocked:hover   { background:rgba(0,0,0,.03) !important; }
+.dark .tw-dropdown-item--blocked:hover { background:rgba(255,255,255,.04) !important; }
+.wcvp-blocked-badge  { display:inline-flex; align-items:center; gap:2px;
+                       background:rgba(120,113,108,.14); color:rgb(87,83,78);
+                       border-radius:4px; padding:1px 6px; font-size:.7rem;
+                       font-weight:600; margin-left:7px; vertical-align:middle;
+                       letter-spacing:.02em; }
+.dark .wcvp-blocked-badge { background:rgba(214,211,209,.14); color:rgb(214,211,209); }
+.wcvp-blocked-reason { font-size:.74rem; color:var(--tp-base-soft);
+                       margin-top:1px; font-style:normal; }
+.wcvp-hint           { padding:8px 16px; font-size:.78rem; color:var(--tp-base-soft); }
 
 /* ── focus ring on input ───────────────────────────────────────────── */
 .tw-search-wrap .q-field--focused .q-field__control {
@@ -354,13 +385,14 @@ def build_taxon_search(
 
     Returns {'taxon_id': int|None, 'label': str, 'clear': callable}.
 
-    sources controls which APIs run and in what order. Each listed source
+    sources controls which sources run and in what order. Each listed source
     always runs — no conditional fallback. Valid values: 'local', 'taxonworks',
-    'powo'. Default: ('local', 'taxonworks'). Bio-association use case passes
-    ('local', 'taxonworks', 'powo').
+    'wcvp'. Default: ('local', 'taxonworks'). Bio-association use case passes
+    ('local', 'taxonworks', 'wcvp') — TaxonWorks stays primary, for consistency with
+    the published mirror; WCVP supplies plant names neither source knows.
 
     nomenclatural_codes filters the local DB section (e.g. ['ICN'] for plants).
-    Does not filter TW or POWO results — those are authoritative for their own
+    Does not filter TW or WCVP results — those are authoritative for their own
     nomenclatural domain.
     """
     ui.add_head_html(_TW_CSS)
@@ -598,81 +630,97 @@ def build_taxon_search(
         if on_select:
             on_select(tid)
 
-    # ── POWO section ──────────────────────────────────────────────────────────
+    # ── WCVP section (plants) ────────────────────────────────────────────────
+    #
+    # Local SQLite, not an API: POWO and WCVP both sit behind a Cloudflare bot challenge
+    # that answers a plain HTTP client with 403 on ~17 of 20 requests, and the old code
+    # swallowed that failure — silently importing IPNI-only data with no nomenclatural
+    # code, no ancestor authorship, and every synonym recorded as an accepted name.
+    # See docs/plant_names.md and issue #98. Nothing here is async or fallible over the
+    # network, so nothing here may swallow an exception.
 
-    async def _append_powo_section(term: str) -> None:
+    def _wcvp_index():
+        """Open the index once per widget. Absent index is a condition, not an error."""
+        if "wcvp_db" not in state:
+            try:
+                state["wcvp_db"] = wcvp_svc.open_index()
+            except wcvp_svc.IndexMissing:
+                state["wcvp_db"] = None
+        return state["wcvp_db"]
+
+    def _append_wcvp_section(term: str) -> None:
+        db = _wcvp_index()
         with dropdown:
-            powo_sec = ui.element("div")
-        with powo_sec:
-            ui.label("Searching Plants of the World Online…").classes("tw-dropdown-empty")
-        try:
-            results = await powo_svc.search_powo(term, limit=8)
-        except Exception:
-            powo_sec.clear()
+            sec = ui.element("div")
+
+        if db is None:
+            with sec:
+                ui.label("World Checklist of Vascular Plants").classes("wcvp-section-label")
+                ui.label(
+                    "No plant index installed — run scripts/build_wcvp_index.py"
+                ).classes("wcvp-hint")
+            _show_dropdown()
             return
 
-        powo_sec.clear()
+        results = wcvp_svc.search(db, term, limit=8)
         if not results:
             return
 
-        with powo_sec:
-            ui.label("Plants of the World Online").classes("powo-section-label")
-            for r in results:
-                name  = r.get("name", "")
-                auth  = r.get("authors", "")
-                label = f"{name} {auth}".strip() if auth else name
-                item_html = _POWO_BADGE + _powo_item_html(r)
+        with sec:
+            ui.label("World Checklist of Vascular Plants").classes("wcvp-section-label")
+            for row in results:
+                accepted = None if row.is_refused else wcvp_svc.accepted_name(db, row)
+                reason = wcvp_svc.refusal_reason(db, row) if row.is_refused else ""
+                body = _wcvp_item_html(row, accepted, reason)
+
+                if row.is_refused:
+                    # No ✚ add badge and no click handler: the row informs, it does not act.
+                    item = ui.element("div").classes(
+                        "tw-result tw-dropdown-item tw-dropdown-item--blocked"
+                    )
+                    item.props(f'title="{_WCVP_BLOCKED_TITLE}"')
+                    with item:
+                        ui.html(body)
+                    continue
+
+                item_html = _WCVP_BADGE + body
                 item = ui.element("div").classes(
-                    "tw-result tw-dropdown-item tw-dropdown-item--powo"
+                    "tw-result tw-dropdown-item tw-dropdown-item--wcvp"
                 )
                 with item:
                     ui.html(item_html)
                 item.on(
                     "click",
-                    lambda _, r=r, lbl=label, h=item_html: asyncio.ensure_future(
-                        _on_powo_pick(r, lbl, h)
+                    lambda _, r=row, lbl=row.label, h=item_html: asyncio.ensure_future(
+                        _on_wcvp_pick(r, lbl, h)
                     ),
                 )
         _show_dropdown()
 
-    async def _on_powo_pick(r: dict, label: str, item_html: str) -> None:
+    async def _on_wcvp_pick(row, label: str, item_html: str) -> None:
         _enter_selected(item_html, label=label)
         state["taxon_id"] = -1  # import in progress
 
-        # If batch POWO fetch only returned IPNI fields, retry once.
-        if r.get("taxonomicStatus") is None and r.get("synonym") is None:
-            fq_id = r.get("fqId", "")
-            if fq_id:
-                try:
-                    fresh = await powo_svc.fetch_powo_taxon(fq_id)
-                    if fresh:
-                        r = {**r, **fresh}
-                except Exception:
-                    pass
-
-        powo_fields = powo_svc.fields_from_powo(r)
-
-        accepted_fields: dict | None = None
-        if powo_fields.get("is_synonym") and powo_fields.get("accepted_fqid"):
-            try:
-                acc_data = await powo_svc.fetch_powo_taxon(powo_fields["accepted_fqid"])
-                if acc_data:
-                    accepted_fields = powo_svc.fields_from_powo(acc_data)
-            except Exception:
-                pass
+        db = _wcvp_index()
+        try:
+            fields = wcvp_svc.fields_from_wcvp(db, row)
+        except wcvp_svc.NotImportable as exc:
+            # A refused row has no click handler, so this is a data problem (e.g. a synonym
+            # whose accepted name is missing from Kew's archive). Say so; never guess.
+            with client:
+                ui.notify(f"Cannot import: {exc}", type="negative", timeout=8000)
+            _clear()
+            return
 
         mismatch_msgs: list[str] = []
 
         def _run_preview(session):
-            return svc_taxa.get_or_create_from_powo_data(
-                session, powo_fields, accepted_fields=accepted_fields,
-                mismatches=mismatch_msgs,
+            return svc_taxa.get_or_create_from_wcvp_data(
+                session, fields, mismatches=mismatch_msgs
             )
 
         def _run_apply(session):
-            return svc_taxa.get_or_create_from_powo_data(
-                session, powo_fields, accepted_fields=accepted_fields
-            )
+            return svc_taxa.get_or_create_from_wcvp_data(session, fields)
 
         try:
             with session_factory() as session:
@@ -685,9 +733,8 @@ def build_taxon_search(
             _clear()
             return
 
-        confirmed = await _show_import_preview_dialog(
-            changes, "Plants of the World Online (POWO)", client
-        )
+        source = wcvp_svc.index_meta(db).get("label", "WCVP")
+        confirmed = await _show_import_preview_dialog(changes, source, client)
         if not confirmed:
             _clear()
             return
@@ -744,8 +791,9 @@ def build_taxon_search(
                 if "taxonworks" in sources:
                     await _append_tw_section(term)
 
-                if "powo" in sources:
-                    await _append_powo_section(term)
+                if "wcvp" in sources:
+                    # Local index: no await, no network, no failure to swallow.
+                    _append_wcvp_section(term)
 
             except asyncio.CancelledError:
                 pass

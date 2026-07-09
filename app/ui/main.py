@@ -1177,7 +1177,7 @@ def index():
                     bio_obj_state = build_taxon_search(
                         _sf,
                         nomenclatural_codes=bio_codes,
-                        sources=("local", "taxonworks", "powo"),
+                        sources=("local", "taxonworks", "wcvp"),
                         placeholder="Type plant or fungus name…",
                     )
 

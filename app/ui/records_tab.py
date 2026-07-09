@@ -496,7 +496,7 @@ def build_records_tab(session_factory, *, on_saved: callable | None = None) -> N
             bio_state = build_taxon_search(
                 session_factory,
                 nomenclatural_codes=bio_codes_local,
-                sources=("local", "taxonworks", "powo"),
+                sources=("local", "taxonworks", "wcvp"),
                 placeholder="Type plant or fungus name…",
             )
 
