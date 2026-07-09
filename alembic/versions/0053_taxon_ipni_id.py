@@ -1,8 +1,12 @@
-"""taxon.dwc:scientificNameID — the external nomenclatural identifier (#98, #99)
+"""taxon.ipniID — the IPNI identifier of the name a taxon was imported from (#98, #99)
 
-The IPNI id of the name a taxon was imported from (WCVP's `scientificnameid`, e.g.
-`ipni:304293-2`, stored bare as `304293-2`). Sits alongside `taxonworksOtuID`, which plays
-exactly the same external-identity role for TaxonWorks.
+The bare IPNI id (WCVP's `scientificnameid`, e.g. `ipni:304293-2`, stored as `304293-2`).
+Sits alongside `taxonworksOtuID`, which plays exactly the same external-identity role for
+TaxonWorks — and follows the same naming convention: a **source-specific** external id is a
+plain camelCase local column, not a `dwc:` term. (An earlier draft named this
+`dwc:scientificNameID`. That DwC term is deliberately generic — "an identifier for the
+nomenclatural details of a scientific name" — and could hold a WFO, IPNI or other id. This
+column only ever holds an IPNI id, so it is named for what it is.)
 
 This is **identity, not provenance**: it records *which name this is*, not whose opinion the
 row reflects. Re-parenting or re-linking the name by hand leaves it true — which is why a
@@ -32,8 +36,8 @@ depends_on = None
 
 
 def upgrade() -> None:
-    op.execute('ALTER TABLE taxon ADD COLUMN "dwc:scientificNameID" TEXT')
+    op.execute('ALTER TABLE taxon ADD COLUMN "ipniID" TEXT')
 
 
 def downgrade() -> None:
-    op.execute('ALTER TABLE taxon DROP COLUMN "dwc:scientificNameID"')
+    op.execute('ALTER TABLE taxon DROP COLUMN "ipniID"')

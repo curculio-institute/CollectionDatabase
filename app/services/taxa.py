@@ -1272,7 +1272,7 @@ def get_or_create_from_wcvp_data(
     rank       = (fields.get("taxon_rank") or "species").lower()
     auth       = fields.get("scientific_name_authorship")
     nomen_code = fields["nomenclatural_code"]
-    name_id    = fields.get("scientific_name_id")
+    name_id    = fields.get("ipni_id")
     element    = element_from_name(sci_name, rank)
 
     # The accepted name first, so the synonym can link to it. Its own lineage is built by
@@ -1336,8 +1336,8 @@ def get_or_create_from_wcvp_data(
                     f"{sci_name}: authorship is {existing.scientific_name_authorship!r} "
                     f"locally, import says {auth!r}"
                 )
-        if name_id and not existing.scientific_name_id:
-            existing.scientific_name_id = name_id
+        if name_id and not existing.ipni_id:
+            existing.ipni_id = name_id
             dirty = True
         if parent_id is not None:
             if existing.parent_name_usage_id is None:
@@ -1380,7 +1380,7 @@ def get_or_create_from_wcvp_data(
         # RAISE on a chained synonym, and WCVP's own links are not guaranteed terminal.
         accepted_name_usage_id=_terminal_accepted(session, accepted_taxon).id if accepted_taxon else None,
         nomenclatural_code=nomen_code,
-        scientific_name_id=name_id,
+        ipni_id=name_id,
         created_at=_utcnow(),
         updated_at=_utcnow(),
     )

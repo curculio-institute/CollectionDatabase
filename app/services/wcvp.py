@@ -542,7 +542,7 @@ def fields_from_wcvp(db: sqlite3.Connection, row: WcvpName) -> dict:
         "taxon_rank": rank,
         "scientific_name_authorship": row.authorship,
         "nomenclatural_code": NOMENCLATURAL_CODE,
-        "scientific_name_id": row.ipni_id,
+        "ipni_id": row.ipni_id,
         "family": row.family,
         # The genus row supplies authorship only when unambiguously resolved; otherwise the
         # name is certain and the author is not, so we stay silent rather than pick one.

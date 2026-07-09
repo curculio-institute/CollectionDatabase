@@ -74,8 +74,8 @@ def test_accepted_species_creates_family_genus_species(session, index):
     assert family.nomenclatural_code == "ICN"
 
 
-def test_ipni_id_is_captured_as_scientific_name_id(session, index):
-    assert _import(session, index, "11").scientific_name_id == "304293-2"
+def test_ipni_id_is_captured(session, index):
+    assert _import(session, index, "11").ipni_id == "304293-2"
 
 
 def test_synonym_is_parented_under_its_own_genus(session, index):

@@ -174,6 +174,21 @@ asserted — they all mean "use that name instead of this one", which is what
 `acceptedNameUsageID` says. (TaxonWorks models them as `Homonym`, `OriginallyInvalid`,
 `Usage::Misspelling` relationships.)
 
+### Ranks are refused on the same principle
+
+WCVP carries **7 137** otherwise-importable names at ranks this database does not model —
+`proles` (2 347), `lusus` (659), `nothosubsp.` (533), `microgène`, `monstr.`, `grex`, and
+**2 707 rows with no rank at all**. `SUPPORTED_RANKS` is genus, species, subspecies, variety,
+subvariety, form, subform.
+
+Unrepresentable is unrepresentable: refuse the import, show the name, state the rank. Coercing
+`Paeonia corallina proles russoi` into a `variety` would assert a rank no authority gave it.
+
+### A synonym whose accepted name is missing
+
+Kew's own data contains dangling `acceptednameusageid` values. The importer refuses such a row
+rather than inventing an accepted name or quietly dropping the link.
+
 ### Refused names are shown, not hidden
 
 A refusal only teaches something if you can see it. If `Juglans gonroku` simply returned no
@@ -283,12 +298,17 @@ WCVP has no family rows, so an imported family row carries a name and a code but
 authorship. Filling it needs a separate static list of family authors — a follow-up, not part
 of #98.
 
-### `dwc:scientificNameID` (optional)
+### `taxon.ipniID`
 
-WCVP's `scientificnameid` holds the IPNI id (`ipni:304293-2`). Storing the bare id on the
-taxon row records **which name this is** — identity, like the existing `taxonworksOtuID`.
-Unlike a `nameAccordingTo` column it does not become false when the name is later re-parented
-by hand, which is why that column was rejected and this one is not.
+WCVP's `scientificnameid` holds the IPNI id (`ipni:304293-2`). The bare id is stored on the
+taxon row (migration 0053), recording **which name this is** — identity, like the existing
+`taxonworksOtuID`. Unlike a `nameAccordingTo` column it does not become false when the name is
+later re-parented by hand, which is why that column was rejected and this one is not.
+
+Named for its source, following `taxonworksOtuID`: a **source-specific** external id is a plain
+camelCase local column, not a `dwc:` term. The DwC term `scientificNameID` is deliberately
+generic ("an identifier for the nomenclatural details of a scientific name") and could hold a
+WFO id just as well; this column only ever holds an IPNI id.
 
 Coverage: 99.1% of accepted names, 99.8% of genera, 98.3% of species; sparse for infraspecific
 ranks (`Form` 45.3%). **It can only be captured at import** — names imported without it can
@@ -335,7 +355,7 @@ the values under audit. If WCVP flips `Thapsia foetida` to Synonym and we match 
 name+status+parent, the lookup *fails*, and the report says "not found in WCVP" instead of
 "status changed" — indistinguishable from the 393 genuinely deleted names.
 
-- **Match on:** `scientificNameID` where present, else `scientificName` + `scientificNameAuthorship`.
+- **Match on:** `ipniID` where present, else `scientificName` + `scientificNameAuthorship`.
 - **Compare:** status, accepted link, parent, rank, authorship.
 - An **ambiguous match is reported as ambiguous** — WCVP itself contains 1 695 duplicate
   name–author combinations (the paper's Table 1).
@@ -357,6 +377,6 @@ not: names came from TaxonWorks where TW knew them, from WCVP otherwise, and fro
 editing after that. Per-taxon `dwc:nameAccordingTo` was considered and rejected for exactly
 this reason — the claim it would record is not one the dataset makes.
 
-If a name's origin matters for a particular study, `dwc:scientificNameID` (§5) identifies the
+If a name's origin matters for a particular study, `ipniID` (§5) identifies the
 IPNI name it was imported from, and the WCVP citation is versioned per release
 (v15 `10.34885/rvc3-4d77`, v16 `10.34885/egs6-cp24`).
