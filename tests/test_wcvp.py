@@ -193,3 +193,157 @@ def test_rebuild_replaces_an_existing_index(tmp_path):
     wcvp.build_index(_archive(tmp_path, [_row("2", "Fagus sylvatica", genus="Fagus")]), db_path)
     db = sqlite3.connect(db_path)
     assert db.execute("SELECT name FROM name").fetchall() == [("Fagus sylvatica",)]
+
+
+# ---------------------------------------------------------------------------
+# Query layer
+# ---------------------------------------------------------------------------
+
+def _genus(taxonid, name, *, auth, family, status="Accepted"):
+    return _row(taxonid, name, auth=auth, rank="Genus", status=status,
+                family=family, genus=name)
+
+
+@pytest.fixture
+def index(tmp_path):
+    """A miniature checklist exercising every case the real archive contains."""
+    archive = _archive(tmp_path, [
+        # accepted species + its genus
+        _genus("10", "Quercus", auth="L.", family="Fagaceae"),
+        _row("11", "Quercus robur", accepted="11", parent="10", ipni="304293-2"),
+        _row("12", "Quercus robur subsp. robur", rank="Subspecies", auth="",
+             accepted="12", parent="11"),
+        # a synonym: no parent_id, own genus in the genus column
+        _genus("20", "Sarothamnus", auth="Wimm.", family="Fabaceae", status="Synonym"),
+        _row("21", "Sarothamnus scoparius", auth="(L.) Wimm.", status="Synonym",
+             accepted="31", family="Fabaceae", genus="Sarothamnus"),
+        _genus("30", "Cytisus", auth="Desf.", family="Fabaceae"),
+        _row("31", "Cytisus scoparius", auth="(L.) Link", accepted="31", parent="30",
+             family="Fabaceae", genus="Cytisus"),
+        # homonym genus across two families
+        _genus("40", "Torreya", auth="Arn.", family="Taxaceae"),
+        _genus("41", "Torreya", auth="Spreng.", family="Lamiaceae", status="Illegitimate"),
+        _genus("42", "Torreya", auth="Raf.", family="Lamiaceae", status="Synonym"),
+        # nothogenus carries a "×" marker on the row but not in the genus column
+        _genus("50", "× Epicattleya", auth="Rolfe", family="Orchidaceae",
+               status="Artificial Hybrid"),
+        # refused
+        _row("60", "Juglans gonroku", auth="Makino", status="Unplaced",
+             family="Juglandaceae", genus="Juglans"),
+        _row("61", "Quercus officinalis", auth="Thunb.", status="Misapplied",
+             accepted="11", family="Fagaceae"),
+        # dangling accepted link (Kew's own data has these)
+        _row("70", "Quercus dangling", status="Synonym", accepted="99999"),
+    ])
+    db_path = tmp_path / "wcvp.sqlite"
+    wcvp.build_index(archive, db_path)
+    return wcvp.open_index(db_path)
+
+
+def test_open_index_raises_when_not_built(tmp_path):
+    with pytest.raises(wcvp.IndexMissing, match="build it with"):
+        wcvp.open_index(tmp_path / "absent.sqlite")
+
+
+def test_index_is_read_only(index):
+    with pytest.raises(sqlite3.OperationalError, match="readonly"):
+        index.execute("DELETE FROM name")
+
+
+def test_search_ranks_accepted_before_replaced_before_refused(index):
+    res = wcvp.search(index, "Quercus")
+    kinds = [("accepted" if r.is_accepted else "refused" if r.is_refused else "replaced")
+             for r in res]
+    assert kinds.index("accepted") < kinds.index("replaced") < kinds.index("refused")
+
+
+def test_search_shows_refused_names_rather_than_hiding_them(index):
+    """Hiding them invites the user to hand-create an invented name instead."""
+    names = [r.name for r in wcvp.search(index, "Juglans gonroku")]
+    assert names == ["Juglans gonroku"]
+
+
+def test_refused_names_are_capped_so_they_cannot_flood(index):
+    res = wcvp.search(index, "Quercus", refused_limit=1)
+    assert sum(r.is_refused for r in res) == 1
+
+
+def test_search_needs_two_characters(index):
+    assert wcvp.search(index, "Q") == []
+
+
+def test_search_matches_later_tokens_anywhere(index):
+    assert wcvp.search(index, "Quer rob")[0].name == "Quercus robur"
+
+
+def test_refusal_reason_never_asserts_a_synonymy(index):
+    misapplied = wcvp.get(index, "61")
+    reason = wcvp.refusal_reason(index, misapplied)
+    assert reason == "in WCVP this name is applied to Quercus robur"
+    assert "synonym" not in reason.lower()
+    unplaced = wcvp.get(index, "60")
+    assert wcvp.refusal_reason(index, unplaced) == \
+        "WCVP records no accepted placement for this name"
+
+
+def test_accepted_name_of_an_accepted_row_is_none(index):
+    assert wcvp.accepted_name(index, wcvp.get(index, "11")) is None
+
+
+def test_accepted_name_follows_a_synonym_link(index):
+    assert wcvp.accepted_name(index, wcvp.get(index, "21")).name == "Cytisus scoparius"
+
+
+def test_dangling_accepted_link_returns_none_not_a_fabrication(index):
+    assert wcvp.accepted_name(index, wcvp.get(index, "70")) is None
+
+
+def test_resolve_genus_uses_family_to_separate_homonyms(index):
+    """1894 genus names are homonyms; Torreya alone would parent a conifer in the mints."""
+    assert wcvp.resolve_genus(index, "Torreya", "Taxaceae").authorship == "Arn."
+
+
+def test_resolve_genus_prefers_the_single_accepted_candidate(index):
+    """Fagaceae has one Quercus; Lamiaceae has two non-accepted Torreya rows."""
+    assert wcvp.resolve_genus(index, "Quercus", "Fagaceae").authorship == "L."
+
+
+def test_resolve_genus_returns_none_when_ambiguous_among_non_accepted(index):
+    """Ascyrum L. (Synonym) vs Ascyrum Mill. (Illegitimate): pick neither, invent no author."""
+    assert wcvp.resolve_genus(index, "Torreya", "Lamiaceae") is None
+
+
+def test_resolve_genus_matches_a_nothogenus_through_its_marker(index):
+    """The genus column says 'Epicattleya'; the genus row is named '× Epicattleya'."""
+    got = wcvp.resolve_genus(index, "Epicattleya", "Orchidaceae")
+    assert got is not None and got.name == "× Epicattleya"
+
+
+def test_synonym_resolves_to_its_own_genus_not_the_accepted_names(index):
+    """Epic #30: Sarothamnus scoparius stays under Sarothamnus, never under Cytisus.
+
+    Parenting under the accepted name's genus would compose the synonym's name as
+    'Cytisus scoparius' — its own accepted name — and get_or_create would merge them.
+    """
+    syn = wcvp.get(index, "21")
+    assert syn.parent_id is None          # WCVP gives synonyms no parent
+    assert syn.genus == "Sarothamnus"     # ...but the genus column is its OWN genus
+    genus = wcvp.resolve_genus(index, syn.genus, syn.family)
+    assert genus.name == "Sarothamnus"
+    assert wcvp.accepted_name(index, syn).genus == "Cytisus"   # and that is a different genus
+
+
+def test_typed_wildcards_are_not_treated_as_wildcards(index):
+    """A bare '%' would otherwise match every one of the 1.45M names."""
+    assert wcvp.search(index, "%") == []          # too short anyway
+    assert wcvp.search(index, "%uercus") == []    # not a prefix match for anything
+    assert wcvp.search(index, "Quercus%") == []   # literal '%' appears in no name
+
+
+def test_escaped_search_still_seeks_the_index(index):
+    """SQLite's LIKE optimization is fussy: an ESCAPE clause could downgrade the prefix
+    seek to a full SCAN of 1.45M rows. Assert the seek, not merely that the index is named.
+    """
+    plan = " ".join(str(r[-1]) for r in index.execute(
+        r"EXPLAIN QUERY PLAN SELECT name FROM name WHERE name LIKE 'Quer%' ESCAPE '\'"))
+    assert "SEARCH" in plan and "ix_name_nocase" in plan, plan

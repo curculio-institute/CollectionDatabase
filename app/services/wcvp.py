@@ -283,3 +283,185 @@ def build_index(archive: Path, db_path: Path, *, batch: int = 50_000) -> BuildRe
         self_referencing_accepted=self_ref,
         dangling_accepted_ids=dangling_acc, dangling_parent_ids=dangling_par,
     )
+
+
+# ---------------------------------------------------------------------------
+# Query layer — read-only access to the built index
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class WcvpName:
+    """One row of the checklist."""
+    taxonid: str
+    ipni_id: str | None
+    name: str
+    authorship: str | None
+    rank: str
+    status: str
+    accepted_id: str | None
+    parent_id: str | None
+    family: str | None
+    genus: str | None
+
+    @property
+    def is_accepted(self) -> bool:
+        return self.status in STATUS_ACCEPTED
+
+    @property
+    def is_replaced(self) -> bool:
+        return self.status in STATUS_REPLACED
+
+    @property
+    def is_refused(self) -> bool:
+        """True when our two-state model cannot represent this name — see STATUS_REFUSED."""
+        return self.status in STATUS_REFUSED
+
+    @property
+    def label(self) -> str:
+        return f"{self.name} {self.authorship}".strip() if self.authorship else self.name
+
+
+class IndexMissing(WcvpError):
+    """The WCVP index has not been built. Plant search is unavailable until it is."""
+
+
+def open_index(path: Path | None = None) -> sqlite3.Connection:
+    """Open the index read-only. Raises IndexMissing if it has not been built.
+
+    Read-only by URI: the index is derived data, and nothing in the app may write to it.
+    """
+    from app import config
+    path = path or config.wcvp_db_path()
+    if not path.exists():
+        raise IndexMissing(
+            f"no WCVP index at {path} — build it with scripts/build_wcvp_index.py"
+        )
+    db = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+    db.row_factory = sqlite3.Row
+    return db
+
+
+def index_meta(db: sqlite3.Connection) -> dict[str, str]:
+    """Provenance of the installed index — read from the file, never the network."""
+    return dict(db.execute("SELECT key, value FROM meta"))
+
+
+def _name(row: sqlite3.Row) -> WcvpName:
+    return WcvpName(**{k: row[k] for k in WcvpName.__dataclass_fields__})
+
+
+_COLS = "taxonid, ipni_id, name, authorship, rank, status, accepted_id, parent_id, family, genus"
+
+# Accepted names first, then replaced-by-X. Within a group, the shortest name first, so an
+# exact hit outranks its own infraspecifics ("Quercus robur" before "Quercus robur var. …").
+_ORDER = "CASE WHEN status IN ('Accepted','Provisionally Accepted') THEN 0 ELSE 1 END, length(name), name"
+
+
+def _escape(token: str) -> str:
+    """Neutralise LIKE wildcards typed by the user — a bare '%' would match every name."""
+    return token.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
+def _where(term: str) -> tuple[str, list[str]]:
+    """Anchor the first token so SQLite can seek ix_name_nocase instead of scanning 1.45M rows.
+
+    A leading wildcard on the first token turns SEARCH into SCAN (~100 ms/keystroke).
+    Later tokens keep their leading wildcard: "Quer rob" must match "Quercus robur".
+    """
+    tokens = term.split()
+    clauses = [r"name LIKE ? ESCAPE '\'"]
+    args = [f"{_escape(tokens[0])}%"]
+    for tok in tokens[1:]:
+        clauses.append(r"name LIKE ? ESCAPE '\'")
+        args.append(f"%{_escape(tok)}%")
+    return " AND ".join(clauses), args
+
+
+def search(db: sqlite3.Connection, term: str, *, limit: int = 8,
+           refused_limit: int = 3) -> list[WcvpName]:
+    """Multi-token prefix search, importable names first.
+
+    Refused names (Unplaced / Misapplied) are *shown* — hiding them invites the user to
+    conclude the name does not exist and hand-create it, a silent invention. They are ranked
+    last and capped, so they can never displace a usable suggestion: in genera like Rubus
+    (23.1% refused) they would otherwise flood the list.
+    """
+    term = term.strip()
+    if len(term) < 2:
+        return []
+    where, args = _where(term)
+
+    refused = ",".join("?" * len(STATUS_REFUSED))
+    importable = db.execute(
+        f"SELECT {_COLS} FROM name WHERE {where} AND status NOT IN ({refused}) "
+        f"ORDER BY {_ORDER} LIMIT ?",
+        (*args, *sorted(STATUS_REFUSED), limit),
+    ).fetchall()
+    blocked = db.execute(
+        f"SELECT {_COLS} FROM name WHERE {where} AND status IN ({refused}) "
+        f"ORDER BY length(name), name LIMIT ?",
+        (*args, *sorted(STATUS_REFUSED), refused_limit),
+    ).fetchall()
+    return [_name(r) for r in importable] + [_name(r) for r in blocked]
+
+
+def get(db: sqlite3.Connection, taxonid: str) -> WcvpName | None:
+    row = db.execute(f"SELECT {_COLS} FROM name WHERE taxonid = ?", (taxonid,)).fetchone()
+    return _name(row) if row else None
+
+
+def accepted_name(db: sqlite3.Connection, row: WcvpName) -> WcvpName | None:
+    """The name WCVP says to use instead. None for an accepted name.
+
+    Kew's data contains dangling accepted_id values; a missing target returns None rather
+    than a fabricated one, and the importer refuses such a row.
+    """
+    if not row.accepted_id:
+        return None
+    return get(db, row.accepted_id)
+
+
+def refusal_reason(db: sqlite3.Connection, row: WcvpName) -> str:
+    """Why this name cannot be imported, phrased without asserting a synonymy it is not."""
+    if row.status == "Misapplied":
+        target = accepted_name(db, row)
+        if target:
+            return f"in WCVP this name is applied to {target.name}"
+        return "in WCVP this name is a misapplication of another name"
+    if row.status == "Unplaced":
+        return "WCVP records no accepted placement for this name"
+    return ""
+
+
+def _bare(genus: str) -> str:
+    """Strip the hybrid/graft marker a nothogenus row carries ('× Epicattleya', '+ Pirocydonia')."""
+    return genus.lstrip("×+ ").strip()
+
+
+def resolve_genus(db: sqlite3.Connection, genus: str, family: str | None) -> WcvpName | None:
+    """The genus row a name belongs under, by its OWN genus — never its accepted name's.
+
+    1 894 genus names are homonyms (Torreya occurs in six families), so name alone is unsafe.
+    Matching on name + family is unique for 96.6% of synonyms; preferring the single Accepted
+    candidate resolves a further 2.2%.
+
+    Returns None when the genus is ambiguous among non-accepted rows (8 179 synonyms, e.g.
+    Ascyrum L. vs Ascyrum Mill.) or absent (810 nothogenera). The caller then creates the
+    genus from its name with NO authorship: the name is certain, the author is not, and
+    composition uses the parent's name_element rather than its authorship — so the composed
+    name is identical either way, and silence about the author asserts nothing false.
+    """
+    target = _bare(genus)
+    rows = [
+        _name(r) for r in db.execute(
+            f"SELECT {_COLS} FROM name WHERE rank = 'Genus' AND family IS ?"
+            " AND (name = ? OR name = '× ' || ? OR name = '+ ' || ?)",
+            (family, target, target, target),
+        )
+    ]
+    if len(rows) == 1:
+        return rows[0]
+    accepted = [r for r in rows if r.status == "Accepted"]
+    if len(accepted) == 1:
+        return accepted[0]
+    return None
