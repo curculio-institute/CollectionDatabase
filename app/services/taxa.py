@@ -1240,3 +1240,150 @@ def get_or_create_from_powo_data(
     session.add(t)
     session.flush()
     return t
+
+
+# ---------------------------------------------------------------------------
+# WCVP integration
+# ---------------------------------------------------------------------------
+
+def get_or_create_from_wcvp_data(
+    session: Session,
+    fields: dict,
+    *,
+    mismatches: list[str] | None = None,
+) -> Taxon:
+    """Find or create a local Taxon from a WCVP-derived field dict.
+
+    `fields` comes from `wcvp.fields_from_wcvp()`, which has already refused anything the
+    model cannot hold (Unplaced / Misapplied statuses, unmodelled ranks, dangling accepted
+    links). Creates the family and genus ancestor rows if missing, then the name itself.
+
+    Lineage is own-lineage (Epic #30): the genus comes from the row's OWN genus, never from
+    its accepted name's. Parenting a synonym under the accepted name's genus would *rename*
+    it — `scientific_name` is composed from the parent chain — merging 143 738 synonyms into
+    their own accepted name and fabricating 216 006 combinations nobody published. See
+    docs/plant_names.md §5.
+
+    Import policy matches the TW/POWO importers: fill NULL fields on an existing row, and
+    report a conflict with a non-NULL local value into `mismatches` rather than overwriting.
+    The local DB is the source of truth.
+    """
+    sci_name   = fields["scientific_name"]
+    rank       = (fields.get("taxon_rank") or "species").lower()
+    auth       = fields.get("scientific_name_authorship")
+    nomen_code = fields["nomenclatural_code"]
+    name_id    = fields.get("scientific_name_id")
+    element    = element_from_name(sci_name, rank)
+
+    # The accepted name first, so the synonym can link to it. Its own lineage is built by
+    # the recursive call; it is NOT this name's lineage.
+    accepted_taxon: Taxon | None = None
+    accepted_fields = fields.get("accepted")
+    if accepted_fields:
+        accepted_taxon = get_or_create_from_wcvp_data(
+            session, accepted_fields, mismatches=mismatches
+        )
+
+    # WCVP has no rank above Genus: `family` is a text column with no authorship, so the
+    # family row is created from its name alone. The genus authorship is present only when
+    # resolve_genus() found it unambiguously; NULL otherwise (silence, never a guess).
+    ancestor_fields: dict = {"taxon_rank": rank, "nomenclatural_code": nomen_code}
+    if fields.get("family"):
+        ancestor_fields["family"] = fields["family"]
+    if fields.get("genus"):
+        ancestor_fields["genus"] = fields["genus"]
+    if fields.get("genus_authorship"):
+        ancestor_fields["genus_authorship"] = fields["genus_authorship"]
+    if fields.get("species_name"):
+        ancestor_fields["species_name"] = fields["species_name"]
+
+    parent_id = _ensure_parent_rows(
+        session, ancestor_fields, nomenclatural_code=nomen_code, mismatches=mismatches
+    )
+
+    composed_sci = _compose_transient(
+        session, name_element=element, taxon_rank=rank,
+        parent_id=parent_id, nomenclatural_code=nomen_code,
+    )
+
+    existing = (
+        session.query(Taxon)
+        .filter(Taxon.scientific_name == composed_sci, Taxon.taxon_rank == rank)
+        .first()
+    )
+
+    # A name can never be its own accepted name. This fires when a synonym composes to the
+    # same name as its accepted name — the signature of a lineage bug (parenting the synonym
+    # under the accepted name's genus), which would otherwise merge the two rows silently and
+    # take the synonym's determinations with it. The accepted-is-terminal triggers do NOT
+    # catch a self-link: the target is itself accepted, so their check passes.
+    if accepted_taxon is not None and existing is not None and existing.id == accepted_taxon.id:
+        raise ValueError(
+            f"{sci_name!r} composes to {composed_sci!r}, which is its own accepted name — "
+            "refusing to merge a synonym into the name it is a synonym of"
+        )
+    if existing:
+        dirty = False
+        if not existing.name_element:
+            existing.name_element = element
+            dirty = True
+        if auth:
+            if not existing.scientific_name_authorship:
+                existing.scientific_name_authorship = auth
+                dirty = True
+            elif existing.scientific_name_authorship != auth and mismatches is not None:
+                mismatches.append(
+                    f"{sci_name}: authorship is {existing.scientific_name_authorship!r} "
+                    f"locally, import says {auth!r}"
+                )
+        if name_id and not existing.scientific_name_id:
+            existing.scientific_name_id = name_id
+            dirty = True
+        if parent_id is not None:
+            if existing.parent_name_usage_id is None:
+                existing.parent_name_usage_id = parent_id
+                dirty = True
+            elif existing.parent_name_usage_id != parent_id and mismatches is not None:
+                local_p = session.get(Taxon, existing.parent_name_usage_id)
+                import_p = session.get(Taxon, parent_id)
+                lname = local_p.scientific_name if local_p else f"id:{existing.parent_name_usage_id}"
+                iname = import_p.scientific_name if import_p else f"id:{parent_id}"
+                mismatches.append(
+                    f"{sci_name}: parent is {lname!r} locally, import says {iname!r}"
+                )
+        if not existing.nomenclatural_code:
+            existing.nomenclatural_code = nomen_code
+            dirty = True
+        if accepted_taxon:
+            if not existing.accepted_name_usage_id:
+                existing.accepted_name_usage_id = _terminal_accepted(session, accepted_taxon).id
+                dirty = True
+            elif existing.accepted_name_usage_id != accepted_taxon.id and mismatches is not None:
+                local_acc = session.get(Taxon, existing.accepted_name_usage_id)
+                lname = local_acc.scientific_name if local_acc else f"id:{existing.accepted_name_usage_id}"
+                mismatches.append(
+                    f"{sci_name}: accepted name is {lname!r} locally, "
+                    f"import says {accepted_taxon.scientific_name!r}"
+                )
+        if dirty:
+            existing.updated_at = _utcnow()
+            session.flush()
+        return existing
+
+    t = Taxon(
+        name_element=element,
+        scientific_name=composed_sci,
+        taxon_rank=rank,
+        scientific_name_authorship=auth,
+        parent_name_usage_id=parent_id,
+        # Resolve to the terminal accepted name: the trg_taxon_accepted_is_terminal triggers
+        # RAISE on a chained synonym, and WCVP's own links are not guaranteed terminal.
+        accepted_name_usage_id=_terminal_accepted(session, accepted_taxon).id if accepted_taxon else None,
+        nomenclatural_code=nomen_code,
+        scientific_name_id=name_id,
+        created_at=_utcnow(),
+        updated_at=_utcnow(),
+    )
+    session.add(t)
+    session.flush()
+    return t

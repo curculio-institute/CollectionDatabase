@@ -67,6 +67,14 @@ class Taxon(Base, TimestampMixin):
         "taxonworksOtuID", Integer, nullable=True
     )
 
+    # External nomenclatural identifier — the bare IPNI id ("304293-2") of the name this row
+    # was imported from (WCVP's scientificnameid). Identity, not provenance: it says which
+    # name this is, not whose opinion the row reflects, so a manual re-parent leaves it true.
+    # NULL for TaxonWorks imports, manual creations, and WCVP names with no IPNI id.
+    scientific_name_id: Mapped[Optional[str]] = mapped_column(
+        "dwc:scientificNameID", String, nullable=True
+    )
+
     # Nomenclatural code governing this name, uppercased DwC value.
     # Set from source API: TW returns "iczn"/"icn"/… → stored as "ICZN"/"ICN"/…
     # POWO returns "Botanical" → stored as "ICN".

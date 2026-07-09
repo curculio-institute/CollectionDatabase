@@ -89,6 +89,14 @@ STATUS_REFUSED = frozenset({
 })
 KNOWN_STATUSES = STATUS_ACCEPTED | STATUS_REPLACED | STATUS_REFUSED
 
+# WCVP ranks our taxon model can hold (TAXON_RANKS, lowercased). WCVP also carries 7 137
+# importable names at ranks we do not model — `proles`, `lusus`, `nothosubsp.`, `monstr.`,
+# and 2 707 with no rank at all. Same rule as an unrepresentable status: refuse the import,
+# but show the name so the user learns it exists rather than inventing it by hand.
+SUPPORTED_RANKS = frozenset({
+    "genus", "species", "subspecies", "variety", "subvariety", "form", "subform",
+})
+
 _SCHEMA = """
 CREATE TABLE name (
     taxonid    TEXT NOT NULL PRIMARY KEY,
@@ -305,16 +313,21 @@ class WcvpName:
 
     @property
     def is_accepted(self) -> bool:
-        return self.status in STATUS_ACCEPTED
+        return self.status in STATUS_ACCEPTED and not self.rank_unsupported
 
     @property
     def is_replaced(self) -> bool:
-        return self.status in STATUS_REPLACED
+        return self.status in STATUS_REPLACED and not self.rank_unsupported
+
+    @property
+    def rank_unsupported(self) -> bool:
+        return self.rank.lower() not in SUPPORTED_RANKS
 
     @property
     def is_refused(self) -> bool:
-        """True when our two-state model cannot represent this name — see STATUS_REFUSED."""
-        return self.status in STATUS_REFUSED
+        """True when our model cannot represent this name — an unrepresentable status
+        (see STATUS_REFUSED) or a rank we do not model (see SUPPORTED_RANKS)."""
+        return self.status in STATUS_REFUSED or self.rank_unsupported
 
     @property
     def label(self) -> str:
@@ -391,16 +404,21 @@ def search(db: sqlite3.Connection, term: str, *, limit: int = 8,
         return []
     where, args = _where(term)
 
-    refused = ",".join("?" * len(STATUS_REFUSED))
+    # Must mirror WcvpName.is_refused exactly, or the ranking and the importer disagree.
+    st = ",".join("?" * len(STATUS_REFUSED))
+    rk = ",".join("?" * len(SUPPORTED_RANKS))
+    refused_sql = f"(status IN ({st}) OR lower(rank) NOT IN ({rk}))"
+    refused_args = [*sorted(STATUS_REFUSED), *sorted(SUPPORTED_RANKS)]
+
     importable = db.execute(
-        f"SELECT {_COLS} FROM name WHERE {where} AND status NOT IN ({refused}) "
+        f"SELECT {_COLS} FROM name WHERE {where} AND NOT {refused_sql} "
         f"ORDER BY {_ORDER} LIMIT ?",
-        (*args, *sorted(STATUS_REFUSED), limit),
+        (*args, *refused_args, limit),
     ).fetchall()
     blocked = db.execute(
-        f"SELECT {_COLS} FROM name WHERE {where} AND status IN ({refused}) "
+        f"SELECT {_COLS} FROM name WHERE {where} AND {refused_sql} "
         f"ORDER BY length(name), name LIMIT ?",
-        (*args, *sorted(STATUS_REFUSED), refused_limit),
+        (*args, *refused_args, refused_limit),
     ).fetchall()
     return [_name(r) for r in importable] + [_name(r) for r in blocked]
 
@@ -430,6 +448,9 @@ def refusal_reason(db: sqlite3.Connection, row: WcvpName) -> str:
         return "in WCVP this name is a misapplication of another name"
     if row.status == "Unplaced":
         return "WCVP records no accepted placement for this name"
+    if row.rank_unsupported:
+        rank = row.rank or "no rank"
+        return f"this database does not model the rank “{rank}”"
     return ""
 
 
@@ -465,3 +486,74 @@ def resolve_genus(db: sqlite3.Connection, genus: str, family: str | None) -> Wcv
     if len(accepted) == 1:
         return accepted[0]
     return None
+
+
+# Infraspecific connectors WCVP writes into the name string ("Quercus robur subsp. robur").
+# Used only to cut the parent species name off an infraspecific synonym, which WCVP gives
+# no parent_id. Mirrors taxa._ICN_INFRA_CONNECTOR.
+_INFRA_CONNECTORS = ("subsp.", "var.", "subvar.", "f.", "subf.")
+
+
+def _species_name_of(name: str) -> str | None:
+    """The parent species name embedded in an infraspecific name, or None.
+
+        'Sarothamnus scoparius var. bicolor' → 'Sarothamnus scoparius'
+    """
+    tokens = name.split()
+    for i, tok in enumerate(tokens):
+        if tok in _INFRA_CONNECTORS:
+            return " ".join(tokens[:i]) or None
+    return None
+
+
+class NotImportable(WcvpError):
+    """This name cannot be represented in the local taxon model. Never coerce it."""
+
+
+def fields_from_wcvp(db: sqlite3.Connection, row: WcvpName) -> dict:
+    """Flatten a chosen WCVP name into the field dict `taxa.get_or_create_from_wcvp_data`
+    consumes — the extraction seam, mirroring the old `powo.fields_from_powo`.
+
+    Raises NotImportable rather than coercing a name the model cannot hold:
+    `Unplaced` / `Misapplied` statuses, ranks we do not model, and a synonym whose accepted
+    target is missing from Kew's data (a dangling link — the caller must not invent one).
+
+    Lineage is the synonym-safe one (Epic #30): the genus comes from the row's OWN `genus`
+    column, never from its accepted name's genus. See docs/plant_names.md §5.
+    """
+    if row.is_refused:
+        raise NotImportable(f"{row.label}: {refusal_reason(db, row)}")
+
+    accepted: dict | None = None
+    if row.accepted_id:
+        target = accepted_name(db, row)
+        if target is None:
+            raise NotImportable(
+                f"{row.label}: WCVP links it to accepted name id {row.accepted_id!r}, "
+                "which is not in the archive (an error in Kew's data)"
+            )
+        accepted = fields_from_wcvp(db, target)
+
+    rank = row.rank.lower()
+    genus_row = resolve_genus(db, row.genus, row.family) if row.genus else None
+
+    return {
+        "scientific_name": row.name,
+        "taxon_rank": rank,
+        "scientific_name_authorship": row.authorship,
+        "nomenclatural_code": NOMENCLATURAL_CODE,
+        "scientific_name_id": row.ipni_id,
+        "family": row.family,
+        # The genus row supplies authorship only when unambiguously resolved; otherwise the
+        # name is certain and the author is not, so we stay silent rather than pick one.
+        "genus": row.genus if rank != "genus" else None,
+        "genus_authorship": genus_row.authorship if genus_row else None,
+        # Infraspecific names need their species parent. Accepted rows carry parent_id;
+        # synonyms carry none, so cut it out of the name string.
+        "species_name": _species_name_of(row.name) if rank in _INFRA_RANKS else None,
+        "is_synonym": bool(row.accepted_id),
+        "accepted": accepted,
+    }
+
+
+_INFRA_RANKS = frozenset({"subspecies", "variety", "subvariety", "form", "subform"})
