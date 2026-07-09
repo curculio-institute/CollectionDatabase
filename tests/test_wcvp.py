@@ -186,6 +186,29 @@ def test_failed_build_leaves_nothing_behind(tmp_path):
     assert not db_path.with_suffix(".building").exists()
 
 
+def test_version_pin_refuses_a_different_release(tmp_path):
+    """A silent backbone upgrade would leave names from two releases in one DB, at which
+    point no single statement of provenance is true. Between v15 and v16, 4341 names
+    changed status and 10929 accepted links moved — this is not a theoretical concern."""
+    eml = _EML.replace("<version>16.0</version>", "<version>17.0</version>")
+    archive = _archive(tmp_path, [_row("1", "Quercus robur")], eml=eml)
+    with pytest.raises(wcvp.WcvpError, match=r"archive is WCVP v17\.0.*pinned to v16\.0"):
+        wcvp.build_index(archive, tmp_path / "wcvp.sqlite")
+    assert not (tmp_path / "wcvp.sqlite").exists()
+
+
+def test_any_version_allows_deliberate_inspection(tmp_path):
+    eml = _EML.replace("<version>16.0</version>", "<version>17.0</version>")
+    archive = _archive(tmp_path, [_row("1", "Quercus robur")], eml=eml)
+    report = wcvp.build_index(archive, tmp_path / "wcvp.sqlite", expect_version=None)
+    assert report.meta.version == "17.0"
+
+
+def test_archive_url_pins_by_major_version():
+    assert wcvp.archive_url("16.0").endswith("/Archive/wcvp_dwca_v16.zip")
+    assert wcvp.archive_url("15.0").endswith("/Archive/wcvp_dwca_v15.zip")
+
+
 def test_rebuild_replaces_an_existing_index(tmp_path):
     """Refreshing to a new WCVP release must not merge into the old rows."""
     db_path = tmp_path / "wcvp.sqlite"
