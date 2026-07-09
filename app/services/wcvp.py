@@ -28,26 +28,6 @@ from typing import Iterator
 from xml.etree import ElementTree
 
 WCVP_DWCA_URL = "http://sftp.kew.org/pub/data-repositories/WCVP/wcvp_dwca.zip"
-_WCVP_ARCHIVE_URL = "http://sftp.kew.org/pub/data-repositories/WCVP/Archive/wcvp_dwca_v{major}.zip"
-
-# The backbone version this dataset is pinned to.
-#
-# The four global plant checklists disagree on ~300 000 names and each revises itself
-# between releases, so an accepted name only means something as "…according to WCVP v16.0".
-# Pinning lets the dataset carry ONE true statement of provenance ("plant names follow
-# TaxonWorks where present, otherwise WCVP v16.0, doi:10.34885/egs6-cp24") instead of a
-# per-taxon `nameAccordingTo` column. That guarantee only holds while every plant name in
-# the DB comes from the same release — so `build_index` refuses a different one, and a WCVP
-# upgrade must be a deliberate, reviewed bump of this constant plus a decision about the
-# names already imported under the old release.
-#
-# Kew keeps old releases under Archive/ (verified v10–v15, 2026-07-09); the current release
-# sits at the top-level URL and is only moved into Archive/ once superseded.
-WCVP_VERSION = "16.0"
-
-# The archive is CC BY 3.0. Attribution is required wherever the data is redistributed —
-# including a DwC export derived from it (Phase 3).
-WCVP_LICENSE = "CC BY 3.0"
 
 _TAXON_CSV = "wcvp_taxon.csv"
 _EML_XML = "eml.xml"
@@ -168,18 +148,6 @@ class WcvpError(RuntimeError):
     """The archive is not what this loader was written against."""
 
 
-def archive_url(version: str = WCVP_VERSION) -> str:
-    """Download URL for a given WCVP release.
-
-    Kew serves the *current* release from a stable top-level filename and moves each
-    superseded release into Archive/wcvp_dwca_v<major>.zip. So the pinned version is
-    fetchable from the top-level URL while current, and from Archive/ once it is not —
-    the caller tries the archived URL first, since that one is unambiguous.
-    """
-    major = version.split(".")[0]
-    return _WCVP_ARCHIVE_URL.format(major=major)
-
-
 def read_archive_meta(zf: zipfile.ZipFile) -> ArchiveMeta:
     """Parse version / pubDate / citation out of the archive's eml.xml."""
     root = ElementTree.fromstring(zf.read(_EML_XML))
@@ -237,33 +205,16 @@ def _rows(zf: zipfile.ZipFile) -> Iterator[tuple]:
             )
 
 
-def build_index(
-    archive: Path,
-    db_path: Path,
-    *,
-    batch: int = 50_000,
-    expect_version: str | None = WCVP_VERSION,
-) -> BuildReport:
+def build_index(archive: Path, db_path: Path, *, batch: int = 50_000) -> BuildReport:
     """Build the SQLite lookup index from a WCVP Darwin Core Archive.
 
     Deterministic and rebuildable: the target is replaced wholesale. Journalling is off
     because a half-built index is thrown away, not recovered.
-
-    `expect_version` guards the dataset's provenance guarantee (see WCVP_VERSION): a
-    silent version change would leave plant names from two releases in one DB, at which
-    point no single statement of provenance is true. Pass None only to inspect an archive.
     """
     with zipfile.ZipFile(archive) as zf:
         if _TAXON_CSV not in zf.namelist():
             raise WcvpError(f"{archive} contains no {_TAXON_CSV}")
         meta = read_archive_meta(zf)
-        if expect_version is not None and meta.version != expect_version:
-            raise WcvpError(
-                f"archive is WCVP v{meta.version}, but this dataset is pinned to "
-                f"v{expect_version}. Upgrading the backbone is a deliberate act: bump "
-                f"WCVP_VERSION, and decide what happens to plant names already imported "
-                f"under v{expect_version} (their accepted links may have changed)."
-            )
 
         tmp = db_path.with_suffix(".building")
         tmp.unlink(missing_ok=True)
@@ -313,7 +264,6 @@ def build_index(
                 ("citation", meta.citation),
                 ("label", meta.label),
                 ("source_url", WCVP_DWCA_URL),
-                ("license", WCVP_LICENSE),
                 ("nomenclatural_code", NOMENCLATURAL_CODE),
                 ("built_at", datetime.now(timezone.utc).isoformat(timespec="seconds")),
                 ("rows", str(n)),

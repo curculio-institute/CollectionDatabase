@@ -42,29 +42,6 @@ def download(url: str, dest: Path) -> Path:
     return dest
 
 
-def _fetch_pinned(dest: Path, url: str | None) -> Path:
-    """Download the pinned WCVP release.
-
-    Kew moves a release into Archive/ only once it is superseded, so the pinned version
-    may live at either URL. Try the archived (unambiguous) one first, then the top-level
-    "current" file. The version is verified from the archive's own eml.xml afterwards, so
-    guessing the URL wrong cannot silently produce the wrong backbone.
-    """
-    if url:
-        print(f"Source: {url}")
-        return download(url, dest)
-
-    for candidate in (wcvp.archive_url(), wcvp.WCVP_DWCA_URL):
-        print(f"Source: {candidate}")
-        try:
-            return download(candidate, dest)
-        except httpx.HTTPStatusError as exc:
-            if exc.response.status_code != 404:
-                raise
-            print("  not there (404) — that release is not archived yet, trying current")
-    raise SystemExit("error: could not fetch the pinned WCVP release from either URL")
-
-
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -72,11 +49,7 @@ def main() -> int:
                     help="use this wcvp_dwca.zip instead of downloading")
     ap.add_argument("--out", type=Path, default=None,
                     help="index path (default: config.wcvp_db_path())")
-    ap.add_argument("--url", default=None,
-                    help="override the download URL (default: the pinned release)")
-    ap.add_argument("--any-version", action="store_true",
-                    help="build from whatever version the archive contains, ignoring the "
-                         f"v{wcvp.WCVP_VERSION} pin (for inspection; see WCVP_VERSION)")
+    ap.add_argument("--url", default=wcvp.WCVP_DWCA_URL)
     ap.add_argument("--keep-archive", action="store_true",
                     help="do not delete a downloaded archive after building")
     args = ap.parse_args()
@@ -92,7 +65,8 @@ def main() -> int:
     else:
         tmpdir = tempfile.TemporaryDirectory()
         target = Path(tmpdir.name) / "wcvp_dwca.zip"
-        archive = _fetch_pinned(target, args.url)
+        print(f"Source: {args.url}")
+        archive = download(args.url, target)
         if args.keep_archive:
             kept = out.parent / "wcvp_dwca.zip"
             kept.parent.mkdir(parents=True, exist_ok=True)
@@ -101,10 +75,7 @@ def main() -> int:
 
     print(f"Building {out} …")
     try:
-        report = wcvp.build_index(
-            archive, out,
-            expect_version=None if args.any_version else wcvp.WCVP_VERSION,
-        )
+        report = wcvp.build_index(archive, out)
     except wcvp.WcvpError as exc:
         print(f"\nerror: {exc}", file=sys.stderr)
         return 1
