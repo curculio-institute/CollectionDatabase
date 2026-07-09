@@ -126,18 +126,15 @@ def build_taxonomy_tree(
 
     filter_id: show only the subtree rooted at this taxon id.
     filter_rank + filter_value: show only subtrees for taxa of that rank and name.
-    nomenclatural_code: if set, restrict to taxa with that code (or NULL).
+    nomenclatural_code: if set, restrict to taxa with that code.
     No filter: show the full tree from all root taxa (parentNameUsageID IS NULL).
     """
     q = session.query(Taxon).filter(Taxon.accepted_name_usage_id.is_(None))
     if nomenclatural_code:
-        from sqlalchemy import or_
-        q = q.filter(
-            or_(
-                Taxon.nomenclatural_code == nomenclatural_code,
-                Taxon.nomenclatural_code.is_(None),
-            )
-        )
+        # No `OR code IS NULL` disjunct: the column is NOT NULL (migration 0054). It used to
+        # be there, and it is what surfaced code-less plants under the ICZN tab (#96) —
+        # displaying rows with missing data can only ever hide the fact that it is missing.
+        q = q.filter(Taxon.nomenclatural_code == nomenclatural_code)
     all_accepted = q.all()
     taxa_by_id: dict[int, Taxon] = {t.id: t for t in all_accepted}
 

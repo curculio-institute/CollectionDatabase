@@ -9,6 +9,8 @@ from app.models import Taxon
 from app.models.base import _utcnow
 
 
+from app.vocab import NOMENCLATURAL_CODES
+
 TAXON_RANKS: list[str] = [
     "kingdom", "phylum", "subphylum", "class", "subclass",
     "superorder", "order", "suborder", "superfamily",
@@ -39,6 +41,29 @@ class TaxonOption:
     label: str
     taxon_rank: str = ""
     nomenclatural_code: str | None = None
+
+
+
+def _require_code(nomenclatural_code: str | None, context: str) -> str:
+    """Every taxon row must carry a nomenclatural code (#96; DB CHECK + NOT NULL, mig 0054).
+
+    Raised — never defaulted. The code is a property of the source (WCVP indexes only
+    ICN-governed names; TaxonWorks reports its own) or inherited from the parent chain, so a
+    missing one means an importer failed to supply it, and guessing would silently mislabel a
+    name's governing code. Fails here, loudly, rather than as an opaque IntegrityError.
+    """
+    code = (nomenclatural_code or "").strip().upper()
+    if not code:
+        raise ValueError(
+            f"{context}: no nomenclatural code. It is inherited from the parent or supplied "
+            "by the source; it is never guessed."
+        )
+    if code not in NOMENCLATURAL_CODES:
+        raise ValueError(
+            f"{context}: nomenclatural code {code!r} is not one of "
+            f"{', '.join(NOMENCLATURAL_CODES)}."
+        )
+    return code
 
 
 def format_scientific_name(taxon: Taxon) -> str:
@@ -608,6 +633,7 @@ def _ensure_parent_rows(
             existing = session.query(Taxon).filter(Taxon.scientific_name == sci).first()
 
         if not existing:
+            _require_code(nomen_code, f"ancestor {sci!r} [{rank_name}]")
             existing = Taxon(
                 name_element=element,
                 scientific_name=sci,
@@ -920,6 +946,8 @@ def create_taxon_direct(
         if acc is None:
             raise ValueError("accepted taxon not found")
         accepted_name_usage_id = _terminal_accepted(session, acc).id
+    nomenclatural_code = _require_code(
+        nomenclatural_code, f"{scientific_name or name_element!r} [{taxon_rank}]")
     t = Taxon(
         name_element=name_element,
         scientific_name=scientific_name or name_element,  # placeholder; recomposed below
@@ -1081,6 +1109,7 @@ def get_or_create_from_tw_data(
             session.flush()
         return existing
 
+    _require_code(nomen_code, f"{sci_name!r} [{rank}]")
     t = Taxon(
         name_element=element,
         scientific_name=sci_name,
@@ -1228,6 +1257,7 @@ def get_or_create_from_wcvp_data(
             session.flush()
         return existing
 
+    _require_code(nomen_code, f"{sci_name!r} [{rank}]")
     t = Taxon(
         name_element=element,
         scientific_name=composed_sci,

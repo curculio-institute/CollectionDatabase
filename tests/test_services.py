@@ -42,6 +42,7 @@ def _taxon(session, genus="Carabus", species="coriaceus", authorship="Linnaeus, 
         scientific_name=sci_name,
         taxon_rank=rank,
         scientific_name_authorship=authorship,
+        nomenclatural_code="ICZN",
         created_at=_utcnow(), updated_at=_utcnow(),
     )
     session.add(t)

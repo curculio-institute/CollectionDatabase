@@ -5,7 +5,7 @@ import app.services.taxonomy as tax
 
 
 def _t(session, name, rank, parent=None):
-    t = Taxon(scientific_name=name, taxon_rank=rank,
+    t = Taxon(scientific_name=name, taxon_rank=rank, nomenclatural_code="ICZN",
               parent_name_usage_id=(parent.id if parent else None),
               created_at=_utcnow(), updated_at=_utcnow())
     session.add(t); session.flush()

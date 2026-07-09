@@ -336,7 +336,7 @@ def test_tw_mismatch_reports_rank_conflict(session):
     """
     wrong = create_taxon_direct(
         session, scientific_name="Achillea", taxon_rank="subgenus",
-        taxonworks_otu_id=5001,
+        taxonworks_otu_id=5001, nomenclatural_code="ICN",
     )
 
     tw_dict, otu_id = _tw_species(

@@ -75,11 +75,12 @@ class Taxon(Base, TimestampMixin):
     # NULL for TaxonWorks imports, manual creations, and WCVP names with no IPNI id.
     ipni_id: Mapped[Optional[str]] = mapped_column("ipniID", String, nullable=True)
 
-    # Nomenclatural code governing this name, uppercased DwC value.
-    # Set from source API: TW returns "iczn"/"icn"/… → stored as "ICZN"/"ICN"/…
-    # POWO returns "Botanical" → stored as "ICN".
-    nomenclatural_code: Mapped[Optional[str]] = mapped_column(
-        "dwc:nomenclaturalCode", String, nullable=True
+    # Nomenclatural code governing this name, uppercased DwC value. NOT NULL + CHECK
+    # (migration 0054): every name is governed by a code, and it is never guessed — it is a
+    # property of the source (WCVP indexes only ICN names; TaxonWorks reports its own, lower-
+    # cased: "iczn"/"icn"/… → stored uppercase) or inherited from the parent.
+    nomenclatural_code: Mapped[str] = mapped_column(
+        "dwc:nomenclaturalCode", String, nullable=False
     )
 
     # Display-only manual ordering among siblings (the collection's taxonomic
