@@ -268,10 +268,24 @@ local-master with no automated push.
 | Language         | **Python**                              | Single language across the whole app. Cross-platform. |
 | Store            | **SQLite** via **SQLAlchemy** ORM       | Single-file, archival-grade, std-lib driver. ORM is the migration escape hatch to Postgres if ever needed. |
 | Schema migrations| **Alembic**                             | All schema changes go through migrations, never manual DDL on a live DB. |
-| App / UI         | **NiceGUI** (on FastAPI)                | Pure-Python UI; renders a real web frontend; run in browser at localhost. |
+| App / UI         | **NiceGUI** (on FastAPI)                | Pure-Python UI; renders a real web frontend; **runs in the browser** at localhost — deliberately, not a native window (see below). |
 | Labels / PDF     | **WeasyPrint**                          | Generates tiny specimen labels (≤18×7 mm) as PDF. Micro-font via Context Condensed. |
 | Spatial          | **GeoPandas**                           | Habitat enrichment as a standalone batch script (Phase 3, not yet built). |
 | Future analytics | **DuckDB**                              | Not the store. Optional later layer. Do not introduce yet. |
+
+**The browser is the UI, not an accident (decided).** NiceGUI can open a native window
+(`ui.run(native=True)` + `pywebview`), and it was considered. We stay in the browser because:
+
+- **Attached media and label PDFs open in a tab.** The media store is served at `/media`, so an
+  image or a print sheet gets the browser's own viewer — zoom, save, print, several open at
+  once. A native webview would mean reimplementing that; WebKitGTK cannot even display PDFs.
+- **The unsaved-changes guard is a browser contract.** `beforeunload` (main.py) is what warns
+  before a page close discards typed-but-unsaved data (#41). A pywebview window does not fire
+  it; its `confirm_close` is a generic "really quit?" with no idea which tab is dirty. Going
+  native would silently downgrade a deliberate data-safety mechanism.
+
+Packaging (a single executable) does **not** require a native window: the launcher starts the
+server and opens the user's default browser.
 
 **Environment:** conda env named `collection`. Do NOT touch `phylogeny` or `catalogue` envs.
 Primary dev OS: Arch Linux; all code must remain cross-platform (Windows/macOS).
