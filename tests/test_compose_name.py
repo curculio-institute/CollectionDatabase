@@ -85,6 +85,7 @@ def test_fallback_when_name_element_missing(session):
         name_element=None,
         scientific_name="Legacy name",
         taxon_rank="species",
+        nomenclatural_code="ICZN",
         created_at=_utcnow(), updated_at=_utcnow(),
     )
     session.add(t); session.flush()

@@ -192,3 +192,34 @@ def test_synonym_integrity_triggers_present(engine):
         f"retired synonym-parent-match trigger(s) still present: {sorted(still_present)} "
         "(migration 0033 should have dropped them)"
     )
+
+
+def test_taxon_nomenclatural_code_not_null_and_checked(engine):
+    # migration 0054 (#96): every name is governed by a code. The code is never guessed —
+    # it is a property of the source or inherited from the parent — so a NULL can only mean
+    # an importer failed to supply one. The rebuild that added NOT NULL had to re-declare
+    # STRICT, both self-FK ON DELETE actions, the index and BOTH triggers; those are
+    # asserted by the generic tests above and by test_synonym_integrity_triggers_present.
+    sql = _table_sql(engine, "taxon")
+    assert '"dwc:nomenclaturalCode" TEXT NOT NULL' in sql, \
+        "taxon.nomenclaturalCode lost NOT NULL (see migration 0054 / issue #96)"
+    assert "ck_taxon_nomenclatural_code" in sql, \
+        "taxon lost the nomenclaturalCode CHECK (see migration 0054)"
+
+
+def test_taxon_nomenclatural_code_rejects_a_bad_value(engine):
+    from sqlalchemy import text
+    with engine.connect() as conn:
+        with pytest.raises(Exception, match="CHECK constraint failed"):
+            conn.execute(text(
+                'INSERT INTO taxon ("dwc:scientificName", "dwc:taxonRank", '
+                '"dwc:nomenclaturalCode", created_at, updated_at) '
+                "VALUES ('Bogus', 'genus', 'BOTANICAL', '2026-01-01', '2026-01-01')"
+            ))
+
+
+def test_taxon_ipni_id_present(engine):
+    # migration 0053 (#98/#99): the IPNI id of the name a row was imported from. Identity,
+    # not provenance — named for its source like taxonworksOtuID, not dwc:scientificNameID.
+    sql = _table_sql(engine, "taxon")
+    assert '"ipniID"' in sql, "taxon lost the ipniID column (see migration 0053)"

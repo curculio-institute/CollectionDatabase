@@ -64,6 +64,11 @@ class AppConfig:
     label_border_determination: str = "black"
     label_border_identifier: str = "black"
 
+    # Offline plant-name backbone built from the WCVP Darwin Core Archive by
+    # scripts/build_wcvp_index.py. Relative paths resolve against data/; "" → data/wcvp.sqlite.
+    # Not the specimen DB: a read-only lookup index, rebuilt from Kew's archive, never edited.
+    wcvp_db: str = ""
+
 
 def printed_pdf_dir() -> Path:
     """Resolved archival folder for printed label PDFs (created if missing)."""
@@ -83,6 +88,16 @@ def media_dir() -> Path:
     if not path.is_absolute():
         path = _DATA_DIR / path
     path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def wcvp_db_path() -> Path:
+    """Resolved path of the offline WCVP index. Not created here — it is built by
+    scripts/build_wcvp_index.py, and its absence is a condition the caller reports."""
+    raw = get_config().wcvp_db
+    path = Path(raw) if raw else (_DATA_DIR / "wcvp.sqlite")
+    if not path.is_absolute():
+        path = _DATA_DIR / path
     return path
 
 

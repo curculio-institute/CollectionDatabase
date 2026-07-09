@@ -70,3 +70,8 @@ NEW_SPECIMEN_DEFAULTS = {
     "life_stage":       "adult",
     "basis_of_record":  "PreservedSpecimen",
 }
+
+# Nomenclatural codes. A closed standard vocabulary — these are the codes themselves, not
+# user-coined terms, so they stay a fixed list and never become an editable vocab table.
+# Mirrored by the CHECK on taxon."dwc:nomenclaturalCode" (migration 0054); keep in step.
+NOMENCLATURAL_CODES = ["ICZN", "ICN", "ICNP", "ICVCN"]

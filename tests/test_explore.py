@@ -8,6 +8,7 @@ from tests.helpers import ensure_repo
 
 def _taxon(session, name, rank, parent=None, auth=""):
     t = Taxon(scientific_name=name, taxon_rank=rank, scientific_name_authorship=auth,
+              nomenclatural_code="ICZN",
               parent_name_usage_id=(parent.id if parent else None),
               created_at=_utcnow(), updated_at=_utcnow())
     session.add(t); session.flush()

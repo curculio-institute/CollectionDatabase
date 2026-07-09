@@ -28,6 +28,7 @@ def _taxon(session, name="Carabus coriaceus") -> Taxon:
     t = Taxon(
         scientific_name=sci_name,
         taxon_rank=rank,
+        nomenclatural_code="ICZN",
         created_at=_utcnow(), updated_at=_utcnow(),
     )
     session.add(t)

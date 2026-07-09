@@ -16,7 +16,7 @@ import re
 import sys
 from datetime import datetime
 
-from nicegui import ui, app
+from nicegui import ui, app, run
 
 from app.database import get_engine, get_session_factory
 import app.services as svc
@@ -25,6 +25,7 @@ import app.services.identifiers as id_svc
 import app.services.labels as lbl_svc
 import app.services.repositories as repo_svc
 import app.services.print_queue as pq_svc
+import app.services.wcvp as wcvp_svc
 from app.config import get_config, save_config, printed_pdf_dir, media_dir
 
 # Serve the managed media store so attached images/files render in the browser
@@ -1177,7 +1178,7 @@ def index():
                     bio_obj_state = build_taxon_search(
                         _sf,
                         nomenclatural_codes=bio_codes,
-                        sources=("local", "taxonworks", "powo"),
+                        sources=("local", "taxonworks", "wcvp"),
                         placeholder="Type plant or fungus name…",
                     )
 
@@ -2587,6 +2588,73 @@ def index():
                 value=cfg_now.taxonpages_base,
                 placeholder="https://catalog.curculionoidea.org",
             ).classes("w-full mt-2")
+
+            ui.separator().classes("my-3")
+
+            # ── Plant names (WCVP) ───────────────────────────────────────
+            # The installed release is read from the index's own meta table — no network.
+            # The update check is on demand only: this app must launch offline (db_safety
+            # runs before the UI serves), so nothing here may touch the network at startup.
+            ui.label("Plant names (WCVP)").classes("text-sm font-medium mb-1")
+            ui.label(
+                "Offline checklist used to import plant names for biological "
+                "associations. Not a dependency of your data: imported names are copied "
+                "into the database, so the index can be rebuilt or removed at any time."
+            ).classes("text-xs mb-2").style("color:var(--tp-base-soft)")
+
+            _wcvp_status = ui.label().classes("text-xs")
+            _wcvp_remote = ui.label().classes("text-xs mt-1")
+
+            def _wcvp_refresh_installed() -> str | None:
+                """Installed release label, or None. Reads the index file, never the network."""
+                try:
+                    db = wcvp_svc.open_index()
+                except wcvp_svc.IndexMissing:
+                    _wcvp_status.set_text(
+                        "Not installed — plant search is unavailable. Build it with:  "
+                        "python scripts/build_wcvp_index.py"
+                    )
+                    _wcvp_status.style("color:var(--tp-base-soft)")
+                    return None
+                meta = wcvp_svc.index_meta(db)
+                db.close()
+                _wcvp_status.set_text(
+                    f"{meta.get('label', 'WCVP')} · {int(meta.get('rows', 0)):,} names · "
+                    f"{meta.get('license', '')}"
+                )
+                _wcvp_status.style("color:var(--tp-base)")
+                return meta.get("version")
+
+            _wcvp_refresh_installed()
+
+            async def _wcvp_check_update() -> None:
+                # Re-read the index first: it may have been rebuilt since this page loaded,
+                # and reporting "a newer release is available" for one already installed
+                # would be worse than not checking at all.
+                installed = _wcvp_refresh_installed()
+                _wcvp_remote.set_text("Checking…")
+                _wcvp_remote.style("color:var(--tp-base-soft)")
+                try:
+                    # ~32 KB: eml.xml is the archive's first zip entry and Kew honours Range.
+                    meta = await run.io_bound(wcvp_svc.latest_release)
+                except Exception as exc:  # network or a changed archive layout — say which
+                    _wcvp_remote.set_text(f"Could not check: {exc}")
+                    _wcvp_remote.style("color:var(--tp-danger)")
+                    return
+                if installed is None:
+                    _wcvp_remote.set_text(f"Kew is serving {meta.label}.")
+                elif meta.version == installed:
+                    _wcvp_remote.set_text(f"Up to date — Kew is serving {meta.label}.")
+                else:
+                    _wcvp_remote.set_text(
+                        f"A newer release is available: {meta.label}. Rebuild with:  "
+                        "python scripts/build_wcvp_index.py"
+                    )
+                _wcvp_remote.style("color:var(--tp-base-soft)")
+
+            ui.button("Check for a new release", on_click=_wcvp_check_update) \
+                .props("flat dense no-caps size=sm").classes("mt-1") \
+                .tooltip("Downloads ~32 KB, not the 85 MB archive")
 
             ui.separator().classes("my-3")
 
