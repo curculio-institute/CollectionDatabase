@@ -230,17 +230,52 @@ Accepted names chain by identifier; synonyms do not:
 The last row is the awkward one. Epic #30 requires a synonym to be parented under **its own**
 genus (so *Curculio forticollis*, a synonym of *Otiorhynchus fortis*, stays under *Curculio*),
 and WCVP gives synonyms no `parent_id`. The genus must therefore be looked up **by name** —
-where 1 894 genus names are homonyms.
+where 1 894 genus names are homonyms (`Torreya` occurs six times, in six families).
+
+WCVP's `genus` column is the **synonym's own** genus, which is exactly what is needed: it
+matches the synonym's own name for 99.998% of synonyms, and the *accepted* name's genus for
+only 49.8%. (Kew models synonym lineage the same way we do.) Read the column; never parse the
+name — the 19 mismatches are graft-chimaeras written `+ Crataegomespilus`, whose first token
+is `+`.
 
 Resolution, in order:
 
-1. Match genus rows on **name + family** (`Torreya` × `Taxaceae`, not `Torreya`). This leaves
-   402 residual ambiguities across the whole checklist.
-2. If several remain, prefer the `Accepted` one.
-3. If still ambiguous, or none matches, **refuse the import** and say why. Do not guess.
+1. Match genus rows on **name + family** (`Torreya` + `Taxaceae`, not `Torreya`), normalising
+   a leading `×`/`+` on the genus row's name. Unique for **96.6%** of synonyms.
+2. If several match, prefer the single `Accepted` one. Resolves a further **2.2%**.
+3. Otherwise — 8 179 ambiguous (e.g. `Ascyrum` L. `Synonym` vs `Ascyrum` Mill. `Illegitimate`:
+   same name, same family, different author) and 810 absent (nothogenera like `× Epicattleya`)
+   — create the genus row **from the `genus` string with no authorship.**
+
+Step 3 does not refuse and does not guess. The genus *name* is certain; only its authorship is
+unknown, and leaving authorship NULL asserts nothing false — whereas picking one of two
+authors would. The composed name is identical either way, since composition uses the parent's
+`name_element`, not its authorship.
 
 A synonym's genus may itself be a synonym (`Sarothamnus` is), which is correct: own-lineage
 parenting is exactly what Epic #30 specifies.
+
+### Why the parent is *not* taken from the accepted name
+
+Tempting, and wrong: `dwc:scientificName` is **composed from the parent chain**
+(`compose_scientific_name` walks up to the nearest genus), so the parent *is* the name.
+Of 573 637 species-rank synonyms with a resolvable accepted name, **359 744 (62.7%) have a
+different genus** from it. Parenting them under the accepted name's genus would:
+
+- **rename 143 738 of them into their own accepted name** — `Cadetia stenocentrum` composes to
+  `Dendrobium stenocentrum`, which *is* its accepted name. `get_or_create` matches on
+  `(composed scientificName, taxonRank)`, so the synonym row would find the accepted row and
+  merge into it: the synonym vanishes and any determination made under it silently becomes a
+  determination of the accepted name;
+- **fabricate 216 006 names nobody published** — `Cadetia subfalcata` → `Dendrobium subfalcata`
+  (the real accepted name is `Dendrobium subfalcatum`; the epithet does not even agree in
+  gender, because it was never combined with that genus).
+
+This is why migration 0033 retired `trg_taxon_synonym_parent_matches_accepted` with the
+standing instruction **do not re-introduce it**, and why
+`test_synonym_integrity.py::test_parent_and_accepted_writes_are_centralised` guards the
+writers. The accepted name is recorded by `acceptedNameUsageID`; the tree *displays* synonyms
+grouped under it. Neither is the parent.
 
 ### Family authorship is not available
 
