@@ -666,15 +666,15 @@ def sha256_of(path: Path, *, chunk: int = 1 << 20) -> str:
 
 
 _README = """\
-# WCVP — offline plant-name backbone
+#  World Checklist of Vascular Plants (WCVP)
 
-This folder holds the plant checklist used to import plant names for biological associations
-(host plants). Everything here is **derived from Kew's published archive** and can be
-recreated at any time; nothing here is your data.
+This folder holds the plant checklist that can be used to import plant taxonomy for biological associations
+(host plants). Everything here is **derived from the published Darwin Core Archive** and can be
+recreated at any time; nothing here is your data. For your collection, you maintain your own plant checklist that lives in data/collection.db
 
 | file | what it is |
 |------|------------|
-| `wcvp_dwca.zip` | Kew's Darwin Core Archive, exactly as downloaded. The primary source. |
+| `wcvp_dwca.zip` | Kew's Darwin Core Archive, exactly as downloaded from https://sftp.kew.org/pub/data-repositories/WCVP/. The primary source. |
 | `wcvp.sqlite` | A lookup index built from that archive. Read-only; the app never writes to it. |
 | `README.md` | This file, generated at install time. |
 
