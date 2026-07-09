@@ -350,3 +350,32 @@ def test_ba_specimen_on_host_taxon_accepted(session):
     session.add(ba)
     session.flush()
     assert ba.id is not None
+
+
+def test_delete_taxon_refuses_a_taxon_used_as_a_host_plant(session):
+    """#101: SQLAlchemy NULLs the association's FK before ON DELETE RESTRICT can fire.
+
+    Without an explicit guard the delete emits
+        UPDATE biological_association SET object_taxon_id = NULL ...
+    which would orphan the association. Only the exclusive-arc CHECK stops it, and it reports
+    itself rather than the real cause — so the user is told a CHECK failed, not that the plant
+    is a recorded host.
+    """
+    from app.services.taxa import delete_taxon
+
+    beetle = _obj(session)
+    plant = _taxon(session, "Quercus robur")
+    rel = _rel(session)
+    assoc = BiologicalAssociation(
+        biological_relationship_id=rel.id,
+        subject_collection_object_id=beetle.id,
+        object_taxon_id=plant.id,
+        created_at=_utcnow(), updated_at=_utcnow(),
+    )
+    session.add(assoc)
+    session.flush()
+
+    with pytest.raises(ValueError, match="1 biological association"):
+        delete_taxon(session, plant.id)
+
+    session.rollback()

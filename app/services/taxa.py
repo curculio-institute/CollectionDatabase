@@ -750,8 +750,10 @@ def update_taxon(
 
 
 def delete_taxon(session: Session, taxon_id: int) -> None:
-    """Delete a taxon. Raises ValueError if it has children, synonyms, or determinations."""
-    from app.models import TaxonDetermination
+    """Delete a taxon. Raises ValueError if anything still references it."""
+    from sqlalchemy import or_
+
+    from app.models import BiologicalAssociation, TaxonDetermination
     t = session.get(Taxon, taxon_id)
     if t is None:
         raise ValueError(f"Taxon {taxon_id} not found")
@@ -764,6 +766,17 @@ def delete_taxon(session: Session, taxon_id: int) -> None:
     det_count = session.query(TaxonDetermination).filter(TaxonDetermination.taxon_id == taxon_id).count()
     if det_count:
         raise ValueError(f"Cannot delete: taxon is used in {det_count} determination(s)")
+    # A host plant is referenced by biological_association. SQLAlchemy's default relationship
+    # behaviour NULLs the child's FK before the FK's ON DELETE RESTRICT can fire, which would
+    # orphan the association; only the exclusive-arc CHECK stops it, and it reports itself
+    # rather than the real cause. Refuse here, with a message about the association (#101).
+    assoc_count = session.query(BiologicalAssociation).filter(
+        or_(BiologicalAssociation.subject_taxon_id == taxon_id,
+            BiologicalAssociation.object_taxon_id == taxon_id)
+    ).count()
+    if assoc_count:
+        raise ValueError(
+            f"Cannot delete: taxon is used in {assoc_count} biological association(s)")
     session.delete(t)
     session.flush()
 

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from nicegui import ui
+from sqlalchemy import or_
 
 from app.services.taxa import (
     TAXON_RANKS,
@@ -13,7 +14,7 @@ from app.services.taxa import (
     search_taxa,
     update_taxon,
 )
-from app.models import Taxon, TaxonDetermination
+from app.models import BiologicalAssociation, Taxon, TaxonDetermination
 
 
 def rank_options(init_rank: str | None) -> list[str]:
@@ -331,21 +332,27 @@ def build_taxon_editor(session_factory, on_saved: callable) -> None:
                 edit_form_api.update(
                     _build_taxon_form(edit_form_col, session_factory, taxon=taxon)
                 )
-                # Mirror the guards in delete_taxon() (services/taxa.py): a taxon
-                # with children, synonyms, or determinations cannot be deleted.
+                # Mirror the guards in delete_taxon() (services/taxa.py): a taxon still
+                # referenced by children, synonyms, determinations or biological
+                # associations cannot be deleted.
                 with session_factory() as s:
                     has_children = s.query(Taxon).filter(Taxon.parent_name_usage_id == tid).count() > 0
                     has_synonyms = s.query(Taxon).filter(Taxon.accepted_name_usage_id == tid).count() > 0
                     has_dets = s.query(TaxonDetermination).filter(
                         TaxonDetermination.taxon_id == tid
                     ).count() > 0
-                if has_children or has_synonyms or has_dets:
+                    has_assocs = s.query(BiologicalAssociation).filter(
+                        or_(BiologicalAssociation.subject_taxon_id == tid,
+                            BiologicalAssociation.object_taxon_id == tid)
+                    ).count() > 0
+                if has_children or has_synonyms or has_dets or has_assocs:
                     delete_btn.disable()
                     reasons = [
                         label for label, present in (
                             ("children", has_children),
                             ("synonyms", has_synonyms),
                             ("determinations", has_dets),
+                            ("biological associations", has_assocs),
                         ) if present
                     ]
                     delete_btn.tooltip("Cannot delete: taxon has " + " and ".join(reasons))
