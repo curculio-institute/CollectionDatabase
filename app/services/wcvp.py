@@ -654,23 +654,135 @@ def download_archive(dest: Path, url: str = WCVP_DWCA_URL, *,
     return dest
 
 
-def install(db_path: Path | None = None, *, url: str = WCVP_DWCA_URL,
-            progress=None) -> BuildReport:
-    """Download the archive to a temp file, build the index, discard the archive.
+def sha256_of(path: Path, *, chunk: int = 1 << 20) -> str:
+    """Content hash of the archive, so the index can be traced to the exact bytes it came from."""
+    import hashlib
 
-    The build writes to `<db_path>.building` and atomically replaces the target, so an
-    existing index survives a failed download or a corrupt archive untouched.
+    h = hashlib.sha256()
+    with path.open("rb") as fh:
+        while block := fh.read(chunk):
+            h.update(block)
+    return h.hexdigest()
+
+
+_README = """\
+# WCVP — offline plant-name backbone
+
+This folder holds the plant checklist used to import plant names for biological associations
+(host plants). Everything here is **derived from Kew's published archive** and can be
+recreated at any time; nothing here is your data.
+
+| file | what it is |
+|------|------------|
+| `wcvp_dwca.zip` | Kew's Darwin Core Archive, exactly as downloaded. The primary source. |
+| `wcvp.sqlite` | A lookup index built from that archive. Read-only; the app never writes to it. |
+| `README.md` | This file, generated at install time. |
+
+## Provenance
+
+- **Release:** {label}
+- **Archive obtained from:** {source}
+- **Installed at:** {built_at}
+- **Archive SHA-256:** `{sha256}`
+- **Archive size:** {size_mb:.0f} MB
+- **Index:** {rows:,} names ({accepted:,} accepted, {replaced:,} replaced-by-another-name,
+  {refused:,} not importable)
+
+## Citation and licence
+
+{citation}
+
+Licensed **{license}**. Attribution is required wherever this data, or anything derived from
+it, is redistributed — including a Darwin Core export of the collection.
+
+## What this is *not*
+
+The index is **not part of your dataset.** Plant names you import are copied into
+`collection.db`, so the database is complete without this folder. Deleting it only disables
+plant *search*; it changes no record. The database does not claim to follow any WCVP release.
+
+## Replacing it
+
+Use **Settings → Plant names (WCVP) → Re-download and rebuild**, or:
+
+    python scripts/build_wcvp_index.py                            # download + build
+    python scripts/build_wcvp_index.py --archive wcvp_dwca.zip    # rebuild from the archive here
+
+Kew serves the current release at
+`http://sftp.kew.org/pub/data-repositories/WCVP/wcvp_dwca.zip`
+and keeps superseded ones under
+`Archive/wcvp_dwca_v<major>.zip`. There is **no usable API**: both `powo.science.kew.org` and
+`wcvp.science.kew.org` sit behind a bot challenge that answers a plain HTTP client with 403.
+
+Refreshing changes nothing about names already imported — they are local.
+
+See `docs/plant_names.md` for the full lifecycle.
+"""
+
+
+def write_readme(folder: Path, report: BuildReport, *, archive: Path, source: str) -> Path:
+    """Explain the folder to whoever finds it: what each file is, where it came from, and
+    that none of it is the user's data.
+
+    `source` is where the archive actually came from — the download URL, or the local file it
+    was copied from. A provenance note that misstates provenance is worse than none.
     """
+    path = folder / "README.md"
+    path.write_text(_README.format(
+        label=report.meta.label,
+        source=source,
+        built_at=datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
+        sha256=sha256_of(archive),
+        size_mb=archive.stat().st_size / 1e6,
+        rows=report.rows,
+        accepted=report.accepted,
+        replaced=report.replaced,
+        refused=report.refused,
+        citation=report.meta.citation,
+        license=WCVP_LICENSE,
+    ))
+    return path
+
+
+def install(folder: Path | None = None, *, url: str = WCVP_DWCA_URL,
+            archive: Path | None = None, progress=None) -> BuildReport:
+    """Populate the WCVP folder: the downloaded archive, the index built from it, a README.
+
+    The archive is **kept**, not discarded. It is the primary source the index is derived
+    from: keeping it makes the folder self-describing, lets the index be rebuilt without a
+    network, and lets the bytes be checked against the SHA-256 recorded in the README.
+
+    `archive` builds from an existing file instead of downloading (it is copied in, so the
+    folder still contains the source it was built from). The index is written to a temp file
+    and atomically renamed, so a failed download or a corrupt archive leaves any existing
+    index untouched.
+    """
+    import shutil
     import tempfile
 
     from app import config
-    db_path = db_path or config.wcvp_db_path()
+    folder = folder or config.wcvp_dir()
+    folder.mkdir(parents=True, exist_ok=True)
+    target = folder / "wcvp_dwca.zip"
 
     with tempfile.TemporaryDirectory() as tmp:
-        archive = Path(tmp) / "wcvp_dwca.zip"
-        if progress:
-            progress("download", 0.0)
-        download_archive(archive, url, progress=progress)
+        staged = Path(tmp) / "wcvp_dwca.zip"
+        if archive is not None:
+            if progress:
+                progress("download", 1.0)
+            shutil.copy2(archive, staged)
+            source = f"a local file, `{archive}`"
+        else:
+            if progress:
+                progress("download", 0.0)
+            download_archive(staged, url, progress=progress)
+            source = url
+
         if progress:
             progress("build", None)
-        return build_index(archive, db_path)
+        report = build_index(staged, folder / "wcvp.sqlite")
+        # Only now is the archive worth keeping: it built a valid index.
+        shutil.move(str(staged), target)
+
+    write_readme(folder, report, archive=target, source=source)
+    return report

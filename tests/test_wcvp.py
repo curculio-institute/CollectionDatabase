@@ -391,3 +391,64 @@ def test_meta_records_the_licence(tmp_path):
     meta = dict(db.execute("SELECT key, value FROM meta"))
     assert meta["license"] == "CC BY 3.0"
     assert "doi" in meta["citation"].lower() or "Kew" in meta["citation"]
+
+
+# ---------------------------------------------------------------------------
+# install(): the folder holds the archive, the index, and a README explaining both
+# ---------------------------------------------------------------------------
+
+def test_install_keeps_the_archive_beside_the_index(tmp_path):
+    """The archive is the primary source the index is derived from. Keeping it makes the
+    folder self-describing and lets the index be rebuilt with no network."""
+    archive = _archive(tmp_path, [_row("1", "Quercus robur", ipni="304293-2")])
+    folder = tmp_path / "wcvp"
+    report = wcvp.install(folder, archive=archive)
+    assert report.rows == 1
+    assert (folder / "wcvp.sqlite").exists()
+    assert (folder / "wcvp_dwca.zip").exists()
+    assert (folder / "README.md").exists()
+
+
+def test_install_readme_records_the_real_source_not_the_download_url(tmp_path):
+    """A provenance note that misstates provenance is worse than none."""
+    archive = _archive(tmp_path, [_row("1", "Quercus robur")])
+    folder = tmp_path / "wcvp"
+    wcvp.install(folder, archive=archive)
+    readme = (folder / "README.md").read_text()
+    assert "a local file" in readme
+    assert wcvp.WCVP_DWCA_URL not in readme.split("## Replacing it")[0]
+
+
+def test_install_readme_records_release_licence_and_archive_hash(tmp_path):
+    archive = _archive(tmp_path, [_row("1", "Quercus robur")])
+    folder = tmp_path / "wcvp"
+    wcvp.install(folder, archive=archive)
+    readme = (folder / "README.md").read_text()
+    assert "WCVP v16.0 (2026-06-04)" in readme
+    assert "CC BY 3.0" in readme
+    assert wcvp.sha256_of(folder / "wcvp_dwca.zip") in readme
+    assert "not part of your dataset" in readme
+
+
+def test_install_can_rebuild_from_the_archive_it_kept(tmp_path):
+    """No network needed: the folder carries its own source."""
+    archive = _archive(tmp_path, [_row("1", "Quercus robur")])
+    folder = tmp_path / "wcvp"
+    wcvp.install(folder, archive=archive)
+    report = wcvp.install(folder, archive=folder / "wcvp_dwca.zip")
+    assert report.rows == 1
+    assert (folder / "wcvp_dwca.zip").exists()
+
+
+def test_a_corrupt_archive_leaves_an_existing_index_untouched(tmp_path):
+    """install() builds to a temp file and atomically replaces, so a bad rebuild is not a loss."""
+    folder = tmp_path / "wcvp"
+    good = _archive(tmp_path, [_row("1", "Quercus robur")])
+    wcvp.install(folder, archive=good)
+    before = (folder / "wcvp.sqlite").read_bytes()
+
+    bad = _archive(tmp_path / "bad", [_row("1", "Q", status="Bogus")]) \
+        if (tmp_path / "bad").mkdir() or True else None
+    with pytest.raises(wcvp.WcvpError):
+        wcvp.install(folder, archive=bad)
+    assert (folder / "wcvp.sqlite").read_bytes() == before

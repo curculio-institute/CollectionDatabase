@@ -63,13 +63,27 @@ static Darwin Core Archive, which is also the access route the paper above cites
 
 ---
 
-## 2. The WCVP index
+## 2. The WCVP folder
 
-`data/wcvp.sqlite`, built by `scripts/build_wcvp_index.py` from Kew's archive.
+`data/wcvp/` holds three files, and explains itself:
+
+| file | what it is |
+|------|------------|
+| `wcvp_dwca.zip` | Kew's Darwin Core Archive, exactly as downloaded. The primary source. |
+| `wcvp.sqlite` | The lookup index built from it. Read-only; the app never writes to it. |
+| `README.md` | Generated at install time: release, source, archive SHA-256, citation, licence. |
+
+Keeping the archive costs 85 MB and buys three things: the folder is self-describing, the
+index can be rebuilt with **no network**, and the bytes it came from can be checked against
+the recorded hash.
 
 **It is a lookup tool, not data.** Derived, disposable, rebuildable, gitignored. It is *not*
 part of your dataset and is **not distributed with the database** — imported names live in
-`taxon`, so a recipient of your `.db` gets every plant name you used without the 270 MB index.
+`taxon`, so a recipient of your `.db` gets every plant name you used without the folder.
+
+It lives **inside `data/`** so a data folder is one self-contained bundle and a folder swap
+moves everything together. The corollary is that each data folder needs its own — which is
+why installing one is a button, not a shell command.
 
 | | |
 |---|---|
@@ -77,7 +91,7 @@ part of your dataset and is **not distributed with the database** — imported n
 | Superseded releases | `…/Archive/wcvp_dwca_v<major>.zip` (verified v10–v15) |
 | Licence | CC BY 3.0 — attribution required wherever the data is redistributed |
 | Contents | 1 448 984 names, ranks Genus and below |
-| Build | ~16 s → 270 MB |
+| Build | ~16 s → 258 MB index (+ 85 MB archive kept) |
 | Search | 0.1–0.8 ms per keystroke (`name COLLATE NOCASE` index) |
 
 ### Getting it
