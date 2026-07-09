@@ -725,12 +725,15 @@ def update_taxon(
     t = session.get(Taxon, taxon_id)
     if t is None:
         raise ValueError(f"Taxon {taxon_id} not found")
+    # Validate before mutating: an edit that clears the code must fail with a message naming
+    # the taxon, not as an opaque IntegrityError with a half-updated object in the session.
+    code = _require_code(nomenclatural_code, scientific_name or t.scientific_name or "taxon")
     if name_element is None:
         name_element = element_from_name(scientific_name or "", taxon_rank)
     t.name_element = name_element
     t.taxon_rank = taxon_rank
     t.scientific_name_authorship = scientific_name_authorship or None
-    t.nomenclatural_code = nomenclatural_code or None
+    t.nomenclatural_code = code
     t.taxonworks_otu_id = taxonworks_otu_id
     t.updated_at = _utcnow()
     session.flush()

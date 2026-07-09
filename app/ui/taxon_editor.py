@@ -16,6 +16,21 @@ from app.services.taxa import (
 from app.models import Taxon, TaxonDetermination
 
 
+def rank_options(init_rank: str | None) -> list[str]:
+    """Rank choices for the editor, always including the taxon's current rank.
+
+    A row may hold a rank outside our vocabulary — e.g. 'spec.', IPNI's abbreviation, stored
+    by the old POWO path when its fetch failed silently (#96). `ui.select` raises ValueError
+    on a value that is not among its options, which aborted the whole form build and left such
+    a taxon uneditable AND undeletable: the one row you most need to repair was the one row the
+    editor refused to open. A bad state must always be reachable by the tool that repairs it.
+    """
+    opts = list(TAXON_RANKS_BY_USE)
+    if init_rank and init_rank not in opts:
+        opts.insert(0, init_rank)
+    return opts
+
+
 def _taxon_opts(session_factory) -> dict:
     with session_factory() as s:
         taxa = search_taxa(s, "", limit=500)
@@ -81,11 +96,20 @@ def _build_taxon_form(
         # Live preview of the full composed name (element + parent chain).
         preview_lbl = ui.label("").classes("text-sm text-secondary italic -mt-1")
 
+        # Includes the taxon's current rank even when it is outside our vocabulary, so a
+        # bad rank can be corrected here rather than making the row uneditable — see
+        # rank_options() above.
+        _init_rank = taxon.taxon_rank if taxon else pf.get("taxon_rank")
+
         rank_sel = ui.select(
-            TAXON_RANKS_BY_USE,
+            rank_options(_init_rank),
             label="Rank *",
-            value=taxon.taxon_rank if taxon else pf.get("taxon_rank"),
+            value=_init_rank,
         ).classes("w-full")
+        if _init_rank and _init_rank not in TAXON_RANKS_BY_USE:
+            ui.label(
+                f"“{_init_rank}” is not a rank this database models — pick the correct one."
+            ).classes("text-xs -mt-1").style("color:var(--tp-danger)")
         # Synonymy is controlled solely by the accepted-name link below: a taxon
         # is a synonym iff an accepted name is set. There is no separate status
         # field (taxonomicStatus is derived from the link at DwC export time).
