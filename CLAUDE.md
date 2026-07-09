@@ -12,6 +12,10 @@ linked file when working in that area:
   the grouped print sheet).
 - **`docs/schema.html`** — the database schema reference: tables, columns, and the full
   integrity-constraint list (CHECK / STRICT / UNIQUE / FK).
+- **`docs/plant_names.md`** — *the plant name lifecycle*: where plant names come from
+  (local → TaxonWorks → WCVP), the offline WCVP index and how it is refreshed, which WCVP
+  statuses are importable and which are refused, what an import creates, and why an imported
+  name is thereafter local and never rewritten.
 - **GitHub issues** — all open bugs and tasks live at
   [`curculio-institute/CollectionDatabase`](https://github.com/curculio-institute/CollectionDatabase/issues)
   (`gh issue list`), not in this file.
