@@ -241,7 +241,7 @@ def index(tmp_path):
 
 
 def test_open_index_raises_when_not_built(tmp_path):
-    with pytest.raises(wcvp.IndexMissing, match="build it with"):
+    with pytest.raises(wcvp.IndexMissing, match="install it in Settings"):
         wcvp.open_index(tmp_path / "absent.sqlite")
 
 
@@ -391,3 +391,106 @@ def test_meta_records_the_licence(tmp_path):
     meta = dict(db.execute("SELECT key, value FROM meta"))
     assert meta["license"] == "CC BY 3.0"
     assert "doi" in meta["citation"].lower() or "Kew" in meta["citation"]
+
+
+# ---------------------------------------------------------------------------
+# install(): the folder holds the archive, the index, and a README explaining both
+# ---------------------------------------------------------------------------
+
+def test_install_keeps_the_archive_beside_the_index(tmp_path):
+    """The archive is the primary source the index is derived from. Keeping it makes the
+    folder self-describing and lets the index be rebuilt with no network."""
+    archive = _archive(tmp_path, [_row("1", "Quercus robur", ipni="304293-2")])
+    folder = tmp_path / "wcvp"
+    report = wcvp.install(folder, archive=archive)
+    assert report.rows == 1
+    assert (folder / "wcvp.sqlite").exists()
+    assert (folder / "wcvp_dwca.zip").exists()
+    assert (folder / "README.md").exists()
+
+
+def test_install_readme_records_the_real_source_not_the_download_url(tmp_path):
+    """A provenance note that misstates provenance is worse than none."""
+    archive = _archive(tmp_path, [_row("1", "Quercus robur")])
+    folder = tmp_path / "wcvp"
+    wcvp.install(folder, archive=archive)
+    readme = (folder / "README.md").read_text()
+    assert "a local file" in readme
+    assert wcvp.WCVP_DWCA_URL not in readme.split("## Replacing it")[0]
+
+
+def test_install_readme_records_release_licence_and_archive_hash(tmp_path):
+    archive = _archive(tmp_path, [_row("1", "Quercus robur")])
+    folder = tmp_path / "wcvp"
+    wcvp.install(folder, archive=archive)
+    readme = (folder / "README.md").read_text()
+    assert "WCVP v16.0 (2026-06-04)" in readme
+    assert "CC BY 3.0" in readme
+    assert wcvp.sha256_of(folder / "wcvp_dwca.zip") in readme
+    assert "not part of your dataset" in readme
+
+
+def test_install_can_rebuild_from_the_archive_it_kept(tmp_path):
+    """No network needed: the folder carries its own source."""
+    archive = _archive(tmp_path, [_row("1", "Quercus robur")])
+    folder = tmp_path / "wcvp"
+    wcvp.install(folder, archive=archive)
+    report = wcvp.install(folder, archive=folder / "wcvp_dwca.zip")
+    assert report.rows == 1
+    assert (folder / "wcvp_dwca.zip").exists()
+
+
+def test_a_corrupt_archive_leaves_an_existing_index_untouched(tmp_path):
+    """install() builds to a temp file and atomically replaces, so a bad rebuild is not a loss."""
+    folder = tmp_path / "wcvp"
+    good = _archive(tmp_path, [_row("1", "Quercus robur")])
+    wcvp.install(folder, archive=good)
+    before = (folder / "wcvp.sqlite").read_bytes()
+
+    bad = _archive(tmp_path / "bad", [_row("1", "Q", status="Bogus")]) \
+        if (tmp_path / "bad").mkdir() or True else None
+    with pytest.raises(wcvp.WcvpError):
+        wcvp.install(folder, archive=bad)
+    assert (folder / "wcvp.sqlite").read_bytes() == before
+
+
+# ---------------------------------------------------------------------------
+# Cross-platform: the read-only URI must survive odd paths and Windows (#104)
+# ---------------------------------------------------------------------------
+
+def test_read_only_uri_escapes_percent(tmp_path):
+    """f"file:{path}" fails to open a path containing '%'."""
+    d = tmp_path / "100%data"; d.mkdir()
+    db_path = d / "wcvp.sqlite"
+    wcvp.build_index(_archive(tmp_path, [_row("1", "Quercus robur")]), db_path)
+    assert wcvp.open_index(db_path).execute("select count(*) from name").fetchone()[0] == 1
+
+
+def test_read_only_uri_escapes_question_mark(tmp_path):
+    """f"file:{path}?mode=ro" on a path containing '?' silently opens a DIFFERENT database:
+    everything after the '?' is parsed as query parameters."""
+    d = tmp_path / "my?db"; d.mkdir()
+    db_path = d / "wcvp.sqlite"
+    wcvp.build_index(_archive(tmp_path, [_row("1", "Quercus robur")]), db_path)
+    assert wcvp.open_index(db_path).execute("select count(*) from name").fetchone()[0] == 1
+
+
+def test_windows_paths_become_a_valid_file_uri():
+    """On Windows, urllib.request.pathname2url is nturl2path.pathname2url. Exercise THAT,
+    since on Linux the posix implementation would merely percent-escape the backslashes and
+    prove nothing. The old f-string emitted `file:C:\\Users\\…` — backslashes and an
+    unescaped drive colon.
+    """
+    import nturl2path
+    url = nturl2path.pathname2url(r"C:\Users\jakob\data\wcvp\wcvp.sqlite")
+    uri = "file:" + url + "?mode=ro"
+    assert url == "///C:/Users/jakob/data/wcvp/wcvp.sqlite", url
+    assert "\\" not in uri
+    assert uri == "file:///C:/Users/jakob/data/wcvp/wcvp.sqlite?mode=ro"
+
+
+def test_index_is_opened_read_only_even_through_the_escaped_uri(tmp_path):
+    db_path = tmp_path / "wcvp.sqlite"
+    wcvp.build_index(_archive(tmp_path, [_row("1", "Quercus robur")]), db_path)
+    with pytest.raises(sqlite3.OperationalError, match="readonly"):
+        wcvp.open_index(db_path).execute("DELETE FROM name")

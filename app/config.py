@@ -64,10 +64,11 @@ class AppConfig:
     label_border_determination: str = "black"
     label_border_identifier: str = "black"
 
-    # Offline plant-name backbone built from the WCVP Darwin Core Archive by
-    # scripts/build_wcvp_index.py. Relative paths resolve against data/; "" → data/wcvp.sqlite.
-    # Not the specimen DB: a read-only lookup index, rebuilt from Kew's archive, never edited.
-    wcvp_db: str = ""
+    # Folder holding the offline plant-name backbone: Kew's downloaded Darwin Core Archive,
+    # the SQLite index built from it, and a README recording where both came from. Relative
+    # paths resolve against data/; "" → data/wcvp. Neither file is the specimen DB — the index
+    # is a read-only lookup table, rebuilt from the archive, never edited.
+    wcvp_dir: str = ""
 
 
 def printed_pdf_dir() -> Path:
@@ -91,14 +92,27 @@ def media_dir() -> Path:
     return path
 
 
-def wcvp_db_path() -> Path:
-    """Resolved path of the offline WCVP index. Not created here — it is built by
-    scripts/build_wcvp_index.py, and its absence is a condition the caller reports."""
-    raw = get_config().wcvp_db
-    path = Path(raw) if raw else (_DATA_DIR / "wcvp.sqlite")
+def wcvp_dir() -> Path:
+    """Resolved folder holding the WCVP archive, the index built from it, and its README.
+
+    Not created here: its absence means "no plant backbone installed", which the caller
+    reports and the Settings card offers to fix.
+    """
+    raw = get_config().wcvp_dir
+    path = Path(raw) if raw else (_DATA_DIR / "wcvp")
     if not path.is_absolute():
         path = _DATA_DIR / path
     return path
+
+
+def wcvp_db_path() -> Path:
+    """Resolved path of the offline WCVP index, inside wcvp_dir()."""
+    return wcvp_dir() / "wcvp.sqlite"
+
+
+def wcvp_archive_path() -> Path:
+    """Resolved path of the downloaded archive the index was built from."""
+    return wcvp_dir() / "wcvp_dwca.zip"
 
 
 _instance: AppConfig | None = None

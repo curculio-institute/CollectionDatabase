@@ -639,38 +639,42 @@ def build_taxon_search(
     # See docs/plant_names.md and issue #98. Nothing here is async or fallible over the
     # network, so nothing here may swallow an exception.
 
-    def _wcvp_index():
-        """Open the index once per widget. Absent index is a condition, not an error."""
-        if "wcvp_db" not in state:
-            try:
-                state["wcvp_db"] = wcvp_svc.open_index()
-            except wcvp_svc.IndexMissing:
-                state["wcvp_db"] = None
-        return state["wcvp_db"]
+    # The index handle is NOT cached. Holding it open locks the file on Windows (a rebuild
+    # then fails with PermissionError) and pins a stale inode on POSIX (the app keeps serving
+    # the old index after a rebuild). Opening per query costs ~1.5 ms and means a freshly
+    # installed index is picked up on the next search, with no restart. See issue #104.
 
     def _append_wcvp_section(term: str) -> None:
-        db = _wcvp_index()
         with dropdown:
             sec = ui.element("div")
 
-        if db is None:
+        try:
+            db = wcvp_svc.open_index()
+        except wcvp_svc.IndexMissing:
             with sec:
                 ui.label("World Checklist of Vascular Plants").classes("wcvp-section-label")
                 ui.label(
-                    "No plant index installed — run scripts/build_wcvp_index.py"
+                    "No plant index installed — see Settings → Plant names (WCVP)"
                 ).classes("wcvp-hint")
             _show_dropdown()
             return
 
-        results = wcvp_svc.search(db, term, limit=8)
-        if not results:
-            return
+        try:
+            results = wcvp_svc.search(db, term, limit=8)
+            if not results:
+                return
+            rendered = [
+                (row,
+                 None if row.is_refused else wcvp_svc.accepted_name(db, row),
+                 wcvp_svc.refusal_reason(db, row) if row.is_refused else "")
+                for row in results
+            ]
+        finally:
+            db.close()
 
         with sec:
             ui.label("World Checklist of Vascular Plants").classes("wcvp-section-label")
-            for row in results:
-                accepted = None if row.is_refused else wcvp_svc.accepted_name(db, row)
-                reason = wcvp_svc.refusal_reason(db, row) if row.is_refused else ""
+            for row, accepted, reason in rendered:
                 body = _wcvp_item_html(row, accepted, reason)
 
                 if row.is_refused:
@@ -701,9 +705,12 @@ def build_taxon_search(
         _enter_selected(item_html, label=label)
         state["taxon_id"] = -1  # import in progress
 
-        db = _wcvp_index()
+        # Read everything needed from the index, then close it: an open handle blocks a
+        # rebuild on Windows (#104), and the import preview below awaits a user decision.
+        db = wcvp_svc.open_index()
         try:
             fields = wcvp_svc.fields_from_wcvp(db, row)
+            source = wcvp_svc.index_meta(db).get("label", "WCVP")
         except wcvp_svc.NotImportable as exc:
             # A refused row has no click handler, so this is a data problem (e.g. a synonym
             # whose accepted name is missing from Kew's archive). Say so; never guess.
@@ -711,6 +718,8 @@ def build_taxon_search(
                 ui.notify(f"Cannot import: {exc}", type="negative", timeout=8000)
             _clear()
             return
+        finally:
+            db.close()
 
         mismatch_msgs: list[str] = []
 
@@ -733,7 +742,6 @@ def build_taxon_search(
             _clear()
             return
 
-        source = wcvp_svc.index_meta(db).get("label", "WCVP")
         confirmed = await _show_import_preview_dialog(changes, source, client)
         if not confirmed:
             _clear()
