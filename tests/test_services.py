@@ -580,3 +580,33 @@ def test_finalize_specimen_returns_created_associations_in_order(session):
     session.flush()
     assert [c.object_taxon_id for c in created] == [oak.id, pine.id]
     assert all(c.id is not None for c in created)
+
+
+# ---------------------------------------------------------------------------
+# update_taxon: the code may never be cleared (#96, migration 0054)
+# ---------------------------------------------------------------------------
+
+def test_update_taxon_refuses_to_clear_the_nomenclatural_code(session):
+    from app.services.taxa import create_taxon_direct, update_taxon
+    t = create_taxon_direct(session, scientific_name="Quercus", taxon_rank="genus",
+                            nomenclatural_code="ICN")
+    session.flush()
+    with pytest.raises(ValueError, match="no nomenclatural code"):
+        update_taxon(session, t.id, taxon_rank="genus", scientific_name_authorship="L.",
+                     parent_name_usage_id=None, accepted_name_usage_id=None,
+                     nomenclatural_code=None, taxonworks_otu_id=None,
+                     scientific_name="Quercus")
+    session.rollback()
+
+
+def test_update_taxon_refuses_a_code_outside_the_vocabulary(session):
+    from app.services.taxa import create_taxon_direct, update_taxon
+    t = create_taxon_direct(session, scientific_name="Quercus", taxon_rank="genus",
+                            nomenclatural_code="ICN")
+    session.flush()
+    with pytest.raises(ValueError, match="not one of"):
+        update_taxon(session, t.id, taxon_rank="genus", scientific_name_authorship="L.",
+                     parent_name_usage_id=None, accepted_name_usage_id=None,
+                     nomenclatural_code="BOTANICAL", taxonworks_otu_id=None,
+                     scientific_name="Quercus")
+    session.rollback()
