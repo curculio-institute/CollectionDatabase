@@ -1,5 +1,8 @@
-# Data directory — DB and config are never committed
+# Data directories — DB, config and print output are never committed
 data/
+data.real/
+data.bak/
+data.test/
 *.db
 *.db-shm
 *.db-wal

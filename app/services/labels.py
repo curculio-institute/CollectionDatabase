@@ -3,11 +3,23 @@
 Reproduces the original two-column ODT template format using Fira Sans Compressed
 as a substitute for Context Condensed SSi.
 
-Three label types — all ≤ 18 mm wide:
+Three label kinds — all 18 mm wide; heights are *minimums* that grow with text:
 
-  data_sheet(rows)            18 × 2.5 mm   — locality / date / collector
-  determination_sheet(rows)   18 × 4.9 mm   — taxon name + determiner
-  identifier_sheet(codes)     18 × 5.5 mm   — QR code + 4-char identifier
+  data           18 × 2.5 mm min  — locality / date / collector
+  determination  18 × 4.9 mm min  — taxon name + determiner
+  identifier     18 × ~6.1 mm     — QR + collection name + big number (sizes to
+                                    content; QR is the ~5.5 mm floor, stays under 7 mm)
+
+One output surface: ``grouped_sheet(...)`` — the composite Print-queue page:
+per-specimen columns of data / identifier / determination bands, plus a "New
+identifiers" group for freshly reserved codes. Everything printable flows through
+the print queue; there is no standalone per-kind sheet.
+
+Within the grouped sheet, labels tile with a small gap (border-collapse: separate,
+``_LABEL_GAP_BORDERED``) so each keeps its own complete border yet a single cut down
+the gap separates two neighbours (no leftover strip, not two cuts). Each type's
+border ("black" cut-guide line or "none") is a config choice — see
+AppConfig.label_border_* / _border_rule.
 
 All return raw PDF bytes.
 
@@ -52,6 +64,21 @@ _FONT       = "'Fira Sans Compressed', 'Fira Sans Condensed', Arial Narrow, sans
 _FONT_SIZE  = "4pt"
 _LINE_H     = "1.41mm"   # 0.0555 in
 _PAD        = "0.19mm 0.53mm"   # top/bottom  left/right
+# Gap between neighbouring labels on the grouped sheet — matched to the mybioform
+# "Etikettenmuster" reference (measured 2026-07-08: ~0.1 mm hairline borders,
+# ~0.42–0.47 mm gap on both axes). The gap is the cut lane: it must be wide enough
+# that a single blade pass drops between two neighbouring hairlines with no leftover
+# strip, so we track the reference ~0.4 mm.
+_LABEL_GAP_BORDERED = "0.4mm"
+
+
+def _border_rule(choice: str) -> str:
+    """CSS `border` shorthand for a per-label-type border config choice.
+
+    ``"black"`` → a thin hairline cut-guide line (~0.1 mm, matching the
+    Etikettenmuster reference); anything else (``"none"``) → no border. Default is
+    black everywhere (see AppConfig.label_border_*)."""
+    return "0.1mm solid #000" if choice == "black" else "none"
 
 
 # ---------------------------------------------------------------------------
@@ -277,19 +304,6 @@ def _data_line2(lbl: DataLabel) -> str:
     return _build(abbreviate_name(lbl.recorded_by))
 
 
-_DATA_CSS = _BASE_CSS + ".label { min-height: 2.5mm; }"
-
-
-def data_sheet(rows: list[DataLabel]) -> bytes:
-    """PDF sheet of data/locality labels (18 × 2.5 mm)."""
-    items = []
-    for lbl in rows:
-        items.append(f'<div class="label">{_data_inner_html(lbl)}</div>')
-    html = (f"<html><head><style>{_DATA_CSS}</style></head>"
-            f'<body><div class="sheet">{"".join(items)}</div></body></html>')
-    return HTML(string=html).write_pdf()
-
-
 # ---------------------------------------------------------------------------
 # Determination labels  (18 × 4.9 mm, 3 lines)
 # ---------------------------------------------------------------------------
@@ -389,10 +403,6 @@ def _det_name_html(lbl: DeterminationLabel) -> str:
     return f"<div>{name}</div>" if name else ""           # tight → flow + grow
 
 
-# min-height keeps the historical 4.9 mm floor; overflow:visible lets a long name
-# wrap and grow the label instead of being clipped (overriding _BASE_CSS).
-_DET_CSS = _BASE_CSS + ".label { min-height: 4.9mm; overflow: visible; }"
-
 # Self-contained CSS for fit measurement: a plain *block* box at the label's
 # content width + font. Deliberately independent of the sheet/.label layout (which
 # is inline-block for pagination) so the line-box count reflects only text
@@ -428,16 +438,6 @@ def _fits_one_line(inner_html: str) -> bool:
         return True
 
 
-def determination_sheet(rows: list[DeterminationLabel]) -> bytes:
-    """PDF sheet of determination labels (18 × 4.9 mm)."""
-    items = []
-    for lbl in rows:
-        items.append(f'<div class="label">{_det_inner_html(lbl)}</div>')
-    html = (f"<html><head><style>{_DET_CSS}</style></head>"
-            f'<body><div class="sheet">{"".join(items)}</div></body></html>')
-    return HTML(string=html).write_pdf()
-
-
 # ---------------------------------------------------------------------------
 # Identifier labels  (18 × 5.5 mm, QR + code)
 # ---------------------------------------------------------------------------
@@ -464,56 +464,88 @@ def _split_identifier_code(code: str) -> tuple[str, str]:
     return code[:idx + 1], code[idx + 1:]
 
 
-def _id_label_inner(code: str, collection_name: str = "") -> str:
-    """Inner HTML for one identifier label: QR image + the code column.
+# Available width (mm) for the number beside the QR, and the condensed-font digit
+# advance in mm per point per character. Used to auto-size the number so a longer code
+# (e.g. 6-digit 000023 / 100000) shrinks to fit instead of overflowing. The cap also
+# respects the label height (name + prefix + number stack in ~6.5 mm).
+_ID_NUM_AVAIL_MM = 10.0
+_NUM_ADVANCE_MM_PER_PT = 0.182   # Fira Sans Compressed digit advance (measured; the
+                                 # number now prints regular weight, slightly narrower than
+                                 # this bold-measured bound, so auto-sizing stays conservative)
+_ID_NUM_MAX_PT = 10.5
+_ID_NUM_MIN_PT = 6.5
 
-    Layout (#56): a self-contained vertical block — a tiny full-width collection-name
-    header (if known) on top, then a row with the QR on the left and the full code
-    ``JJPC-00304`` on one line, centred, to its right. Self-contained (``.id-label``
-    owns the whole layout) so it renders identically in the Labels sheet AND inside
-    the Print-queue grouped cell, regardless of the wrapping container.
+
+def _id_number_font_pt(num: str) -> float:
+    """Point size for the big number so it fits the fixed text column beside the QR.
+
+    Digit advance is proportional to font size, so the width of ``n`` chars is
+    ``n × pt × _NUM_ADVANCE_MM_PER_PT``; solve for the pt that fills the available
+    width, then clamp. 4–5 digit codes hit the cap; 6+ digits shrink to fit."""
+    n = max(len(num), 1)
+    pt = _ID_NUM_AVAIL_MM / (n * _NUM_ADVANCE_MM_PER_PT)
+    return round(max(_ID_NUM_MIN_PT, min(_ID_NUM_MAX_PT, pt)), 1)
+
+
+def _id_label_inner(code: str, collection_name: str = "") -> str:
+    """Inner HTML for one identifier label: tiny full collection-name line, then a
+    row with the QR on the left and — to its right — the collection-code prefix
+    (``JJPC-``, small) stacked *over* the sequence number (``00304``, large + bold,
+    auto-sized to fit).
+
+    Splitting the prefix onto its own line lets the number print big and legible
+    (redesign 2026-07-07); the QR still encodes the whole ``JJPC-00304``. The prefix
+    keeps its trailing hyphen (the DB codes are ``JJPC-00304``, so the two lines read
+    ``JJPC-`` / ``00304``). The tiny full-name line is kept (#56).
+
+    Layout follows the user's own template: **QR on the left**, and to its right a
+    centred stack of three lines — full collection name (small) / ``JJPC-`` / the big
+    number. The number is auto-sized (``_id_number_font_pt``) so a longer code shrinks
+    to fit rather than overflow. Self-contained so it renders identically in the Labels
+    batch sheet AND the Print-queue grouped cell.
     """
+    prefix, num = _split_identifier_code(code)     # ('JJPC-', '00304')
     qr = _qr_data_url(code)
     name_html = (
         f'<div class="id-collname">{_e(collection_name)}</div>'
         if collection_name else ""
     )
+    prefix_html = f'<div class="id-prefix">{_e(prefix)}</div>' if prefix else ""
+    num_pt = _id_number_font_pt(num)
     return (
         f'<div class="id-label">'
-        f'{name_html}'
-        f'<div class="id-row">'
-        f'<img src="{qr}">'
-        f'<div class="id-text"><div class="id-code">{_e(code)}</div></div>'
-        f'</div>'
+        f'<img class="id-qr" src="{qr}">'
+        f'<div class="id-text">{name_html}{prefix_html}'
+        f'<div class="id-number" style="font-size:{num_pt}pt">{_e(num)}</div></div>'
         f'</div>'
     )
 
 
-# Shared CSS for the identifier label — included in every identifier-label CSS block.
-# ``.id-label`` is the whole self-contained block (vertical: name header over a
-# QR+code row); it fills whatever container holds it (.label / .lbl-id), so both
-# sheets render the same compact label.
+# Shared CSS for the identifier label — the self-contained block inside the grouped
+# cell. QR left; a left-aligned name / prefix / number stack right. The block sizes
+# to its content (no min-height floor) so the border hugs the QR/text with no dead
+# vertical space — important for borderless labels, where any slack reads as a large
+# gap between one row's number and the next row's text.
 _ID_TEXT_CSS = """
 .id-label {
-    display: flex; flex-direction: column; justify-content: center;
-    width: 100%; height: 100%;
-    font-family: 'Fira Code', 'DejaVu Sans Mono', monospace; font-weight: bold;
+    display: flex; flex-direction: row; align-items: center; gap: 0.6mm;
+    width: 100%;
+    font-family: 'Fira Sans Compressed', 'Fira Sans Condensed', 'Arial Narrow', sans-serif;
+    font-weight: 400;
 }
+.id-qr { width: 5.5mm; height: 5.5mm; flex-shrink: 0; image-rendering: pixelated; }
+/* left-aligned so the name / prefix / number hug the QR instead of floating in the
+   centre of the wide column. */
+.id-text { flex: 1; min-width: 0; text-align: left; line-height: 1.0; overflow: hidden; }
+/* All regular weight (not bold): at these micro sizes bold thickens/fills the digit
+   counters on a real printer; regular stays cleaner (decided 2026-07-07). */
 .id-collname {
-    font-size: 2.5pt; font-weight: 600; letter-spacing: 0;
-    line-height: 1.0; text-align: center; width: 100%;
+    font-size: 2.5pt; font-weight: 400; letter-spacing: 0;
     white-space: nowrap; overflow: hidden;
 }
-.id-row { display: flex; align-items: center; gap: 0.9mm; width: 100%; }
-.id-row img { width: 4.5mm; height: 4.5mm; flex-shrink: 0; image-rendering: pixelated; }
-.id-text { flex: 1; min-width: 0; text-align: center; overflow: hidden; }
-.id-code { font-size: 5pt; letter-spacing: 0.1pt; white-space: nowrap; }
-"""
-
-_ID_CSS = _BASE_CSS + _ID_TEXT_CSS + """
-/* .label stays inline-block (from _BASE_CSS) so labels tile across the sheet; the
-   self-contained .id-label inside owns the vertical layout. */
-.label { height: 6.5mm; padding: 0.45mm 0.5mm 0.35mm; }
+.id-prefix { font-size: 3.4pt; font-weight: 400; letter-spacing: 0.3pt; }
+/* font-size is set inline per label (auto-sized to fit; see _id_number_font_pt). */
+.id-number { font-weight: 400; letter-spacing: 0.2pt; white-space: nowrap; }
 """
 
 
@@ -523,21 +555,6 @@ def _collection_of(code: str, names: dict[str, str] | None) -> str:
         return ""
     prefix, _ = _split_identifier_code(code)
     return names.get(prefix.rstrip("-"), "")
-
-
-def identifier_sheet(codes: list[str], names: dict[str, str] | None = None) -> bytes:
-    """PDF sheet of identifier-only labels (18 × 7 mm).
-
-    ``names`` maps a collection code (the code prefix) → its full name, printed in
-    tiny letters above the code (see repositories.name_map). Unknown prefixes just
-    omit the name line."""
-    items = [
-        f'<div class="label">{_id_label_inner(c, _collection_of(c, names))}</div>'
-        for c in codes
-    ]
-    html = (f"<html><head><style>{_ID_CSS}</style></head>"
-            f'<body><div class="sheet">{"".join(items)}</div></body></html>')
-    return HTML(string=html).write_pdf()
 
 
 # ---------------------------------------------------------------------------
@@ -586,28 +603,39 @@ class LabelGroup:
 # (columns stretch or wrap across group boundaries), but table layout is solid.
 # Each group is an inline-block box that wraps with a large margin; inside it a
 # fixed-layout table has one column per specimen and one row per band (data /
-# identifier / determination). `border-spacing` gives the small inter-specimen
-# gap with zero vertical gap, so a specimen's column stays together for cutting.
-_GROUPED_CSS = _BASE_CSS + _ID_TEXT_CSS + f"""
+# identifier / determination). The chunk table is `border-collapse: separate` with
+# a small `_LABEL_GAP`, so every label keeps its own complete border and neighbours
+# are **separated by a thin gap** — small enough for one cut down the gap (no
+# leftover strip, not two cuts). The large `_GROUP_GAP` between groups keeps
+# different queue actions separable (decided 2026-07-07: small gap within a group,
+# large gap between groups). Per-band borders come from config (AppConfig.label_border_*).
+
+def _grouped_css(borders: dict[str, str] | None = None) -> str:
+    borders = borders or {}
+    bd = _border_rule(borders.get("data", "black"))
+    bt = _border_rule(borders.get("determination", "black"))
+    bi = _border_rule(borders.get("identifier", "black"))
+    return _BASE_CSS + _ID_TEXT_CSS + f"""
 .printed-at {{ font-size: 5pt; color: #666; margin-bottom: 3mm; }}
 .group {{ display: inline-block; vertical-align: top; line-height: {_LINE_H}; margin: 0 {_GROUP_GAP} {_GROUP_GAP} 0; }}
 .group-header {{ font-size: 5pt; color: #666; margin-bottom: 0.4mm; letter-spacing: 0.2pt; }}
-.chunk {{ table-layout: fixed; border-collapse: separate; border-spacing: {_SPEC_GAP} 0; page-break-inside: avoid; }}
+.chunk {{ table-layout: fixed; border-collapse: separate; border-spacing: {_LABEL_GAP_BORDERED}; page-break-inside: avoid; }}
 .chunk + .chunk {{ margin-top: {_CHUNK_GAP}; }}
 .cell {{ width: 18mm; padding: 0; vertical-align: top; }}
 .lbl-data {{
     min-height: 2.5mm;
-    border: 0.1mm dashed #aaa; padding: 0.19mm 0.53mm; overflow: hidden;
+    border: {bd}; padding: 0.19mm 0.53mm; overflow: hidden;
     font-size: {_FONT_SIZE};
 }}
 .lbl-det {{
     min-height: 4.9mm;
-    border: 0.1mm dashed #aaa; padding: 0.19mm 0.53mm; overflow: visible;
+    border: {bt}; padding: 0.19mm 0.53mm; overflow: visible;
     font-size: {_FONT_SIZE};
 }}
 .lbl-id {{
-    height: 6.5mm;
-    border: 0.1mm dashed #aaa; padding: 0.3mm 0.5mm;
+    /* tiny top space so the collection-name line doesn't touch the top border;
+       no bottom padding — the number's own line-box already leaves ~0.4mm there. */
+    border: {bi}; padding: 0.15mm 0.5mm 0 0.5mm;
     overflow: hidden;
 }}
 """
@@ -641,37 +669,55 @@ def _group_html(group: LabelGroup, names: dict[str, str] | None = None) -> str:
     has_det  = any(s.determination is not None for s in specs)
 
     chunks: list[str] = []
-    for start in range(0, len(specs), _LABELS_PER_ROW):
-        chunk = specs[start:start + _LABELS_PER_ROW]
-        rows: list[str] = []
-        # Band order top→bottom: data, identifier, determination. Each present
-        # band is a table row with one cell per column (empty <td> if missing)
-        # so columns stay aligned across bands.
-        if has_data:
-            rows.append("<tr>" + "".join(_data_cell(s.data) for s in chunk) + "</tr>")
-        if has_id:
-            rows.append("<tr>" + "".join(_id_cell(s.id_code, names) for s in chunk) + "</tr>")
-        if has_det:
-            rows.append("<tr>" + "".join(_det_cell(s.determination) for s in chunk) + "</tr>")
-        chunks.append(f'<table class="chunk">{"".join(rows)}</table>')
+    if has_id and not has_data and not has_det:
+        # Identifier-only group (e.g. "New identifiers"): tile every code into ONE
+        # multi-row table so the vertical gap between rows is a single border-spacing
+        # (~0.4 mm cut lane), matching the horizontal gap — a uniform grid like the
+        # Etikettenmuster reference. Wrapping each run into its own chunk table would
+        # instead stack two border-spacings + the chunk margin (~2.3 mm), which reads
+        # as far too much vertical space between rows.
+        id_rows = [
+            "<tr>" + "".join(_id_cell(s.id_code, names)
+                             for s in specs[start:start + _LABELS_PER_ROW]) + "</tr>"
+            for start in range(0, len(specs), _LABELS_PER_ROW)
+        ]
+        chunks.append(f'<table class="chunk">{"".join(id_rows)}</table>')
+    else:
+        for start in range(0, len(specs), _LABELS_PER_ROW):
+            chunk = specs[start:start + _LABELS_PER_ROW]
+            rows: list[str] = []
+            # Band order top→bottom: data, identifier, determination. Each present
+            # band is a table row with one cell per column (empty <td> if missing)
+            # so columns stay aligned across bands.
+            if has_data:
+                rows.append("<tr>" + "".join(_data_cell(s.data) for s in chunk) + "</tr>")
+            if has_id:
+                rows.append("<tr>" + "".join(_id_cell(s.id_code, names) for s in chunk) + "</tr>")
+            if has_det:
+                rows.append("<tr>" + "".join(_det_cell(s.determination) for s in chunk) + "</tr>")
+            chunks.append(f'<table class="chunk">{"".join(rows)}</table>')
 
     header = f'<div class="group-header">{_e(group.source)}</div>' if group.source else ""
     return f'<div class="group">{header}{"".join(chunks)}</div>'
 
 
 def _grouped_html(groups: list[LabelGroup], printed_at: str,
-                  names: dict[str, str] | None = None) -> str:
+                  names: dict[str, str] | None = None,
+                  borders: dict[str, str] | None = None) -> str:
     body = "".join(_group_html(g, names) for g in groups if g.specimens)
     stamp = f'<div class="printed-at">Printed: {_e(printed_at)}</div>'
-    return (f"<html><head><style>{_GROUPED_CSS}</style></head>"
+    return (f"<html><head><style>{_grouped_css(borders)}</style></head>"
             f'<body>{stamp}<div class="sheet">{body}</div></body></html>')
 
 
 def grouped_sheet(groups: list[LabelGroup], printed_at: str,
-                  names: dict[str, str] | None = None) -> bytes:
+                  names: dict[str, str] | None = None,
+                  borders: dict[str, str] | None = None) -> bytes:
     """Render queued labels as a grouped, column-aligned sheet (see module note).
 
-    ``names`` maps collection code → full name for the identifier band (#56)."""
-    return HTML(string=_grouped_html(groups, printed_at, names)).write_pdf()
+    ``names`` maps collection code → full name for the identifier band (#56).
+    ``borders`` maps ``"data"``/``"determination"``/``"identifier"`` → ``"black"``
+    | ``"none"`` (AppConfig.label_border_*); default black."""
+    return HTML(string=_grouped_html(groups, printed_at, names, borders)).write_pdf()
 
 

@@ -15,7 +15,7 @@ from app.services.labels import (
     DeterminationLabel, DataLabel,
     _det_line1, _det_name_html, _det_line3, _data_line2, _fits_one_line,
     _grouped_html,
-    determination_sheet, data_sheet, grouped_sheet, LabelGroup, SpecimenLabels,
+    grouped_sheet, LabelGroup, SpecimenLabels,
 )
 
 
@@ -150,16 +150,18 @@ def test_long_name_text_is_preserved():
         assert token in h
 
 
-@pytest.mark.parametrize("sheet_fn,labels", [
-    (determination_sheet, [DeterminationLabel(genus="Aaaaaaaaaaaa", specific_epithet="bbbbbbbbbbbb",
-        authorship="(Wxxxxxxxx & Yyyyyyyy, 2019) nec Zzzzzzzz",
-        determiner="Verylongsingletokensurnameindeed", year="2025")]),
-    (data_sheet, [DataLabel(country="United Kingdom", country_code="GB",
-        locality="A very long locality string that will certainly wrap several times over",
-        recorded_by="John Doe", event_date="2025-06-14")]),
-])
-def test_pathological_labels_render_without_error(sheet_fn, labels):
-    pdf = sheet_fn(labels)
+def test_pathological_labels_render_without_error():
+    # Pathologically long data + determination content must still render — they now
+    # render only as bands inside the grouped queue sheet.
+    specs = [SpecimenLabels(
+        data=DataLabel(country="United Kingdom", country_code="GB",
+            locality="A very long locality string that will certainly wrap several times over",
+            recorded_by="John Doe", event_date="2025-06-14"),
+        determination=DeterminationLabel(genus="Aaaaaaaaaaaa", specific_epithet="bbbbbbbbbbbb",
+            authorship="(Wxxxxxxxx & Yyyyyyyy, 2019) nec Zzzzzzzz",
+            determiner="Verylongsingletokensurnameindeed", year="2025"),
+        id_code="JJPRC-00001")]
+    pdf = grouped_sheet([LabelGroup(source="Mounting Session", specimens=specs)], "2026-06-15")
     assert pdf[:4] == b"%PDF" and len(pdf) > 1000
 
 
@@ -240,3 +242,59 @@ def test_event_preview_includes_db_id():
     ev = CollectingEvent(locality="Kramerplateau", event_date="2025-06-14")
     ev.id = 42
     assert "#42" in format_event_preview_html(ev)
+
+
+# ---------------------------------------------------------------------------
+# Identifier redesign + per-type borders + touching layout (2026-07-07)
+# ---------------------------------------------------------------------------
+from app.services.labels import (  # noqa: E402
+    _id_label_inner, _border_rule, _grouped_css,
+)
+
+
+def test_identifier_splits_prefix_over_number():
+    """The code prints as a small collection prefix line (with its hyphen, since the
+    DB codes are 'JJPC-00304') over a big auto-sized number — not one inline string."""
+    html = _id_label_inner("JJPC-00304", "Jakob Jilg Private Collection")
+    assert '<div class="id-prefix">JJPC-</div>' in html   # hyphen kept
+    assert '<div class="id-number" style="font-size:' in html and ">00304</div>" in html
+    assert "Jakob Jilg Private Collection" in html       # tiny full-name line kept
+    assert "JJPC-00304" not in html                       # not one inline string
+
+
+def test_identifier_number_autosizes_down_for_long_codes():
+    """A 6+ digit number shrinks below the 4–5 digit cap so it never overflows."""
+    from app.services.labels import _id_number_font_pt
+    assert _id_number_font_pt("00304") == _id_number_font_pt("42931")   # 5-digit at cap
+    assert _id_number_font_pt("100000") < _id_number_font_pt("00304")   # 6-digit smaller
+    assert _id_number_font_pt("1234567") < _id_number_font_pt("100000") # 7-digit smaller still
+
+
+def test_identifier_legacy_code_without_hyphen():
+    """A hyphen-less legacy code has no prefix line; the whole code is the number."""
+    html = _id_label_inner("abcd", "")
+    assert 'id-prefix' not in html
+    assert 'class="id-number"' in html and ">abcd</div>" in html
+
+
+def test_border_rule_choices():
+    assert _border_rule("black") == "0.1mm solid #000"
+    assert _border_rule("none") == "none"
+    assert _border_rule("anything-else") == "none"
+
+
+def test_grouped_css_threads_per_type_borders():
+    css = _grouped_css({"data": "none", "determination": "black", "identifier": "black"})
+    # data band → no border; det + id bands → solid black.
+    assert ".lbl-data {" in css and "border: none;" in css
+    assert "0.1mm solid #000" in css                     # det/id borders present
+    # labels within a group are separated by a small gap (each its own border),
+    # small enough for one cut per edge — not touching (bordered labels need space).
+    assert "border-collapse: separate;" in css
+    assert "border-spacing:" in css
+
+
+def test_grouped_css_default_is_black_everywhere():
+    css = _grouped_css(None)
+    assert "border: none;" not in css
+    assert css.count("0.1mm solid #000") >= 3            # all three bands

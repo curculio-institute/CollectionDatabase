@@ -34,7 +34,7 @@ import app.services.person_defaults as pd_svc
 import app.services.events as ev_svc
 import app.services.db_safety as db_safety
 from app.services.label_text import format_event_preview_html
-from app.models import CollectionObject, CollectingEvent, TaxonDetermination, LabelCode
+from app.models import CollectionObject, CollectingEvent, TaxonDetermination
 from app.ui.taxon_search import build_taxon_search
 from app.ui.identification_list import build_identification_list
 from app.ui.import_assign import build_import_assign_tab
@@ -2414,7 +2414,6 @@ def index():
                     if _reserved_count_ref[0]:
                         n = sum(b.n_reserved for b in _with_session(id_svc.all_batches_with_reserved))
                         _reserved_count_ref[0].set_text(f"{n} staged")
-                    _refresh_batch_sel()
                 _refreshers["batch_stats"] = _refresh_batch_stats
 
                 # ── Mode A: identifier-only labels ───────────────────────
@@ -2437,15 +2436,6 @@ def index():
                     with ui.row().classes("mt-4 gap-3 items-end"):
                         gen_btn = ui.button("Generate", icon="queue")
 
-                    def _refresh_batch_sel():
-                        batches = _with_session(id_svc.batches_with_reserved)
-                        batch_sel.options = {
-                            b.batch_id: f"{b.created_at[:16].replace('T', '  ')}  "
-                                        f"({b.n_reserved} of {b.n_total} staged)"
-                            for b in batches
-                        }
-                        batch_sel.update()
-
                     def _generate_id_labels():
                         n = int(count_input.value or 1)
                         with _sf() as session:
@@ -2459,16 +2449,12 @@ def index():
                                         "to choose one.", type="negative")
                                     return
                                 coll_code = _default_repo.collection_code
-                                batch_id, codes = id_svc.reserve_sequential_codes(session, coll_code, n)
-                                # One print group for this reservation → prints
-                                # under a "New identifiers" header on the sheet.
-                                group_id = pq_svc.next_print_group_id(session)
-                                for lc in session.query(LabelCode).filter(LabelCode.batch_id == batch_id).all():
-                                    pq_svc.enqueue_identifier(
-                                        session, lc.id,
-                                        print_group_id=group_id,
-                                        source=pq_svc.SOURCE_IDENTIFIERS,
-                                    )
+                                batch_id, _ = id_svc.reserve_sequential_codes(session, coll_code, n)
+                                # Enqueue the freshly reserved batch through the one
+                                # shared seam (dedup + "New identifiers" group) — the
+                                # same path as "Add to print queue" for an existing
+                                # batch. Right after reserve the dedup is a no-op.
+                                pq_svc.requeue_batch_identifiers(session, batch_id)
                         # Queue-only: printing happens solely via the Print queue
                         # tab. Emitting a PDF here too risked a double print (print
                         # now + print the queue later = duplicate identifier labels).
@@ -2477,34 +2463,6 @@ def index():
                         _refresh_queue()
 
                     gen_btn.on_click(_generate_id_labels)
-
-                    ui.separator().classes("my-3")
-                    ui.label("Reprint a batch").classes("text-sm font-medium")
-                    with ui.row().classes("w-full gap-3 items-end"):
-                        batch_sel = ui.select(
-                            options={},
-                            label="Select batch…",
-                            clearable=True,
-                        ).classes("flex-1")
-                        reprint_btn = ui.button("Reprint", icon="print").props("flat")
-
-                    def _reprint_batch():
-                        bid = batch_sel.value
-                        if not bid:
-                            ui.notify("Select a batch first.", type="warning")
-                            return
-                        codes = _with_session(lambda s: id_svc.codes_for_batch(s, bid))
-                        if not codes:
-                            ui.notify("No reserved codes left in this batch.", type="warning")
-                            return
-                        names = _with_session(repo_svc.name_map)
-                        pdf = lbl_svc.identifier_sheet(codes, names)
-                        ui.download(pdf, filename=f"identifiers_reprint_batch{bid}.pdf",
-                                    media_type="application/pdf")
-                        id_status.set_text(f"✓ Reprinted {len(codes)} codes from batch {bid}")
-
-                    reprint_btn.on_click(_reprint_batch)
-                    _refresh_batch_sel()
 
                 # ── Reserved codes viewer ────────────────────────────────
                 with ui.card().classes("w-full shadow-sm"):
@@ -2718,6 +2676,30 @@ def index():
 
             ui.separator().classes("my-3")
 
+            # ── Printed-label borders (per type) ──────────────────────────
+            ui.label("Printed-label borders").classes("text-sm font-medium mb-1")
+            ui.label(
+                "A thin black cut-guide line around each label, or none. Set per "
+                "label type. Applies to the Labels-tab batch sheet and the print queue."
+            ).classes("text-xs mb-2").style("color:var(--tp-base-soft)")
+            _cfg_lb = get_config()
+            _border_opts = {"black": "Black", "none": "None"}
+            with ui.row().classes("gap-4 items-center flex-wrap"):
+                with ui.column().classes("gap-0"):
+                    ui.label("Data").classes("text-xs").style("color:var(--tp-base-soft)")
+                    label_border_data_tog = ui.toggle(
+                        _border_opts, value=_cfg_lb.label_border_data).props("no-caps dense")
+                with ui.column().classes("gap-0"):
+                    ui.label("Determination").classes("text-xs").style("color:var(--tp-base-soft)")
+                    label_border_det_tog = ui.toggle(
+                        _border_opts, value=_cfg_lb.label_border_determination).props("no-caps dense")
+                with ui.column().classes("gap-0"):
+                    ui.label("Identifier").classes("text-xs").style("color:var(--tp-base-soft)")
+                    label_border_id_tog = ui.toggle(
+                        _border_opts, value=_cfg_lb.label_border_identifier).props("no-caps dense")
+
+            ui.separator().classes("my-3")
+
             # ── Default names ─────────────────────────────────────────────
             ui.label("Default names").classes("text-sm font-medium mb-1")
             ui.label(
@@ -2784,6 +2766,9 @@ def index():
                 cfg.map_default_layer     = map_layer_sel.value or "street"
                 cfg.digitize_layout       = digitize_layout_toggle.value or "normal"
                 cfg.default_license       = default_license_sel.value or ""
+                cfg.label_border_data          = label_border_data_tog.value or "black"
+                cfg.label_border_determination = label_border_det_tog.value or "black"
+                cfg.label_border_identifier    = label_border_id_tog.value or "black"
                 with _sf() as _s:
                     with _s.begin():
                         # The default collection is a flag on the repository vocab

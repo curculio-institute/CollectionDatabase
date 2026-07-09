@@ -57,6 +57,13 @@ class AppConfig:
     # the name is obscured. Confidential specimens/events are dropped entirely.
     confidential_person_label: str = "Collector obscured (Privacy Policy)"
 
+    # Printed-label borders, per label type. "black" → a thin solid cut-guide line
+    # around each label; "none" → no border. Independent per type so the user can,
+    # e.g., border identifier labels but not data labels. See labels._border_rule.
+    label_border_data: str = "black"
+    label_border_determination: str = "black"
+    label_border_identifier: str = "black"
+
 
 def printed_pdf_dir() -> Path:
     """Resolved archival folder for printed label PDFs (created if missing)."""
