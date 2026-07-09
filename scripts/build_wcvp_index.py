@@ -18,28 +18,19 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-import httpx
 
 from app import config
 from app.services import wcvp
 
 
-def download(url: str, dest: Path) -> Path:
-    """Stream the archive to `dest`, reporting progress on a single line."""
-    with httpx.stream("GET", url, follow_redirects=True, timeout=60.0) as r:
-        r.raise_for_status()
-        total = int(r.headers.get("content-length", 0))
-        done = 0
-        with dest.open("wb") as fh:
-            for chunk in r.iter_bytes(chunk_size=1 << 20):
-                fh.write(chunk)
-                done += len(chunk)
-                if total:
-                    pct = 100 * done / total
-                    print(f"\r  downloading… {done/1e6:6.1f} / {total/1e6:.1f} MB ({pct:4.1f}%)",
-                          end="", flush=True)
-        print()
-    return dest
+def _progress(phase: str, frac):
+    """One-line CLI progress, matching what the Settings card shows."""
+    if phase == "download":
+        bar = f"{100 * frac:4.1f}%" if frac is not None else "…"
+        print(f"\r  downloading… {bar}", end="", flush=True)
+    else:
+        print("\r  downloading… done   ")
+        print("  building index…")
 
 
 def main() -> int:
@@ -66,7 +57,7 @@ def main() -> int:
         tmpdir = tempfile.TemporaryDirectory()
         target = Path(tmpdir.name) / "wcvp_dwca.zip"
         print(f"Source: {args.url}")
-        archive = download(args.url, target)
+        archive = wcvp.download_archive(target, args.url, progress=_progress)
         if args.keep_archive:
             kept = out.parent / "wcvp_dwca.zip"
             kept.parent.mkdir(parents=True, exist_ok=True)

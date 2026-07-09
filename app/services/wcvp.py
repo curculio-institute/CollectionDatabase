@@ -623,3 +623,54 @@ def latest_release(url: str = WCVP_DWCA_URL, *, timeout: float = 20.0) -> Archiv
                   follow_redirects=True, timeout=timeout)
     r.raise_for_status()
     return meta_from_zip_prefix(r.content)
+
+
+# ---------------------------------------------------------------------------
+# Install — download the archive and build the index in one call
+# ---------------------------------------------------------------------------
+#
+# Shared by scripts/build_wcvp_index.py and the Settings card, so the UI and the CLI
+# cannot drift. The index lives beside the collection it is used with (config.wcvp_db_path,
+# i.e. inside data/), and the user should never have to move a file by hand to get it there.
+
+ProgressFn = "Callable[[str, float | None], None]"   # (phase, fraction 0..1 or None)
+
+
+def download_archive(dest: Path, url: str = WCVP_DWCA_URL, *,
+                     progress=None, timeout: float = 60.0) -> Path:
+    """Stream the archive to `dest`, reporting fractional progress if asked."""
+    import httpx
+
+    with httpx.stream("GET", url, follow_redirects=True, timeout=timeout) as r:
+        r.raise_for_status()
+        total = int(r.headers.get("content-length", 0))
+        done = 0
+        with dest.open("wb") as fh:
+            for chunk in r.iter_bytes(chunk_size=1 << 20):
+                fh.write(chunk)
+                done += len(chunk)
+                if progress:
+                    progress("download", (done / total) if total else None)
+    return dest
+
+
+def install(db_path: Path | None = None, *, url: str = WCVP_DWCA_URL,
+            progress=None) -> BuildReport:
+    """Download the archive to a temp file, build the index, discard the archive.
+
+    The build writes to `<db_path>.building` and atomically replaces the target, so an
+    existing index survives a failed download or a corrupt archive untouched.
+    """
+    import tempfile
+
+    from app import config
+    db_path = db_path or config.wcvp_db_path()
+
+    with tempfile.TemporaryDirectory() as tmp:
+        archive = Path(tmp) / "wcvp_dwca.zip"
+        if progress:
+            progress("download", 0.0)
+        download_archive(archive, url, progress=progress)
+        if progress:
+            progress("build", None)
+        return build_index(archive, db_path)

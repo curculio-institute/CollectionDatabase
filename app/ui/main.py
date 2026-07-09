@@ -2611,10 +2611,10 @@ def index():
                     db = wcvp_svc.open_index()
                 except wcvp_svc.IndexMissing:
                     _wcvp_status.set_text(
-                        "Not installed — plant search is unavailable. Build it with:  "
-                        "python scripts/build_wcvp_index.py"
+                        "Not installed — plant search is unavailable."
                     )
                     _wcvp_status.style("color:var(--tp-base-soft)")
+                    _wcvp_install_btn.set_text("Download and install (85 MB)")
                     return None
                 meta = wcvp_svc.index_meta(db)
                 db.close()
@@ -2623,7 +2623,69 @@ def index():
                     f"{meta.get('license', '')}"
                 )
                 _wcvp_status.style("color:var(--tp-base)")
+                _wcvp_install_btn.set_text("Re-download and rebuild")
                 return meta.get("version")
+
+            async def _wcvp_install() -> None:
+                """Fetch Kew's archive and build the index into this collection's data folder.
+
+                The index lives beside the collection it serves, so each data folder needs its
+                own — and the user must never have to move a file or run a script to get one.
+                build_index() writes to a temp file and atomically replaces the target, so a
+                failed download or a corrupt archive leaves an existing index untouched.
+                """
+                _wcvp_install_btn.disable()
+                _wcvp_check_btn.disable()
+
+                # Progress is written from a worker thread; the UI reads it on a timer. Never
+                # touch UI elements from the thread itself.
+                state = {"phase": "download", "frac": 0.0}
+
+                def _progress(phase: str, frac) -> None:
+                    state["phase"], state["frac"] = phase, frac
+
+                def _tick() -> None:
+                    if state["phase"] == "download":
+                        pct = f"{100 * state['frac']:.0f}%" if state["frac"] is not None else "…"
+                        _wcvp_remote.set_text(f"Downloading Kew's archive… {pct}")
+                    else:
+                        _wcvp_remote.set_text("Building the index… (about 15 seconds)")
+                    _wcvp_remote.style("color:var(--tp-base-soft)")
+
+                timer = ui.timer(0.3, _tick)
+                try:
+                    report = await run.io_bound(
+                        lambda: wcvp_svc.install(progress=_progress)
+                    )
+                except Exception as exc:
+                    _wcvp_remote.set_text(f"Install failed: {exc}")
+                    _wcvp_remote.style("color:var(--tp-danger)")
+                    return
+                finally:
+                    timer.deactivate()
+                    timer.delete()          # per the dialog timer-leak rule
+                    _wcvp_install_btn.enable()
+                    _wcvp_check_btn.enable()
+
+                _wcvp_refresh_installed()
+                _wcvp_remote.set_text(
+                    f"Installed {report.meta.label} — {report.rows:,} names. "
+                    "Plant search is available on the next page load."
+                )
+                _wcvp_remote.style("color:var(--tp-base-soft)")
+
+            with ui.row().classes("gap-2 mt-1"):
+                _wcvp_install_btn = (
+                    ui.button("Download and install (85 MB)", on_click=_wcvp_install)
+                    .props("flat dense no-caps size=sm")
+                    .tooltip("Downloads Kew's archive into this collection's data folder "
+                             "and builds the index (~15 s)")
+                )
+                _wcvp_check_btn = (
+                    ui.button("Check for a new release", on_click=lambda: _wcvp_check_update())
+                    .props("flat dense no-caps size=sm")
+                    .tooltip("Downloads ~32 KB, not the 85 MB archive")
+                )
 
             _wcvp_refresh_installed()
 
@@ -2647,14 +2709,10 @@ def index():
                     _wcvp_remote.set_text(f"Up to date — Kew is serving {meta.label}.")
                 else:
                     _wcvp_remote.set_text(
-                        f"A newer release is available: {meta.label}. Rebuild with:  "
-                        "python scripts/build_wcvp_index.py"
+                        f"A newer release is available: {meta.label} — "
+                        "press “Re-download and rebuild”."
                     )
                 _wcvp_remote.style("color:var(--tp-base-soft)")
-
-            ui.button("Check for a new release", on_click=_wcvp_check_update) \
-                .props("flat dense no-caps size=sm").classes("mt-1") \
-                .tooltip("Downloads ~32 KB, not the 85 MB archive")
 
             ui.separator().classes("my-3")
 
