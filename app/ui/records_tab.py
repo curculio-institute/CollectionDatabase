@@ -335,18 +335,31 @@ def build_records_tab(session_factory, *, on_saved: callable | None = None) -> N
         # catalog_number is immutable (shown read-only in the header); collectionCode
         # is editable (gifting). Remaining fields are seeded from the DB snapshot.
         # Widgets are unpacked into locals so the save path references them unchanged.
+        # The specimen's life-stage history and resource identifiers are STAGED like the
+        # identifications: the handles are kept so "Save changes" can commit them in the
+        # same transaction. (Media is still bound — see C2.)
+        _sub: dict = {}
+
+        def _build_spec_footer():
+            _sub["ls"] = build_life_stage_button(
+                session_factory, target_id_getter=lambda: co_id, deferred=True)
+            _sub["ext"] = build_external_id_button(
+                session_factory, target_kind="collection_object",
+                target_id_getter=lambda: co_id,
+                tooltip="Specimen resource identifiers", deferred=True)
+            return (
+                _sub["ls"]["button"],
+                _sub["ext"]["button"],
+                _media_btn(session_factory, target_kind="collection_object",
+                           target_id=co_id, tooltip="Specimen media"),
+            )
+
         spec = build_specimen_form(
             session_factory,
             identifier_policy="edit",
             initial=co_snap,
             identity_label=f"#{co_id}  {co_snap['catalog_number']}",
-            footer_slot=lambda: (
-                _ls_btn(session_factory, target_id=co_id),
-                _ext_btn(session_factory, target_kind="collection_object",
-                         target_id=co_id, tooltip="Specimen resource identifiers"),
-                _media_btn(session_factory, target_kind="collection_object",
-                           target_id=co_id, tooltip="Specimen media"),
-            ),
+            footer_slot=lambda: _build_spec_footer(),
         )
         count_in     = spec["count_in"]
         prep_field   = spec["prep_field"]
@@ -613,6 +626,8 @@ def build_records_tab(session_factory, *, on_saved: callable | None = None) -> N
                         # card saves atomically or not at all.
                         id_state["commit"](s)
                         _assoc_commit(s)
+                        _sub["ls"]["commit"](s, co_id)
+                        _sub["ext"]["commit"](s, co_id)
                         ev_fields = _collect_ev_fields()
                         # Only write the shared event if the user unlocked it; in
                         # view mode this is a specimen-only save (the event — and
@@ -670,7 +685,9 @@ def build_records_tab(session_factory, *, on_saved: callable | None = None) -> N
         # Staged identifications count as unsaved changes too — the whole point of #54.
         _dirty["fn"] = lambda: (_current_values() != _baseline
                                 or id_state["has_changes"]()
-                                or _assoc_has_changes())
+                                or _assoc_has_changes()
+                                or _sub["ls"]["has_changes"]()
+                                or _sub["ext"]["has_changes"]())
 
     # ── Event form ─────────────────────────────────────────────────────────────
     def _build_event_form(ev_id, n, cos, ev_snap):

@@ -25,8 +25,13 @@ def build_life_stage_button(
     staged_store: Optional[list] = None,
     on_change: Optional[Callable[[], None]] = None,
     tooltip: str = "Rearing / life-stage history",
+    deferred: bool = False,
 ) -> dict:
+    """`deferred` (Records): the specimen exists, but adds/deletes are staged until the
+    card's Save calls commit(session, target_id)."""
     staged_items: list[dict] = staged_store if staged_store is not None else []
+    _pending_delete: list[int] = []
+    _pending_add: list[dict] = []
 
     def _target_id() -> Optional[int]:
         return target_id_getter() if target_id_getter else None
@@ -34,11 +39,7 @@ def build_life_stage_button(
     def _count() -> int:
         if staged:
             return len(staged_items)
-        tid = _target_id()
-        if tid is None:
-            return 0
-        with session_factory() as s:
-            return ls_svc.count_life_stages(s, tid)
+        return len(_entries())
 
     btn = ui.button(icon="timeline", on_click=lambda: _open()).props("flat dense round") \
         .tooltip(tooltip)
@@ -59,9 +60,14 @@ def build_life_stage_button(
         if tid is None:
             return []
         with session_factory() as s:
-            return [{"key": r.id, "life_stage": r.life_stage,
+            rows = [{"key": r.id, "life_stage": r.life_stage,
                      "basis_of_record": r.basis_of_record, "event_date": r.event_date or ""}
                     for r in ls_svc.list_life_stages(s, tid)]
+        if not deferred:
+            return rows
+        rows = [r for r in rows if r["key"] not in _pending_delete]
+        rows += [{"key": ("new", i), **it} for i, it in enumerate(_pending_add)]
+        return rows
 
     def _add(life_stage: str, basis: str, event_date: str):
         if not (life_stage or "").strip():
@@ -69,6 +75,9 @@ def build_life_stage_button(
             return
         if staged:
             staged_items.append({"life_stage": life_stage, "basis_of_record": basis,
+                                 "event_date": event_date or ""})
+        elif deferred:
+            _pending_add.append({"life_stage": life_stage, "basis_of_record": basis,
                                  "event_date": event_date or ""})
         else:
             tid = _target_id()
@@ -87,6 +96,12 @@ def build_life_stage_button(
     def _delete(e: dict):
         if staged:
             staged_items.pop(e["key"])
+        elif deferred:
+            key = e["key"]
+            if isinstance(key, tuple):
+                _pending_add.pop(key[1])
+            else:
+                _pending_delete.append(key)
         else:
             with session_factory() as s:
                 with s.begin():
@@ -152,10 +167,22 @@ def build_life_stage_button(
         refresh()
 
     def commit(session, target_id: int):
-        for it in staged_items:
+        """staged (Digitize): create held rows on the new specimen.
+        deferred (Records): apply staged deletes + adds to the existing specimen."""
+        items = staged_items
+        if deferred:
+            for rid in _pending_delete:
+                ls_svc.delete_life_stage(session, rid)
+            _pending_delete.clear()
+            items = list(_pending_add)
+            _pending_add.clear()
+        for it in items:
             ls_svc.add_life_stage(session, collection_object_id=target_id,
                                   life_stage=it["life_stage"], basis_of_record=it["basis_of_record"],
                                   event_date=it["event_date"] or None)
+
+    def has_changes() -> bool:
+        return bool(_pending_add or _pending_delete)
 
     def clear():
         staged_items.clear()
@@ -163,6 +190,7 @@ def build_life_stage_button(
 
     refresh()
     return {
+        "has_changes": has_changes,
         "button": btn, "refresh": refresh,
         "has_content": (lambda: len(staged_items) > 0) if staged else (lambda: _count() > 0),
         "commit": commit, "clear": clear, "staged_items": staged_items,
