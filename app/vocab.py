@@ -31,6 +31,27 @@ SEX_SYMBOLS = {"male": "♂", "female": "♀", "gynandromorph": "⚥"}
 
 LIFE_STAGE_OPTIONS = ["adult", "larva", "pupa", "egg", ""]
 
+# Open-nomenclature qualifiers for a determination (dwc:identificationQualifier). A CLOSED
+# standard set — hard-enforced by a DB CHECK (migration 0058), not an editable vocab — because
+# each carries a specific taxonomic meaning that must not drift:
+#   cf.    confer — "compare with"; tentative, resembles the named species
+#   aff.   affinis — has affinity to but is distinct from it
+#   nr.    "near" — used like aff.
+#   agg.   aggregate — a named species-aggregate (e.g. "Rubus fruticosus agg.")
+#   gr.    of the species group
+#   ?      identification uncertain
+#   sp.    species undetermined (a genus-level determination)
+#   spp.   several/multiple species
+#   indet. indeterminate — cannot be determined further
+# "" (blank) = a definite identification, stored as NULL. cf. is first (fast one-key add);
+# the blank stays last per the UI convention. render_identification inserts the value verbatim
+# after the genus-group, so this list is the ONLY place the semantics live.
+IDENTIFICATION_QUALIFIER_OPTIONS = [
+    "cf.", "aff.", "nr.", "agg.", "gr.", "?", "sp.", "spp.", "indet.", "",
+]
+# The non-blank values, for the DB CHECK + import validation (blank is stored as NULL).
+IDENTIFICATION_QUALIFIERS = tuple(q for q in IDENTIFICATION_QUALIFIER_OPTIONS if q)
+
 # Must match ck_co_basis_of_record (migration 0019): exactly these three values.
 # basisOfRecord is NOT NULL, so no blank option. (TaxonWorks' DwC import accepts
 # only PreservedSpecimen/FossilSpecimen — HumanObservation is local-only, see

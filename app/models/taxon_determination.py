@@ -3,6 +3,13 @@ from typing import Optional, TYPE_CHECKING
 from sqlalchemy import Integer, String, ForeignKey, CheckConstraint, Index, text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from .base import Base, TimestampMixin
+from app.vocab import IDENTIFICATION_QUALIFIERS
+
+# NULL (definite ID) or one of the closed open-nomenclature set. Migration 0058.
+_QUAL_CHECK_SQL = (
+    '"dwc:identificationQualifier" IS NULL OR "dwc:identificationQualifier" IN ('
+    + ", ".join(f"'{q}'" for q in IDENTIFICATION_QUALIFIERS) + ")"
+)
 
 if TYPE_CHECKING:
     from .person import Person
@@ -33,6 +40,7 @@ class TaxonDetermination(Base, TimestampMixin):
 
     __table_args__ = (
         CheckConstraint("is_current IN (0, 1)", name="ck_td_is_current_bool"),
+        CheckConstraint(_QUAL_CHECK_SQL, name="ck_td_identification_qualifier"),
         # At most one current determination per specimen (#74). Partial unique
         # index so the is_current=0 history rows stay unconstrained.
         Index(

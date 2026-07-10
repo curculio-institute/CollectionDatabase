@@ -31,7 +31,8 @@ from app.ui.type_status_field import build_type_status_field
 from app.models import Taxon
 import app.services.person_defaults as pd_svc
 # Controlled vocabulary — single source of truth (app/vocab.py).
-from app.vocab import SEX_OPTIONS as _SEX_OPTIONS, SEX_SYMBOLS as _SEX_SYMBOL
+from app.vocab import (SEX_OPTIONS as _SEX_OPTIONS, SEX_SYMBOLS as _SEX_SYMBOL,
+                       IDENTIFICATION_QUALIFIER_OPTIONS as _QUAL_OPTIONS)
 
 _TYPE_STATUS_OPTIONS = [
     "Holotype", "Paratype", "Lectotype", "Paralectotype", "Neotype", "Syntype",
@@ -44,6 +45,7 @@ from app.services.taxa import (
 from app.ui.taxon_search import build_taxon_search, _local_item_html
 from app.ui.date_input import AUTO_CHANGED_CSS, attach_date_validation, append_year_pin
 from app.ui.person_field import build_person_field
+from app.ui.choice_field import build_choice_field
 import app.services.specimens as sp_svc
 
 
@@ -356,11 +358,14 @@ def build_identification_list(
                         initial_value=d.get("type_status") or None,
                         classes="col-span-1",
                     )
-                    e_qual = ui.input(
-                        "qualifier",
-                        value=d["identification_qualifier"] or "",
-                        placeholder="cf. / aff.",
-                    ).classes("col-span-1")
+                    # Closed open-nomenclature set (DB CHECK), via the person-field custom
+                    # dropdown: opens on focus with cf. (first) highlighted, so one Enter adds
+                    # it. Cleared = definite ID. get_value() is the qualifier string.
+                    e_qual = build_choice_field(
+                        _QUAL_OPTIONS, "qualifier",
+                        initial_value=d["identification_qualifier"] or None,
+                        classes="col-span-1")
+
                     e_rem = ui.input(
                         "remarks",
                         value=d["identification_remarks"] or "",
@@ -386,7 +391,7 @@ def build_identification_list(
                                         type_status=ts["get_value"]() or None,
                                         identified_by_id=idby_id,
                                         date_identified=dt.value or None,
-                                        identification_qualifier=ql.value or None,
+                                        identification_qualifier=ql["get_value"]() or None,
                                         identification_remarks=rm.value or None,
                                     )
                                     if new_tid != det["taxon_id"]:
@@ -408,7 +413,7 @@ def build_identification_list(
                             "identified_by":    idby["get_value"](),
                             "identified_by_id": None,
                             "date_identified":          dt.value or None,
-                            "identification_qualifier": ql.value or None,
+                            "identification_qualifier": ql["get_value"]() or None,
                             "identification_remarks":   rm.value or None,
                         })
                         if new_tid != _dets[ix]["taxon_id"]:
@@ -416,7 +421,7 @@ def build_identification_list(
                         # Re-render the name: the qualifier is shown inline. (Live
                         # mode re-renders automatically via _reload_from_db.)
                         _dets[ix]["taxon_label"] = render_identification(
-                            _dets[ix].get("verbatim_identification") or "", ql.value or None
+                            _dets[ix].get("verbatim_identification") or "", ql["get_value"]()
                         )
                     _refresh()
 
@@ -467,7 +472,8 @@ def build_identification_list(
         attach_date_validation(add_dtid, no_future=True, allow_interval=True)
         add_sex  = ui.select(_SEX_OPTIONS, label="sex").classes("w-28")
         add_type = build_type_status_field(classes="w-36")
-        add_qual = ui.input("qualifier", placeholder="cf. / aff.").classes("w-28")
+        add_qual = build_choice_field(_QUAL_OPTIONS, "qualifier", classes="w-28")
+
         add_rem  = ui.input("remarks").classes("flex-1 min-w-40")
 
     def _do_add(_=None):
@@ -496,7 +502,7 @@ def build_identification_list(
                             type_status=add_type["get_value"]() or None,
                             identified_by_id=idby_id,
                             date_identified=add_dtid.value or None,
-                            identification_qualifier=add_qual.value or None,
+                            identification_qualifier=add_qual["get_value"]() or None,
                             identification_remarks=add_rem.value or None,
                             verbatim_identification=verbatim,
                             is_current=0,
@@ -521,7 +527,7 @@ def build_identification_list(
                     verbatim = compose_scientific_name(s, t)  # frozen at add time
                 else:
                     is_syn, acc_label, verbatim = False, None, f"taxon #{new_tid}"
-            t_label = render_identification(verbatim, add_qual.value or None)
+            t_label = render_identification(verbatim, add_qual["get_value"]())
 
             # No person is created here: a determiner typed for a specimen that is never
             # saved would linger in the People list (#60). The name is carried; the save
@@ -539,7 +545,7 @@ def build_identification_list(
                 "identified_by":            add_idby_state["get_value"](),
                 "identified_by_id":         None,
                 "date_identified":          add_dtid.value or None,
-                "identification_qualifier": add_qual.value or None,
+                "identification_qualifier": add_qual["get_value"]() or None,
                 "identification_remarks":   add_rem.value or None,
                 "is_current":               False,
             })
@@ -552,7 +558,7 @@ def build_identification_list(
         add_dtid.value = ""
         add_sex.value  = ""
         add_type["set_value"](None)
-        add_qual.value = ""
+        add_qual["set_value"](None)
         add_rem.value  = ""
         _refresh()
 
@@ -578,7 +584,7 @@ def build_identification_list(
         add_dtid.value = ""
         add_sex.value  = ""
         add_type["set_value"](None)
-        add_qual.value = ""
+        add_qual["set_value"](None)
         add_rem.value  = ""
         _refresh()
 
@@ -593,7 +599,7 @@ def build_identification_list(
         return bool(_dets) or bool(add_taxon_state["taxon_id"]) \
             or bool(add_idby_state["get_value"]()) or bool(add_dtid.value) \
             or bool(add_sex.value) or bool(add_type["get_value"]()) \
-            or bool(add_qual.value) or bool(add_rem.value)
+            or bool(add_qual["get_value"]()) or bool(add_rem.value)
 
     def _state_has_changes() -> bool:
         """Staged mode: has anything been added, edited, deleted or re-flagged?"""
