@@ -82,6 +82,56 @@ def _pick_locality(props_list: list[dict]) -> str:
     return best
 
 
+# --- Administrative hierarchy from Overpass is_in -------------------------------
+# The state is the relation carrying an ISO3166-2 tag, NOT a fixed admin_level:
+# DE-BY sits at L4, GR-J at L5, CN-YN at L4. The country carries ISO3166-1, which
+# also yields dwc:countryCode from the data (never a hand-rolled dict).
+#
+# Below the first-order subdivision there is no ISO tag, so these two levels are a
+# HEURISTIC, verified across DE/GR/KZ/CH/FR/CN only — see CLAUDE.md "Open (do not
+# guess)". They are left empty rather than guessed when the level is absent.
+_COUNTY_LEVEL = 6
+_MUNI_LEVELS = (7, 8)      # prefer L7 (GR Δήμος) over L8 (its municipal unit)
+_REGION_LEVEL = 5          # Regierungsbezirk / prefecture tier — only if not the state
+
+
+def _admin_name(row: dict) -> str:
+    """name:en where OSM has it (country/state everywhere tested), else the local name."""
+    return row.get("en") or row.get("nm") or ""
+
+
+def _admin_level(row: dict) -> int | None:
+    try:
+        return int(row.get("lvl") or "")
+    except ValueError:
+        return None
+
+
+def _resolve_hierarchy(adm_rows: list[dict]) -> dict:
+    """Map converted Overpass admin relations onto the collecting-event geography fields."""
+    country = next((r for r in adm_rows if r.get("iso1")), None) \
+        or next((r for r in adm_rows if _admin_level(r) == 2), None)
+    state = next((r for r in adm_rows if r.get("iso2")), None)
+    state_lvl = _admin_level(state) if state else None
+
+    def at(level: int) -> dict | None:
+        if level == state_lvl:
+            return None                      # the state itself is never also a sub-tier
+        return next((r for r in adm_rows if _admin_level(r) == level), None)
+
+    region = at(_REGION_LEVEL)
+    county = at(_COUNTY_LEVEL)
+    muni = next((m for m in (at(lvl) for lvl in _MUNI_LEVELS) if m), None)
+    return {
+        "country":      _admin_name(country) if country else "",
+        "country_code": (country.get("iso1", "") if country else "").upper(),
+        "state":        _admin_name(state) if state else "",
+        "region":       _admin_name(region) if region else "",
+        "county":       _admin_name(county) if county else "",
+        "municipality": _admin_name(muni) if muni else "",
+    }
+
+
 # Cap on nearby point-feature locality candidates (enclosing areas are always shown);
 # keeps the picker a useful shortlist in feature-dense areas, not an exhaustive dump.
 _MAX_LOCALITY_POINTS = 10
@@ -95,6 +145,41 @@ def _haversine_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     dlmb = math.radians(lon2 - lon1)
     a = math.sin(dphi / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dlmb / 2) ** 2
     return 2 * r * math.asin(min(1.0, math.sqrt(a)))
+
+
+# Overpass throttles (429) and sheds load (504) on the public instance often enough that a
+# single transient failure must not cost the user the whole lookup — measured: an is_in for
+# 26.015/101.883 returned 504 once, then answered on the retry. Only these statuses and
+# transport errors are retried; a 400 (bad query) is a bug in us and fails immediately.
+_OVERPASS_URL = "https://overpass-api.de/api/interpreter"
+_OVERPASS_RETRY_STATUS = (429, 502, 503, 504)
+_OVERPASS_BACKOFF_S = (1.0, 3.0)          # attempt 1 → 1 s → attempt 2 → 3 s → attempt 3
+
+
+async def _overpass_post(query: str, *, timeout: float = 30.0) -> list[dict] | None:
+    """POST an Overpass QL query; return its `elements`, or None if it never answered."""
+    for attempt in range(len(_OVERPASS_BACKOFF_S) + 1):
+        try:
+            async with httpx.AsyncClient(timeout=timeout) as cl:
+                r = await cl.post(
+                    _OVERPASS_URL,
+                    data={"data": query},
+                    headers={"User-Agent": "EntomologicalCollection/1.0"},
+                )
+            if r.status_code in _OVERPASS_RETRY_STATUS and attempt < len(_OVERPASS_BACKOFF_S):
+                await asyncio.sleep(_OVERPASS_BACKOFF_S[attempt])
+                continue
+            r.raise_for_status()
+            return r.json().get("elements", [])
+        except (httpx.TransportError, httpx.HTTPStatusError) as ex:
+            retryable = isinstance(ex, httpx.TransportError) or (
+                ex.response.status_code in _OVERPASS_RETRY_STATUS)
+            if not retryable or attempt >= len(_OVERPASS_BACKOFF_S):
+                return None
+            await asyncio.sleep(_OVERPASS_BACKOFF_S[attempt])
+        except Exception:
+            return None
+    return None
 
 
 def build_collecting_event_form(
@@ -265,147 +350,158 @@ def build_collecting_event_form(
     ui.timer(0.3, _inject_coord_paste_js, once=True)
 
     async def _reverse_geocode(lat: float, lon: float) -> dict | None:
-        """Reverse-geocode via Photon (address) + Overpass is_in (enclosing areas).
-        Fills fields as a side effect; returns Photon props or None."""
+        """Fill the geography fields from Overpass is_in (containment) + Photon (nearby names).
+
+        The two services answer different questions and must not be swapped (CLAUDE.md
+        "Geocoding: containment vs proximity"):
+
+        * Overpass ``is_in`` returns the polygons that CONTAIN the point → the whole
+          administrative hierarchy. The state is the relation tagged ``ISO3166-2``, not a
+          fixed admin_level.
+        * Photon ``/reverse`` is a PROXIMITY search: its country/state/county/city describe
+          the NEAREST FEATURE, not the query point, so they are read only as a degraded
+          fallback when Overpass fails. Its features are the locality candidates, filtered
+          to those actually inside the uncertainty circle.
+
+        Returns ``{"photon": props|None}`` — ``None`` only when the lookup truly failed.
+        An empty Photon response is NOT a failure: it means "no named feature nearby"
+        (open sea, steppe, 26.015/101.883), which leaves `locality` blank, not the form.
+        """
         for _b in (_cntry_warn, _code_warn, _state_warn, _county_warn, _muni_warn):
             _b.classes(add="hidden")
         _locality_warn.classes(add="hidden")
 
-        # The 'around' search radius scales with the coordinate uncertainty: a precise
-        # point → just the very nearest features; a vague one → a wider net. Floor keeps
-        # the nearest named feature reachable; cap keeps it sane when uncertainty is huge.
+        # The locality circle scales with the coordinate uncertainty: a precise point → only
+        # the very nearest features; a vague one → a wider net. Floor keeps the nearest named
+        # feature reachable; cap keeps it sane when uncertainty is huge.
         try:
             _unc = float(uncert_in.value or 0)
         except (TypeError, ValueError):
             _unc = 0.0
-        radius_m = int(max(300, min(_unc or 1000, 3000)))
+        circle_m = int(max(300, min(_unc or 1000, 3000)))
 
         async def _photon() -> list[dict]:
+            """Nearby named features with a computed distance (Photon carries no distance)."""
             async with httpx.AsyncClient(timeout=10) as cl:
                 r = await cl.get(
                     "https://photon.komoot.io/reverse",
-                    params={"lat": lat, "lon": lon, "lang": "en", "limit": 15},
+                    # Photon's radius ceiling is ~1.5 km — 3 km and 10 km return the same
+                    # results — so the circle filter below, not this hint, is what binds.
+                    params={"lat": lat, "lon": lon, "lang": "en", "limit": 15,
+                            "radius": circle_m / 1000},
                     headers={"User-Agent": "EntomologicalCollection/1.0"},
                 )
                 r.raise_for_status()
-                return [f["properties"] for f in r.json().get("features", [])]
+                out = []
+                for f in r.json().get("features", []):
+                    props = f["properties"]
+                    geom = (f.get("geometry") or {}).get("coordinates")
+                    props["_dist"] = (_haversine_m(lat, lon, geom[1], geom[0])
+                                      if geom else float("inf"))
+                    out.append(props)
+                return out
 
-        async def _overpass() -> dict:
-            # One query: (1) enclosing admin_level-5 boundary → administrative_region;
-            # (2) enclosing named areas (reserves / forests / islands); (3) nearby named
-            # natural features (peaks / water / caves / OSM localities) by radius — because
-            # Photon only returns buildings/streets here, not meaningful collecting spots.
+        async def _overpass() -> dict | None:
+            """Enclosing admin hierarchy + enclosing named areas/islands. None on failure."""
             q = (
                 "[out:json][timeout:25];"
                 f"is_in({lat},{lon})->.a;"
+                # `is_in` yields AREAS — relation(pivot.a) is required; rel.a[...] silently
+                # matches nothing. `convert` flattens the tags we need (absent → "").
+                "relation(pivot.a)[boundary=administrative][name];"
+                'convert adm ::id=id(), lvl=t["admin_level"], nm=t["name"], en=t["name:en"],'
+                ' iso1=t["ISO3166-1"], iso2=t["ISO3166-2"];'
+                "out;"
                 "("
-                "  relation(pivot.a)[boundary=administrative][admin_level=5][name];"
                 "  way(pivot.a)[name][boundary=protected_area];"
                 "  way(pivot.a)[name][leisure=nature_reserve];"
                 '  way(pivot.a)[name][landuse~"^(forest|wood)$"];'
                 '  way(pivot.a)[name][place~"^(island|islet)$"];'
-                "  relation(pivot.a)[name][boundary~\"^(protected_area|national_park)$\"];"
+                '  relation(pivot.a)[name][boundary~"^(protected_area|national_park)$"];'
                 "  relation(pivot.a)[name][leisure=nature_reserve];"
                 '  relation(pivot.a)[name][landuse~"^(forest|wood)$"];'
                 '  relation(pivot.a)[name][place~"^(island|islet)$"];'
-                ")->.areas;"
-                "("
-                f"  node(around:{radius_m},{lat},{lon})[natural=peak][name];"
-                f"  nwr(around:{radius_m},{lat},{lon})[natural=water][name];"
-                f'  way(around:{radius_m},{lat},{lon})[waterway~"^(river|stream|canal)$"][name];'
-                f"  node(around:{radius_m},{lat},{lon})[place=locality][name];"
-                f'  node(around:{radius_m},{lat},{lon})[natural~"^(spring|cave_entrance|saddle|glacier)$"][name];'
-                ")->.pts;"
-                ".areas out tags;"
-                ".pts out center tags;"
+                ");"
+                "out tags;"
             )
-            out = {"admin_region": "", "islands": [], "candidates": []}
-            try:
-                async with httpx.AsyncClient(timeout=20) as cl:
-                    r = await cl.post(
-                        "https://overpass-api.de/api/interpreter",
-                        data={"data": q},
-                        headers={"User-Agent": "EntomologicalCollection/1.0"},
-                    )
-                    r.raise_for_status()
-                    seen: set[str] = set()
-                    for el in r.json().get("elements", []):
-                        tags = el.get("tags", {})
-                        n = tags.get("name", "")
-                        if not n:
-                            continue
-                        place_val, natural = tags.get("place", ""), tags.get("natural", "")
-                        waterway = tags.get("waterway", "")
-                        if tags.get("admin_level") == "5" and tags.get("boundary") == "administrative":
-                            out["admin_region"] = out["admin_region"] or n
-                            continue
-                        if place_val in ("island", "islet"):
-                            if n not in out["islands"]:
-                                out["islands"].append(n)
-                            continue
-                        if n in seen:
-                            continue
-                        seen.add(n)
-                        # Two groups: "area" = the point is INSIDE it (reserve / forest /
-                        # protected area) → always listed, no distance; "point" = a nearby
-                        # named feature (peak / water / spring / cave / OSM locality) →
-                        # listed with distance, sorted by distance (filled in by the caller).
-                        if natural == "peak":
-                            ele = tags.get("ele")
-                            kind = f"peak {ele} m" if ele else "peak"
-                            group = "point"
-                        elif natural == "water" or waterway in ("river", "stream", "canal"):
-                            kind, group = (waterway or "water"), "point"
-                        elif natural in ("spring", "cave_entrance", "saddle", "glacier"):
-                            kind, group = natural.replace("_entrance", ""), "point"
-                        elif place_val == "locality":
-                            kind, group = "locality", "point"
-                        else:
-                            kind = (tags.get("leisure") or tags.get("boundary")
-                                    or tags.get("landuse") or "area")
-                            group = "area"
-                        c = el.get("center") or {"lat": el.get("lat"), "lon": el.get("lon")}
-                        d = (_haversine_m(lat, lon, c["lat"], c["lon"])
-                             if c.get("lat") is not None else 0.0)
-                        out["candidates"].append({"name": n, "kind": kind, "group": group, "dist": d})
-                    return out
-            except Exception:
-                return out
+            elements = await _overpass_post(q)
+            if elements is None:
+                return None
+            adm_rows, areas, islands, seen = [], [], [], set()
+            for el in elements:
+                tags = el.get("tags", {})
+                if el.get("type") == "adm":          # converted admin relation
+                    adm_rows.append(tags)
+                    continue
+                n = tags.get("name", "")
+                if not n or n in seen:
+                    continue
+                seen.add(n)
+                if tags.get("place") in ("island", "islet"):
+                    islands.append(n)
+                    continue
+                kind = (tags.get("leisure") or tags.get("boundary")
+                        or tags.get("landuse") or "area")
+                areas.append({"name": n, "kind": kind})
+            return {"hier": _resolve_hierarchy(adm_rows),
+                    "areas": areas, "islands": islands}
 
-        try:
-            all_props, overpass = await asyncio.gather(_photon(), _overpass())
-        except Exception as ex:
-            ui.notify(f"Reverse geocoding failed: {ex}", type="negative")
+        # return_exceptions: a Photon failure must not discard the Overpass answer that ran
+        # beside it — re-awaiting _overpass() here would fire a second, identical query and
+        # is how the public instance starts returning 429.
+        _photon_res, _overpass_res = await asyncio.gather(
+            _photon(), _overpass(), return_exceptions=True)
+        all_props = _photon_res if isinstance(_photon_res, list) else []
+        overpass = _overpass_res if isinstance(_overpass_res, dict) else None
+
+        if overpass is None and not all_props:
+            ui.notify("Reverse geocoding failed: no response from Overpass or Photon.",
+                      type="negative")
             return None
 
-        if not all_props:
-            ui.notify("Reverse geocoding returned no results.", type="warning")
-            return None
+        if overpass is not None:
+            hier, areas, islands = overpass["hier"], overpass["areas"], overpass["islands"]
+        else:
+            # Degraded fallback: Photon's hierarchy describes its nearest feature, so it can
+            # name a neighbouring municipality. Loud, because the value may be wrong.
+            p0 = all_props[0]
+            ui.notify("Overpass unavailable — administrative fields taken from the nearest "
+                      "feature and may be off. Please check them.", type="warning")
+            hier = {"country": p0.get("country", ""),
+                    "country_code": p0.get("countrycode", "").upper(),
+                    "state": p0.get("state", ""), "region": "",
+                    "county": p0.get("county", ""),
+                    "municipality": p0.get("city") or p0.get("locality") or ""}
+            areas, islands = [], []
 
-        p = all_props[0]
-        # Enclosing areas (point is inside → no distance, always listed) vs nearby point
-        # features (with distance, sorted by distance, capped to a shortlist).
-        areas  = [c for c in overpass["candidates"] if c["group"] == "area"]
-        points = sorted((c for c in overpass["candidates"] if c["group"] == "point"),
-                        key=lambda x: x["dist"])[:_MAX_LOCALITY_POINTS]
+        # Locality candidates: only features genuinely INSIDE the uncertainty circle. Photon
+        # happily returns a road 2.8 km away when nothing is near (26.015/101.883) — that is
+        # not a collecting locality, and an empty locality is the correct answer there.
+        near = sorted((p for p in all_props if p["_dist"] <= circle_m),
+                      key=lambda p: p["_dist"])[:_MAX_LOCALITY_POINTS]
+        # Best locality = highest-ranked kind inside the circle, nearest breaking the tie;
+        # else an enclosing area; else nothing.
+        ranked = sorted(
+            ((_LOCALITY_KV.get((p.get("osm_key", ""), p.get("osm_value", "")), -1), -p["_dist"], p)
+             for p in near if p.get("name")),
+            key=lambda t: (t[0], t[1]), reverse=True)
+        best = next((p for pri, _, p in ranked if pri >= 0), None)
+
         _st["populating"] = True
-        # country / stateProvince already English (Photon lang=en). administrative_region
-        # (Regierungsbezirk) only exists at OSM admin_level 5 → from Overpass.
-        country_in.value = p.get("country", "")
-        code_in.value    = p.get("countrycode", "").upper()
-        state_in.value   = p.get("state", "")
-        region_in.value  = overpass["admin_region"]
-        county_in.value  = p.get("county", "")
-        muni_in.value    = p.get("city") or p.get("locality") or ""
-        # Photon only returns buildings/streets here, so the best collecting locality is
-        # the NEAREST specific feature (not the broad enclosing area).
-        photon_locality  = _pick_locality(all_props)
-        locality_in.value = (photon_locality
-                             or (points[0]["name"] if points else "")
-                             or (areas[0]["name"] if areas else ""))
-        island_in.value   = overpass["islands"][0] if overpass["islands"] else ""
+        country_in.value  = hier["country"]
+        code_in.value     = hier["country_code"]
+        state_in.value    = hier["state"]
+        region_in.value   = hier["region"]
+        county_in.value   = hier["county"]
+        muni_in.value     = hier["municipality"]
+        locality_in.value = (best["name"] if best else "") or (areas[0]["name"] if areas else "")
+        island_in.value   = islands[0] if islands else ""
         _st["populating"] = False
         _fire_edit()
+
+        points = [{"name": p["name"], "kind": p.get("osm_value") or p.get("osm_key") or "place",
+                   "dist": p["_dist"]}
+                  for p in near if p.get("name")]
 
         # "Also nearby" picker: enclosing areas first (no distance), then nearby features
         # with their distance, click to set locality. De-dup by name.
@@ -421,12 +517,6 @@ def build_collecting_event_form(
             if c["name"] not in _seen_locs:
                 _seen_locs.add(c["name"])
                 _alts.append((f"{c['name']}  ·  {c['kind']}  ·  {_fmt_dist(c['dist'])}", c["name"]))
-        for pr in all_props:
-            name = pr.get("name", "")
-            kv = (pr.get("osm_key", ""), pr.get("osm_value", ""))
-            if kv in _LOCALITY_KV and name and name not in _seen_locs:
-                _seen_locs.add(name)
-                _alts.append((name, name))
         if _alts:
             _locality_items.clear()
             with _locality_items:
@@ -440,10 +530,12 @@ def build_collecting_event_form(
             _locality_tip.update()
             _locality_warn.classes(remove="hidden")
 
-        return p
+        # The boundary check compares Photon perimeter samples; with no Photon centre props
+        # there is nothing to compare against, so the caller skips it rather than guess.
+        return {"photon": all_props[0] if all_props else None}
 
     async def _check_boundary_crossing(
-        lat: float, lon: float, radius_m: float, photon_props: dict,
+        lat: float, lon: float, radius_m: float,
         ok_icons: list | None = None,
     ) -> bool:
         """Warn when the uncertainty circle crosses admin boundaries (samples 4 cardinal points)."""
@@ -458,8 +550,18 @@ def build_collecting_event_form(
                 "locality": _pick_locality(props_list),
             }
 
-        centre = _props_to_snap([photon_props])
-        centre["locality"] = locality_in.value
+        # The centre snapshot is what the form actually shows (Overpass containment), NOT
+        # photon_props — otherwise "keep the centre value" would overwrite a correct field
+        # with Photon's nearest-feature guess. The perimeter samples below are still Photon,
+        # so a crossing warning is advisory only; see CLAUDE.md "Boundary-crossing check".
+        centre = {
+            "country":  country_in.value or "",
+            "code":     code_in.value or "",
+            "state":    state_in.value or "",
+            "county":   county_in.value or "",
+            "muni":     muni_in.value or "",
+            "locality": locality_in.value or "",
+        }
         snapshots: list[dict] = [centre]
 
         perimeter_pts = []
@@ -617,13 +719,15 @@ def build_collecting_event_form(
             for _ok in _geocode_ok_icons:
                 _ok.classes(add="hidden", remove="lookup-ok-fade")
             _locality_warn.classes(add="hidden")
-            p = await _reverse_geocode(lat, lon)
+            res = await _reverse_geocode(lat, lon)
             _lookup_btn.props(remove="loading")
-            if p is None:
+            if res is None:
                 return
             ui.notify("Location fields filled from coordinates.", type="positive")
-            if unc and unc > 0:
-                await _check_boundary_crossing(lat, lon, unc, p, ok_icons=_geocode_ok_icons)
+            p = res["photon"]
+            # No Photon features (open sea, steppe) → no perimeter hierarchies to diff.
+            if unc and unc > 0 and p is not None:
+                await _check_boundary_crossing(lat, lon, unc, ok_icons=_geocode_ok_icons)
             else:
                 for _ok in _geocode_ok_icons:
                     _ok.classes(remove="hidden", add="lookup-ok-fade")
