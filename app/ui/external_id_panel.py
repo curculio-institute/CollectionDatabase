@@ -29,8 +29,15 @@ def build_external_id_button(
     staged_store: Optional[list] = None,
     on_change: Optional[Callable[[], None]] = None,
     tooltip: str = "Resource identifiers",
+    deferred: bool = False,
 ) -> dict:
+    """`deferred` (Records): the record exists, but adds/deletes are staged until the
+    card's Save calls commit(session, target_id). Without it a click wrote immediately,
+    which contradicts the card's single "Save changes" button."""
     staged_items: list[dict] = staged_store if staged_store is not None else []
+    # Deferred bookkeeping: ids of existing rows to delete, and values to create.
+    _pending_delete: list[int] = []
+    _pending_add: list[str] = []
 
     def _target_id() -> Optional[int]:
         return target_id_getter() if target_id_getter else None
@@ -38,11 +45,7 @@ def build_external_id_button(
     def _count() -> int:
         if staged:
             return len(staged_items)
-        tid = _target_id()
-        if tid is None:
-            return 0
-        with session_factory() as s:
-            return ext_svc.count_identifiers(s, target_kind=target_kind, target_id=tid)
+        return len(_entries())
 
     btn = ui.button(icon="link", on_click=lambda: _open()).props("flat dense round") \
         .tooltip(tooltip)
@@ -63,8 +66,13 @@ def build_external_id_button(
         if tid is None:
             return []
         with session_factory() as s:
-            return [{"key": e.id, "value": e.value}
+            rows = [{"key": e.id, "value": e.value}
                     for e in ext_svc.list_identifiers(s, target_kind=target_kind, target_id=tid)]
+        if not deferred:
+            return rows
+        rows = [r for r in rows if r["key"] not in _pending_delete]
+        rows += [{"key": ("new", i), "value": v} for i, v in enumerate(_pending_add)]
+        return rows
 
     def _add(value: str):
         """Add one resource identifier — the user just pastes the URI."""
@@ -74,6 +82,8 @@ def build_external_id_button(
             return
         if staged:
             staged_items.append({"value": value})
+        elif deferred:
+            _pending_add.append(value)          # written by commit(), inside the card's Save
         else:
             tid = _target_id()
             if tid is None:
@@ -90,6 +100,12 @@ def build_external_id_button(
     def _delete(e: dict):
         if staged:
             staged_items.pop(e["key"])
+        elif deferred:
+            key = e["key"]
+            if isinstance(key, tuple):          # an entry added in this session
+                _pending_add.pop(key[1])
+            else:
+                _pending_delete.append(key)     # existing row: deleted by commit()
         else:
             with session_factory() as s:
                 with s.begin():
@@ -151,9 +167,23 @@ def build_external_id_button(
         refresh()
 
     def commit(session, target_id: int):
+        """staged (Digitize): create the held entries on the new record.
+        deferred (Records): apply the staged deletes + adds to the existing record."""
+        if deferred:
+            for eid in _pending_delete:
+                ext_svc.delete_identifier(session, eid)
+            _pending_delete.clear()
+            for value in _pending_add:
+                ext_svc.add_identifier(session, target_kind=target_kind,
+                                       target_id=target_id, value=value)
+            _pending_add.clear()
+            return
         for it in staged_items:
             ext_svc.add_identifier(session, target_kind=target_kind, target_id=target_id,
                                    value=it["value"])
+
+    def has_changes() -> bool:
+        return bool(_pending_add or _pending_delete)
 
     def clear():
         staged_items.clear()
@@ -161,7 +191,7 @@ def build_external_id_button(
 
     refresh()
     return {
-        "button": btn, "refresh": refresh,
+        "button": btn, "refresh": refresh, "has_changes": has_changes,
         "has_content": (lambda: len(staged_items) > 0) if staged else (lambda: _count() > 0),
         "commit": commit, "clear": clear, "staged_items": staged_items,
     }

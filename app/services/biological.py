@@ -87,6 +87,9 @@ class AssociationRow:
     rel_name: str
     object_label: str
     object_taxon_id: int | None
+    # The relationship's FK, needed to re-create a staged association on save (Records
+    # stages adds/removes until "Save changes"); rel_name alone is a display label.
+    rel_id: int | None = None
 
 
 def get_associations_for_specimen(
@@ -110,7 +113,8 @@ def get_associations_for_specimen(
             obj_label = format_scientific_name(r.object_taxon)
         else:
             obj_label = f"specimen #{r.object_collection_object_id}"
-        out.append(AssociationRow(r.id, rel_name, obj_label, r.object_taxon_id))
+        out.append(AssociationRow(r.id, rel_name, obj_label, r.object_taxon_id,
+                                  r.biological_relationship_id))
     return out
 
 

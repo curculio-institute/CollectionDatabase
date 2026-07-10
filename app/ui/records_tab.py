@@ -22,6 +22,7 @@ from app.ui.collecting_event_form import build_collecting_event_form
 from app.ui.specimen_form import build_specimen_form
 from app.ui.event_reuse import build_event_share_banner
 from app.ui.media_panel import build_media_button
+import app.services.media as media_svc
 from app.ui.external_id_panel import build_external_id_button
 from app.ui.life_stage_panel import build_life_stage_button
 
@@ -335,18 +336,33 @@ def build_records_tab(session_factory, *, on_saved: callable | None = None) -> N
         # catalog_number is immutable (shown read-only in the header); collectionCode
         # is editable (gifting). Remaining fields are seeded from the DB snapshot.
         # Widgets are unpacked into locals so the save path references them unchanged.
+        # The specimen's life-stage history and resource identifiers are STAGED like the
+        # identifications: the handles are kept so "Save changes" can commit them in the
+        # same transaction. (Media is still bound — see C2.)
+        _sub: dict = {}
+
+        def _build_spec_footer():
+            _sub["ls"] = build_life_stage_button(
+                session_factory, target_id_getter=lambda: co_id, deferred=True)
+            _sub["ext"] = build_external_id_button(
+                session_factory, target_kind="collection_object",
+                target_id_getter=lambda: co_id,
+                tooltip="Specimen resource identifiers", deferred=True)
+            _sub["media"] = build_media_button(
+                session_factory, target_kind="collection_object",
+                target_id_getter=lambda: co_id, tooltip="Specimen media", deferred=True)
+            return (
+                _sub["ls"]["button"],
+                _sub["ext"]["button"],
+                _sub["media"]["button"],
+            )
+
         spec = build_specimen_form(
             session_factory,
             identifier_policy="edit",
             initial=co_snap,
             identity_label=f"#{co_id}  {co_snap['catalog_number']}",
-            footer_slot=lambda: (
-                _ls_btn(session_factory, target_id=co_id),
-                _ext_btn(session_factory, target_kind="collection_object",
-                         target_id=co_id, tooltip="Specimen resource identifiers"),
-                _media_btn(session_factory, target_kind="collection_object",
-                           target_id=co_id, tooltip="Specimen media"),
-            ),
+            footer_slot=lambda: _build_spec_footer(),
         )
         count_in     = spec["count_in"]
         prep_field   = spec["prep_field"]
@@ -362,11 +378,14 @@ def build_records_tab(session_factory, *, on_saved: callable | None = None) -> N
         with ui.card().classes("w-full shadow-sm"):
             ui.label("Identifications").classes("section-label mb-2")
             ui.separator().classes("mb-2")
-            build_identification_list(
+            # Staged: identification edits live in memory until "Save changes" runs
+            # id_state["commit"](s). on_changed only nudges the dirty poll — nothing is
+            # written, so the cross-tab refresh must not fire here either (#54).
+            id_state = build_identification_list(
                 session_factory,
                 co_id=co_id,
                 initial_dets=det_snaps,
-                on_changed=lambda: on_saved() if on_saved else None,
+                deferred=True,
             )
 
         # ── Collecting Event card ─────────────────────────────────────────
@@ -446,47 +465,82 @@ def build_records_tab(session_factory, *, on_saved: callable | None = None) -> N
 
             assoc_col = ui.column().classes("w-full gap-1 mb-3")
 
+            # Staged, like the identifications above: the rows loaded from the DB, plus any
+            # added in this session (id=None), minus any removed (their ids queued in
+            # _assoc_deleted). Nothing is written until "Save changes" calls _assoc_commit.
+            _assoc_rows: list[dict] = _with_session(
+                lambda s: [{"id": a.id, "rel_id": a.rel_id, "rel_name": a.rel_name,
+                            "taxon_id": a.object_taxon_id, "object_label": a.object_label}
+                           for a in bio_svc.get_associations_for_specimen(s, co_id)]
+            )
+            _assoc_deleted: list[int] = []
+            _assoc_baseline = [(r["id"], r["rel_id"], r["taxon_id"]) for r in _assoc_rows]
+
+            def _assoc_has_changes() -> bool:
+                return (bool(_assoc_deleted)
+                        or [(r["id"], r["rel_id"], r["taxon_id"]) for r in _assoc_rows]
+                        != _assoc_baseline)
+
             def _refresh_assoc_list():
                 assoc_col.clear()
-                cur = _with_session(
-                    lambda s: bio_svc.get_associations_for_specimen(s, co_id)
-                )
                 with assoc_col:
-                    if not cur:
+                    if not _assoc_rows:
                         ui.label("No associations.").classes("text-sm italic") \
                             .style("color:var(--tp-base-soft)")
-                    for a in cur:
+                    for i, a in enumerate(_assoc_rows):
                         with ui.row().classes("items-center gap-2 w-full"):
                             ui.icon("link", size="xs") \
                                 .style("color:var(--tp-secondary); opacity:.7")
-                            ui.label(f"{a.rel_name} — {a.object_label}").classes("text-sm flex-1")
-                            _ext_btn(session_factory,
-                                     target_kind="biological_association",
-                                     target_id=a.id, tooltip="Other party (resource identifier)")
-                            _media_btn(session_factory,
-                                       target_kind="biological_association",
-                                       target_id=a.id, tooltip="Association media")
+                            ui.label(f"{a['rel_name']} — {a['object_label']}") \
+                                .classes("text-sm flex-1")
+                            if a["id"] is not None:
+                                _ext_btn(session_factory,
+                                         target_kind="biological_association",
+                                         target_id=a["id"], tooltip="Other party (resource identifier)")
+                                _media_btn(session_factory,
+                                           target_kind="biological_association",
+                                           target_id=a["id"], tooltip="Association media")
+                            else:
+                                # A staged association has no id yet, so nothing can be
+                                # attached to it. Say so rather than showing dead buttons.
+                                ui.icon("schedule", size="xs") \
+                                    .style("color:var(--tp-base-soft)") \
+                                    .tooltip("Saved with the specimen — attach media or a "
+                                             "resource identifier afterwards")
                             (
                                 ui.button("", icon="close")
                                 .props("flat dense round size=xs")
-                                .on_click(lambda _, ba_id=a.id: _remove_assoc(ba_id))
+                                .on_click(lambda _, ix=i: _remove_assoc(ix))
                             )
 
-            def _remove_assoc(ba_id: int):
-                try:
-                    with session_factory() as s:
-                        with s.begin():
-                            bio_svc.remove_biological_association(s, ba_id)
-                    _refresh_assoc_list()
-                except Exception as exc:
-                    ui.notify(f"Failed: {exc}", type="negative")
+            def _remove_assoc(ix: int):
+                row = _assoc_rows.pop(ix)
+                if row["id"] is not None:      # existing row: delete it on commit
+                    _assoc_deleted.append(row["id"])
+                _refresh_assoc_list()
+
+            def _assoc_commit(s) -> None:
+                """Apply staged associations inside the card's Save transaction."""
+                for ba_id in _assoc_deleted:
+                    bio_svc.remove_biological_association(s, ba_id)
+                _assoc_deleted.clear()
+                for row in _assoc_rows:
+                    if row["id"] is None:
+                        created = bio_svc.save_biological_association(
+                            s,
+                            collection_object_id=co_id,
+                            biological_relationship_id=row["rel_id"],
+                            object_taxon_id=row["taxon_id"],
+                        )
+                        row["id"] = created.id
 
             _refresh_assoc_list()
 
             ui.separator().classes("my-2")
             ui.label("Add association").classes("text-sm font-medium mb-1")
             ui.label(
-                "Add one association at a time — save associations immediately using the button below."
+                "Add one association at a time. Associations are saved with the specimen "
+                "when you press “Save changes”."
             ).classes("text-xs mb-2").style("color:var(--tp-base-soft)")
 
             rel_opts = _with_session(bio_svc.get_relationship_options)
@@ -517,24 +571,24 @@ def build_records_tab(session_factory, *, on_saved: callable | None = None) -> N
                     ui.notify("Taxon is still importing — wait a moment.", type="warning")
                     return
                 try:
-                    with session_factory() as s:
-                        with s.begin():
-                            bio_svc.save_biological_association(
-                                s,
-                                collection_object_id=co_id,
-                                biological_relationship_id=rel_id,
-                                object_taxon_id=taxon_id,
-                            )
+                    # Staged: created by _assoc_commit inside "Save changes".
+                    _assoc_rows.append({
+                        "id":           None,
+                        "rel_id":       rel_id,
+                        "rel_name":     next((r.name for r in rel_opts if r.id == rel_id), "?"),
+                        "taxon_id":     taxon_id,
+                        "object_label": bio_state["label"] or f"taxon #{taxon_id}",
+                    })
                     bio_state["clear"]()
                     assoc_rel_sel.value = None
                     _refresh_assoc_list()
-                    ui.notify("Association saved.", type="positive")
                 except Exception as exc:
                     ui.notify(f"Failed: {exc}", type="negative")
 
             with ui.row().classes("w-full items-center mt-2"):
                 ui.space()
-                ui.button("Save association", icon="add", on_click=_add_assoc) \
+                # "Add", not "Save": it stages the association; the card's Save writes it.
+                ui.button("Add association", icon="add", on_click=_add_assoc) \
                     .props("flat no-caps color=secondary")
 
         # ── Save bar ─────────────────────────────────────────────────────────
@@ -566,10 +620,19 @@ def build_records_tab(session_factory, *, on_saved: callable | None = None) -> N
             if not (coll_code_in.value or "").strip():
                 ui.notify("collectionCode cannot be empty.", type="warning")
                 return
+            _media_orphans: list[str] = []
             try:
                 with session_factory() as s:
                     with s.begin():
                         sp_svc.update_collection_object(s, co_id, **_collect_co_fields(s))
+                        # Staged identifications (add / edit / delete / set-current, and any
+                        # new determiner name) are applied in the SAME transaction, so the
+                        # card saves atomically or not at all.
+                        id_state["commit"](s)
+                        _assoc_commit(s)
+                        _sub["ls"]["commit"](s, co_id)
+                        _sub["ext"]["commit"](s, co_id)
+                        _media_orphans = _sub["media"]["commit"](s, co_id) or []
                         ev_fields = _collect_ev_fields()
                         # Only write the shared event if the user unlocked it; in
                         # view mode this is a specimen-only save (the event — and
@@ -587,6 +650,10 @@ def build_records_tab(session_factory, *, on_saved: callable | None = None) -> N
             # Post-commit cleanup goes OUTSIDE the try: the data is already
             # committed, so a hiccup in on_saved()/reload must not be reported as a
             # "Save failed" (which would prompt a duplicate re-save). #59
+            # Bytes are unlinked only now, after the commit succeeded — a rolled-back save
+            # must never destroy a still-referenced file (#63).
+            for _rel in _media_orphans:
+                media_svc.delete_stored_file(_rel)
             ui.notify("Changes saved.", type="positive")
             if on_saved:
                 on_saved()
@@ -624,7 +691,13 @@ def build_records_tab(session_factory, *, on_saved: callable | None = None) -> N
                 ev["sampling_protocol"] = ev_ce["protocol_get"]()
             return _norm({"co": co, "ev": ev})
         _baseline = _current_values()
-        _dirty["fn"] = lambda: _current_values() != _baseline
+        # Staged identifications count as unsaved changes too — the whole point of #54.
+        _dirty["fn"] = lambda: (_current_values() != _baseline
+                                or id_state["has_changes"]()
+                                or _assoc_has_changes()
+                                or _sub["ls"]["has_changes"]()
+                                or _sub["ext"]["has_changes"]()
+                                or _sub["media"]["has_changes"]())
 
     # ── Event form ─────────────────────────────────────────────────────────────
     def _build_event_form(ev_id, n, cos, ev_snap):

@@ -29,6 +29,14 @@ _CAT_ICON = {
 _CATEGORIES = list(_CAT_ICON.keys())
 
 
+def _data_url(data: bytes, mime: str | None) -> str:
+    """A base64 data: URL, so a not-yet-saved upload's thumbnail renders straight from
+    memory — no file on disk (#63). Only images are shown as thumbnails; the rest fall back
+    to a category icon, so a generic application/octet-stream mime is fine here."""
+    import base64
+    return f"data:{mime or 'application/octet-stream'};base64,{base64.b64encode(data).decode()}"
+
+
 def _license_options(current: str | None) -> list[str]:
     """The licence dropdown's options, always able to display *current* (#64).
 
@@ -69,6 +77,7 @@ def build_media_button(
     on_change: Optional[Callable[[], None]] = None,
     icon: str = "collections",
     tooltip: str = "Media",
+    deferred: bool = False,
 ) -> dict:
     """Returns a dict with:
       - ``button``      the ui.button (with count badge)
@@ -86,6 +95,42 @@ def build_media_button(
     staged_items: list[dict] = staged_store if staged_store is not None else []
     state = {"filter": None}
 
+    # Deferred (Records): the attachments of an existing record are loaded into an in-memory
+    # working list; every add / delete / metadata edit stays there until the card's Save
+    # calls commit(session, target_id). Bound and staged modes are unchanged.
+    #   existing item: {"kind":"db",  att_id, media_id, deleted, caption, is_primary,
+    #                   category, rel, name, license, rights_holder_id, rights_name, _orig}
+    #   new item:      {"kind":"new", meta, caption, is_primary, category, license,
+    #                   rights_holder_id, rights_name}   (bytes already in the store)
+    _def: list[dict] = []
+
+    def _seed_deferred() -> None:
+        tid = _target_id()
+        _def.clear()
+        if tid is None:
+            return
+        with session_factory() as s:
+            for a in media_svc.list_attachments(s, target_kind=target_kind, target_id=tid):
+                m = a.media
+                rname = None
+                if m.rights_holder_id is not None:
+                    pr = s.get(Person, m.rights_holder_id)
+                    rname = pr.full_name if pr else None
+                _def.append({
+                    "kind": "db", "att_id": a.id, "media_id": m.id, "deleted": False,
+                    "caption": a.caption or "", "is_primary": bool(a.is_primary),
+                    "category": m.category, "rel": m.relative_path,
+                    "name": m.original_filename or m.relative_path,
+                    "license": m.license or "", "rights_holder_id": m.rights_holder_id,
+                    "rights_name": rname or "",
+                })
+        for it in _def:
+            it["_orig"] = _def_sig(it)
+
+    def _def_sig(it: dict) -> tuple:
+        return (it.get("deleted", False), it["caption"], it["is_primary"],
+                it["category"], it["license"], it.get("rights_holder_id"), it["rights_name"])
+
     def _target_id() -> Optional[int]:
         return target_id_getter() if target_id_getter else None
 
@@ -93,6 +138,8 @@ def build_media_button(
     def _count() -> int:
         if staged:
             return len(staged_items)
+        if deferred:
+            return sum(1 for it in _def if not it.get("deleted"))
         tid = _target_id()
         if tid is None:
             return 0
@@ -114,6 +161,22 @@ def build_media_button(
 
     # ── snapshot of current items (uniform shape for both modes) ──────────────────
     def _entries() -> list[dict]:
+        if deferred:
+            out = []
+            for i, it in enumerate(_def):
+                if it.get("deleted"):
+                    continue
+                if it["kind"] == "db":
+                    rel, name, data_url = it["rel"], it["name"], None
+                else:
+                    rel, data_url = None, it["data_url"]
+                    name = it["probe"].get("original_filename") or "upload"
+                out.append({
+                    "key": i, "caption": it["caption"], "is_primary": it["is_primary"],
+                    "category": it["category"], "rel": rel, "data_url": data_url, "name": name,
+                    "license": it["license"], "rights_name": it["rights_name"],
+                })
+            return out
         if staged:
             out = []
             for i, it in enumerate(staged_items):
@@ -156,6 +219,19 @@ def build_media_button(
                     "rights_holder_id": None, "rights_name": "", "caption": "",
                     "is_primary": 0,
                 })
+        elif deferred:
+            # Held in memory only: probe for metadata WITHOUT writing to disk, and keep the
+            # raw bytes for both the thumbnail (a data: URL) and store_bytes at commit. So
+            # abandoning an upload writes nothing to disk — no orphan file at all (#63).
+            for name, data in files:
+                probe = media_svc.probe_bytes(data, name)
+                _def.append({
+                    "kind": "new", "data": data, "probe": probe,
+                    "data_url": _data_url(data, probe.get("format")),
+                    "category": probe["category"], "license": "",
+                    "rights_holder_id": None, "rights_name": "", "caption": "",
+                    "is_primary": 0,
+                })
         else:
             tid = _target_id()
             if tid is None:
@@ -176,6 +252,8 @@ def build_media_button(
     def _set_category(e, value):
         if staged:
             staged_items[e["key"]]["category"] = value
+        elif deferred:
+            _def[e["key"]]["category"] = value
         else:
             with session_factory() as s:
                 with s.begin():
@@ -186,6 +264,9 @@ def build_media_button(
         if staged:
             for i, it in enumerate(staged_items):
                 it["is_primary"] = 1 if i == e["key"] else 0
+        elif deferred:
+            for i, it in enumerate(_def):
+                it["is_primary"] = (i == e["key"])
         else:
             with session_factory() as s:
                 with s.begin():
@@ -196,6 +277,12 @@ def build_media_button(
     def _delete(e):
         if staged:
             staged_items.pop(e["key"])
+        elif deferred:
+            it = _def[e["key"]]
+            if it["kind"] == "new":
+                _def.pop(e["key"])          # never persisted — just drop it
+            else:
+                it["deleted"] = True        # existing row: deleted by commit(), reversible
         else:
             # Commits the row deletion, then unlinks the orphaned bytes — never the other
             # way round, or a failed commit leaves a media row pointing at nothing (#63).
@@ -212,6 +299,8 @@ def build_media_button(
     def _set_license(e, value):
         if staged:
             staged_items[e["key"]]["license"] = value or ""
+        elif deferred:
+            _def[e["key"]]["license"] = value or ""
         else:
             with session_factory() as s:
                 with s.begin():
@@ -220,13 +309,20 @@ def build_media_button(
     def _set_caption_entry(e, value):
         if staged:
             staged_items[e["key"]]["caption"] = value or ""
+        elif deferred:
+            _def[e["key"]]["caption"] = value or ""
         else:
             with session_factory() as s:
                 with s.begin():
                     media_svc.update_attachment(s, e["att_id"], caption=value or "")
 
     def _set_rights(e, rights_field):
-        """Commit the chosen rightsHolder person and store its id (works in both modes)."""
+        """Store the chosen rightsHolder. Deferred holds the NAME and resolves it to a
+        person only on commit (#60 — no stray person if the card is abandoned)."""
+        if deferred:
+            name = rights_field["get_value"]() or ""
+            _def[e["key"]].update(rights_holder_id=None, rights_name=name)
+            return
         with session_factory() as s:
             with s.begin():
                 rid = rights_field["commit"](s)
@@ -265,7 +361,9 @@ def build_media_button(
         # the important fields are visible and editable without an extra click. Each
         # commits on change/blur — no Save button.
         with ui.card().classes("p-2 gap-1").style("width:230px"):
-            url = f"/media/{it['rel']}"
+            # A memory-held upload (deferred, not yet written) shows from its data: URL;
+            # everything on disk shows from /media/<rel>.
+            url = it.get("data_url") or f"/media/{it['rel']}"
             if it["category"] == "Image":
                 ui.image(url).classes("w-full h-32 object-cover rounded") \
                     .style("cursor:pointer").on("click", lambda u=url: ui.navigate.to(u, new_tab=True))
@@ -349,7 +447,13 @@ def build_media_button(
 
     # ── staged commit / helpers ───────────────────────────────────────────────────
     def commit(session, target_id: int):
-        """Flush staged files onto the now-saved record (staged mode only)."""
+        """staged (Digitize): attach the held files to the new record.
+        deferred (Records): reconcile the working list against the DB — deletes, then
+        creates, then metadata edits, then the single primary. Returns the relative paths
+        of any now-orphaned bytes; the caller unlinks them AFTER the transaction commits
+        (never inside it — a rolled-back save must not destroy bytes, #63)."""
+        if deferred:
+            return _commit_deferred(session, target_id)
         for it in staged_items:
             media_svc.attach_stored(
                 session, target_kind=target_kind, target_id=target_id,
@@ -357,14 +461,64 @@ def build_media_button(
                 category=it["category"], license=it["license"] or None,
                 rights_holder_id=it["rights_holder_id"], is_primary=it["is_primary"],
             )
+        return []
+
+    def _commit_deferred(session, target_id: int) -> list[str]:
+        import app.services.persons as persons_svc
+        orphans: list[str] = []
+
+        def _rid(it) -> Optional[int]:
+            if it.get("rights_holder_id"):
+                return it["rights_holder_id"]
+            name = (it.get("rights_name") or "").strip()
+            return persons_svc.get_or_create_person(session, full_name=name).id if name else None
+
+        for it in _def:
+            if it["kind"] == "db" and it.get("deleted"):
+                rel = media_svc.delete_attachment(session, it["att_id"])
+                if rel:
+                    orphans.append(rel)
+        for it in _def:
+            if it["kind"] == "new":
+                _fname = it["probe"].get("original_filename") or "upload"
+                meta = media_svc.store_bytes(it["data"], _fname)        # writes to disk now
+                att = media_svc.attach_stored(
+                    session, target_kind=target_kind, target_id=target_id,
+                    meta=meta, caption=it["caption"] or None,
+                    category=it["category"], license=it["license"] or None,
+                    rights_holder_id=_rid(it), is_primary=1 if it["is_primary"] else 0,
+                )
+                it.update(kind="db", att_id=att.id, media_id=att.media_id,
+                          rel=meta["relative_path"], name=_fname, deleted=False)
+                it.pop("data", None); it.pop("data_url", None); it.pop("probe", None)
+            elif not it.get("deleted"):
+                media_svc.update_media(session, it["media_id"], category=it["category"],
+                                       license=it["license"] or None,
+                                       rights_holder_id=_rid(it))
+                media_svc.update_attachment(session, it["att_id"], caption=it["caption"] or "")
+
+        primary = next((it for it in _def if not it.get("deleted") and it["is_primary"]), None)
+        if primary is not None and primary.get("att_id"):
+            media_svc.set_primary(session, target_kind=target_kind, target_id=target_id,
+                                  attachment_id=primary["att_id"])
+        # Drop committed deletions and re-baseline so a second save is a no-op.
+        _def[:] = [it for it in _def if not it.get("deleted")]
+        for it in _def:
+            it["_orig"] = _def_sig(it)
+        return orphans
+
+    def has_changes() -> bool:
+        return any(it["kind"] == "new" or it["_orig"] != _def_sig(it) for it in _def)
 
     def clear():
         staged_items.clear()
         refresh()
 
+    if deferred:
+        _seed_deferred()
     refresh()
     return {
-        "button": btn, "refresh": refresh,
+        "button": btn, "refresh": refresh, "has_changes": has_changes,
         "has_content": (lambda: len(staged_items) > 0) if staged else (lambda: _count() > 0),
         "commit": commit, "clear": clear, "staged_items": staged_items,
     }
