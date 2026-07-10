@@ -29,6 +29,14 @@ _CAT_ICON = {
 _CATEGORIES = list(_CAT_ICON.keys())
 
 
+def _data_url(data: bytes, mime: str | None) -> str:
+    """A base64 data: URL, so a not-yet-saved upload's thumbnail renders straight from
+    memory — no file on disk (#63). Only images are shown as thumbnails; the rest fall back
+    to a category icon, so a generic application/octet-stream mime is fine here."""
+    import base64
+    return f"data:{mime or 'application/octet-stream'};base64,{base64.b64encode(data).decode()}"
+
+
 def _license_options(current: str | None) -> list[str]:
     """The licence dropdown's options, always able to display *current* (#64).
 
@@ -158,12 +166,14 @@ def build_media_button(
             for i, it in enumerate(_def):
                 if it.get("deleted"):
                     continue
-                rel = it["rel"] if it["kind"] == "db" else it["meta"]["relative_path"]
-                name = it["name"] if it["kind"] == "db" else (
-                    it["meta"].get("original_filename") or it["meta"]["relative_path"])
+                if it["kind"] == "db":
+                    rel, name, data_url = it["rel"], it["name"], None
+                else:
+                    rel, data_url = None, it["data_url"]
+                    name = it["probe"].get("original_filename") or "upload"
                 out.append({
                     "key": i, "caption": it["caption"], "is_primary": it["is_primary"],
-                    "category": it["category"], "rel": rel, "name": name,
+                    "category": it["category"], "rel": rel, "data_url": data_url, "name": name,
                     "license": it["license"], "rights_name": it["rights_name"],
                 })
             return out
@@ -201,19 +211,27 @@ def build_media_button(
     # ── mutations ─────────────────────────────────────────────────────────────────
     def _on_files(files: list[tuple[str, bytes]]):
         """files = list of (filename, bytes) — supports batch (one→many) upload."""
-        if staged or deferred:
-            target = staged_items if staged else None
+        if staged:
             for name, data in files:
                 meta = media_svc.store_bytes(data, name)
-                item = {
+                staged_items.append({
                     "meta": meta, "category": meta["category"], "license": "",
                     "rights_holder_id": None, "rights_name": "", "caption": "",
                     "is_primary": 0,
-                }
-                if staged:
-                    staged_items.append(item)
-                else:
-                    _def.append({"kind": "new", **item})
+                })
+        elif deferred:
+            # Held in memory only: probe for metadata WITHOUT writing to disk, and keep the
+            # raw bytes for both the thumbnail (a data: URL) and store_bytes at commit. So
+            # abandoning an upload writes nothing to disk — no orphan file at all (#63).
+            for name, data in files:
+                probe = media_svc.probe_bytes(data, name)
+                _def.append({
+                    "kind": "new", "data": data, "probe": probe,
+                    "data_url": _data_url(data, probe.get("format")),
+                    "category": probe["category"], "license": "",
+                    "rights_holder_id": None, "rights_name": "", "caption": "",
+                    "is_primary": 0,
+                })
         else:
             tid = _target_id()
             if tid is None:
@@ -343,7 +361,9 @@ def build_media_button(
         # the important fields are visible and editable without an extra click. Each
         # commits on change/blur — no Save button.
         with ui.card().classes("p-2 gap-1").style("width:230px"):
-            url = f"/media/{it['rel']}"
+            # A memory-held upload (deferred, not yet written) shows from its data: URL;
+            # everything on disk shows from /media/<rel>.
+            url = it.get("data_url") or f"/media/{it['rel']}"
             if it["category"] == "Image":
                 ui.image(url).classes("w-full h-32 object-cover rounded") \
                     .style("cursor:pointer").on("click", lambda u=url: ui.navigate.to(u, new_tab=True))
@@ -460,14 +480,17 @@ def build_media_button(
                     orphans.append(rel)
         for it in _def:
             if it["kind"] == "new":
+                _fname = it["probe"].get("original_filename") or "upload"
+                meta = media_svc.store_bytes(it["data"], _fname)        # writes to disk now
                 att = media_svc.attach_stored(
                     session, target_kind=target_kind, target_id=target_id,
-                    meta=it["meta"], caption=it["caption"] or None,
+                    meta=meta, caption=it["caption"] or None,
                     category=it["category"], license=it["license"] or None,
                     rights_holder_id=_rid(it), is_primary=1 if it["is_primary"] else 0,
                 )
                 it.update(kind="db", att_id=att.id, media_id=att.media_id,
-                          rel=it["meta"]["relative_path"], deleted=False)
+                          rel=meta["relative_path"], name=_fname, deleted=False)
+                it.pop("data", None); it.pop("data_url", None); it.pop("probe", None)
             elif not it.get("deleted"):
                 media_svc.update_media(session, it["media_id"], category=it["category"],
                                        license=it["license"] or None,

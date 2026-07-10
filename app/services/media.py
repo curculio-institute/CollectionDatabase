@@ -79,6 +79,40 @@ def _image_dimensions(path: Path) -> tuple[Optional[int], Optional[int]]:
         return None, None
 
 
+def _image_dimensions_from_bytes(data: bytes) -> tuple[Optional[int], Optional[int]]:
+    """(width, height) read straight from bytes — no file on disk needed."""
+    try:
+        import io
+        from PIL import Image
+        with Image.open(io.BytesIO(data)) as im:
+            return im.width, im.height
+    except Exception:
+        return None, None
+
+
+def probe_bytes(data: bytes, original_filename: str) -> dict:
+    """Metadata for a file WITHOUT writing it to disk.
+
+    Same shape as ``store_bytes`` minus ``relative_path`` — because nothing has been stored
+    yet. Lets the UI hold a dropped file in memory (rendering its thumbnail from a data: URL)
+    and only call ``store_bytes`` at save time, so abandoning an upload leaves no orphan file
+    at all (#63). Idempotent-safe: the sha lets a later ``store_bytes`` dedupe as usual.
+    """
+    sha256 = hashlib.sha256(data).hexdigest()
+    ext = Path(original_filename).suffix
+    mime, _ = mimetypes.guess_type(original_filename)
+    width, height = _image_dimensions_from_bytes(data)
+    return {
+        "sha256": sha256,
+        "byte_size": len(data),
+        "format": mime,
+        "category": detect_category(mime, ext),
+        "original_filename": original_filename,
+        "width": width,
+        "height": height,
+    }
+
+
 def _store_path(sha256: str, ext: str) -> Path:
     shard = media_dir() / sha256[:2]
     return shard / f"{sha256}{ext.lower()}"
@@ -90,9 +124,9 @@ def store_bytes(data: bytes, original_filename: str) -> dict:
     Idempotent: identical bytes resolve to the same path and are written only once.
     Returns the fields needed to create a ``media`` row (the caller fills user metadata
     like title/creator/license)."""
-    sha256 = hashlib.sha256(data).hexdigest()
+    meta = probe_bytes(data, original_filename)
     ext = Path(original_filename).suffix
-    dest = _store_path(sha256, ext)
+    dest = _store_path(meta["sha256"], ext)
     if not dest.exists():
         dest.parent.mkdir(parents=True, exist_ok=True)
         # Write to a temp sibling then atomically rename, so a crash mid-write never
@@ -100,18 +134,8 @@ def store_bytes(data: bytes, original_filename: str) -> dict:
         tmp = dest.with_suffix(dest.suffix + ".part")
         tmp.write_bytes(data)
         tmp.replace(dest)
-    mime, _ = mimetypes.guess_type(original_filename)
-    width, height = _image_dimensions(dest)
-    return {
-        "sha256": sha256,
-        "relative_path": str(dest.relative_to(media_dir())),
-        "byte_size": len(data),
-        "format": mime,
-        "category": detect_category(mime, ext),
-        "original_filename": original_filename,
-        "width": width,
-        "height": height,
-    }
+    meta["relative_path"] = str(dest.relative_to(media_dir()))
+    return meta
 
 
 def store_file(src: str | Path | BinaryIO, original_filename: Optional[str] = None) -> dict:
