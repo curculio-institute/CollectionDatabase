@@ -503,14 +503,63 @@ in `create`/`update_collecting_event`), so the event form keeps its geocode-inpu
 boundary-warning UI **unchanged** — only the service + the model-read sites resolve by FK.
 Language policy: country + stateProvince in English (Photon `lang=en`), the rest local.
 
-**Geocoding upgrades (`collecting_event_form._reverse_geocode`, #40):** Photon (`lang=en`)
-gives English country/state but only returns buildings/streets near a point — *not* meaningful
-collecting localities — and never the Regierungsbezirk. So one Overpass query adds: the
-enclosing **admin_level-5 boundary → administrative_region** (e.g. Oberbayern), and the
-**nearest named natural features by radius** — peaks (+elevation), water bodies / waterways,
-springs / caves / saddles, and OSM `place=locality` — de-duped by name and **ranked**
-(enclosing areas first, then by distance) into the "Also nearby" locality picker. `locality`
-auto-fills to the best candidate (the nearest meaningful feature) when Photon has no named one.
+**Geocoding: containment vs proximity (decided 2026-07-10; `collecting_event_form._reverse_geocode`, #40).**
+The two services answer **different questions**, and the administrative hierarchy must come from
+the one that answers *containment*:
+
+- **Overpass `is_in` owns the hierarchy.** It returns the polygons that actually *contain* the
+  point. The **state is identified by its `ISO3166-2` tag**, never by `admin_level` — the level
+  differs by country (`DE-BY` sits at L4, `GR-J` at L5), so a positional rule is wrong. The
+  country relation carries `ISO3166-1`, which supplies `dwc:countryCode` from the data (see
+  "No hardcoded country codes"). English names come from `name:en`, present on country/state
+  everywhere tested; the lower tiers have none and are stored with their local `name`, which is
+  the language policy anyway. `administrative_region` (Regierungsbezirk) is an L5 that is *not*
+  itself the ISO state.
+- **Photon owns locality candidates only.** `/reverse` is a **proximity search** with an implicit
+  radius (~1 km; the `radius` param has a low ceiling — 3 km and 10 km returned the same 1.15 km
+  of results). Its `city`/`county`/`state` describe the **nearest feature**, not the query point,
+  so they are wrong whenever that feature lies across a boundary (measured: at 47.68,11.12 Photon
+  reports `Seehausen am Staffelsee`; the point is inside `Uffing am Staffelsee`). Never read the
+  hierarchy from Photon. Candidates must be **distance-filtered against the uncertainty circle**
+  using the geometry Photon returns (it carries no distance field).
+- Photon *does* return wetlands, streams, peaks and `place=locality` — the earlier claim that it
+  yields "only buildings/streets" was false — so the Overpass `around:` block that re-fetched them
+  is redundant. (It uniquely supplies a peak's `ele`.) Where nothing is within its radius it
+  returns **zero features** (open sea, steppe), which must not blank the form: Overpass still
+  answers, and Photon's hierarchy stays only as an explicit degraded fallback when Overpass fails.
+
+**Nominatim is not used** (rejected for per-IP rate limiting after 429s from firing on every pin
+drag; the manual Lookup button removed that condition, but the `ISO3166-2` tag makes its only
+remaining advantage — per-country level→field mapping — unnecessary). Its 1 req/s policy also
+rules it out for the 4-point perimeter boundary check.
+
+**Boundary-crossing check — one combined `is_in` (measured 2026-07-10).** Whether the uncertainty
+*circle* crosses a boundary cannot be answered by any single query at the centre. Two dead ends are
+already in the history, do not retry them: `relation(around:r)` matches boundary relations by **way
+node** proximity, so a small circle inside an admin area returns 0 results even when it visibly
+crosses a border (`e4c27bb`); and 8 parallel Photon calls trip 503s, silently dropping points
+(`cd2b6c9`, the Basel tripoint lost France). Sampling perimeter points is therefore still required,
+and it is a **warning heuristic, not a guarantee** — 4 bearings cannot prove a circle is
+boundary-free (`74713ce`).
+
+Overpass takes **several `is_in` in one request**: `is_in(lat,lon)->.pN;
+relation(pivot.pN)[boundary=administrative][name]; convert pt ::id=id(), i="N", …; out;` per point.
+`convert` stamps the sample index onto each relation so results can be attributed back (absent tags
+come back as `""`, not null). Verified at the Basel tripoint: one request, centre + 4 perimeter →
+DE / FR / CH all detected; an interior point yields one hierarchy, no false positive. This also
+returns the **centre's** full hierarchy, so it subsumes the separate hierarchy lookup.
+
+**Cost: ~9–12 s** (a single `is_in` is ~0.9 s; five is roughly linear), and that shape has returned
+504. So it **must not block the form.** Fill from the fast calls first and let this land later —
+`is_in` is *areas*, so `relation(pivot.…)` is required (`rel.pN[…]` silently matches nothing).
+The current check is worse than slow: it samples perimeter points **via Photon**, whose hierarchy
+describes the nearest feature, so it both misses and invents crossings, and is skipped in silence
+where Photon returns no features.
+
+**Open (do not guess):** `county` / `municipality` have **no ISO tag** below the first-order
+subdivision. `L6`=county and lowest `L7+`=municipality held across DE/GR/KZ, but that is a
+three-country regularity, not a standard — validate it before relying on it. France already
+strains it (`L5 European Collectivity of Alsace` is not a Regierungsbezirk tier).
 
 The shared mechanism:
 
