@@ -2603,7 +2603,7 @@ def index():
             ).classes("text-xs mb-2").style("color:var(--tp-base-soft)")
 
             _wcvp_status = ui.label().classes("text-xs")
-            _wcvp_remote = ui.label().classes("text-xs mt-1")
+            _wcvp_remote = ui.label().classes("text-xs mt-1 break-all")
 
             def _wcvp_refresh_installed() -> str | None:
                 """Installed release label, or None. Reads the index file, never the network."""
@@ -2647,7 +2647,10 @@ def index():
                 def _tick() -> None:
                     if state["phase"] == "download":
                         pct = f"{100 * state['frac']:.0f}%" if state["frac"] is not None else "…"
-                        _wcvp_remote.set_text(f"Downloading Kew's archive… {pct}")
+                        # Name the URL rather than "Kew's archive": the user should be able to
+                        # see exactly what is being fetched, and from where.
+                        _wcvp_remote.set_text(
+                            f"Downloading from {wcvp_svc.WCVP_DWCA_URL} — {pct}")
                     else:
                         _wcvp_remote.set_text("Building the index… (about 15 seconds)")
                     _wcvp_remote.style("color:var(--tp-base-soft)")
