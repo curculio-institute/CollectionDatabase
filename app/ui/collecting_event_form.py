@@ -34,7 +34,10 @@ import httpx
 from nicegui import ui
 
 from app.config import get_config
-from app.services.vocabularies import habitat_vocab, sampling_protocol_vocab
+from app.services.vocabularies import (
+    administrative_region_vocab, country_vocab, county_vocab, habitat_vocab,
+    island_vocab, sampling_protocol_vocab, state_province_vocab,
+)
 from app.ui.map_picker import build_map_picker
 from app.ui.person_field import build_person_field
 from app.ui.vocab_field import build_vocab_field
@@ -269,6 +272,47 @@ async def _overpass_failure_message(reason: str) -> str:
     return f"Overpass did not answer ({reason}): {status}."
 
 
+class _VocabInput:
+    """Adapts a ``build_vocab_field`` handle to the ``ui.input`` interface this form uses.
+
+    The geography levels are FK-backed controlled vocabularies and must behave like one
+    (existing entries, "✚ add" for a new name, keyboard nav, live options) — but the form
+    reads and writes them as ``.value`` in a dozen places, and the field registry drives
+    collect / load / reset / readonly generically. This keeps that contract.
+
+    ``.code`` exposes the ISO code of the *picked row*: two rows can share a name (Limburg
+    BE-VLI / NL-LI), so the name alone does not identify the pick.
+    """
+
+    __slots__ = ("_h",)
+
+    def __init__(self, handle: dict):
+        self._h = handle
+
+    @property
+    def value(self) -> str:
+        return self._h["get_value"]() or ""
+
+    @value.setter
+    def value(self, val) -> None:
+        self._h["set_value"]((str(val) if val is not None else "") or None)
+
+    @property
+    def code(self) -> str | None:
+        return self._h["get_code"]()
+
+    def set_value(self, name: str | None, code: str | None = None) -> None:
+        self._h["set_value"](name or None, code)
+
+    def props(self, add: str | None = None, *, remove: str | None = None):
+        """Only 'readonly' is ever toggled on these fields by _set_readonly()."""
+        if add and "readonly" in add:
+            self._h["set_readonly"](True)
+        if remove and "readonly" in remove:
+            self._h["set_readonly"](False)
+        return self
+
+
 def build_collecting_event_form(
     session_factory,
     *,
@@ -290,9 +334,7 @@ def build_collecting_event_form(
       recby_refresh()     : refresh the recordedBy options from the DB.
       recby_get()         : current recordedBy value.
     """
-    # state_iso: the ISO 3166-2 code of the geocoded stateProvince, held here rather than in
-    # a widget — it has no field of its own (nothing to edit) and is stored on the vocab row.
-    _st = {"populating": False, "editable": True, "state_iso": ""}
+    _st = {"populating": False, "editable": True}
 
     def _fire_edit():
         if not _st["populating"] and on_field_edit:
@@ -324,12 +366,11 @@ def build_collecting_event_form(
         _fire_edit()
 
     def _on_state_change(_=None):
+        # The picked row's ISO code lives on the field itself: choosing "Bavaria (DE-BY)"
+        # from the dropdown carries DE-BY, while a free-typed name carries none. Nothing
+        # to clear here.
         if not _st["populating"]:
             _wipe_from("state")
-            # The ISO code belongs to the geocoded state. The moment the user retypes the
-            # name it describes a state we have not identified, so drop it rather than
-            # attach "DE-BY" to whatever was typed.
-            _st["state_iso"] = ""
         _fire_edit()
 
     def _on_county_change(_=None):
@@ -342,15 +383,25 @@ def build_collecting_event_form(
             _wipe_from("muni")
         _fire_edit()
 
-    def _geocode_input(label, on_change=None, placeholder=""):
+    def _geocode_input(label, on_change=None, placeholder="", vocab=None):
         """Input + hidden inline warning menu + ok icon + pending spinner.
 
         Returns (input, btn, tip, items_col, ok_icon, spinner). The spinner marks *this*
         field as awaiting its own source, so a slow lookup shows where it is still working
         instead of the whole form sitting inert.
+
+        With *vocab*, the field is the controlled-vocabulary dropdown (the same UX as the
+        person field) rather than a bare text input — these levels are FK-backed vocabs and
+        should look like it. The warning menu / ✓ / spinner stay as siblings in the row.
         """
         with ui.row().classes("col-span-1 items-center gap-0 w-full"):
-            inp = ui.input(label, on_change=on_change, placeholder=placeholder).classes("flex-1 min-w-0")
+            if vocab is not None:
+                inp = _VocabInput(build_vocab_field(
+                    session_factory, vocab, label,
+                    on_change=on_change, classes="flex-1 min-w-0"))
+            else:
+                inp = ui.input(label, on_change=on_change,
+                               placeholder=placeholder).classes("flex-1 min-w-0")
             with (
                 ui.button(icon="warning_amber")
                 .props("flat dense round size=xs color=orange")
@@ -483,9 +534,8 @@ def build_collecting_event_form(
         _st["populating"] = True
         for _f in (country_in, code_in, state_in, region_in, county_in, muni_in,
                    locality_in, island_in):
-            _f.value = ""
+            _f.value = ""          # clears the vocab fields' ISO codes with them
         _st["populating"] = False
-        _st["state_iso"] = ""     # belongs to the state we are about to replace
         _fire_edit()
 
         # The locality circle scales with the coordinate uncertainty: a precise point → only
@@ -665,10 +715,12 @@ def build_collecting_event_form(
             if res is not None:
                 hier = res["hier"]
                 _st["populating"] = True
-                country_in.value = hier["country"]
+                # The ISO codes ride along with the names: the geocoder identified *these*
+                # rows (Bavaria = DE-BY), so the save must resolve to them and not to a
+                # same-named uncoded row.
+                country_in.set_value(hier["country"], hier["country_code"])
                 code_in.value    = hier["country_code"]
-                state_in.value   = hier["state"]
-                _st["state_iso"] = hier["state_code"]
+                state_in.set_value(hier["state"], hier["state_code"])
                 region_in.value  = hier["region"]
                 county_in.value  = hier["county"]
                 muni_in.value    = hier["municipality"]
@@ -710,9 +762,13 @@ def build_collecting_event_form(
                       type="warning", multi_line=True, timeout=15000,
                       classes="text-left", close_button="OK")
             _st["populating"] = True
-            country_in.value = p0.get("country", "")
+            country_in.set_value(p0.get("country", ""),
+                                 (p0.get("countrycode", "") or "").upper())
             code_in.value    = (p0.get("countrycode", "") or "").upper()
-            state_in.value   = p0.get("state", "")
+            # No state code: Photon names the nearest feature's tier, which in Greece is the
+            # Decentralized Administration, not the ISO region. Claiming an ISO code for it
+            # would be a lie; the field stays uncoded.
+            state_in.set_value(p0.get("state", "") or None, None)
             region_in.value  = ""
             county_in.value  = p0.get("county", "")
             muni_in.value    = p0.get("city") or p0.get("locality") or ""
@@ -830,9 +886,11 @@ def build_collecting_event_form(
 
         async def _apply_snap(snap: dict) -> None:
             _st["populating"] = True
-            country_in.value  = snap["country"]
+            country_in.set_value(snap["country"] or None, snap["code"] or None)
             code_in.value     = snap["code"]
-            state_in.value    = snap["state"]
+            # Perimeter samples are Photon's; they carry no ISO 3166-2 code, so picking one
+            # sets the state name without claiming a code for it.
+            state_in.set_value(snap["state"] or None, None)
             county_in.value   = snap["county"]
             muni_in.value     = snap["muni"]
             locality_in.value = snap["locality"]
@@ -962,23 +1020,26 @@ def build_collecting_event_form(
 
     # ── Location ────────────────────────────────────────────────────────────
     ui.label("Location").classes("text-xs font-semibold uppercase tracking-wider text-grey-6 mt-4")
+    # The five administrative levels are FK-backed controlled vocabularies (migration 0041),
+    # so they get the vocab dropdown. countryCode is a 2-char DwC code, and municipality /
+    # locality / verbatimLocality are deliberately free text — those stay plain inputs.
     with ui.grid(columns=5).classes("w-full gap-3 mt-1"):
         country_in, _cntry_warn, _cntry_tip, _cntry_items, _cntry_ok, _cntry_sp = _geocode_input(
-            "country", on_change=_on_country_change)
+            "country", on_change=_on_country_change, vocab=country_vocab)
         code_in, _code_warn, _code_tip, _code_items, _code_ok, _code_sp = _geocode_input(
             "countryCode", on_change=_fire_edit, placeholder="DE")
         state_in, _state_warn, _state_tip, _state_items, _state_ok, _state_sp = _geocode_input(
-            "stateProvince", on_change=_on_state_change)
+            "stateProvince", on_change=_on_state_change, vocab=state_province_vocab)
         # administrative region (Regierungsbezirk tier) — a controlled vocab too, but no DwC
         # term. Filled from the enclosing admin_level-5 boundary (Overpass is_in), when that
         # L5 is not itself the ISO state. Resolved name→id in the events service.
         with ui.row().classes("col-span-1 items-center gap-0 w-full"):
-            region_in = (ui.input("admin. region", on_change=_fire_edit).classes("flex-1 min-w-0")
-                         .tooltip("Sub-state region (e.g. Oberbayern / Regierungsbezirk) — "
-                                  "for permit-level queries"))
+            region_in = _VocabInput(build_vocab_field(
+                session_factory, administrative_region_vocab, "admin. region",
+                on_change=_fire_edit, classes="flex-1 min-w-0"))
             _region_sp = ui.spinner(size="xs").props("color=primary").classes("hidden")
         county_in, _county_warn, _county_tip, _county_items, _county_ok, _county_sp = _geocode_input(
-            "county", on_change=_on_county_change)
+            "county", on_change=_on_county_change, vocab=county_vocab)
         muni_in, _muni_warn, _muni_tip, _muni_items, _muni_ok, _muni_sp = _geocode_input(
             "municipality", on_change=_on_muni_change)
     _geocode_ok_icons = [_cntry_ok, _code_ok, _state_ok, _county_ok, _muni_ok]
@@ -987,7 +1048,9 @@ def build_collecting_event_form(
         locality_in, _locality_warn, _locality_tip, _locality_items, _locality_ok, _locality_sp = \
             _geocode_input("locality", on_change=_fire_edit)
         with ui.row().classes("col-span-1 items-center gap-0 w-full"):
-            island_in = ui.input("island", on_change=_fire_edit).classes("flex-1 min-w-0")
+            island_in = _VocabInput(build_vocab_field(
+                session_factory, island_vocab, "island",
+                on_change=_fire_edit, classes="flex-1 min-w-0"))
             _island_sp = ui.spinner(size="xs").props("color=primary").classes("hidden")
         verblocal_in = ui.input("verbatimLocality", on_change=_fire_edit).classes("col-span-1")
     _geocode_ok_icons.append(_locality_ok)
@@ -1075,10 +1138,11 @@ def build_collecting_event_form(
         # validation (which calls collect_fields) has no get_or_create side effect.
         out = {name: w.value for name, w in _event_widgets.items()}
         out["confidential"] = 1 if conf_chk.value else 0
-        # Not an event column: consumed by events._resolve_geo_fields, which stamps it on
-        # the state_province vocab row alongside the name→id lookup. Empty when the state
-        # was typed by hand or the geocoder found no ISO tag.
-        out["state_province_iso"] = _st["state_iso"]
+        # Not event columns: consumed by events._resolve_geo_fields, which resolves the
+        # vocab row by (name, iso_code). Empty when the level was typed by hand, picked
+        # from an uncoded row, or the geocoder found no ISO tag.
+        out["country_iso"] = country_in.code or ""
+        out["state_province_iso"] = state_in.code or ""
         return out
 
     def _commit(s) -> dict:
@@ -1118,6 +1182,13 @@ def build_collecting_event_form(
         _st["populating"] = True
         for name, w in _event_widgets.items():
             w.value = _s(snapshot.get(name))
+        # Re-apply the two coded levels *with* their codes. Without this a name shared by
+        # two rows (Limburg BE-VLI / NL-LI) is ambiguous, the field adopts no code, and
+        # re-saving would silently re-point the event at the uncoded row.
+        country_in.set_value(_s(snapshot.get("country")) or None,
+                             snapshot.get("country_iso"))
+        state_in.set_value(_s(snapshot.get("state_province")) or None,
+                           snapshot.get("state_province_iso"))
         conf_chk.value = bool(snapshot.get("confidential"))
         recby_state["set_value"](snapshot.get("recorded_by") or None)
         habitat_field["set_value"](snapshot.get("habitat") or None)

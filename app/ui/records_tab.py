@@ -229,8 +229,12 @@ def build_records_tab(session_factory, *, on_saved: callable | None = None) -> N
 
             ev_snap = {
                 "country":                          (ev.country_obj.name if ev and ev.country_obj else None),
+                # ISO codes identify *which* vocab row (Limburg BE-VLI vs NL-LI); without
+                # them a re-save of an ambiguous name would re-point the event (0056).
+                "country_iso":                      (ev.country_obj.iso_code if ev and ev.country_obj else None),
                 "country_code":                     ev.country_code         if ev else None,
                 "state_province":                   (ev.state_province_obj.name if ev and ev.state_province_obj else None),
+                "state_province_iso":               (ev.state_province_obj.iso_code if ev and ev.state_province_obj else None),
                 "administrative_region":            (ev.administrative_region_obj.name if ev and ev.administrative_region_obj else None),
                 "county":                           (ev.county_obj.name if ev and ev.county_obj else None),
                 "municipality":                     ev.municipality         if ev else None,
@@ -276,8 +280,10 @@ def build_records_tab(session_factory, *, on_saved: callable | None = None) -> N
             ]
             ev_snap = {
                 "country":                          ev.country_obj.name if ev.country_obj else None,
+                "country_iso":                      ev.country_obj.iso_code if ev.country_obj else None,
                 "country_code":                     ev.country_code,
                 "state_province":                   ev.state_province_obj.name if ev.state_province_obj else None,
+                "state_province_iso":               ev.state_province_obj.iso_code if ev.state_province_obj else None,
                 "administrative_region":            ev.administrative_region_obj.name if ev.administrative_region_obj else None,
                 "county":                           ev.county_obj.name if ev.county_obj else None,
                 "municipality":                     ev.municipality,

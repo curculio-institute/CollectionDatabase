@@ -52,11 +52,15 @@ def _resolve_geo_fields(session: Session, fields: dict) -> dict:
     # exact match is reused and anything else creates a new row — never a mutation of an
     # existing row, never a refused save. "Limburg" (BE-VLI) and "Limburg" (NL-LI) coexist;
     # a hand-typed uncoded "Limburg" is a third row the user can merge later. Migration 0056.
-    codes = {
-        "state_province": (fields.pop("state_province_iso", "") or "").strip().upper(),
-        # dwc:countryCode stays an event column too — it is the DwC term the export emits.
-        "country": (fields.get("country_code") or "").strip().upper(),
-    }
+    state_iso = (fields.pop("state_province_iso", "") or "").strip().upper()
+    # The country's code may come from the picked vocab row or, failing that, from
+    # dwc:countryCode — which stays an event column because it is the DwC term the export
+    # emits, and is not the vocab row's identity.
+    country_iso = ((fields.pop("country_iso", "") or "").strip().upper()
+                   or (fields.get("country_code") or "").strip().upper())
+    _check_state_inside_country(country_iso, state_iso)
+
+    codes = {"state_province": state_iso, "country": country_iso}
     for name_key, id_key in _GEO_TEXT_TO_FK.items():
         if name_key in fields:
             val = (fields.pop(name_key) or "").strip()
@@ -64,6 +68,23 @@ def _resolve_geo_fields(session: Session, fields: dict) -> dict:
             row = vocabs[name_key].get_or_create(session, val, code=code) if val else None
             fields[id_key] = row.id if row else None
     return fields
+
+
+def _check_state_inside_country(country_iso: str, state_iso: str) -> None:
+    """An ISO 3166-2 code begins with the ISO 3166-1 code of its country, by definition.
+
+    So `DE-BY` in country `GR` is not a matter of taste — it is a contradiction the codes
+    themselves expose, and it means the event names a state outside its country. Refuse the
+    save rather than store an impossible locality (CLAUDE.md §2). Only checked when *both*
+    codes are known; an uncoded row asserts nothing and is left alone.
+    """
+    if not (country_iso and state_iso):
+        return
+    prefix = state_iso.split("-", 1)[0]
+    if prefix != country_iso:
+        raise ValueError(
+            f"stateProvince {state_iso} lies in country {prefix}, not in {country_iso}. "
+            "A state cannot be outside its country — fix the country or the state.")
 
 
 @dataclass(frozen=True)

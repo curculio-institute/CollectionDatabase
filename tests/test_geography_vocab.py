@@ -143,3 +143,61 @@ def test_greek_region_carries_its_iso_code(session):
     session.flush()
     assert session.query(StateProvince).filter_by(
         name="Peloponnese Region").one().iso_code == "GR-J"
+
+
+# ── a state cannot lie outside its country (ISO 3166-2 begins with ISO 3166-1) ────
+
+def test_state_outside_its_country_is_refused(session):
+    import pytest
+    with pytest.raises(ValueError, match="lies in country DE, not in GR"):
+        ev_svc.create_collecting_event(
+            session, country="Greece", country_code="GR",
+            state_province="Bavaria", state_province_iso="DE-BY")
+
+
+def test_matching_country_and_state_codes_save_fine(session):
+    ev = ev_svc.create_collecting_event(
+        session, country="Germany", country_code="DE",
+        state_province="Bavaria", state_province_iso="DE-BY")
+    session.flush()
+    assert ev.state_province_obj.iso_code == "DE-BY"
+
+
+def test_uncoded_levels_assert_nothing_and_are_not_checked(session):
+    """A hand-typed state has no code; it cannot contradict the country."""
+    ev = ev_svc.create_collecting_event(
+        session, country="Greece", country_code="GR", state_province="Bavaria")
+    session.flush()
+    assert ev.state_province_obj.iso_code is None
+
+
+def test_country_iso_from_the_picked_vocab_row_wins_over_countrycode(session):
+    """The dropdown pick identifies the row; dwc:countryCode is only the fallback."""
+    from app.models import Country
+    ev_svc.create_collecting_event(session, country="Germany", country_iso="DE",
+                                   country_code="")
+    session.flush()
+    assert session.query(Country).filter_by(name="Germany").one().iso_code == "DE"
+
+
+# ── Vocabulary.entries(): one tuple per row, never collapsed by name ──────────────
+
+def test_entries_lists_every_row_including_duplicate_names(session):
+    from app.services.vocabularies import state_province_vocab
+    ev_svc.create_collecting_event(session, state_province="Limburg", state_province_iso="BE-VLI")
+    ev_svc.create_collecting_event(session, state_province="Limburg", state_province_iso="NL-LI")
+    session.flush()
+    entries = state_province_vocab.entries(session)
+    assert sorted(e for e in entries if e[0] == "Limburg") == [
+        ("Limburg", "BE-VLI"), ("Limburg", "NL-LI")]
+    # options() *does* collapse them — which is why the widget uses entries()
+    assert list(state_province_vocab.options(session)).count("Limburg") == 1
+
+
+def test_display_label_shows_the_code(session):
+    from app.models import StateProvince
+    from app.services.vocabularies import state_province_vocab
+    ev_svc.create_collecting_event(session, state_province="Limburg", state_province_iso="NL-LI")
+    session.flush()
+    row = session.query(StateProvince).filter_by(name="Limburg").one()
+    assert state_province_vocab.display_label(row) == "Limburg (NL-LI)"

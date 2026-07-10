@@ -134,6 +134,17 @@ class Vocabulary:
         code = getattr(obj, self.code_attr, None) if self.code_attr else None
         return f"{name} ({code})" if code else name
 
+    def entries(self, session: Session) -> list[tuple[str, str | None]]:
+        """[(name, code)] for the dropdown widget — one tuple per *row*, not per name.
+
+        Unlike ``options()`` this never collapses two same-named rows: the widget must be
+        able to offer "Limburg (BE-VLI)" and "Limburg (NL-LI)" as distinct picks, because
+        choosing one has to be unambiguous at save time.
+        """
+        return [(self._name(o),
+                 getattr(o, self.code_attr) if self.code_attr else None)
+                for o in self.list(session)]
+
     # ── writes ────────────────────────────────────────────────────────────────
 
     def get_or_create(self, session: Session, name: str, *, code: str | None = None):
