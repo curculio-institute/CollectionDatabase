@@ -153,12 +153,16 @@ def delete_stored_file(relative_path: str) -> None:
 
 # ── Repository layer (DB rows + bytes together) ──────────────────────────────────────
 
-def _get_or_create_media(session: Session, meta: dict) -> Media:
-    """Find an existing Media row by sha256 (content already de-duped on disk) or create
-    one from a metadata dict produced by store_bytes/store_file."""
+def _get_or_create_media(session: Session, meta: dict) -> tuple[Media, bool]:
+    """Find an existing Media row by sha256, else create one. Returns ``(media, created)``.
+
+    ``created`` matters: an existing asset's user metadata (licence / rightsHolder /
+    category) belongs to the *photograph* and must not be rewritten just because it is being
+    attached somewhere else — see ``attach_stored``.
+    """
     existing = session.scalar(select(Media).where(Media.sha256 == meta["sha256"]))
     if existing is not None:
-        return existing
+        return existing, False
     media = Media(
         sha256=meta["sha256"],
         relative_path=meta["relative_path"],
@@ -171,7 +175,7 @@ def _get_or_create_media(session: Session, meta: dict) -> Media:
     )
     session.add(media)
     session.flush()
-    return media
+    return media, True
 
 
 def add_attachment(
@@ -190,7 +194,7 @@ def add_attachment(
     if target_kind not in TARGET_FK:
         raise ValueError(f"unknown target_kind {target_kind!r}")
     meta = store_bytes(data, filename)
-    media = _get_or_create_media(session, meta)
+    media, _created = _get_or_create_media(session, meta)
     att = MediaAttachment(media_id=media.id, caption=caption)
     setattr(att, TARGET_FK[target_kind], target_id)
     session.add(att)
@@ -212,16 +216,28 @@ def attach_stored(
 ) -> MediaAttachment:
     """Attach a file that is **already in the store** (its bytes were written earlier,
     e.g. staged during Digitize before the record existed). ``meta`` is the dict returned
-    by store_bytes/store_file. Creates the media row if absent and applies metadata."""
+    by store_bytes/store_file. Creates the media row if absent.
+
+    **Metadata is applied only when the media row is created (#63).** `license`,
+    `rights_holder_id` and `category` describe the *photograph*, not the record it is
+    attached to: a photo licensed CC-BY 4.0 keeps that licence whether it illustrates one
+    event or three. The store is content-addressed, so re-attaching byte-identical content
+    resolves to the *existing* row — and writing the upload form's values onto it silently
+    rewrote the licence/rightsHolder of every record already using that photograph. An
+    asset's metadata is changed deliberately, via ``update_media``, never as a side effect
+    of attaching it somewhere else. Per-usage fields (caption, is_primary) live on the
+    attachment and are always set.
+    """
     if target_kind not in TARGET_FK:
         raise ValueError(f"unknown target_kind {target_kind!r}")
-    media = _get_or_create_media(session, meta)
-    if category:
-        media.category = category
-    if license is not None:
-        media.license = license
-    if rights_holder_id is not None:
-        media.rights_holder_id = rights_holder_id
+    media, created = _get_or_create_media(session, meta)
+    if created:
+        if category:
+            media.category = category
+        if license is not None:
+            media.license = license
+        if rights_holder_id is not None:
+            media.rights_holder_id = rights_holder_id
     att = MediaAttachment(media_id=media.id, caption=caption, is_primary=is_primary)
     setattr(att, TARGET_FK[target_kind], target_id)
     session.add(att)
@@ -271,20 +287,44 @@ def update_attachment(session: Session, attachment_id: int, *, caption: Optional
         att.caption = caption
 
 
-def delete_attachment(session: Session, attachment_id: int) -> None:
-    """Remove an attachment. If its Media is left with no attachments, delete the Media
-    row and its on-disk bytes too (content no longer referenced)."""
+def delete_attachment(session: Session, attachment_id: int) -> Optional[str]:
+    """Remove an attachment; drop the Media row too when nothing references it any more.
+
+    Returns the **relative path of the now-orphaned bytes**, or None when the content is
+    still referenced (or nothing was deleted). The caller must unlink it with
+    ``delete_stored_file`` *after* the transaction commits — see ``delete_attachment_and_file``.
+
+    The bytes are deliberately NOT unlinked here (#63). Deleting a file inside an open
+    transaction is irreversible while the DB half is not: if the commit then fails, the
+    `media` row rolls back into existence and points at content that no longer exists. A
+    row without its bytes is unrecoverable; an orphaned file is a tidy-up job.
+    """
     att = session.get(MediaAttachment, attachment_id)
     if att is None:
-        return
+        return None
     media = att.media
     session.delete(att)
     session.flush()
     remaining = session.scalar(
         select(MediaAttachment.id).where(MediaAttachment.media_id == media.id)
     )
-    if remaining is None:
-        rel = media.relative_path
-        session.delete(media)
-        session.flush()
+    if remaining is not None:
+        return None
+    rel = media.relative_path
+    session.delete(media)
+    session.flush()
+    return rel
+
+
+def delete_attachment_and_file(session_factory, attachment_id: int) -> None:
+    """Delete an attachment, committing the DB change *before* unlinking the bytes.
+
+    The safe order: commit, then unlink. A crash between the two leaves an orphaned file,
+    which `verify_integrity` / an orphan sweep can find; the reverse order leaves a media
+    row pointing at nothing, which nothing can repair.
+    """
+    with session_factory() as s:
+        with s.begin():
+            rel = delete_attachment(s, attachment_id)
+    if rel:
         delete_stored_file(rel)

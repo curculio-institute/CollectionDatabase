@@ -167,9 +167,9 @@ def build_media_button(
         if staged:
             staged_items.pop(e["key"])
         else:
-            with session_factory() as s:
-                with s.begin():
-                    media_svc.delete_attachment(s, e["att_id"])
+            # Commits the row deletion, then unlinks the orphaned bytes — never the other
+            # way round, or a failed commit leaves a media row pointing at nothing (#63).
+            media_svc.delete_attachment_and_file(session_factory, e["att_id"])
         _rebuild()
         refresh()
         if on_change:

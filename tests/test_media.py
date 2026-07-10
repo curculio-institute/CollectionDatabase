@@ -56,11 +56,15 @@ def test_attach_list_and_delete_cleans_up(media_env):
     rel = rows[0].media.relative_path
     assert media_svc.abs_path(rel).is_file()
 
-    # deleting the only attachment removes the orphaned media row + bytes
-    media_svc.delete_attachment(s, att.id)
+    # Deleting the only attachment removes the orphaned media row and REPORTS the bytes;
+    # unlinking is the caller's job, after the commit (#63).
+    orphaned = media_svc.delete_attachment(s, att.id)
     s.flush()
     assert media_svc.list_attachments(s, target_kind="collecting_event", target_id=ev.id) == []
     assert s.query(Media).count() == 0
+    assert orphaned == rel
+    assert media_svc.abs_path(rel).is_file()      # still there — not yet committed
+    media_svc.delete_stored_file(orphaned)
     assert not media_svc.abs_path(rel).is_file()
 
 
@@ -122,6 +126,74 @@ def test_shared_media_not_deleted_while_referenced(media_env):
     s.flush()
     assert s.query(Media).count() == 1          # de-duped to one asset
     rel = s.get(Media, a1.media_id).relative_path
-    media_svc.delete_attachment(s, a1.id); s.flush()
-    assert s.query(Media).count() == 1          # still referenced by a2
+    orphaned = media_svc.delete_attachment(s, a1.id); s.flush()
+    assert orphaned is None                     # content still referenced by a2
+    assert s.query(Media).count() == 1
     assert media_svc.abs_path(rel).is_file()
+
+
+# ── #63: attaching must not rewrite a shared asset's metadata ────────────────────
+# The store is content-addressed, so byte-identical content resolves to ONE media row.
+# licence / rightsHolder / category describe the photograph, not the record it hangs off.
+
+def test_attaching_shared_content_does_not_clobber_its_metadata(media_env):
+    s, _ = media_env
+    e1 = CollectingEvent(locality="Staffelsee")
+    e2 = CollectingEvent(locality="Staffelsee, 200 m east")
+    s.add_all([e1, e2]); s.flush()
+
+    meta = media_svc.store_bytes(b"one photograph of the shore", "habitat.jpg")
+    media_svc.attach_stored(s, target_kind="collecting_event", target_id=e1.id, meta=meta,
+                            category="Image", license="CC-BY 4.0")
+    s.flush()
+
+    # the SAME photo on a second event — a legitimate case (one place, two events)
+    media_svc.attach_stored(s, target_kind="collecting_event", target_id=e2.id, meta=meta,
+                            category="Document", license="CC0", caption="from the ridge")
+    s.flush()
+
+    assert s.query(Media).count() == 1               # still one asset, still de-duped
+    asset = s.query(Media).one()
+    assert asset.license == "CC-BY 4.0"              # NOT rewritten by the second attach
+    assert asset.category == "Image"
+    # per-usage metadata still lands on the attachment
+    atts = media_svc.list_attachments(s, target_kind="collecting_event", target_id=e2.id)
+    assert atts[0].caption == "from the ridge"
+
+
+def test_new_content_still_gets_its_metadata(media_env):
+    """The guard must not stop a *newly created* asset from receiving its metadata."""
+    s, _ = media_env
+    ev = CollectingEvent(locality="X")
+    s.add(ev); s.flush()
+    meta = media_svc.store_bytes(b"a brand new photo", "new.jpg")
+    media_svc.attach_stored(s, target_kind="collecting_event", target_id=ev.id, meta=meta,
+                            category="Document", license="CC0")
+    s.flush()
+    asset = s.query(Media).one()
+    assert asset.license == "CC0" and asset.category == "Document"
+
+
+# ── #63: a rolled-back delete must not destroy the bytes ─────────────────────────
+
+def test_rollback_after_delete_leaves_the_file_intact(media_env):
+    """delete_attachment reports the orphaned path; it does not unlink inside the tx.
+
+    If it unlinked eagerly, this rollback would restore the media row while its bytes were
+    already gone — a row pointing at nothing, unrecoverable.
+    """
+    s, _ = media_env
+    ev = CollectingEvent(locality="X")
+    s.add(ev); s.flush()
+    att = media_svc.add_attachment(s, target_kind="collecting_event", target_id=ev.id,
+                                   data=b"precious pixels", filename="p.jpg")
+    s.flush()
+    rel = s.get(Media, att.media_id).relative_path
+    sp = s.begin_nested()                       # stand-in for the outer transaction
+
+    orphaned = media_svc.delete_attachment(s, att.id)
+    assert orphaned == rel
+    sp.rollback()                               # the commit "fails"
+
+    assert s.query(Media).count() == 1          # row is back...
+    assert media_svc.abs_path(rel).is_file()    # ...and its bytes were never touched

@@ -349,11 +349,23 @@ storage:
   and `license` are **Tier-2** fields in the media editor (a push_pin inserts the configured
   default): the rightsHolder default is `person_defaults.default_rights_holder_id` (a person,
   in the DB) and the licence default is `config.default_license` (a plain string).
+- **An asset's metadata belongs to the photograph, not to the record it hangs on (#63).**
+  `license` / `rights_holder_id` / `category` live on the shared `media` row and are applied
+  **only when that row is created**. Attaching byte-identical content resolves to the
+  *existing* row (that is the point of the content-addressed store), and writing the upload
+  form's values onto it silently rewrote the licence of every record already using that
+  photograph. Metadata is changed deliberately, via `update_media`. Per-usage fields
+  (`caption`, `is_primary`, `sort_order`) live on `media_attachment` and are always set.
+  Sharing one photo across several *events* is legitimate — one place, two nearby events.
 - Deleting the last attachment of a media asset removes the orphaned `media` row **and**
-  its on-disk bytes (`media.delete_attachment`); shared content is kept while still
-  referenced. Snapshots cover the `.db` only — `data/media/` is backed up separately, and
-  a rolled-back upload can leave an orphan file (bytes are written before the row commits);
-  an orphan-sweep is a planned maintenance action.
+  its on-disk bytes; shared content is kept while still referenced. **Commit first, unlink
+  second** (#63): `delete_attachment()` returns the orphaned relative path without touching
+  the disk, and `delete_attachment_and_file()` unlinks it *after* the transaction commits.
+  Unlinking inside the transaction is irreversible while the DB half is not — a failed commit
+  restored the `media` row pointing at bytes that were already gone, which nothing can repair;
+  an orphaned file is merely a tidy-up job. Snapshots cover the `.db` only — `data/media/` is
+  backed up separately, and a rolled-back upload can still leave an orphan file (bytes are
+  written before the row commits); an orphan-sweep is a planned maintenance action.
 - **UI is an icon + popup** (`app/ui/media_panel.py` → `build_media_button`): a compact
   button with a **count badge** opens a popup with **batch upload** (many files at once),
   a category filter, and per-item category / primary / delete / details (rightsHolder,
