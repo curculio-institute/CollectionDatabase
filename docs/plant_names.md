@@ -73,7 +73,7 @@ static Darwin Core Archive, which is also the access route the paper above cites
 | `wcvp.sqlite` | The lookup index built from it. Read-only; the app never writes to it. |
 | `README.md` | Generated at install time: release, source, archive SHA-256, citation, licence. |
 
-Keeping the archive costs 85 MB and buys three things: the folder is self-describing, the
+Keeping the archive costs ~88 MB and buys three things: the folder is self-describing, the
 index can be rebuilt with **no network**, and the bytes it came from can be checked against
 the recorded hash.
 
@@ -87,17 +87,17 @@ why installing one is a button, not a shell command.
 
 | | |
 |---|---|
-| Source | `http://sftp.kew.org/pub/data-repositories/WCVP/wcvp_dwca.zip` (85 MB) |
+| Source | `http://sftp.kew.org/pub/data-repositories/WCVP/wcvp_dwca.zip` (~88 MB) |
 | Superseded releases | `…/Archive/wcvp_dwca_v<major>.zip` (verified v10–v15) |
 | Licence | CC BY 3.0 — attribution required wherever the data is redistributed |
 | Contents | 1 448 984 names, ranks Genus and below |
-| Build | ~16 s → 258 MB index (+ 85 MB archive kept) |
+| Build | ~16 s → 258 MB index (+ the ~88 MB archive, kept) |
 | Search | 0.1–0.8 ms per keystroke (`name COLLATE NOCASE` index) |
 
 ### Getting it
 
 **Settings → Plant names (WCVP) → “Download and install”.** It fetches Kew's archive with a
-progress readout and builds the index into the active collection's `data/` folder — no shell,
+progress readout naming the URL and the size the server reports and builds the index into the active collection's `data/` folder — no shell,
 no file to move. The same button reads “Re-download and rebuild” once an index is present.
 
 The index lives **inside `data/`**, beside the collection it serves, so a data folder is one

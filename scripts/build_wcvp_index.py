@@ -25,13 +25,18 @@ from app import config
 from app.services import wcvp
 
 
-def _progress(phase: str, frac) -> None:
-    """One-line CLI progress, mirroring what the Settings card shows."""
+def _progress(phase: str, done: int, total: int | None) -> None:
+    """One-line CLI progress, mirroring what the Settings card shows.
+
+    The size comes from the server, never from a constant: the archive is whatever Kew is
+    serving today.
+    """
     if phase == "download":
-        pct = f"{100 * frac:5.1f}%" if frac is not None else "…"
-        print(f"\r  downloading… {pct}", end="", flush=True)
+        got = (f"{100 * done / total:5.1f}% of {total / 1e6:.0f} MB" if total
+               else f"{done / 1e6:.0f} MB")
+        print(f"\r  downloading… {got}", end="", flush=True)
     else:
-        print("\r  downloading… done ")
+        print("\r  downloading… done" + " " * 20)
         print("  building index…")
 
 

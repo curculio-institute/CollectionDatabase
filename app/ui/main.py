@@ -2603,7 +2603,7 @@ def index():
             ).classes("text-xs mb-2").style("color:var(--tp-base-soft)")
 
             _wcvp_status = ui.label().classes("text-xs")
-            _wcvp_remote = ui.label().classes("text-xs mt-1")
+            _wcvp_remote = ui.label().classes("text-xs mt-1 break-all")
 
             def _wcvp_refresh_installed() -> str | None:
                 """Installed release label, or None. Reads the index file, never the network."""
@@ -2614,7 +2614,7 @@ def index():
                         "Not installed — plant search is unavailable."
                     )
                     _wcvp_status.style("color:var(--tp-base-soft)")
-                    _wcvp_install_btn.set_text("Download and install (85 MB)")
+                    _wcvp_install_btn.set_text("Download and install")
                     return None
                 meta = wcvp_svc.index_meta(db)
                 db.close()
@@ -2639,15 +2639,23 @@ def index():
 
                 # Progress is written from a worker thread; the UI reads it on a timer. Never
                 # touch UI elements from the thread itself.
-                state = {"phase": "download", "frac": 0.0}
+                state = {"phase": "download", "done": 0, "total": None}
 
-                def _progress(phase: str, frac) -> None:
-                    state["phase"], state["frac"] = phase, frac
+                def _progress(phase: str, done: int, total: int | None) -> None:
+                    state["phase"], state["done"], state["total"] = phase, done, total
 
                 def _tick() -> None:
                     if state["phase"] == "download":
-                        pct = f"{100 * state['frac']:.0f}%" if state["frac"] is not None else "…"
-                        _wcvp_remote.set_text(f"Downloading Kew's archive… {pct}")
+                        # Name the URL, and report the size the SERVER gives us. The archive
+                        # is whatever Kew is serving today; a size baked into this source
+                        # would be a guess that goes stale at the next release.
+                        done, total = state["done"], state["total"]
+                        if total:
+                            got = f"{100 * done / total:.0f}% of {total / 1e6:.0f} MB"
+                        else:
+                            got = f"{done / 1e6:.0f} MB"
+                        _wcvp_remote.set_text(
+                            f"Downloading from {wcvp_svc.WCVP_DWCA_URL} — {got}")
                     else:
                         _wcvp_remote.set_text("Building the index… (about 15 seconds)")
                     _wcvp_remote.style("color:var(--tp-base-soft)")
@@ -2682,15 +2690,15 @@ def index():
 
             with ui.row().classes("gap-2 mt-1"):
                 _wcvp_install_btn = (
-                    ui.button("Download and install (85 MB)", on_click=_wcvp_install)
+                    ui.button("Download and install", on_click=_wcvp_install)
                     .props("flat dense no-caps size=sm")
                     .tooltip("Downloads Kew's archive into this collection's data folder "
-                             "and builds the index (~15 s)")
+                             "and builds the index. The size is reported as it downloads.")
                 )
                 _wcvp_check_btn = (
                     ui.button("Check for a new release", on_click=lambda: _wcvp_check_update())
                     .props("flat dense no-caps size=sm")
-                    .tooltip("Downloads ~32 KB, not the 85 MB archive")
+                    .tooltip("Downloads ~32 KB, not the whole archive")
                 )
 
             _wcvp_refresh_installed()
