@@ -16,367 +16,408 @@ def build_controlled_vocab_tab(session_factory, *, on_person_changed=None) -> No
         with session_factory() as s:
             return fn(s)
 
-    # ── People ───────────────────────────────────────────────────────────────
-    with ui.card().classes("w-full shadow-sm"):
-        with ui.row().classes("items-center gap-2 mb-1"):
-            ui.label("People").classes("section-label")
-            ui.label(
-                "Names used in identifiedBy and recordedBy fields."
-            ).classes("text-sm").style("color:var(--tp-base-soft)")
+    # ── Section tabs ─────────────────────────────────────────────────────────
+    # One card per tab rather than a single long scroll: these lists (people, countries,
+    # states) grow without bound. Always on — unlike the Digitize stepper, which is a
+    # layout preference, this is the only layout.
+    #
+    # NiceGUI's own tabs, deliberately NOT the Digitize `.tp-stepper-bar` chips: that bar
+    # is driven by a global keydown handler that grabs `document.querySelector(
+    # '.tp-stepper-bar')` — the FIRST such bar on the page. Reusing the class in this
+    # single-page app would let one bar steal the other's ←/→ keys.
+    _sections: list[tuple[str, str]] = (
+        [("people", "People"), ("repository", "Collections / Institutions")]
+        + [(spec.key, spec.title) for spec in VOCAB_REGISTRY]
+    )
+    _keys = [k for k, _ in _sections]
 
-        ui.separator().classes("mb-3")
+    # Labelled, not bare chevrons: Quasar renders its own ‹ › arrows *inside* the bar to
+    # scroll the tab strip when it overflows. Two unlabelled arrow pairs side by side read
+    # as one control with two meanings.
+    with ui.row().classes("w-full items-center gap-2 mb-2 flex-nowrap"):
+        prev_btn = ui.button("Prev", icon="chevron_left") \
+            .props("flat dense no-caps").tooltip("Previous section (wraps around)")
+        with ui.tabs().props("dense inline-label outside-arrows mobile-arrows") \
+                .classes("flex-1 min-w-0") as section_tabs:
+            for _key, _title in _sections:
+                ui.tab(_key, label=_title)
+        next_btn = ui.button("Next", icon="chevron_right") \
+            .props("flat dense no-caps icon-right").tooltip("Next section (wraps around)")
 
-        def _load_rows() -> list[dict]:
-            people = _with_session(persons_svc.list_persons)
-            return [
-                {
-                    "id":      str(p.id),
-                    "full":    p.full_name,
-                    "abbr":    p.abbreviated_name or "",
-                    "orcid":   p.orcid or "",
-                    "conf":    "🔒" if p.confidential else "",
-                    "consent": "✅" if p.consent_approved else "",
-                }
-                for p in people
-            ]
+    def _cycle(step: int) -> None:
+        """Wrap around, so the sections form a ring the user can circle through."""
+        cur = section_tabs.value or _keys[0]
+        idx = (_keys.index(cur) + step) % len(_keys)
+        section_tabs.set_value(_keys[idx])
 
-        people_table = ui.table(
-            columns=[
-                {"name": "full",  "label": "Full name",        "field": "full",  "align": "left", "sortable": True},
-                {"name": "abbr",  "label": "Abbreviated name",  "field": "abbr",  "align": "left"},
-                {"name": "orcid", "label": "ORCID",             "field": "orcid", "align": "left"},
-                {"name": "consent", "label": "Consented", "field": "consent", "align": "center"},
-                {"name": "conf",  "label": "Confidential",      "field": "conf",  "align": "center"},
-                {"name": "actions", "label": "", "field": "actions", "align": "right"},
-            ],
-            rows=_load_rows(),
-            row_key="id",
-        ).classes("w-full").props("flat dense")
+    prev_btn.on_click(lambda: _cycle(-1))
+    next_btn.on_click(lambda: _cycle(+1))
 
-        # edit → merge → delete
-        people_table.add_slot("body-cell-actions", """
-            <q-td :props="props">
-                <q-btn flat dense round icon="edit" size="xs"
-                    @click="$parent.$emit('edit', props.row)" />
-                <q-btn flat dense round icon="merge_type" size="sm"
-                    style="color: #f97316"
-                    @click="$parent.$emit('merge', props.row)"
-                    title="Merge with another person" />
-                <q-btn flat dense round icon="delete" size="xs" color="negative"
-                    @click="$parent.$emit('delete', props.row)" />
-            </q-td>
-        """)
+    with ui.tab_panels(section_tabs, value=_keys[0]).classes("w-full").props("keep-alive"):
+        with ui.tab_panel("people").classes("p-0"):
+            # ── People ───────────────────────────────────────────────────────────────
+            with ui.card().classes("w-full shadow-sm"):
+                with ui.row().classes("items-center gap-2 mb-1"):
+                    ui.label("People").classes("section-label")
+                    ui.label(
+                        "Names used in identifiedBy and recordedBy fields."
+                    ).classes("text-sm").style("color:var(--tp-base-soft)")
 
-        def _refresh_table():
-            people_table.rows = _load_rows()
-            people_table.update()
+                ui.separator().classes("mb-3")
 
-        ui.timer(2.0, _refresh_table)
+                def _load_rows() -> list[dict]:
+                    people = _with_session(persons_svc.list_persons)
+                    return [
+                        {
+                            "id":      str(p.id),
+                            "full":    p.full_name,
+                            "abbr":    p.abbreviated_name or "",
+                            "orcid":   p.orcid or "",
+                            "conf":    "🔒" if p.confidential else "",
+                            "consent": "✅" if p.consent_approved else "",
+                        }
+                        for p in people
+                    ]
 
-        # ── Edit dialog ───────────────────────────────────────────────────
-        edit_state: dict = {"id": None}
+                people_table = ui.table(
+                    columns=[
+                        {"name": "full",  "label": "Full name",        "field": "full",  "align": "left", "sortable": True},
+                        {"name": "abbr",  "label": "Abbreviated name",  "field": "abbr",  "align": "left"},
+                        {"name": "orcid", "label": "ORCID",             "field": "orcid", "align": "left"},
+                        {"name": "consent", "label": "Consented", "field": "consent", "align": "center"},
+                        {"name": "conf",  "label": "Confidential",      "field": "conf",  "align": "center"},
+                        {"name": "actions", "label": "", "field": "actions", "align": "right"},
+                    ],
+                    rows=_load_rows(),
+                    row_key="id",
+                ).classes("w-full").props("flat dense")
 
-        with ui.dialog() as edit_dialog, ui.card().classes("w-96"):
-            ui.label("Edit person").classes("section-label mb-2")
-            dlg_full  = ui.input("Full name *").classes("w-full")
-            dlg_abbr  = ui.input("Abbreviated name", placeholder="J. Doe").classes("w-full mt-2")
-            dlg_orcid = ui.input("ORCID", placeholder="https://orcid.org/0000-0000-0000-0000").classes("w-full mt-2")
-            dlg_consent = (
-                ui.checkbox("Consented — export with name")
-                .props("dense").classes("mt-2")
-                .tooltip("The person was asked and agreed to be published WITH their "
-                         "name. A record that consent was obtained.")
-            )
-            dlg_conf  = (
-                ui.checkbox("Confidential — obscure this name on export")
-                .props("dense")
-                .tooltip("On DwC export, this person's name is replaced with the "
-                         "generic privacy label wherever they appear as recordedBy / "
-                         "identifiedBy. The records themselves are still exported.")
-            )
-            # Mutually exclusive — opposite export choices.
-            dlg_consent.on_value_change(
-                lambda e: e.value and dlg_conf.set_value(False))
-            dlg_conf.on_value_change(
-                lambda e: e.value and dlg_consent.set_value(False))
+                # edit → merge → delete
+                people_table.add_slot("body-cell-actions", """
+                    <q-td :props="props">
+                        <q-btn flat dense round icon="edit" size="xs"
+                            @click="$parent.$emit('edit', props.row)" />
+                        <q-btn flat dense round icon="merge_type" size="sm"
+                            style="color: #f97316"
+                            @click="$parent.$emit('merge', props.row)"
+                            title="Merge with another person" />
+                        <q-btn flat dense round icon="delete" size="xs" color="negative"
+                            @click="$parent.$emit('delete', props.row)" />
+                    </q-td>
+                """)
 
-            def _save_edit():
-                if not dlg_full.value.strip():
-                    ui.notify("Full name is required.", type="warning")
-                    return
-                try:
-                    with session_factory() as s:
-                        with s.begin():
-                            persons_svc.update_person(
-                                s, edit_state["id"],
-                                full_name=dlg_full.value,
-                                abbreviated_name=dlg_abbr.value or None,
-                                orcid=dlg_orcid.value or None,
-                                confidential=dlg_conf.value,
-                                consent_approved=dlg_consent.value,
-                            )
-                    edit_dialog.close()
-                    _refresh_table()
-                    if on_person_changed:
-                        on_person_changed()
-                    ui.notify("Person updated.", type="positive")
-                except Exception as exc:
-                    ui.notify(f"Failed: {exc}", type="negative")
+                def _refresh_table():
+                    people_table.rows = _load_rows()
+                    people_table.update()
 
-            with ui.row().classes("w-full justify-end gap-2 mt-3"):
-                ui.button("Cancel", on_click=edit_dialog.close).props("flat no-caps")
-                ui.button("Save", on_click=_save_edit).props("no-caps color=secondary")
+                ui.timer(2.0, _refresh_table)
 
-        def _open_edit(row: dict):
-            edit_state["id"] = int(row["id"])
-            dlg_full.value   = row["full"]
-            dlg_abbr.value   = row["abbr"]
-            dlg_orcid.value  = row["orcid"]
-            dlg_conf.value    = bool(row.get("conf"))
-            dlg_consent.value = bool(row.get("consent"))
-            edit_dialog.open()
+                # ── Edit dialog ───────────────────────────────────────────────────
+                edit_state: dict = {"id": None}
 
-        def _delete_person(row: dict):
-            try:
-                with session_factory() as s:
-                    with s.begin():
-                        persons_svc.delete_person(s, int(row["id"]))
-                _refresh_table()
-                if on_person_changed:
-                    on_person_changed()
-                ui.notify("Person deleted.", type="positive")
-            except ValueError as exc:
-                ui.notify(str(exc), type="warning")
-            except Exception as exc:
-                ui.notify(f"Delete failed: {exc}", type="negative")
-
-        # ── Merge dialog ──────────────────────────────────────────────────
-        # Click merge on any row → dialog opens immediately.
-        # Dialog contains an inline picker for the merge target.
-        # Swap button flips which side is absorbed vs. kept.
-        _mctx: dict = {"absorb_id": None, "keep_id": None, "others": {}}
-
-        def _person_label(p) -> str:
-            parts = [p.full_name]
-            if p.abbreviated_name:
-                parts.append(p.abbreviated_name)
-            if p.orcid:
-                parts.append(p.orcid)
-            return " · ".join(parts)
-
-        with ui.dialog() as merge_dialog, ui.card().classes("w-[500px]"):
-            ui.label("Merge persons").classes("section-label mb-4")
-
-            # Header row: absorbed → kept
-            with ui.row().classes("w-full gap-2 items-center"):
-                with ui.column().classes("flex-1 gap-1 min-w-0"):
-                    ui.label("Absorbed — deleted after merge") \
-                        .classes("text-xs uppercase tracking-wide") \
-                        .style("color:#f97316")
-                    merge_absorb_label = ui.label("").classes("font-semibold text-sm truncate")
-
-                ui.icon("arrow_forward").style("color:var(--tp-base-soft); font-size:1.5rem; flex-shrink:0")
-
-                with ui.column().classes("flex-1 gap-1 min-w-0"):
-                    ui.label("Kept — receives all references") \
-                        .classes("text-xs uppercase tracking-wide") \
-                        .style("color:var(--tp-secondary)")
-                    merge_keep_label = ui.label("").classes("font-semibold text-sm truncate")
-
-            # Target list — rebuilt from scratch on every dialog open
-            merge_target_container = ui.element("div").classes("w-full mt-3")
-
-            merge_swap_btn = (
-                ui.button("Swap sides", icon="swap_horiz")
-                .props("flat no-caps dense")
-                .style("color:#f97316")
-                .classes("mt-2")
-            )
-
-            merge_ref_label = (
-                ui.label("")
-                .classes("text-sm mt-2")
-                .style("color:var(--tp-base-soft)")
-            )
-
-            ui.html(
-                '<p style="color:#b45309; font-size:.82rem; margin-top:6px">'
-                "⚠ The absorbed person row will be permanently deleted."
-                "</p>"
-            )
-
-            with ui.row().classes("w-full justify-end gap-2 mt-4"):
-                ui.button("Cancel", on_click=merge_dialog.close).props("flat no-caps")
-                merge_confirm_btn = (
-                    ui.button("Merge", icon="merge_type")
-                    .props("no-caps")
-                    .style("background:#f97316; color:white")
-                )
-
-        def _rebuild_target_list(others: dict[int, str], selected_id: int | None) -> None:
-            """Rebuild the target-person list inside the dialog from scratch."""
-            merge_target_container.clear()
-            with merge_target_container:
-                for pid, label in others.items():
-                    selected = pid == selected_id
-                    row_classes = (
-                        "w-full flex items-center gap-2 px-3 py-2 rounded cursor-pointer "
-                        + ("outline outline-1 outline-secondary bg-secondary/5" if selected else "hover:bg-slate-50 dark:hover:bg-white/5")
+                with ui.dialog() as edit_dialog, ui.card().classes("w-96"):
+                    ui.label("Edit person").classes("section-label mb-2")
+                    dlg_full  = ui.input("Full name *").classes("w-full")
+                    dlg_abbr  = ui.input("Abbreviated name", placeholder="J. Doe").classes("w-full mt-2")
+                    dlg_orcid = ui.input("ORCID", placeholder="https://orcid.org/0000-0000-0000-0000").classes("w-full mt-2")
+                    dlg_consent = (
+                        ui.checkbox("Consented — export with name")
+                        .props("dense").classes("mt-2")
+                        .tooltip("The person was asked and agreed to be published WITH their "
+                                 "name. A record that consent was obtained.")
                     )
-                    row = ui.element("div").classes(row_classes)
-                    with row:
-                        ui.icon("radio_button_checked" if selected else "radio_button_unchecked") \
-                            .style("color:var(--tp-secondary); font-size:1.1rem; flex-shrink:0")
-                        ui.label(label).classes("text-sm truncate")
-                    row.on("click", lambda _, p=pid: _select_keep(p))
+                    dlg_conf  = (
+                        ui.checkbox("Confidential — obscure this name on export")
+                        .props("dense")
+                        .tooltip("On DwC export, this person's name is replaced with the "
+                                 "generic privacy label wherever they appear as recordedBy / "
+                                 "identifiedBy. The records themselves are still exported.")
+                    )
+                    # Mutually exclusive — opposite export choices.
+                    dlg_consent.on_value_change(
+                        lambda e: e.value and dlg_conf.set_value(False))
+                    dlg_conf.on_value_change(
+                        lambda e: e.value and dlg_consent.set_value(False))
 
-        def _select_keep(pid: int) -> None:
-            _mctx["keep_id"] = pid
-            _rebuild_target_list(_mctx["others"], pid)
-            _update_merge_preview()
+                    def _save_edit():
+                        if not dlg_full.value.strip():
+                            ui.notify("Full name is required.", type="warning")
+                            return
+                        try:
+                            with session_factory() as s:
+                                with s.begin():
+                                    persons_svc.update_person(
+                                        s, edit_state["id"],
+                                        full_name=dlg_full.value,
+                                        abbreviated_name=dlg_abbr.value or None,
+                                        orcid=dlg_orcid.value or None,
+                                        confidential=dlg_conf.value,
+                                        consent_approved=dlg_consent.value,
+                                    )
+                            edit_dialog.close()
+                            _refresh_table()
+                            if on_person_changed:
+                                on_person_changed()
+                            ui.notify("Person updated.", type="positive")
+                        except Exception as exc:
+                            ui.notify(f"Failed: {exc}", type="negative")
 
-        def _update_merge_preview() -> None:
-            keep_id   = _mctx["keep_id"]
-            absorb_id = _mctx["absorb_id"]
-            if keep_id is None or absorb_id is None:
-                merge_keep_label.set_text("")
-                merge_ref_label.set_text("")
-                return
-            with session_factory() as s:
-                preview = persons_svc.merge_preview(s, keep_id=keep_id, absorb_id=absorb_id)
-            merge_keep_label.set_text(preview.keep_name)
-            noun = "reference" if preview.reference_count == 1 else "references"
-            merge_ref_label.set_text(
-                f'{preview.reference_count} {noun} will be re-pointed to "{preview.keep_name}".'
-                if preview.reference_count
-                else "No existing references to re-point."
-            )
+                    with ui.row().classes("w-full justify-end gap-2 mt-3"):
+                        ui.button("Cancel", on_click=edit_dialog.close).props("flat no-caps")
+                        ui.button("Save", on_click=_save_edit).props("no-caps color=secondary")
 
-        def _open_merge(row: dict) -> None:
-            absorb_id = int(row["id"])
-            with session_factory() as s:
-                all_people = persons_svc.list_persons(s)
-            others = {p.id: _person_label(p) for p in all_people if p.id != absorb_id}
-            absorb_name = next((p.full_name for p in all_people if p.id == absorb_id), "?")
-            default_keep = next(iter(others), None)
+                def _open_edit(row: dict):
+                    edit_state["id"] = int(row["id"])
+                    dlg_full.value   = row["full"]
+                    dlg_abbr.value   = row["abbr"]
+                    dlg_orcid.value  = row["orcid"]
+                    dlg_conf.value    = bool(row.get("conf"))
+                    dlg_consent.value = bool(row.get("consent"))
+                    edit_dialog.open()
 
-            _mctx["absorb_id"] = absorb_id
-            _mctx["keep_id"]   = default_keep
-            _mctx["others"]    = others
+                def _delete_person(row: dict):
+                    try:
+                        with session_factory() as s:
+                            with s.begin():
+                                persons_svc.delete_person(s, int(row["id"]))
+                        _refresh_table()
+                        if on_person_changed:
+                            on_person_changed()
+                        ui.notify("Person deleted.", type="positive")
+                    except ValueError as exc:
+                        ui.notify(str(exc), type="warning")
+                    except Exception as exc:
+                        ui.notify(f"Delete failed: {exc}", type="negative")
 
-            merge_absorb_label.set_text(absorb_name)
-            _rebuild_target_list(others, default_keep)
-            _update_merge_preview()
-            merge_dialog.open()
+                # ── Merge dialog ──────────────────────────────────────────────────
+                # Click merge on any row → dialog opens immediately.
+                # Dialog contains an inline picker for the merge target.
+                # Swap button flips which side is absorbed vs. kept.
+                _mctx: dict = {"absorb_id": None, "keep_id": None, "others": {}}
 
-        def _swap_merge() -> None:
-            new_absorb = _mctx["keep_id"]
-            new_keep   = _mctx["absorb_id"]
-            if new_absorb is None:
-                return
-            with session_factory() as s:
-                all_people = persons_svc.list_persons(s)
-            others      = {p.id: _person_label(p) for p in all_people if p.id != new_absorb}
-            absorb_name = next((p.full_name for p in all_people if p.id == new_absorb), "?")
-            keep_id     = new_keep if new_keep in others else next(iter(others), None)
+                def _person_label(p) -> str:
+                    parts = [p.full_name]
+                    if p.abbreviated_name:
+                        parts.append(p.abbreviated_name)
+                    if p.orcid:
+                        parts.append(p.orcid)
+                    return " · ".join(parts)
 
-            _mctx["absorb_id"] = new_absorb
-            _mctx["keep_id"]   = keep_id
-            _mctx["others"]    = others
+                with ui.dialog() as merge_dialog, ui.card().classes("w-[500px]"):
+                    ui.label("Merge persons").classes("section-label mb-4")
 
-            merge_absorb_label.set_text(absorb_name)
-            _rebuild_target_list(others, keep_id)
-            _update_merge_preview()
+                    # Header row: absorbed → kept
+                    with ui.row().classes("w-full gap-2 items-center"):
+                        with ui.column().classes("flex-1 gap-1 min-w-0"):
+                            ui.label("Absorbed — deleted after merge") \
+                                .classes("text-xs uppercase tracking-wide") \
+                                .style("color:#f97316")
+                            merge_absorb_label = ui.label("").classes("font-semibold text-sm truncate")
 
-        merge_swap_btn.on_click(_swap_merge)
+                        ui.icon("arrow_forward").style("color:var(--tp-base-soft); font-size:1.5rem; flex-shrink:0")
 
-        def _confirm_merge() -> None:
-            keep_id   = _mctx["keep_id"]
-            absorb_id = _mctx["absorb_id"]
-            if keep_id is None or absorb_id is None or keep_id == absorb_id:
-                ui.notify("Select a target person first.", type="warning")
-                return
-            try:
-                with session_factory() as s:
-                    with s.begin():
-                        persons_svc.merge_persons(s, keep_id=keep_id, absorb_id=absorb_id)
-                merge_dialog.close()
-                _refresh_table()
-                if on_person_changed:
-                    on_person_changed()
-                ui.notify("Persons merged.", type="positive")
-            except ValueError as exc:
-                ui.notify(str(exc), type="warning")
-            except Exception as exc:
-                ui.notify(f"Merge failed: {exc}", type="negative")
+                        with ui.column().classes("flex-1 gap-1 min-w-0"):
+                            ui.label("Kept — receives all references") \
+                                .classes("text-xs uppercase tracking-wide") \
+                                .style("color:var(--tp-secondary)")
+                            merge_keep_label = ui.label("").classes("font-semibold text-sm truncate")
 
-        merge_confirm_btn.on_click(_confirm_merge)
+                    # Target list — rebuilt from scratch on every dialog open
+                    merge_target_container = ui.element("div").classes("w-full mt-3")
 
-        people_table.on("merge",  lambda e: _open_merge(e.args))
-        people_table.on("edit",   lambda e: _open_edit(e.args))
-        people_table.on("delete", lambda e: _delete_person(e.args))
+                    merge_swap_btn = (
+                        ui.button("Swap sides", icon="swap_horiz")
+                        .props("flat no-caps dense")
+                        .style("color:#f97316")
+                        .classes("mt-2")
+                    )
 
-        # ── Add person ────────────────────────────────────────────────────
-        ui.separator().classes("my-3")
-        ui.label("Add person").classes("text-sm font-semibold mb-2")
+                    merge_ref_label = (
+                        ui.label("")
+                        .classes("text-sm mt-2")
+                        .style("color:var(--tp-base-soft)")
+                    )
 
-        with ui.grid(columns=3).classes("w-full gap-3"):
-            add_full  = ui.input("Full name *").classes("col-span-1")
-            add_abbr  = ui.input("Abbreviated name", placeholder="J. Doe").classes("col-span-1")
-            add_orcid = ui.input("ORCID", placeholder="https://orcid.org/0000-0000-0000-0000").classes("col-span-1")
-        with ui.row().classes("items-center gap-4 mt-1"):
-            add_consent = (
-                ui.checkbox("Consented — export with name").props("dense")
-                .tooltip("Asked and agreed to be published with their name.")
-            )
-            add_conf = (
-                ui.checkbox("Confidential — obscure on export").props("dense")
-                .tooltip("Name replaced with the generic privacy label on export.")
-            )
-            add_consent.on_value_change(lambda e: e.value and add_conf.set_value(False))
-            add_conf.on_value_change(lambda e: e.value and add_consent.set_value(False))
+                    ui.html(
+                        '<p style="color:#b45309; font-size:.82rem; margin-top:6px">'
+                        "⚠ The absorbed person row will be permanently deleted."
+                        "</p>"
+                    )
 
-        def _add_person():
-            if not add_full.value.strip():
-                ui.notify("Full name is required.", type="warning")
-                return
-            try:
-                with session_factory() as s:
-                    with s.begin():
-                        persons_svc.create_person(
-                            s,
-                            full_name=add_full.value,
-                            abbreviated_name=add_abbr.value or None,
-                            orcid=add_orcid.value or None,
-                            confidential=add_conf.value,
-                            consent_approved=add_consent.value,
+                    with ui.row().classes("w-full justify-end gap-2 mt-4"):
+                        ui.button("Cancel", on_click=merge_dialog.close).props("flat no-caps")
+                        merge_confirm_btn = (
+                            ui.button("Merge", icon="merge_type")
+                            .props("no-caps")
+                            .style("background:#f97316; color:white")
                         )
-                add_full.value  = ""
-                add_abbr.value  = ""
-                add_orcid.value = ""
-                add_conf.value = False
-                add_consent.value = False
-                _refresh_table()
-                if on_person_changed:
-                    on_person_changed()
-                ui.notify("Person added.", type="positive")
-            except Exception as exc:
-                ui.notify(f"Failed: {exc}", type="negative")
 
-        with ui.row().classes("w-full items-center mt-2"):
-            ui.space()
-            ui.button("Add person", icon="person_add", on_click=_add_person) \
-                .props("flat no-caps color=secondary")
+                def _rebuild_target_list(others: dict[int, str], selected_id: int | None) -> None:
+                    """Rebuild the target-person list inside the dialog from scratch."""
+                    merge_target_container.clear()
+                    with merge_target_container:
+                        for pid, label in others.items():
+                            selected = pid == selected_id
+                            row_classes = (
+                                "w-full flex items-center gap-2 px-3 py-2 rounded cursor-pointer "
+                                + ("outline outline-1 outline-secondary bg-secondary/5" if selected else "hover:bg-slate-50 dark:hover:bg-white/5")
+                            )
+                            row = ui.element("div").classes(row_classes)
+                            with row:
+                                ui.icon("radio_button_checked" if selected else "radio_button_unchecked") \
+                                    .style("color:var(--tp-secondary); font-size:1.1rem; flex-shrink:0")
+                                ui.label(label).classes("text-sm truncate")
+                            row.on("click", lambda _, p=pid: _select_keep(p))
 
-    # ── Collections / institutions ────────────────────────────────────────────
-    _build_repository_card(session_factory)
+                def _select_keep(pid: int) -> None:
+                    _mctx["keep_id"] = pid
+                    _rebuild_target_list(_mctx["others"], pid)
+                    _update_merge_preview()
 
-    # ── Generic single-name vocabularies (preparations, …) ────────────────────
-    # Each registry entry gets its own card with the same edit / merge / delete /
-    # add affordances as People, but for a single ``name`` column. Future single-
-    # name vocabularies appear here automatically (see app/services/vocabularies.py).
-    for spec in VOCAB_REGISTRY:
-        _build_vocab_section(session_factory, spec)
+                def _update_merge_preview() -> None:
+                    keep_id   = _mctx["keep_id"]
+                    absorb_id = _mctx["absorb_id"]
+                    if keep_id is None or absorb_id is None:
+                        merge_keep_label.set_text("")
+                        merge_ref_label.set_text("")
+                        return
+                    with session_factory() as s:
+                        preview = persons_svc.merge_preview(s, keep_id=keep_id, absorb_id=absorb_id)
+                    merge_keep_label.set_text(preview.keep_name)
+                    noun = "reference" if preview.reference_count == 1 else "references"
+                    merge_ref_label.set_text(
+                        f'{preview.reference_count} {noun} will be re-pointed to "{preview.keep_name}".'
+                        if preview.reference_count
+                        else "No existing references to re-point."
+                    )
+
+                def _open_merge(row: dict) -> None:
+                    absorb_id = int(row["id"])
+                    with session_factory() as s:
+                        all_people = persons_svc.list_persons(s)
+                    others = {p.id: _person_label(p) for p in all_people if p.id != absorb_id}
+                    absorb_name = next((p.full_name for p in all_people if p.id == absorb_id), "?")
+                    default_keep = next(iter(others), None)
+
+                    _mctx["absorb_id"] = absorb_id
+                    _mctx["keep_id"]   = default_keep
+                    _mctx["others"]    = others
+
+                    merge_absorb_label.set_text(absorb_name)
+                    _rebuild_target_list(others, default_keep)
+                    _update_merge_preview()
+                    merge_dialog.open()
+
+                def _swap_merge() -> None:
+                    new_absorb = _mctx["keep_id"]
+                    new_keep   = _mctx["absorb_id"]
+                    if new_absorb is None:
+                        return
+                    with session_factory() as s:
+                        all_people = persons_svc.list_persons(s)
+                    others      = {p.id: _person_label(p) for p in all_people if p.id != new_absorb}
+                    absorb_name = next((p.full_name for p in all_people if p.id == new_absorb), "?")
+                    keep_id     = new_keep if new_keep in others else next(iter(others), None)
+
+                    _mctx["absorb_id"] = new_absorb
+                    _mctx["keep_id"]   = keep_id
+                    _mctx["others"]    = others
+
+                    merge_absorb_label.set_text(absorb_name)
+                    _rebuild_target_list(others, keep_id)
+                    _update_merge_preview()
+
+                merge_swap_btn.on_click(_swap_merge)
+
+                def _confirm_merge() -> None:
+                    keep_id   = _mctx["keep_id"]
+                    absorb_id = _mctx["absorb_id"]
+                    if keep_id is None or absorb_id is None or keep_id == absorb_id:
+                        ui.notify("Select a target person first.", type="warning")
+                        return
+                    try:
+                        with session_factory() as s:
+                            with s.begin():
+                                persons_svc.merge_persons(s, keep_id=keep_id, absorb_id=absorb_id)
+                        merge_dialog.close()
+                        _refresh_table()
+                        if on_person_changed:
+                            on_person_changed()
+                        ui.notify("Persons merged.", type="positive")
+                    except ValueError as exc:
+                        ui.notify(str(exc), type="warning")
+                    except Exception as exc:
+                        ui.notify(f"Merge failed: {exc}", type="negative")
+
+                merge_confirm_btn.on_click(_confirm_merge)
+
+                people_table.on("merge",  lambda e: _open_merge(e.args))
+                people_table.on("edit",   lambda e: _open_edit(e.args))
+                people_table.on("delete", lambda e: _delete_person(e.args))
+
+                # ── Add person ────────────────────────────────────────────────────
+                ui.separator().classes("my-3")
+                ui.label("Add person").classes("text-sm font-semibold mb-2")
+
+                with ui.grid(columns=3).classes("w-full gap-3"):
+                    add_full  = ui.input("Full name *").classes("col-span-1")
+                    add_abbr  = ui.input("Abbreviated name", placeholder="J. Doe").classes("col-span-1")
+                    add_orcid = ui.input("ORCID", placeholder="https://orcid.org/0000-0000-0000-0000").classes("col-span-1")
+                with ui.row().classes("items-center gap-4 mt-1"):
+                    add_consent = (
+                        ui.checkbox("Consented — export with name").props("dense")
+                        .tooltip("Asked and agreed to be published with their name.")
+                    )
+                    add_conf = (
+                        ui.checkbox("Confidential — obscure on export").props("dense")
+                        .tooltip("Name replaced with the generic privacy label on export.")
+                    )
+                    add_consent.on_value_change(lambda e: e.value and add_conf.set_value(False))
+                    add_conf.on_value_change(lambda e: e.value and add_consent.set_value(False))
+
+                def _add_person():
+                    if not add_full.value.strip():
+                        ui.notify("Full name is required.", type="warning")
+                        return
+                    try:
+                        with session_factory() as s:
+                            with s.begin():
+                                persons_svc.create_person(
+                                    s,
+                                    full_name=add_full.value,
+                                    abbreviated_name=add_abbr.value or None,
+                                    orcid=add_orcid.value or None,
+                                    confidential=add_conf.value,
+                                    consent_approved=add_consent.value,
+                                )
+                        add_full.value  = ""
+                        add_abbr.value  = ""
+                        add_orcid.value = ""
+                        add_conf.value = False
+                        add_consent.value = False
+                        _refresh_table()
+                        if on_person_changed:
+                            on_person_changed()
+                        ui.notify("Person added.", type="positive")
+                    except Exception as exc:
+                        ui.notify(f"Failed: {exc}", type="negative")
+
+                with ui.row().classes("w-full items-center mt-2"):
+                    ui.space()
+                    ui.button("Add person", icon="person_add", on_click=_add_person) \
+                        .props("flat no-caps color=secondary")
+
+        # ── Collections / institutions ────────────────────────────────────
+        with ui.tab_panel("repository").classes("p-0"):
+            _build_repository_card(session_factory)
+
+        # ── Generic single-name vocabularies (preparations, …) ─────────────
+        # Each registry entry gets its own card with the same edit / merge / delete /
+        # add affordances as People, but for a single ``name`` column. Future single-
+        # name vocabularies appear here automatically (see app/services/vocabularies.py).
+        for spec in VOCAB_REGISTRY:
+            with ui.tab_panel(spec.key).classes("p-0"):
+                _build_vocab_section(session_factory, spec)
 
 
 def _build_repository_card(session_factory) -> None:
