@@ -346,7 +346,7 @@ def build_identification_list(
                         placeholder="YYYY-MM-DD",
                     ).classes("col-span-1")
                     append_year_pin(e_dtid, visible_when_empty=False)
-                    attach_date_validation(e_dtid, no_future=True)
+                    attach_date_validation(e_dtid, no_future=True, allow_interval=True)
                     e_sex = ui.select(
                         _SEX_OPTIONS, label="sex",
                         value=d.get("sex") or "",
@@ -464,7 +464,7 @@ def build_identification_list(
             )
         add_dtid = ui.input("dateIdentified", placeholder="YYYY-MM-DD").classes("w-36")
         append_year_pin(add_dtid)
-        attach_date_validation(add_dtid, no_future=True)
+        attach_date_validation(add_dtid, no_future=True, allow_interval=True)
         add_sex  = ui.select(_SEX_OPTIONS, label="sex").classes("w-28")
         add_type = build_type_status_field(classes="w-36")
         add_qual = ui.input("qualifier", placeholder="cf. / aff.").classes("w-28")

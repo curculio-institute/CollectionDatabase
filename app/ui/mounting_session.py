@@ -107,7 +107,7 @@ def build_mounting_session_section(
                     .classes("w-full mt-2")
                 )
                 append_year_pin(date_in)
-                attach_date_validation(date_in, no_future=True)
+                attach_date_validation(date_in, no_future=True, allow_interval=True)
 
                 with ui.row().classes("w-full flex-wrap gap-2 mt-2"):
                     sex_sel = ui.select(
