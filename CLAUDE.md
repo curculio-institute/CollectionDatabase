@@ -478,8 +478,8 @@ canonical value). Current single-name vocabularies (more may follow — built on
 | disposition | `collection_object.disposition_id` | `disposition` | 0048 | was `dwc:disposition` TEXT + a **closed** CHECK; opened up (#76) so holdings like "loaned to Jeffrey" are recordable. **Seeded** with the former six values. DwC `[Not mapped]` by TW |
 | habitat | `collecting_event.habitat_id` | `habitat` | 0040 | was `dwc:habitat` TEXT |
 | samplingProtocol | `collecting_event.sampling_protocol_id` | `sampling_protocol` | 0040 | was a hardcoded UI list; table **seeded** with the curated set |
-| country | `collecting_event.country_id` | `country` | 0041 | English name (pycountry); `dwc:countryCode` stays per-event |
-| stateProvince | `collecting_event.state_province_id` | `state_province` | 0041 | English name (OSM `name:en`) |
+| country | `collecting_event.country_id` | `country` | 0041, **0056** | English name (OSM `name:en`); **`iso_code`** = ISO 3166-1 (`DE`). `dwc:countryCode` stays per-event (the DwC term the export emits) |
+| stateProvince | `collecting_event.state_province_id` | `state_province` | 0041, **0055/0056** | English name (OSM `name:en`); **`iso_code`** = ISO 3166-2 (`DE-BY`) |
 | administrative region | `collecting_event.administrative_region_id` | `administrative_region` | 0041 | Regierungsbezirk tier; **no DwC term** (local field); local name |
 | county | `collecting_event.county_id` | `county` | 0041 | local name (Landkreis) |
 | island | `collecting_event.island_id` | `island` | 0041 | local name |
@@ -492,6 +492,35 @@ moved to an editable vocab (#76, migration 0048):** it is genuinely user-coined 
 arbitrary holdings like "loaned to Jeffrey"), and DwC `disposition` is `[Not mapped]` by TW, so
 freeform values never reach TaxonWorks — the duplicate/reject risk that keeps the others closed
 doesn't apply.
+
+**A geography vocab row is identified by `(name, iso_code)`, never by name (decided 2026-07-10;
+migration 0056).** A subdivision *name* does not identify a subdivision: of the 5,420 ISO 3166-2
+subdivisions, **40 names are shared across different countries** (checked against Wikidata `P300`)
+— `Limburg` = `BE-VLI` + `NL-LI`, `Punjab` = `IN-PB` + `PK-PB`, `Central Province` = six countries.
+Under `UNIQUE(name)` a Dutch-Limburg specimen either silently reused the Belgian row or, with the
+short-lived fill-once ISO stamp, **refused to save**. Both are wrong.
+
+The rule, applied identically to `country` (ISO 3166-1) and `state_province` (ISO 3166-2):
+
+> **exact match on `(name, iso_code)` → reuse; anything else → create a new row.**
+
+**No existing row is ever mutated to carry a code it did not have, and no save is ever refused.**
+A hand-typed `Limburg` must not be silently declared Dutch by a later geocode; it stays an uncoded
+row, and the user folds it with the **merge tool** if the two really are the same place. Duplicates
+are the *expected*, cheap outcome — merge exists precisely for this.
+
+`UNIQUE(name)` is replaced by a unique index on **`(name, IFNULL(iso_code, ''))`**. The `IFNULL` is
+load-bearing: SQLite treats `NULL != NULL`, so a plain `UNIQUE(name, iso_code)` would let every
+hand-typed save create yet another uncoded duplicate. Result: exactly one uncoded row per name,
+plus one row per distinct code. `Vocabulary(code_attr=…)` implements the match; `display_label()`
+renders `Limburg (NL-LI)` where a bare name would be ambiguous. Existing rows keep `iso_code =
+NULL` and are **not** back-filled — 40 names are ambiguous, so a name→code backfill would be a guess.
+
+Below the first-order subdivision **there is no ISO code**, so `county` / `island` /
+`administrative_region` keep `UNIQUE(name)` and remain wrong in the same way, with no honest fix.
+`municipality` is free text and stays so — *decided*: a vocab there would invite merging
+`Biberbach` into `Biberach`, two real Bavarian places, and the geocoder's `Municipality of Tripoli`
+vs `Tripoli` is a naming problem, not a merge problem.
 
 **Geography is the exception that proves the rule (revised, #40):** the administrative levels
 *are* controlled vocabs — even though they come from geocoding, the geocoder yields

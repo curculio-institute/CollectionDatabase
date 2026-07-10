@@ -79,8 +79,12 @@ SAMPLING_PROTOCOL = VocabSpec(
 # ── Geography facets (administrative hierarchy) ───────────────────────────────
 # Single-name vocabularies on collecting_event so locality values are consistent
 # enough for the faceted Explore search + mergeable (Deutschland → Germany). #40.
-country_vocab = Vocabulary(Country, ref_table="country", noun="country")
-state_province_vocab = Vocabulary(StateProvince, ref_table="state_province", noun="state / province")
+# country + state_province are keyed by (name, iso_code), not name: 40 ISO 3166-2
+# subdivision names are shared across countries (Limburg = BE-VLI + NL-LI). Migration 0056.
+country_vocab = Vocabulary(Country, ref_table="country", noun="country",
+                           code_attr="iso_code")
+state_province_vocab = Vocabulary(StateProvince, ref_table="state_province",
+                                  noun="state / province", code_attr="iso_code")
 county_vocab = Vocabulary(County, ref_table="county", noun="county")
 island_vocab = Vocabulary(Island, ref_table="island", noun="island")
 administrative_region_vocab = Vocabulary(

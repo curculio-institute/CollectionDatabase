@@ -46,15 +46,23 @@ class Vocabulary:
     has_default: whether the model carries an ``is_default`` flag column (at most one
                 row flagged; a partial-unique index enforces it). Enables ``get_default``
                 / ``set_default`` for a Tier-1 autofill default (mirrors repository #83).
+    code_attr:  name of an ISO-code column, if the vocab has one (``country`` /
+                ``state_province``). When set, a row's identity is **(name, code)**, not
+                the name — because 40 ISO 3166-2 subdivision names are shared across
+                countries (Limburg = BE-VLI + NL-LI). ``get_or_create`` then matches on
+                both, and creates rather than reusing a row with a different code.
+                Migration 0056.
     """
 
     def __init__(self, model, *, ref_table: str, name_attr: str = "name",
-                 noun: str = "entry", has_default: bool = False):
+                 noun: str = "entry", has_default: bool = False,
+                 code_attr: str | None = None):
         self.model = model
         self.ref_table = ref_table
         self.name_attr = name_attr
         self.noun = noun
         self.has_default = has_default
+        self.code_attr = code_attr
 
     # ── name helpers ──────────────────────────────────────────────────────────
 
@@ -106,13 +114,30 @@ class Vocabulary:
         return session.query(self.model).order_by(self._name_col()).all()
 
     def options(self, session: Session) -> dict[str, str]:
-        """{name: name} for ui.select / the vocab dropdown widget."""
+        """{name: name} for ui.select / the vocab dropdown widget.
+
+        Keys are the plain names — `vocab_field` matches typed text against them, so they
+        must not be decorated. A code-bearing vocab can hold two rows with the same name
+        (Limburg BE-VLI / NL-LI); they collapse to one key here, which is why such vocabs
+        are rendered from ``list()`` + ``display_label()`` in the Controlled Vocabularies
+        card, not from this dict.
+        """
         return {self._name(o): self._name(o) for o in self.list(session)}
+
+    def display_label(self, obj) -> str:
+        """Name, suffixed with the ISO code when the vocab has one — "Limburg (NL-LI)".
+
+        Two rows may legitimately share a name (see ``code_attr``); the code is the only
+        thing that tells them apart in a list.
+        """
+        name = self._name(obj)
+        code = getattr(obj, self.code_attr, None) if self.code_attr else None
+        return f"{name} ({code})" if code else name
 
     # ── writes ────────────────────────────────────────────────────────────────
 
-    def get_or_create(self, session: Session, name: str):
-        """Return the existing row with this name, or create one.
+    def get_or_create(self, session: Session, name: str, *, code: str | None = None):
+        """Return the existing row matching this entry, or create one.
 
         Safe to call repeatedly in one transaction — the flush in ``create``
         makes the new row visible so a second call finds it instead of hitting
@@ -121,20 +146,34 @@ class Vocabulary:
         Matching is **case-insensitive** so a geocoder's ``"Germany"`` and a
         hand-typed ``"germany"`` resolve to the same canonical row instead of
         creating a case-variant duplicate (#73). The first-created spelling
-        stays canonical; later differently-cased inputs reuse it."""
+        stays canonical; later differently-cased inputs reuse it.
+
+        For a code-bearing vocab (``code_attr``), identity is **(name, code)**:
+        an exact match is reused, anything else creates a new row. An existing
+        row is **never mutated** to carry a code it did not have — a hand-typed
+        ``Limburg`` must not be silently declared Dutch. Two rows that do turn
+        out to mean the same place are folded with ``merge``.
+        """
         clean = (name or "").strip()
-        existing = (
-            session.query(self.model)
-            .filter(func.lower(self._name_col()) == clean.lower())
-            .first()
-        )
+        q = session.query(self.model).filter(func.lower(self._name_col()) == clean.lower())
+        if self.code_attr:
+            clean_code = (code or "").strip().upper() or None
+            col = getattr(self.model, self.code_attr)
+            q = q.filter(col.is_(None) if clean_code is None else col == clean_code)
+            existing = q.first()
+            if existing:
+                return existing
+            return self.create(session, name=clean, code=clean_code)
+        existing = q.first()
         if existing:
             return existing
         return self.create(session, name=clean)
 
-    def create(self, session: Session, *, name: str):
+    def create(self, session: Session, *, name: str, code: str | None = None):
         obj = self.model(created_at=_utcnow(), updated_at=_utcnow())
         setattr(obj, self.name_attr, (name or "").strip())
+        if self.code_attr:
+            setattr(obj, self.code_attr, (code or "").strip().upper() or None)
         session.add(obj)
         session.flush()
         return obj

@@ -61,11 +61,11 @@ def test_search_event_by_state_province_name(session):
     assert len(hits) >= 1
 
 
-# ── stateProvince ISO 3166-2 code (migration 0055) ──────────────────────────────
-# The code is a property of the state, not of the event, so it lives once on the vocab
-# row. The geocoder identifies the state *by* this tag and now carries it through.
+# ── country / stateProvince identity is (name, iso_code) — migrations 0055 + 0056 ────
+# A subdivision NAME does not identify a subdivision: 40 of the 5,420 ISO 3166-2 names are
+# shared across countries. Exact match on (name, code) reuses; anything else creates.
 
-def test_state_iso_code_is_stamped_on_the_vocab_row(session):
+def test_state_iso_code_is_stamped_on_a_new_vocab_row(session):
     ev_svc.create_collecting_event(
         session, country="Germany", state_province="Bavaria",
         state_province_iso="DE-BY", locality="Uffing")
@@ -81,29 +81,58 @@ def test_state_iso_code_is_not_an_event_column(session):
     assert not hasattr(ev, "state_province_iso")
 
 
-def test_state_iso_code_is_optional(session):
-    """Existing rows have no code; a save without one must not fail or blank it."""
-    ev_svc.create_collecting_event(session, state_province="Hesse")
+def test_same_name_different_country_gets_its_own_row(session):
+    """Limburg is BE-VLI *and* NL-LI. Forcing them into one row loses a real place."""
+    ev_svc.create_collecting_event(session, country="Belgium", state_province="Limburg",
+                                   state_province_iso="BE-VLI")
+    ev_svc.create_collecting_event(session, country="Netherlands", state_province="Limburg",
+                                   state_province_iso="NL-LI")
     session.flush()
-    assert session.query(StateProvince).filter_by(name="Hesse").one().iso_code is None
-    # a later save that carries the code fills it in
-    ev_svc.create_collecting_event(session, state_province="Hesse", state_province_iso="DE-HE")
-    session.flush()
-    assert session.query(StateProvince).filter_by(name="Hesse").one().iso_code == "DE-HE"
-    # and a later save WITHOUT a code leaves it intact
-    ev_svc.create_collecting_event(session, state_province="Hesse")
-    session.flush()
-    assert session.query(StateProvince).filter_by(name="Hesse").one().iso_code == "DE-HE"
+    rows = session.query(StateProvince).filter_by(name="Limburg").all()
+    assert sorted(r.iso_code for r in rows) == ["BE-VLI", "NL-LI"]
 
 
-def test_conflicting_state_iso_code_is_refused_loudly(session):
-    """One state name cannot honestly carry two subdivision codes — refuse, never overwrite."""
-    import pytest
+def test_a_save_is_never_refused_by_a_code_conflict(session):
+    """The old fill-once stamp raised here, refusing a legitimate Dutch-Limburg specimen."""
+    ev_svc.create_collecting_event(session, state_province="Punjab", state_province_iso="IN-PB")
+    session.flush()
+    ev = ev_svc.create_collecting_event(session, state_province="Punjab",
+                                        state_province_iso="PK-PB")   # must not raise
+    session.flush()
+    assert ev.state_province_obj.iso_code == "PK-PB"
+    assert session.query(StateProvince).filter_by(name="Punjab").count() == 2
+
+
+def test_exact_match_on_name_and_code_is_reused(session):
+    ev_svc.create_collecting_event(session, state_province="Bavaria", state_province_iso="DE-BY")
     ev_svc.create_collecting_event(session, state_province="Bavaria", state_province_iso="DE-BY")
     session.flush()
-    with pytest.raises(ValueError, match="already recorded as"):
-        ev_svc.create_collecting_event(
-            session, state_province="Bavaria", state_province_iso="DE-BW")
+    assert session.query(StateProvince).filter_by(name="Bavaria").count() == 1
+
+
+def test_an_existing_uncoded_row_is_never_mutated(session):
+    """A hand-typed 'Limburg' must not be silently declared Dutch by a later geocode."""
+    ev_svc.create_collecting_event(session, state_province="Limburg")      # no code
+    session.flush()
+    ev_svc.create_collecting_event(session, state_province="Limburg", state_province_iso="NL-LI")
+    session.flush()
+    rows = session.query(StateProvince).filter_by(name="Limburg").all()
+    assert sorted((r.iso_code or "") for r in rows) == ["", "NL-LI"]      # merge later
+
+
+def test_uncoded_name_does_not_duplicate_endlessly(session):
+    """IFNULL() in the unique index: exactly one uncoded row per name, not one per save."""
+    ev_svc.create_collecting_event(session, state_province="Hesse")
+    ev_svc.create_collecting_event(session, state_province="Hesse")
+    session.flush()
+    assert session.query(StateProvince).filter_by(name="Hesse").count() == 1
+
+
+def test_country_carries_its_iso_code_the_same_way(session):
+    from app.models import Country
+    ev_svc.create_collecting_event(session, country="Germany", country_code="DE")
+    session.flush()
+    assert session.query(Country).filter_by(name="Germany").one().iso_code == "DE"
 
 
 def test_greek_region_carries_its_iso_code(session):
@@ -112,5 +141,5 @@ def test_greek_region_carries_its_iso_code(session):
         session, country="Greece", state_province="Peloponnese Region",
         state_province_iso="GR-J", locality="Tripoli")
     session.flush()
-    row = session.query(StateProvince).filter_by(name="Peloponnese Region").one()
-    assert row.iso_code == "GR-J"
+    assert session.query(StateProvince).filter_by(
+        name="Peloponnese Region").one().iso_code == "GR-J"

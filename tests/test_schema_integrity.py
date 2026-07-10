@@ -29,6 +29,12 @@ STRICT_TABLES = sorted({
     "external_identifier",  # 0037
     "life_stage_record",  # 0038
     "repository",  # 0045
+    # The controlled vocabularies are STRICT too and were unguarded until 0056 rebuilt two
+    # of them — exactly the blind spot the DB-1 rule exists to close.
+    "preparation",  # 0039
+    "habitat", "sampling_protocol",  # 0040
+    "country", "state_province", "administrative_region", "county", "island",  # 0041
+    "disposition",  # 0048
 })
 
 # Tables whose constraints were dropped + restored — checked in extra detail below.
@@ -223,3 +229,47 @@ def test_taxon_ipni_id_present(engine):
     # not provenance — named for its source like taxonworksOtuID, not dwc:scientificNameID.
     sql = _table_sql(engine, "taxon")
     assert '"ipniID"' in sql, "taxon lost the ipniID column (see migration 0053)"
+
+
+# ── geography vocab identity: (name, iso_code), not name (migration 0056) ──────────
+# 40 of the 5,420 ISO 3166-2 subdivision names are shared across countries (Limburg =
+# BE-VLI + NL-LI), so UNIQUE(name) forces two real places into one row. A future rebuild
+# must not quietly restore it.
+
+@pytest.mark.parametrize("table", ["country", "state_province"])
+def test_geo_vocab_is_keyed_by_name_and_iso_code(engine, table):
+    from sqlalchemy import text
+    sql = _table_sql(engine, table)
+    assert "UNIQUE(name)" not in sql.replace(" ", ""), (
+        f"{table} regained UNIQUE(name) — Limburg (BE-VLI) and Limburg (NL-LI) would "
+        f"collide (see migration 0056)")
+    with engine.connect() as conn:
+        idx = conn.execute(text(
+            "SELECT sql FROM sqlite_master WHERE type='index' AND tbl_name=:t "
+            "AND name=:n"), {"t": table, "n": f"uq_{table}_name_iso"}).scalar()
+    assert idx, f"{table} lost its unique (name, IFNULL(iso_code,'')) index"
+    # IFNULL is load-bearing: SQLite treats NULL != NULL, so a plain UNIQUE(name, iso_code)
+    # would let every uncoded save create another duplicate row.
+    assert "IFNULL" in idx.upper(), f"{table} unique index dropped the IFNULL() wrapper"
+
+
+@pytest.mark.parametrize("table", ["country", "state_province"])
+def test_geo_vocab_allows_same_name_with_different_codes(engine, table):
+    from sqlalchemy import text
+    with engine.connect() as conn:
+        trans = conn.begin()
+        conn.execute(text(
+            f"INSERT INTO {table} (name, iso_code, created_at, updated_at) "
+            "VALUES ('Limburg', 'BE-VLI', '2026-01-01', '2026-01-01')"))
+        conn.execute(text(
+            f"INSERT INTO {table} (name, iso_code, created_at, updated_at) "
+            "VALUES ('Limburg', 'NL-LI', '2026-01-01', '2026-01-01')"))
+        # ...but only one *uncoded* row per name
+        conn.execute(text(
+            f"INSERT INTO {table} (name, iso_code, created_at, updated_at) "
+            "VALUES ('Limburg', NULL, '2026-01-01', '2026-01-01')"))
+        with pytest.raises(Exception, match="UNIQUE constraint failed"):
+            conn.execute(text(
+                f"INSERT INTO {table} (name, iso_code, created_at, updated_at) "
+                "VALUES ('Limburg', NULL, '2026-01-01', '2026-01-01')"))
+        trans.rollback()
