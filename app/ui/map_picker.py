@@ -190,9 +190,6 @@ def build_map_picker(
         display:flex; align-items:center; flex-shrink:0;
         padding:8px 16px; gap:12px;
         border-top:1px solid var(--tp-base-border,#e2e8f0);">
-      <button id="{uid}loc" class="_mp-btn">
-        <i class="material-icons" style="font-size:1.1rem;">my_location</i>Locate
-      </button>
       <span style="flex:1;"></span>
       <button onclick="document.getElementById('{uid}ov').style.display='none'"
         style="background:var(--tp-secondary,#0369a1);color:#fff;
@@ -467,23 +464,6 @@ def build_map_picker(
                 if (uncSlider) uncSlider.disabled = v;
             }}
         }};
-
-        /* "Locate" button — fly to coordinates currently entered in the form */
-        var locBtn = document.getElementById(uid + 'loc');
-        if (locBtn) {{
-            locBtn.onclick = function() {{
-                var latEl = document.querySelector('._coord-lat input');
-                var lonEl = document.querySelector('._coord-lon input');
-                var uncEl = document.querySelector('._coord-unc input');
-                if (!latEl || !lonEl) return;
-                var lat = parseFloat(latEl.value);
-                var lon = parseFloat(lonEl.value);
-                if (isNaN(lat) || isNaN(lon)) return;
-                var u = uncEl ? parseFloat(uncEl.value) : NaN;
-                placeAt(L.latLng(lat, lon), isNaN(u) ? (unc || 0) : u);
-                map.setView([lat, lon], Math.max(map.getZoom(), 10));
-            }};
-        }}
 
         /* "Copy" button — lat, lon, radius (tab-separated) to the clipboard */
         if (copyBtn) {{
