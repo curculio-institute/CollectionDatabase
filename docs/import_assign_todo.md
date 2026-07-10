@@ -16,18 +16,19 @@ Key files:
 
 ## P0 — silent data corruption
 
-### 1. eventDate is stored verbatim, never normalised
+### 1. eventDate is stored verbatim, never normalised — DONE
 `_on_assign` passes `event_date` straight into `create_collecting_event`, which stores strings
 as-is (`events.py:247-249`). `parse_dwc_date` is only wired into `ui/date_input.py` and
 `ui/mounting_session.py`, never this path. Result: `15.07.2005` lands in `dwc:eventDate`
 literally (1,226 of 1,412 real-world rows), no warning.
 
-- Call `parse_dwc_date(raw, allow_interval=True)` on `eventDate` in the save path (or in
-  `row_to_event_fields`), store the ISO result, keep the raw in `verbatimEventDate`.
-- On a parse error, **refuse the row** the way `_validate` refuses a bad latitude — do not save
-  a bad date. Surface the message.
-- Consider validating in a pre-flight pass (see #8) so the user sees all bad dates before the loop.
-- Test: `DD.MM.YYYY`, `MM.YYYY`, `YYYY`, `YYYY-MM-DD/YYYY-MM-DD`, and a garbage value.
+**Fixed.** `dwc_import.normalise_row_dates(row)` parses eventDate + dateIdentified via
+`parse_dwc_date` (now also month names + roman numerals, #95). `_validate` refuses a bad date
+(like a bad latitude); the save path stores the ISO result and keeps the raw eventDate in
+`verbatimEventDate`. Ambiguity (2-digit year, slash day/month) is refused, not guessed; the
+DD.MM European order is assumed to match the data, with the raw preserved so a misread is
+auditable. Covered by test_import_dates.py (incl. an integration test through the real events
+service) + 50 date tests. Pre-flight batch validation (#8) can reuse `normalise_row_dates`.
 
 ### 2. Two-token fallback silently downgrades a subspecies to its species — DONE
 `find_taxon_by_name` (`taxa.py:320-331`) retries a failed exact match on the first two tokens to
