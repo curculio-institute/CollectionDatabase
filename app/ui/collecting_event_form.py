@@ -126,6 +126,10 @@ def _resolve_hierarchy(adm_rows: list[dict]) -> dict:
         "country":      _admin_name(country) if country else "",
         "country_code": (country.get("iso1", "") if country else "").upper(),
         "state":        _admin_name(state) if state else "",
+        # The ISO 3166-2 code of the state — the very tag that identified it above. Carried
+        # through (not discarded) and stored on the state_province vocab row: a label has no
+        # room for "Baden-Württemberg" but "DE-BW" fits. Migration 0055.
+        "state_code":   (state.get("iso2", "") if state else "").upper(),
         "region":       _admin_name(region) if region else "",
         "county":       _admin_name(county) if county else "",
         "municipality": _admin_name(muni) if muni else "",
@@ -203,7 +207,9 @@ def build_collecting_event_form(
       recby_refresh()     : refresh the recordedBy options from the DB.
       recby_get()         : current recordedBy value.
     """
-    _st = {"populating": False, "editable": True}
+    # state_iso: the ISO 3166-2 code of the geocoded stateProvince, held here rather than in
+    # a widget — it has no field of its own (nothing to edit) and is stored on the vocab row.
+    _st = {"populating": False, "editable": True, "state_iso": ""}
 
     def _fire_edit():
         if not _st["populating"] and on_field_edit:
@@ -237,6 +243,10 @@ def build_collecting_event_form(
     def _on_state_change(_=None):
         if not _st["populating"]:
             _wipe_from("state")
+            # The ISO code belongs to the geocoded state. The moment the user retypes the
+            # name it describes a state we have not identified, so drop it rather than
+            # attach "DE-BY" to whatever was typed.
+            _st["state_iso"] = ""
         _fire_edit()
 
     def _on_county_change(_=None):
@@ -392,6 +402,7 @@ def build_collecting_event_form(
                    locality_in, island_in):
             _f.value = ""
         _st["populating"] = False
+        _st["state_iso"] = ""     # belongs to the state we are about to replace
         _fire_edit()
 
         # The locality circle scales with the coordinate uncertainty: a precise point → only
@@ -573,6 +584,7 @@ def build_collecting_event_form(
                 country_in.value = hier["country"]
                 code_in.value    = hier["country_code"]
                 state_in.value   = hier["state"]
+                _st["state_iso"] = hier["state_code"]
                 region_in.value  = hier["region"]
                 county_in.value  = hier["county"]
                 muni_in.value    = hier["municipality"]
@@ -961,6 +973,10 @@ def build_collecting_event_form(
         # validation (which calls collect_fields) has no get_or_create side effect.
         out = {name: w.value for name, w in _event_widgets.items()}
         out["confidential"] = 1 if conf_chk.value else 0
+        # Not an event column: consumed by events._resolve_geo_fields, which stamps it on
+        # the state_province vocab row alongside the name→id lookup. Empty when the state
+        # was typed by hand or the geocoder found no ISO tag.
+        out["state_province_iso"] = _st["state_iso"]
         return out
 
     def _commit(s) -> dict:

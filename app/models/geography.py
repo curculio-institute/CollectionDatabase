@@ -18,7 +18,7 @@ what makes the faceted Explore search work (#40).
 map's job). `country_code` stays a per-event column (dwc:countryCode).
 """
 from __future__ import annotations
-from sqlalchemy import Integer, String, UniqueConstraint
+from sqlalchemy import Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 from .base import Base, TimestampMixin
 
@@ -37,6 +37,12 @@ class Country(_NameVocab):
 class StateProvince(_NameVocab):
     __tablename__ = "state_province"
     __table_args__ = (UniqueConstraint("name", name="uq_state_province_name"),)
+
+    # ISO 3166-2 code of the first-order subdivision ("DE-BY", "GR-J", "CN-YN"), as tagged
+    # on the containing OSM boundary relation — the same tag the geocoder uses to identify
+    # which relation *is* the state. Nullable: rows created before migration 0055, or by
+    # hand, have none, and the code is not required. Not unique on purpose — see 0055.
+    iso_code: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
 class County(_NameVocab):

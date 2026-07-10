@@ -59,3 +59,58 @@ def test_search_event_by_state_province_name(session):
     session.flush()
     hits = ev_svc.search_collecting_events(session, "Bavaria")
     assert len(hits) >= 1
+
+
+# ── stateProvince ISO 3166-2 code (migration 0055) ──────────────────────────────
+# The code is a property of the state, not of the event, so it lives once on the vocab
+# row. The geocoder identifies the state *by* this tag and now carries it through.
+
+def test_state_iso_code_is_stamped_on_the_vocab_row(session):
+    ev_svc.create_collecting_event(
+        session, country="Germany", state_province="Bavaria",
+        state_province_iso="DE-BY", locality="Uffing")
+    session.flush()
+    assert session.query(StateProvince).filter_by(name="Bavaria").one().iso_code == "DE-BY"
+
+
+def test_state_iso_code_is_not_an_event_column(session):
+    """`state_province_iso` is consumed by _resolve_geo_fields, never set on the event."""
+    ev = ev_svc.create_collecting_event(
+        session, country="Germany", state_province="Bavaria", state_province_iso="DE-BY")
+    session.flush()
+    assert not hasattr(ev, "state_province_iso")
+
+
+def test_state_iso_code_is_optional(session):
+    """Existing rows have no code; a save without one must not fail or blank it."""
+    ev_svc.create_collecting_event(session, state_province="Hesse")
+    session.flush()
+    assert session.query(StateProvince).filter_by(name="Hesse").one().iso_code is None
+    # a later save that carries the code fills it in
+    ev_svc.create_collecting_event(session, state_province="Hesse", state_province_iso="DE-HE")
+    session.flush()
+    assert session.query(StateProvince).filter_by(name="Hesse").one().iso_code == "DE-HE"
+    # and a later save WITHOUT a code leaves it intact
+    ev_svc.create_collecting_event(session, state_province="Hesse")
+    session.flush()
+    assert session.query(StateProvince).filter_by(name="Hesse").one().iso_code == "DE-HE"
+
+
+def test_conflicting_state_iso_code_is_refused_loudly(session):
+    """One state name cannot honestly carry two subdivision codes — refuse, never overwrite."""
+    import pytest
+    ev_svc.create_collecting_event(session, state_province="Bavaria", state_province_iso="DE-BY")
+    session.flush()
+    with pytest.raises(ValueError, match="already recorded as"):
+        ev_svc.create_collecting_event(
+            session, state_province="Bavaria", state_province_iso="DE-BW")
+
+
+def test_greek_region_carries_its_iso_code(session):
+    """GR-J sits at admin_level 5, DE-BY at 4 — the code, not the level, identifies a state."""
+    ev_svc.create_collecting_event(
+        session, country="Greece", state_province="Peloponnese Region",
+        state_province_iso="GR-J", locality="Tripoli")
+    session.flush()
+    row = session.query(StateProvince).filter_by(name="Peloponnese Region").one()
+    assert row.iso_code == "GR-J"

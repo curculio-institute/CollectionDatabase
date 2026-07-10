@@ -35,7 +35,10 @@ _GEO_TEXT_TO_FK = {
 
 def _resolve_geo_fields(session: Session, fields: dict) -> dict:
     """Convert any geography NAME keys in `fields` to their FK *_id (creating the
-    vocab row when needed; blank → None). Mutates and returns `fields`."""
+    vocab row when needed; blank → None). Mutates and returns `fields`.
+
+    Also consumes the non-column key `state_province_iso` (see `_stamp_state_iso`).
+    """
     from app.services.vocabularies import (
         country_vocab, state_province_vocab, administrative_region_vocab,
         county_vocab, island_vocab,
@@ -45,11 +48,33 @@ def _resolve_geo_fields(session: Session, fields: dict) -> dict:
         "administrative_region": administrative_region_vocab,
         "county": county_vocab, "island": island_vocab,
     }
+    iso = (fields.pop("state_province_iso", "") or "").strip().upper()
     for name_key, id_key in _GEO_TEXT_TO_FK.items():
         if name_key in fields:
             val = (fields.pop(name_key) or "").strip()
-            fields[id_key] = vocabs[name_key].get_or_create(session, val).id if val else None
+            row = vocabs[name_key].get_or_create(session, val) if val else None
+            fields[id_key] = row.id if row else None
+            if name_key == "state_province" and row is not None and iso:
+                _stamp_state_iso(row, iso)
     return fields
+
+
+def _stamp_state_iso(state_row, iso: str) -> None:
+    """Record the ISO 3166-2 code on a state_province row the geocoder just identified.
+
+    Fill-once: a row with no code gets one. A row whose code already differs is NOT
+    silently rewritten — the same state name cannot honestly carry two subdivision codes,
+    so that means either a merged/renamed vocab row or a bad geocode, and a silent
+    overwrite would corrupt every label printed from it (CLAUDE.md §2, "never skip
+    silently" / "a silent wrong value is worse than a loud failure").
+    """
+    if not state_row.iso_code:
+        state_row.iso_code = iso
+    elif state_row.iso_code != iso:
+        raise ValueError(
+            f"stateProvince {state_row.name!r} is already recorded as "
+            f"{state_row.iso_code!r}, but the coordinates resolve to {iso!r}. "
+            "Fix the state name or merge the vocabulary rows before saving.")
 
 
 @dataclass(frozen=True)
