@@ -561,8 +561,35 @@ remaining advantage — per-country level→field mapping — unnecessary). Its 
 rules it out for the 4-point perimeter boundary check.
 
 **Overpass retries** (`_overpass_post`): 429/502/503/504 + transport errors, backoff 1 s then 3 s,
-three attempts. A 4xx is **not** retried — that is a bug in our query, not a busy server. Measured:
-`is_in` at 26.015/101.883 returned 504 once, then answered on retry.
+three attempts, under a **hard 40 s deadline** (each attempt's timeout is shrunk to the time
+remaining, or a fresh 25 s attempt started at t=26 s would run to 51 s). A 4xx is **not** retried —
+that is a bug in our query, not a busy server. Measured: `is_in` at 26.015/101.883 returned 504
+once, then answered on retry.
+
+**No mirror failover (measured 2026-07-10; dead end, do not add).** `overpass-api.de` allows only
+**2 concurrent queries per IP** (`/api/status`), and it load-balances between two backends
+(`gall.` / `lambert.openstreetmap.de`) — which is why one `is_in` costs 1.2 s or 24 s. Adding
+mirrors looks like the obvious hedge. It is not, on the Augsburg point:
+
+| endpoint | result |
+|---|---|
+| `overpass-api.de` | 1.13 s, 6 admin rows ✓ |
+| `overpass.kumi.systems` | ReadTimeout at 35 s |
+| `overpass.private.coffee` | ReadTimeout at 35 s |
+| `overpass.osm.jp` | ConnectError |
+| `overpass.osm.ch` | **HTTP 200, zero admin rows** — regional (Swiss) data only |
+
+`osm.ch` is the trap: it *succeeds* with an empty result for a German point, so a failover would
+silently report "this point lies in no administrative area" and blank the hierarchy — a silent
+wrong value (§2), which is worse than the honest failure. One endpoint, honest errors.
+
+**Errors must say why** (`_overpass_status` / `_overpass_failure_message`). "Overpass unavailable"
+gives the user nothing to act on. On failure, read `/api/status` (plain text; needs a `User-Agent`
+or Apache answers 406) and report the slot budget: *0 of 2 query slots free for this computer*
+(rate-limited — wait), or *2 of 2 free, so this looks like server load* (retry now). If the status
+page is unreachable too, **suggest** a rate limit, never assert one. The degraded Photon fallback
+also states that the fields came from the nearest feature rather than the containing areas, so the
+user knows to check them.
 
 **Boundary-crossing check — one combined `is_in` (measured 2026-07-10).** Whether the uncertainty
 *circle* crosses a boundary cannot be answered by any single query at the centre. Two dead ends are

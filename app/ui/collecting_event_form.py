@@ -28,6 +28,7 @@ from __future__ import annotations
 import asyncio
 import math
 import re
+import time
 
 import httpx
 from nicegui import ui
@@ -155,35 +156,117 @@ def _haversine_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
 # single transient failure must not cost the user the whole lookup — measured: an is_in for
 # 26.015/101.883 returned 504 once, then answered on the retry. Only these statuses and
 # transport errors are retried; a 400 (bad query) is a bug in us and fails immediately.
+#
+# There is deliberately NO mirror failover. Measured 2026-07-10 on the Augsburg point:
+# overpass.kumi.systems and overpass.private.coffee both ReadTimeout at 35 s, overpass.osm.jp
+# refuses the connection, and overpass.osm.ch answers **200 OK with zero admin rows** because
+# it carries only regional (Swiss) data. Failing over to it would not raise — it would report
+# "this point lies in no administrative area" and silently blank the hierarchy, which is the
+# exact failure this project forbids (CLAUDE.md §2). One endpoint, honest errors.
+#
+# `overpass-api.de` itself load-balances between two backends (the status page announces
+# `gall.` or `lambert.openstreetmap.de`), which is why the same query costs 1.2 s or 24 s.
 _OVERPASS_URL = "https://overpass-api.de/api/interpreter"
+_OVERPASS_STATUS_URL = "https://overpass-api.de/api/status"
 _OVERPASS_RETRY_STATUS = (429, 502, 503, 504)
 _OVERPASS_BACKOFF_S = (1.0, 3.0)          # attempt 1 → 1 s → attempt 2 → 3 s → attempt 3
+_OVERPASS_ATTEMPT_TIMEOUT_S = 25.0        # matches the [timeout:25] we ask the server for
+_OVERPASS_DEADLINE_S = 40.0               # give up rather than retry into a 90 s wait
+_UA = {"User-Agent": "EntomologicalCollection/1.0"}
 
 
-async def _overpass_post(query: str, *, timeout: float = 30.0) -> list[dict] | None:
-    """POST an Overpass QL query; return its `elements`, or None if it never answered."""
+async def _overpass_post(query: str, *, timeout: float = _OVERPASS_ATTEMPT_TIMEOUT_S,
+                         deadline: float = _OVERPASS_DEADLINE_S) -> tuple[list[dict] | None, str]:
+    """POST an Overpass QL query.
+
+    Returns ``(elements, "")`` on success, or ``(None, reason)`` where *reason* is a short
+    human-readable cause ("timed out", "HTTP 429", …) for the message shown to the user —
+    "Overpass unavailable" alone tells them nothing they can act on.
+    """
+    started = time.monotonic()
+    reason = "no response"
     for attempt in range(len(_OVERPASS_BACKOFF_S) + 1):
+        # The deadline is a hard cap on the whole call, not just on the sleeps: a fresh
+        # 25 s attempt started at t=26 s would run to 51 s. Shrink it to what is left.
+        remaining = deadline - (time.monotonic() - started)
+        if remaining <= 0:
+            return None, f"{reason} (gave up after {deadline:.0f} s)"
         try:
-            async with httpx.AsyncClient(timeout=timeout) as cl:
-                r = await cl.post(
-                    _OVERPASS_URL,
-                    data={"data": query},
-                    headers={"User-Agent": "EntomologicalCollection/1.0"},
-                )
-            if r.status_code in _OVERPASS_RETRY_STATUS and attempt < len(_OVERPASS_BACKOFF_S):
-                await asyncio.sleep(_OVERPASS_BACKOFF_S[attempt])
-                continue
+            async with httpx.AsyncClient(timeout=min(timeout, remaining)) as cl:
+                r = await cl.post(_OVERPASS_URL, data={"data": query}, headers=_UA)
+            if r.status_code in _OVERPASS_RETRY_STATUS:
+                reason = f"HTTP {r.status_code}"
+                if attempt < len(_OVERPASS_BACKOFF_S):
+                    if time.monotonic() - started + _OVERPASS_BACKOFF_S[attempt] < deadline:
+                        await asyncio.sleep(_OVERPASS_BACKOFF_S[attempt])
+                        continue
+                    return None, f"{reason} (gave up after {deadline:.0f} s)"
             r.raise_for_status()
-            return r.json().get("elements", [])
-        except (httpx.TransportError, httpx.HTTPStatusError) as ex:
-            retryable = isinstance(ex, httpx.TransportError) or (
-                ex.response.status_code in _OVERPASS_RETRY_STATUS)
-            if not retryable or attempt >= len(_OVERPASS_BACKOFF_S):
-                return None
-            await asyncio.sleep(_OVERPASS_BACKOFF_S[attempt])
-        except Exception:
-            return None
+            return r.json().get("elements", []), ""
+        except httpx.TimeoutException:
+            reason = "timed out"
+        except httpx.TransportError as ex:
+            reason = f"network error ({type(ex).__name__})"
+        except httpx.HTTPStatusError as ex:
+            code = ex.response.status_code
+            if code not in _OVERPASS_RETRY_STATUS:
+                # A 4xx is our bug (a malformed query), not a busy server: fail fast.
+                return None, f"HTTP {code}"
+            reason = f"HTTP {code}"
+        except Exception as ex:                       # malformed JSON, etc.
+            return None, f"{type(ex).__name__}"
+        if attempt >= len(_OVERPASS_BACKOFF_S):
+            break
+        if time.monotonic() - started + _OVERPASS_BACKOFF_S[attempt] >= deadline:
+            return None, f"{reason} (gave up after {deadline:.0f} s)"
+        await asyncio.sleep(_OVERPASS_BACKOFF_S[attempt])
+    return None, reason
+
+
+async def _overpass_status() -> str | None:
+    """Ask Overpass why it is unhappy: the slot budget for this IP.
+
+    `/api/status` is plain text and reports the per-IP rate limit and free slots, e.g.
+
+        Rate limit: 2
+        2 slots available now.
+        Slot available after: 2026-07-10T11:42:29Z, in 14 seconds.
+
+    Returns a short phrase for the notification, or None if the status page is unreachable
+    (in which case the caller must *suggest* a rate limit rather than assert one).
+    """
+    try:
+        async with httpx.AsyncClient(timeout=8) as cl:
+            r = await cl.get(_OVERPASS_STATUS_URL, headers=_UA)
+        r.raise_for_status()
+        text = r.text
+    except Exception:
+        return None
+
+    limit = re.search(r"Rate limit:\s*(\d+)", text)
+    free = re.search(r"(\d+)\s+slots? available now", text)
+    wait = re.search(r"in\s+(\d+)\s+seconds", text)
+    if free and limit:
+        if int(free.group(1)) > 0:
+            return (f"{free.group(1)} of {limit.group(1)} query slots are free, so this looks "
+                    "like server load rather than a rate limit")
+        return f"0 of {limit.group(1)} query slots are free for this computer"
+    if wait:
+        return (f"all query slots for this computer are in use — "
+                f"the next frees up in about {wait.group(1)} s")
+    if limit:
+        return f"the server allows {limit.group(1)} concurrent queries from this computer"
     return None
+
+
+async def _overpass_failure_message(reason: str) -> str:
+    """Compose an actionable 'why did Overpass not answer' sentence."""
+    status = await _overpass_status()
+    if status is None:
+        return (f"Overpass did not answer ({reason}); its status page is unreachable too. "
+                "The per-computer query-rate limit may have been exceeded — wait a minute "
+                "and try again.")
+    return f"Overpass did not answer ({reason}): {status}."
 
 
 def build_collecting_event_form(
@@ -469,8 +552,9 @@ def build_collecting_event_form(
                 ");"
                 "out tags;"
             )
-            elements = await _overpass_post(q)
+            elements, err = await _overpass_post(q)
             if elements is None:
+                _geo["overpass_error"] = err
                 return None
             adm_rows, areas, islands, seen = [], [], [], set()
             for el in elements:
@@ -496,7 +580,7 @@ def build_collecting_event_form(
         # the moment it lands rather than both being gathered and applied together, so the
         # locality appears immediately instead of waiting on the containment query.
         _geo: dict = {"best": None, "areas": [], "points": [], "auto": "",
-                      "photon_done": False, "areas_done": False}
+                      "photon_done": False, "areas_done": False, "overpass_error": ""}
 
         def _fmt_dist(d: float) -> str:
             return f"{round(d)} m" if d < 1000 else f"{d / 1000:.1f} km"
@@ -606,16 +690,25 @@ def build_collecting_event_form(
             _spin(_admin_spinners + _locality_spinners, False)
 
         if hier is None and not all_props:
-            ui.notify("Reverse geocoding failed: no response from Overpass or Photon.",
-                      type="negative")
+            # Both sources silent. Say which one failed and why — "geocoding failed" alone
+            # leaves the user with nothing to act on (wait? fix coordinates? check the net?).
+            msg = await _overpass_failure_message(_geo["overpass_error"] or "no response")
+            ui.notify(f"Reverse geocoding failed. {msg} Photon returned nothing either.",
+                      type="negative", multi_line=True, timeout=12000,
+                      classes="text-left", close_button="OK")
             return None
 
         if hier is None:
             # Degraded fallback: Photon's hierarchy describes its nearest feature, so it can
-            # name a neighbouring municipality. Loud, because the value may be wrong.
+            # name a neighbouring municipality — and in Greece a different admin tier entirely.
+            # Loud, and it says *why*, because the values may be wrong.
             p0 = all_props[0]
-            ui.notify("Overpass unavailable — administrative fields taken from the nearest "
-                      "feature and may be off. Please check them.", type="warning")
+            msg = await _overpass_failure_message(_geo["overpass_error"] or "no response")
+            ui.notify(f"{msg} The administrative fields below were taken from the nearest "
+                      "named feature instead of the areas containing the point, so they may "
+                      "be wrong (and admin. region is left empty). Please check them.",
+                      type="warning", multi_line=True, timeout=15000,
+                      classes="text-left", close_button="OK")
             _st["populating"] = True
             country_in.value = p0.get("country", "")
             code_in.value    = (p0.get("countrycode", "") or "").upper()
