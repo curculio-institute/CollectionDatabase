@@ -238,8 +238,23 @@ def build_import_assign_tab(session_factory, refreshers: dict, on_saved=None) ->
                 ) if p)
                 _summary_line("", extra)
 
-            # Quick specimen overrides, pre-filled from the CSV.
-            count_in.value = int(sp["individual_count"] or 1)
+            # Quick specimen overrides, pre-filled from the CSV. individualCount
+            # is parsed defensively: a non-numeric cell (e.g. "F") must not crash
+            # this value-change callback (#4). Defaults to 1 unless the user
+            # adjusts the field; a warning surfaces an unparseable original.
+            warns: list[str] = []
+            cnt, cnt_warn = dwc_svc.parse_individual_count(sp["individual_count"])
+            count_in.value = cnt
+            if cnt_warn:
+                warns.append(cnt_warn)
+            # Soft warning (#5): a georeference with no uncertainty radius — the
+            # one thing point-radius exists to prevent. Doesn't block the save.
+            _unc = (ev["coordinate_uncertainty_in_meters"] or "").strip()
+            if lat and lon and not _unc:
+                warns.append("No coordinateUncertaintyInMeters — "
+                             "the georeference has no radius.")
+            if warns:
+                assign_status.set_text("  ·  ".join(warns))
             sex_sel.value  = det["sex"] or None
             prep_field["set_value"](sp["preparations"] or None)
 
@@ -468,6 +483,14 @@ def build_import_assign_tab(session_factory, refreshers: dict, on_saved=None) ->
                             return f"{label} out of range [{lo}, {hi}]."
                     except ValueError:
                         return f"{label} must be a number."
+            # A coordinate pair is atomic — one axis without the other is half a
+            # georeference (#5). Reject it rather than save a lat with no lon.
+            _lat = (ev["decimal_latitude"] or "").strip()
+            _lon = (ev["decimal_longitude"] or "").strip()
+            if bool(_lat) != bool(_lon):
+                return ("decimalLatitude and decimalLongitude must both be "
+                        "present or both empty — a half georeference cannot "
+                        "be saved.")
             unc = ev["coordinate_uncertainty_in_meters"]
             if unc:
                 try:
@@ -535,7 +558,10 @@ def build_import_assign_tab(session_factory, refreshers: dict, on_saved=None) ->
                             specimen_fields={
                                 "catalog_number":    code,
                                 "repository_id":     default_repo.id,
-                                "individual_count":  int(count_in.value or 1),
+                                # Preserve a deliberate 0; only a cleared (None)
+                                # field falls back to the standard 1 (#4).
+                                "individual_count":  1 if count_in.value is None
+                                                     else int(count_in.value),
                                 "preparation_id":    prep_field["commit"](session),
                                 "life_stage":        sp["life_stage"] or NEW_SPECIMEN_DEFAULTS["life_stage"],
                                 "basis_of_record":   NEW_SPECIMEN_DEFAULTS["basis_of_record"],

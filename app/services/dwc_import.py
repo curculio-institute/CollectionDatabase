@@ -211,6 +211,30 @@ def row_to_determination_fields(row: dict) -> dict:
     }
 
 
+def parse_individual_count(raw) -> tuple[int, str | None]:
+    """Parse a DwC individualCount cell defensively.
+
+    Returns ``(count, warning)``. The standard value is **1**: an empty/missing
+    cell, or a value that is not a whole number (e.g. ``"F"``), falls back to 1 —
+    but a non-empty unparseable value also yields a ``warning`` string so the
+    caller can surface it rather than coerce it silently (§2). A deliberate,
+    valid ``0`` is preserved (the DB CHECK allows ``>= 0``); a negative value is
+    treated as unparseable (the DB would reject it) and falls back to 1 + warning.
+    """
+    if raw is None:
+        return 1, None
+    s = str(raw).strip()
+    if not s:
+        return 1, None
+    try:
+        n = int(s)
+    except ValueError:
+        return 1, f"individualCount {s!r} is not a whole number — defaulted to 1."
+    if n < 0:
+        return 1, f"individualCount {s!r} is negative — defaulted to 1."
+    return n, None
+
+
 def row_to_specimen_prefill(row: dict) -> dict:
     """Fields from the spreadsheet that can pre-fill the per-specimen inputs."""
     return {
