@@ -424,8 +424,19 @@ def build_collecting_event_form(
                     out.append(props)
                 return out
 
-        async def _overpass_admin() -> dict | None:
-            """The enclosing administrative hierarchy. None on failure. Measured 2–24 s."""
+        async def _overpass() -> dict | None:
+            """Enclosing admin hierarchy + named areas/islands, in ONE request. None on failure.
+
+            Deliberately one query, not two parallel ones. The public Overpass instance grants
+            an IP only a couple of concurrent slots, so a second request queues behind the
+            first rather than running beside it. Measured (6 runs, alternating, 20 s apart):
+
+                one combined query   median  3.7 s, max 13.8 s, 6/6 succeeded
+                two parallel queries median 29.2 s, max 37.2 s, 0/6 succeeded
+
+            Splitting serialised the work and added retry backoff on top. The `is_in` is
+            evaluated once and both blocks pivot off it, so bundling is also cheaper server-side.
+            """
             q = (
                 "[out:json][timeout:25];"
                 f"is_in({lat},{lon})->.a;"
@@ -435,22 +446,6 @@ def build_collecting_event_form(
                 'convert adm ::id=id(), lvl=t["admin_level"], nm=t["name"], en=t["name:en"],'
                 ' iso1=t["ISO3166-1"], iso2=t["ISO3166-2"];'
                 "out;"
-            )
-            elements = await _overpass_post(q)
-            if elements is None:
-                return None
-            return _resolve_hierarchy([e.get("tags", {}) for e in elements
-                                       if e.get("type") == "adm"])
-
-        async def _overpass_areas() -> dict | None:
-            """Enclosing named areas (reserves / forests) + islands. None on failure. ~1.2 s.
-
-            Split from the hierarchy query on purpose: it is the fast half, and bundling the
-            two made the island/locality fields wait on a hierarchy scan that can take 24 s.
-            """
-            q = (
-                "[out:json][timeout:25];"
-                f"is_in({lat},{lon})->.a;"
                 "("
                 "  way(pivot.a)[name][boundary=protected_area];"
                 "  way(pivot.a)[name][leisure=nature_reserve];"
@@ -466,9 +461,12 @@ def build_collecting_event_form(
             elements = await _overpass_post(q)
             if elements is None:
                 return None
-            areas, islands, seen = [], [], set()
+            adm_rows, areas, islands, seen = [], [], [], set()
             for el in elements:
                 tags = el.get("tags", {})
+                if el.get("type") == "adm":          # converted admin relation
+                    adm_rows.append(tags)
+                    continue
                 n = tags.get("name", "")
                 if not n or n in seen:
                     continue
@@ -479,12 +477,13 @@ def build_collecting_event_form(
                 kind = (tags.get("leisure") or tags.get("boundary")
                         or tags.get("landuse") or "area")
                 areas.append({"name": n, "kind": kind})
-            return {"areas": areas, "islands": islands}
+            return {"hier": _resolve_hierarchy(adm_rows),
+                    "areas": areas, "islands": islands}
 
         # ── progressive fill ────────────────────────────────────────────────────
-        # Photon answers in ~0.15 s, the hierarchy in 2–24 s. They are written to their own
-        # fields the moment each lands, rather than gathered and applied together, so the
-        # form is never inert while a slow Overpass query runs.
+        # Photon answers in ~0.15 s, Overpass in ~3.7 s (median). Each writes its own fields
+        # the moment it lands rather than both being gathered and applied together, so the
+        # locality appears immediately instead of waiting on the containment query.
         _geo: dict = {"best": None, "areas": [], "points": [], "auto": "",
                       "photon_done": False, "areas_done": False}
 
@@ -563,25 +562,13 @@ def build_collecting_event_form(
             _locality_settled()
             return props
 
-        async def _fill_areas() -> None:
-            res = await _overpass_areas()
+        async def _fill_overpass() -> dict | None:
+            """One wave: the containment hierarchy, the island, and the enclosing areas."""
+            res = await _overpass()
             _geo["areas"] = res["areas"] if res else []
             _geo["areas_done"] = True
             if res is not None:
-                # Written unconditionally: no enclosing island means the island field is
-                # empty for *this* point, not left showing the previous one.
-                _st["populating"] = True
-                island_in.value = res["islands"][0] if res["islands"] else ""
-                _st["populating"] = False
-                _fire_edit()
-            _spin([_island_sp], False)
-            _apply_locality()
-            _rebuild_picker()
-            _locality_settled()
-
-        async def _fill_admin() -> dict | None:
-            hier = await _overpass_admin()
-            if hier is not None:
+                hier = res["hier"]
                 _st["populating"] = True
                 country_in.value = hier["country"]
                 code_in.value    = hier["country_code"]
@@ -589,15 +576,20 @@ def build_collecting_event_form(
                 region_in.value  = hier["region"]
                 county_in.value  = hier["county"]
                 muni_in.value    = hier["municipality"]
+                # Written unconditionally: no enclosing island means the island field is
+                # empty for *this* point, not left showing the previous one.
+                island_in.value  = res["islands"][0] if res["islands"] else ""
                 _st["populating"] = False
                 _fire_edit()
-            _spin(_admin_spinners, False)
-            return hier
+            _spin(_admin_spinners + [_island_sp], False)
+            _apply_locality()
+            _rebuild_picker()
+            _locality_settled()
+            return res["hier"] if res else None
 
         _spin(_admin_spinners + _locality_spinners, True)
         try:
-            all_props, hier, _ = await asyncio.gather(
-                _fill_photon(), _fill_admin(), _fill_areas())
+            all_props, hier = await asyncio.gather(_fill_photon(), _fill_overpass())
         finally:
             _spin(_admin_spinners + _locality_spinners, False)
 
