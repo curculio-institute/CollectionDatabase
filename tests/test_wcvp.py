@@ -6,6 +6,7 @@ taxonomicStatus rather than guessing where it belongs, and must parse the archiv
 *unquoted* CSV exactly as meta.xml declares it. Each of those is pinned here.
 """
 import sqlite3
+from pathlib import Path
 import zipfile
 
 import pytest
@@ -494,3 +495,53 @@ def test_index_is_opened_read_only_even_through_the_escaped_uri(tmp_path):
     wcvp.build_index(_archive(tmp_path, [_row("1", "Quercus robur")]), db_path)
     with pytest.raises(sqlite3.OperationalError, match="readonly"):
         wcvp.open_index(db_path).execute("DELETE FROM name")
+
+
+def test_install_leaves_no_part_file_behind(tmp_path):
+    folder = tmp_path / "wcvp"
+    wcvp.install(folder, archive=_archive(tmp_path, [_row("1", "Quercus robur")]))
+    assert not (folder / "wcvp_dwca.zip.part").exists()
+    assert (folder / "wcvp_dwca.zip").exists()
+
+
+def test_a_failed_install_preserves_the_previous_archive_index_and_readme(tmp_path):
+    """The partial download has a different name until a valid index is built from it, so a
+    corrupt archive can never clobber a working install."""
+    folder = tmp_path / "wcvp"
+    good = _archive(tmp_path, [_row("1", "Quercus robur")])
+    wcvp.install(folder, archive=good)
+    before = {f.name: f.read_bytes() for f in folder.iterdir()}
+
+    (tmp_path / "bad").mkdir()
+    bad = _archive(tmp_path / "bad", [_row("1", "Q", status="Bogus")])
+    with pytest.raises(wcvp.WcvpError):
+        wcvp.install(folder, archive=bad)
+
+    after = {f.name: f.read_bytes() for f in folder.iterdir()}
+    assert after == before                                   # archive, index and README intact
+    assert not (folder / "wcvp_dwca.zip.part").exists()      # and no debris
+
+
+def test_a_leftover_part_from_an_interrupted_run_is_discarded(tmp_path):
+    folder = tmp_path / "wcvp"
+    folder.mkdir()
+    (folder / "wcvp_dwca.zip.part").write_bytes(b"half a download")
+    wcvp.install(folder, archive=_archive(tmp_path, [_row("1", "Quercus robur")]))
+    assert not (folder / "wcvp_dwca.zip.part").exists()
+    assert zipfile.is_zipfile(folder / "wcvp_dwca.zip")
+
+
+def test_the_archive_is_staged_in_the_target_folder_not_a_temp_dir(tmp_path, monkeypatch):
+    """Staging elsewhere makes the final move an 88 MB cross-filesystem copy (and hides an
+    in-progress download from the user). Assert the .part appears beside the target."""
+    folder = tmp_path / "wcvp"
+    seen: list[Path] = []
+    real_build = wcvp.build_index
+
+    def spy(archive_path, db_path, **kw):
+        seen.append(Path(archive_path))
+        return real_build(archive_path, db_path, **kw)
+
+    monkeypatch.setattr(wcvp, "build_index", spy)
+    wcvp.install(folder, archive=_archive(tmp_path, [_row("1", "Quercus robur")]))
+    assert seen and seen[0] == folder / "wcvp_dwca.zip.part", seen

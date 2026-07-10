@@ -793,38 +793,55 @@ def install(folder: Path | None = None, *, url: str = WCVP_DWCA_URL,
     from: keeping it makes the folder self-describing, lets the index be rebuilt without a
     network, and lets the bytes be checked against the SHA-256 recorded in the README.
 
-    `archive` builds from an existing file instead of downloading (it is copied in, so the
-    folder still contains the source it was built from). The index is written to a temp file
-    and atomically renamed, so a failed download or a corrupt archive leaves any existing
-    index untouched.
+    The download stages **inside the target folder** as `wcvp_dwca.zip.part`, not in the
+    system temp directory. Three reasons:
+
+    * `os.replace` within one directory is atomic and instant. A temp dir is usually on
+      another filesystem — `/tmp` is a RAM disk on many Linux systems, and `%TEMP%` sits on
+      C: while the collection may live on D: — so the move degrades to copying the whole
+      archive a second time.
+    * An in-progress download is then *visible*: the folder holds a growing `.part` file
+      rather than nothing at all.
+    * It avoids Windows' temp-dir cleanup, MAX_PATH, and antivirus scanning of %TEMP%.
+
+    A good archive is never clobbered: the partial file has a different name until a valid
+    index has been built from it. On any failure the `.part` is removed and the existing
+    archive, index and README are left exactly as they were.
+
+    `archive` builds from an existing file instead of downloading (it is staged the same way,
+    so the folder still contains the source it was built from).
     """
     import shutil
-    import tempfile
 
     from app import config
     folder = folder or config.wcvp_dir()
     folder.mkdir(parents=True, exist_ok=True)
     target = folder / "wcvp_dwca.zip"
+    part = folder / "wcvp_dwca.zip.part"
 
-    with tempfile.TemporaryDirectory() as tmp:
-        staged = Path(tmp) / "wcvp_dwca.zip"
+    part.unlink(missing_ok=True)          # a leftover from an interrupted run
+    try:
         if archive is not None:
             size = archive.stat().st_size
             if progress:
                 progress("download", size, size)
-            shutil.copy2(archive, staged)
+            shutil.copy2(archive, part)
             source = f"a local file, `{archive}`"
         else:
             if progress:
                 progress("download", 0, None)
-            download_archive(staged, url, progress=progress)
+            download_archive(part, url, progress=progress)
             source = url
 
         if progress:
             progress("build", 0, None)
-        report = build_index(staged, folder / "wcvp.sqlite")
-        # Only now is the archive worth keeping: it built a valid index.
-        shutil.move(str(staged), target)
+        report = build_index(part, folder / "wcvp.sqlite")
+        # Only now is the archive worth keeping: it built a valid index. Same directory, so
+        # this is a rename, not an 88 MB copy.
+        _replace_with_retry(part, target)
+    except BaseException:
+        part.unlink(missing_ok=True)
+        raise
 
     write_readme(folder, report, archive=target, source=source)
     return report
