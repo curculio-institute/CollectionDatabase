@@ -139,6 +139,16 @@ def build_vocab_field(
         return (f'{_html.escape(name)} '
                 f'<span class="pf-code">{_html.escape(code)}</span>')
 
+    def _add_html(name: str, code: str | None = None) -> str:
+        """"✚ add <name>" markup — carrying the code when we know it.
+
+        A geocoded value can be new to the vocab *and* carry an ISO code (Overpass tags the
+        containing relation with ISO3166-1 / ISO3166-2), and that code is what the new row
+        will be created with. Hiding it would show "✚ add Greece" while silently creating
+        ("Greece", "GR"). The typed-text row has no code, so it renders unchanged.
+        """
+        return (f'<span class="pf-new-badge">✚ add</span> {_sel_html(name, code)}')
+
     def _update_dropdown(term: str) -> None:
         dropdown.clear()
         real = term.strip()
@@ -160,9 +170,7 @@ def build_vocab_field(
             # "✚ add <typed>" LAST — only when the text isn't already a known name;
             # it becomes the sole (highlighted) row when nothing matches.
             if real and real not in _known:
-                add_html = (
-                    f'<span class="pf-new-badge">✚ add</span> {_html.escape(real)}'
-                )
+                add_html = _add_html(real)
                 item = ui.element("div").classes("pf-item pf-item--new")
                 with item:
                     ui.html(add_html)
@@ -197,8 +205,7 @@ def build_vocab_field(
         v = initial_value.strip()
         if v:
             _seed_code = next((c for n, c in _entries if n == v), None)
-            disp = (_sel_html(v, _seed_code) if v in _known
-                    else f'<span class="pf-new-badge">✚ add</span> {_html.escape(v)}')
+            disp = _sel_html(v, _seed_code) if v in _known else _add_html(v, _seed_code)
             _enter_selected(disp, clean=v, notify=False, code=_seed_code)
 
     # ── timer refresh ─────────────────────────────────────────────────────────
@@ -236,8 +243,7 @@ def build_vocab_field(
         if c is None:
             matches = {mc for mn, mc in _entries if mn == v}
             c = matches.pop() if len(matches) == 1 else None
-        disp = (_sel_html(v, c) if v in _known
-                else f'<span class="pf-new-badge">✚ add</span> {_html.escape(v)}')
+        disp = _sel_html(v, c) if v in _known else _add_html(v, c)
         _enter_selected(disp, clean=v, notify=False, code=c)
 
     def commit(session) -> int | None:
