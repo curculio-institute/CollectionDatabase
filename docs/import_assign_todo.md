@@ -29,16 +29,20 @@ literally (1,226 of 1,412 real-world rows), no warning.
 - Consider validating in a pre-flight pass (see #8) so the user sees all bad dates before the loop.
 - Test: `DD.MM.YYYY`, `MM.YYYY`, `YYYY`, `YYYY-MM-DD/YYYY-MM-DD`, and a garbage value.
 
-### 2. Two-token fallback silently downgrades a subspecies to its species
+### 2. Two-token fallback silently downgrades a subspecies to its species — DONE
 `find_taxon_by_name` (`taxa.py:320-331`) retries a failed exact match on the first two tokens to
 strip trailing authorship. It cannot distinguish authorship from a trinomial epithet, so
 `Carabus baudii fenestrellanus` resolves to the **species** `Carabus baudii` and the UI reports
 "resolved locally" with a green check (`import_assign.py:271`). ~96 trinomials in the real data.
 
-- Minimum: make the caption distinguish an exact match from a fallback match, so the user can
-  see it happened.
-- Better: do not fall back when the dropped token is a valid lowercase epithet
-  (`^[a-z][a-z-]*$`) — that's a rank downgrade, not authorship.
+**Fixed** by the data contract the user chose: authorship is separate (DwC `scientificName` is
+the name only; `scientificNameAuthorship` holds the author — which our DB already models).
+`find_taxon_by_name` now does an **exact match only**, no token-stripping heuristic; the crutch
+is gone, so no name can be silently downgraded. `taxa.scientific_name_has_authorship()` detects a
+name that still carries authorship (a token past the epithets that isn't a lowercase epithet), and
+the import resolve shows an actionable "move it to scientificNameAuthorship" hint instead of a
+mysterious local miss. Clean trinomials still resolve exactly; `Sitona lineatus Linnaeus` no
+longer auto-matches locally (it goes to TW / manual, which is the point of the contract).
 
 ---
 

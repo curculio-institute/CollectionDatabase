@@ -298,41 +298,51 @@ def rank_from_parse(specific: str | None, infraspecific: str | None) -> str:
 
 
 def find_taxon_by_name(session: Session, scientific_name: str) -> "Taxon | None":
-    """Find an accepted taxon matching a name string.
+    """Find an accepted taxon by an **exact** match on dwc:scientificName.
 
-    Tries exact match on dwc:scientificName first; then falls back to a
-    two-token match (strips trailing authorship tokens) to handle spreadsheets
-    that include authorship in the scientificName column.
+    The name is expected authorship-free — `dwc:scientificName` is the *composed* name
+    without authorship (CLAUDE.md §4), and authorship rides in `scientificNameAuthorship`.
+    So there is deliberately **no** authorship-stripping fallback: the old "take the first
+    two tokens" heuristic could not tell a trailing author from a trinomial epithet, and
+    silently downgraded `Carabus baudii fenestrellanus` to the species `Carabus baudii` (#2).
+    A caller with a dirty, authorship-laden name should be told to separate it (see
+    `scientific_name_has_authorship`), not quietly mis-resolved.
+
     Returns None when the name is empty or matches more than one accepted row.
     """
     name = scientific_name.strip()
     if not name:
         return None
 
-    base_q = session.query(Taxon).filter(Taxon.accepted_name_usage_id.is_(None))
-
-    results = base_q.filter(Taxon.scientific_name == name).all()
-    if len(results) == 1:
-        return results[0]
-    if len(results) > 1:
-        return None
-
-    # Strip potential authorship: take the first 2 tokens (or 3 for subgenus form).
-    parts = name.split()
-    if len(parts) >= 2:
-        if len(parts) >= 3 and parts[1].startswith("("):
-            short = " ".join(parts[:3])
-        else:
-            short = " ".join(parts[:2])
-        if short != name:
-            results = base_q.filter(Taxon.scientific_name == short).all()
-            if len(results) == 1:
-                return results[0]
-
-    return None
+    results = (session.query(Taxon)
+               .filter(Taxon.accepted_name_usage_id.is_(None))
+               .filter(Taxon.scientific_name == name)
+               .all())
+    return results[0] if len(results) == 1 else None
 
 
 _EPITHET_RE = re.compile(r"^[a-z][a-z-]*$")
+
+
+def scientific_name_has_authorship(scientific_name: str) -> bool:
+    """True if a ``scientificName`` string appears to carry authorship it should not.
+
+    A clean DwC name (our stored form) is ``Genus`` + optional ``(Subgenus)`` + one or more
+    lowercase epithets — nothing else. Any other token — a capitalised author, a year, ``&``,
+    ``d'Orbigny`` — means authorship was left in the name column and belongs in
+    ``scientificNameAuthorship``. Used to turn a resolution miss into an actionable message
+    ("move the authorship out") instead of a silent failure (#2).
+
+    Note `Carabus baudii fenestrellanus` (a clean trinomial, all lowercase epithets) is NOT
+    flagged, while `Carabus violaceus de Geer` IS (``Geer`` is capitalised).
+    """
+    parts = scientific_name.split()
+    if not parts:
+        return False
+    i = 1                                   # genus (capitalised) is fine
+    if i < len(parts) and parts[i].startswith("("):
+        i += 1                              # skip a (Subgenus) token
+    return any(not _EPITHET_RE.match(tok) for tok in parts[i:])
 
 
 def build_manual_taxon_prefill(session: Session, row: dict) -> dict:

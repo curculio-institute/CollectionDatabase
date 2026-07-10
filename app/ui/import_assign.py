@@ -296,6 +296,19 @@ def build_import_assign_tab(session_factory, refreshers: dict, on_saved=None) ->
 
             taxon_status.clear()
 
+            # A local miss on an authorship-laden name is expected — dwc:scientificName is the
+            # name only (authorship goes in scientificNameAuthorship), so it can never match a
+            # stored composed name. Say so, instead of leaving the user to wonder (#2).
+            if taxa_svc.scientific_name_has_authorship(name):
+                with taxon_status:
+                    with ui.row().classes("items-start gap-2 mb-2"):
+                        ui.icon("info", size="sm").style("color:#d97706; margin-top:2px")
+                        ui.label(
+                            f'"{name}" looks like it includes authorship. scientificName should '
+                            "be the name only — move the author into the scientificNameAuthorship "
+                            "column so it matches the local database.").classes("text-xs") \
+                          .style("color:#d97706")
+
             if results:
                 with taxon_status:
                     ui.label("Not found locally. Select from TaxonWorks:") \
