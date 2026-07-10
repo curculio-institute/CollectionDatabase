@@ -22,6 +22,7 @@ from app.ui.collecting_event_form import build_collecting_event_form
 from app.ui.specimen_form import build_specimen_form
 from app.ui.event_reuse import build_event_share_banner
 from app.ui.media_panel import build_media_button
+import app.services.media as media_svc
 from app.ui.external_id_panel import build_external_id_button
 from app.ui.life_stage_panel import build_life_stage_button
 
@@ -347,11 +348,13 @@ def build_records_tab(session_factory, *, on_saved: callable | None = None) -> N
                 session_factory, target_kind="collection_object",
                 target_id_getter=lambda: co_id,
                 tooltip="Specimen resource identifiers", deferred=True)
+            _sub["media"] = build_media_button(
+                session_factory, target_kind="collection_object",
+                target_id_getter=lambda: co_id, tooltip="Specimen media", deferred=True)
             return (
                 _sub["ls"]["button"],
                 _sub["ext"]["button"],
-                _media_btn(session_factory, target_kind="collection_object",
-                           target_id=co_id, tooltip="Specimen media"),
+                _sub["media"]["button"],
             )
 
         spec = build_specimen_form(
@@ -617,6 +620,7 @@ def build_records_tab(session_factory, *, on_saved: callable | None = None) -> N
             if not (coll_code_in.value or "").strip():
                 ui.notify("collectionCode cannot be empty.", type="warning")
                 return
+            _media_orphans: list[str] = []
             try:
                 with session_factory() as s:
                     with s.begin():
@@ -628,6 +632,7 @@ def build_records_tab(session_factory, *, on_saved: callable | None = None) -> N
                         _assoc_commit(s)
                         _sub["ls"]["commit"](s, co_id)
                         _sub["ext"]["commit"](s, co_id)
+                        _media_orphans = _sub["media"]["commit"](s, co_id) or []
                         ev_fields = _collect_ev_fields()
                         # Only write the shared event if the user unlocked it; in
                         # view mode this is a specimen-only save (the event — and
@@ -645,6 +650,10 @@ def build_records_tab(session_factory, *, on_saved: callable | None = None) -> N
             # Post-commit cleanup goes OUTSIDE the try: the data is already
             # committed, so a hiccup in on_saved()/reload must not be reported as a
             # "Save failed" (which would prompt a duplicate re-save). #59
+            # Bytes are unlinked only now, after the commit succeeded — a rolled-back save
+            # must never destroy a still-referenced file (#63).
+            for _rel in _media_orphans:
+                media_svc.delete_stored_file(_rel)
             ui.notify("Changes saved.", type="positive")
             if on_saved:
                 on_saved()
@@ -687,7 +696,8 @@ def build_records_tab(session_factory, *, on_saved: callable | None = None) -> N
                                 or id_state["has_changes"]()
                                 or _assoc_has_changes()
                                 or _sub["ls"]["has_changes"]()
-                                or _sub["ext"]["has_changes"]())
+                                or _sub["ext"]["has_changes"]()
+                                or _sub["media"]["has_changes"]())
 
     # ── Event form ─────────────────────────────────────────────────────────────
     def _build_event_form(ev_id, n, cos, ev_snap):
