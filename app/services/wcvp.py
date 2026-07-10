@@ -223,7 +223,7 @@ def _replace_with_retry(src: Path, dst: Path, *, attempts: int = 10, delay: floa
 
     POSIX replaces an open file happily. Windows raises PermissionError while any handle is
     open, and readers here are short-lived (open → query → close), so a short retry closes the
-    race rather than failing an 85 MB install (#104).
+    race rather than failing a whole download (#104).
     """
     import time
 
@@ -671,24 +671,27 @@ def latest_release(url: str = WCVP_DWCA_URL, *, timeout: float = 20.0) -> Archiv
 # cannot drift. The index lives beside the collection it is used with (config.wcvp_db_path,
 # i.e. inside data/), and the user should never have to move a file by hand to get it there.
 
-ProgressFn = "Callable[[str, float | None], None]"   # (phase, fraction 0..1 or None)
+# progress(phase, done_bytes, total_bytes | None). Bytes rather than a fraction, so the
+# caller can show the archive's real size instead of a number baked into the source — the
+# size is whatever Kew is serving today, and it changes with every release.
+ProgressFn = "Callable[[str, int, int | None], None]"
 
 
 def download_archive(dest: Path, url: str = WCVP_DWCA_URL, *,
                      progress=None, timeout: float = 60.0) -> Path:
-    """Stream the archive to `dest`, reporting fractional progress if asked."""
+    """Stream the archive to `dest`, reporting bytes downloaded / total if asked."""
     import httpx
 
     with httpx.stream("GET", url, follow_redirects=True, timeout=timeout) as r:
         r.raise_for_status()
-        total = int(r.headers.get("content-length", 0))
+        total = int(r.headers.get("content-length", 0)) or None
         done = 0
         with dest.open("wb") as fh:
             for chunk in r.iter_bytes(chunk_size=1 << 20):
                 fh.write(chunk)
                 done += len(chunk)
                 if progress:
-                    progress("download", (done / total) if total else None)
+                    progress("download", done, total)
     return dest
 
 
@@ -806,18 +809,19 @@ def install(folder: Path | None = None, *, url: str = WCVP_DWCA_URL,
     with tempfile.TemporaryDirectory() as tmp:
         staged = Path(tmp) / "wcvp_dwca.zip"
         if archive is not None:
+            size = archive.stat().st_size
             if progress:
-                progress("download", 1.0)
+                progress("download", size, size)
             shutil.copy2(archive, staged)
             source = f"a local file, `{archive}`"
         else:
             if progress:
-                progress("download", 0.0)
+                progress("download", 0, None)
             download_archive(staged, url, progress=progress)
             source = url
 
         if progress:
-            progress("build", None)
+            progress("build", 0, None)
         report = build_index(staged, folder / "wcvp.sqlite")
         # Only now is the archive worth keeping: it built a valid index.
         shutil.move(str(staged), target)
