@@ -23,6 +23,20 @@ from nicegui import ui
 # Reuse the person field's dropdown CSS + keyboard-nav script (single source).
 from app.ui.person_field import _CSS, _NAV_SCRIPT
 
+# The ISO-code chip on a code-bearing vocab row ("Limburg  NL-LI"). It lives here, not in
+# person_field's shared _CSS: a person has no ISO code, and only this widget renders one.
+_CODE_CSS = """
+<style>
+.pf-code {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: .70rem; letter-spacing: .03em;
+    color: rgba(0,0,0,.45); background: rgba(0,0,0,.05);
+    border-radius: 3px; padding: 0 4px; margin-left: 6px; vertical-align: middle;
+}
+.dark .pf-code { color: rgba(255,255,255,.55); background: rgba(255,255,255,.08); }
+</style>
+"""
+
 
 def build_vocab_field(
     session_factory,
@@ -40,11 +54,18 @@ def build_vocab_field(
     (provides .options(session) and .get_or_create(session, name))."""
     ui.add_head_html(_CSS)
     ui.add_head_html(_NAV_SCRIPT)
+    ui.add_head_html(_CODE_CSS)
 
     with session_factory() as s:
-        initial_opts = vocab.options(s)
-    _known: set[str] = set(initial_opts.keys())
+        _entries: list[tuple[str, str | None]] = vocab.entries(s)
+    # Names only — what the user types is matched against these, and the "✚ add" badge
+    # appears when the typed text is not among them.
+    _known: set[str] = {n for n, _ in _entries}
     _value: list[str | None] = [None]
+    # The ISO code of the *picked row*. Two rows can share a name (Limburg BE-VLI /
+    # NL-LI), so the name alone does not identify the pick — the code disambiguates it
+    # at save time. None for an uncoded row, a free-typed new name, or a plain vocab.
+    _code: list[str | None] = [None]
 
     wrap = ui.element("div").style("position:relative").classes(f"custom-dropdown-field {classes}")
 
@@ -75,8 +96,10 @@ def build_vocab_field(
 
     # ── state transitions ─────────────────────────────────────────────────────
 
-    def _enter_selected(display_html: str, clean: str, *, notify: bool = True) -> None:
+    def _enter_selected(display_html: str, clean: str, *, notify: bool = True,
+                        code: str | None = None) -> None:
         _value[0] = clean
+        _code[0] = code
         sel_content.set_content(display_html)
         sel_display.style("display:flex")
         inp.set_visibility(False)
@@ -88,6 +111,7 @@ def build_vocab_field(
 
     def _clear(notify: bool = True) -> None:
         _value[0] = None
+        _code[0] = None
         sel_content.set_content("")
         sel_display.style("display:none")
         inp.set_visibility(True)
@@ -108,6 +132,23 @@ def build_vocab_field(
 
     # ── dropdown ──────────────────────────────────────────────────────────────
 
+    def _sel_html(name: str, code: str | None) -> str:
+        """Selected/row markup: the name, with its ISO code as a muted suffix."""
+        if not code:
+            return _html.escape(name)
+        return (f'{_html.escape(name)} '
+                f'<span class="pf-code">{_html.escape(code)}</span>')
+
+    def _add_html(name: str, code: str | None = None) -> str:
+        """"✚ add <name>" markup — carrying the code when we know it.
+
+        A geocoded value can be new to the vocab *and* carry an ISO code (Overpass tags the
+        containing relation with ISO3166-1 / ISO3166-2), and that code is what the new row
+        will be created with. Hiding it would show "✚ add Greece" while silently creating
+        ("Greece", "GR"). The typed-text row has no code, so it renders unchanged.
+        """
+        return (f'<span class="pf-new-badge">✚ add</span> {_sel_html(name, code)}')
+
     def _update_dropdown(term: str) -> None:
         dropdown.clear()
         real = term.strip()
@@ -115,20 +156,21 @@ def build_vocab_field(
         items: list = []
         with dropdown:
             # Existing matches first, so the auto-highlighted top row is the best
-            # match — Enter takes it directly (no ArrowDown needed).
-            for name in sorted(_known):
+            # match — Enter takes it directly (no ArrowDown needed). One row per vocab
+            # ROW, not per name: "Limburg (BE-VLI)" and "Limburg (NL-LI)" are separate
+            # picks, and choosing one must be unambiguous at save time.
+            for name, code in sorted(_entries, key=lambda e: (e[0], e[1] or "")):
                 if not f or f in name.lower():
                     item = ui.element("div").classes("pf-item")
                     with item:
-                        ui.label(name)
-                    item.on("click", lambda _, n=name: _enter_selected(_html.escape(n), n))
+                        ui.html(_sel_html(name, code))
+                    item.on("click", lambda _, n=name, c=code:
+                            _enter_selected(_sel_html(n, c), n, code=c))
                     items.append(item)
             # "✚ add <typed>" LAST — only when the text isn't already a known name;
             # it becomes the sole (highlighted) row when nothing matches.
             if real and real not in _known:
-                add_html = (
-                    f'<span class="pf-new-badge">✚ add</span> {_html.escape(real)}'
-                )
+                add_html = _add_html(real)
                 item = ui.element("div").classes("pf-item pf-item--new")
                 with item:
                     ui.html(add_html)
@@ -162,17 +204,18 @@ def build_vocab_field(
     if initial_value:
         v = initial_value.strip()
         if v:
-            disp = (_html.escape(v) if v in _known
-                    else f'<span class="pf-new-badge">✚ add</span> {_html.escape(v)}')
-            _enter_selected(disp, clean=v, notify=False)
+            _seed_code = next((c for n, c in _entries if n == v), None)
+            disp = _sel_html(v, _seed_code) if v in _known else _add_html(v, _seed_code)
+            _enter_selected(disp, clean=v, notify=False, code=_seed_code)
 
     # ── timer refresh ─────────────────────────────────────────────────────────
 
     def refresh() -> None:
         with session_factory() as s:
-            new_opts = vocab.options(s)
+            new_entries = vocab.entries(s)
+        _entries[:] = new_entries
         _known.clear()
-        _known.update(new_opts.keys())
+        _known.update(n for n, _ in new_entries)
 
     ui.timer(2.0, refresh)
 
@@ -181,22 +224,39 @@ def build_vocab_field(
     def get_value() -> str | None:
         return _value[0]
 
-    def set_value(val: str | None) -> None:
+    def get_code() -> str | None:
+        """ISO code of the picked row (None for uncoded rows / plain vocabs)."""
+        return _code[0]
+
+    def set_value(val: str | None, code: str | None = None) -> None:
+        """Set the field programmatically (geocode fill, record load, push-pin default).
+
+        When no *code* is given and the name matches exactly one existing row, that row's
+        code is adopted; an ambiguous name (two Limburgs) adopts none rather than guessing
+        which country the user meant.
+        """
         v = (val or "").strip() or None
-        if v:
-            disp = (_html.escape(v) if v in _known
-                    else f'<span class="pf-new-badge">✚ add</span> {_html.escape(v)}')
-            _enter_selected(disp, clean=v, notify=False)
-        else:
+        if not v:
             _clear(notify=False)
+            return
+        c = (code or "").strip().upper() or None
+        if c is None:
+            matches = {mc for mn, mc in _entries if mn == v}
+            c = matches.pop() if len(matches) == 1 else None
+        disp = _sel_html(v, c) if v in _known else _add_html(v, c)
+        _enter_selected(disp, clean=v, notify=False, code=c)
 
     def commit(session) -> int | None:
-        """Ensure the current name exists in the vocab table; return its id (the
-        FK value to store), or None if nothing is selected."""
+        """Ensure the current entry exists in the vocab table; return its id (the
+        FK value to store), or None if nothing is selected.
+
+        Passes the picked row's code, so a code-bearing vocab resolves to the exact
+        (name, code) row instead of collapsing onto the uncoded one.
+        """
         val = _value[0]
         if not val:
             return None
-        obj = vocab.get_or_create(session, val)
+        obj = vocab.get_or_create(session, val, code=_code[0])
         _known.add(val)
         return obj.id
 
@@ -210,6 +270,7 @@ def build_vocab_field(
 
     return {
         "get_value":    get_value,
+        "get_code":     get_code,
         "set_value":    set_value,
         "commit":       commit,
         "refresh":      refresh,

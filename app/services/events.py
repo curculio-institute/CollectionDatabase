@@ -35,7 +35,11 @@ _GEO_TEXT_TO_FK = {
 
 def _resolve_geo_fields(session: Session, fields: dict) -> dict:
     """Convert any geography NAME keys in `fields` to their FK *_id (creating the
-    vocab row when needed; blank → None). Mutates and returns `fields`."""
+    vocab row when needed; blank → None). Mutates and returns `fields`.
+
+    Also consumes the non-column keys `country_iso` / `state_province_iso`, which identify
+    *which* vocab row a name means (Limburg BE-VLI vs NL-LI) — neither is an event column.
+    """
     from app.services.vocabularies import (
         country_vocab, state_province_vocab, administrative_region_vocab,
         county_vocab, island_vocab,
@@ -45,11 +49,42 @@ def _resolve_geo_fields(session: Session, fields: dict) -> dict:
         "administrative_region": administrative_region_vocab,
         "county": county_vocab, "island": island_vocab,
     }
+    # ISO codes for the two code-bearing vocabs. A row's identity is (name, code), so an
+    # exact match is reused and anything else creates a new row — never a mutation of an
+    # existing row, never a refused save. "Limburg" (BE-VLI) and "Limburg" (NL-LI) coexist;
+    # a hand-typed uncoded "Limburg" is a third row the user can merge later. Migration 0056.
+    state_iso = (fields.pop("state_province_iso", "") or "").strip().upper()
+    # The country's code identifies its vocab row. There is no event column to fall back on:
+    # dwc:countryCode was dropped in 0057 because a stored copy drifted from country.iso_code
+    # (`Germany` could carry `FR`). The DwC export derives it from the row.
+    country_iso = (fields.pop("country_iso", "") or "").strip().upper()
+    _check_state_inside_country(country_iso, state_iso)
+
+    codes = {"state_province": state_iso, "country": country_iso}
     for name_key, id_key in _GEO_TEXT_TO_FK.items():
         if name_key in fields:
             val = (fields.pop(name_key) or "").strip()
-            fields[id_key] = vocabs[name_key].get_or_create(session, val).id if val else None
+            code = codes.get(name_key) or None
+            row = vocabs[name_key].get_or_create(session, val, code=code) if val else None
+            fields[id_key] = row.id if row else None
     return fields
+
+
+def _check_state_inside_country(country_iso: str, state_iso: str) -> None:
+    """An ISO 3166-2 code begins with the ISO 3166-1 code of its country, by definition.
+
+    So `DE-BY` in country `GR` is not a matter of taste — it is a contradiction the codes
+    themselves expose, and it means the event names a state outside its country. Refuse the
+    save rather than store an impossible locality (CLAUDE.md §2). Only checked when *both*
+    codes are known; an uncoded row asserts nothing and is left alone.
+    """
+    if not (country_iso and state_iso):
+        return
+    prefix = state_iso.split("-", 1)[0]
+    if prefix != country_iso:
+        raise ValueError(
+            f"stateProvince {state_iso} lies in country {prefix}, not in {country_iso}. "
+            "A state cannot be outside its country — fix the country or the state.")
 
 
 @dataclass(frozen=True)
@@ -113,8 +148,9 @@ def event_form_snapshot(session: Session, event_id: int) -> dict | None:
         return None
     return {
         "country":                          ev.country_obj.name if ev.country_obj else None,
-        "country_code":                     ev.country_code,
+        "country_iso":                      ev.country_obj.iso_code if ev.country_obj else None,
         "state_province":                   ev.state_province_obj.name if ev.state_province_obj else None,
+        "state_province_iso":               ev.state_province_obj.iso_code if ev.state_province_obj else None,
         "administrative_region":            ev.administrative_region_obj.name if ev.administrative_region_obj else None,
         "county":                           ev.county_obj.name if ev.county_obj else None,
         "municipality":                     ev.municipality,

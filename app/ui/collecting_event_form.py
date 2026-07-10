@@ -28,12 +28,16 @@ from __future__ import annotations
 import asyncio
 import math
 import re
+import time
 
 import httpx
 from nicegui import ui
 
 from app.config import get_config
-from app.services.vocabularies import habitat_vocab, sampling_protocol_vocab
+from app.services.vocabularies import (
+    administrative_region_vocab, country_vocab, county_vocab, habitat_vocab,
+    island_vocab, sampling_protocol_vocab, state_province_vocab,
+)
 from app.ui.map_picker import build_map_picker
 from app.ui.person_field import build_person_field
 from app.ui.vocab_field import build_vocab_field
@@ -82,6 +86,60 @@ def _pick_locality(props_list: list[dict]) -> str:
     return best
 
 
+# --- Administrative hierarchy from Overpass is_in -------------------------------
+# The state is the relation carrying an ISO3166-2 tag, NOT a fixed admin_level:
+# DE-BY sits at L4, GR-J at L5, CN-YN at L4. The country carries ISO3166-1, which
+# also yields dwc:countryCode from the data (never a hand-rolled dict).
+#
+# Below the first-order subdivision there is no ISO tag, so these two levels are a
+# HEURISTIC, verified across DE/GR/KZ/CH/FR/CN only — see CLAUDE.md "Open (do not
+# guess)". They are left empty rather than guessed when the level is absent.
+_COUNTY_LEVEL = 6
+_MUNI_LEVELS = (7, 8)      # prefer L7 (GR Δήμος) over L8 (its municipal unit)
+_REGION_LEVEL = 5          # Regierungsbezirk / prefecture tier — only if not the state
+
+
+def _admin_name(row: dict) -> str:
+    """name:en where OSM has it (country/state everywhere tested), else the local name."""
+    return row.get("en") or row.get("nm") or ""
+
+
+def _admin_level(row: dict) -> int | None:
+    try:
+        return int(row.get("lvl") or "")
+    except ValueError:
+        return None
+
+
+def _resolve_hierarchy(adm_rows: list[dict]) -> dict:
+    """Map converted Overpass admin relations onto the collecting-event geography fields."""
+    country = next((r for r in adm_rows if r.get("iso1")), None) \
+        or next((r for r in adm_rows if _admin_level(r) == 2), None)
+    state = next((r for r in adm_rows if r.get("iso2")), None)
+    state_lvl = _admin_level(state) if state else None
+
+    def at(level: int) -> dict | None:
+        if level == state_lvl:
+            return None                      # the state itself is never also a sub-tier
+        return next((r for r in adm_rows if _admin_level(r) == level), None)
+
+    region = at(_REGION_LEVEL)
+    county = at(_COUNTY_LEVEL)
+    muni = next((m for m in (at(lvl) for lvl in _MUNI_LEVELS) if m), None)
+    return {
+        "country":      _admin_name(country) if country else "",
+        "country_code": (country.get("iso1", "") if country else "").upper(),
+        "state":        _admin_name(state) if state else "",
+        # The ISO 3166-2 code of the state — the very tag that identified it above. Carried
+        # through (not discarded) and stored on the state_province vocab row: a label has no
+        # room for "Baden-Württemberg" but "DE-BW" fits. Migration 0055.
+        "state_code":   (state.get("iso2", "") if state else "").upper(),
+        "region":       _admin_name(region) if region else "",
+        "county":       _admin_name(county) if county else "",
+        "municipality": _admin_name(muni) if muni else "",
+    }
+
+
 # Cap on nearby point-feature locality candidates (enclosing areas are always shown);
 # keeps the picker a useful shortlist in feature-dense areas, not an exhaustive dump.
 _MAX_LOCALITY_POINTS = 10
@@ -95,6 +153,164 @@ def _haversine_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     dlmb = math.radians(lon2 - lon1)
     a = math.sin(dphi / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dlmb / 2) ** 2
     return 2 * r * math.asin(min(1.0, math.sqrt(a)))
+
+
+# Overpass throttles (429) and sheds load (504) on the public instance often enough that a
+# single transient failure must not cost the user the whole lookup — measured: an is_in for
+# 26.015/101.883 returned 504 once, then answered on the retry. Only these statuses and
+# transport errors are retried; a 400 (bad query) is a bug in us and fails immediately.
+#
+# There is deliberately NO mirror failover. Measured 2026-07-10 on the Augsburg point:
+# overpass.kumi.systems and overpass.private.coffee both ReadTimeout at 35 s, overpass.osm.jp
+# refuses the connection, and overpass.osm.ch answers **200 OK with zero admin rows** because
+# it carries only regional (Swiss) data. Failing over to it would not raise — it would report
+# "this point lies in no administrative area" and silently blank the hierarchy, which is the
+# exact failure this project forbids (CLAUDE.md §2). One endpoint, honest errors.
+#
+# `overpass-api.de` itself load-balances between two backends (the status page announces
+# `gall.` or `lambert.openstreetmap.de`), which is why the same query costs 1.2 s or 24 s.
+_OVERPASS_URL = "https://overpass-api.de/api/interpreter"
+_OVERPASS_STATUS_URL = "https://overpass-api.de/api/status"
+_OVERPASS_RETRY_STATUS = (429, 502, 503, 504)
+_OVERPASS_BACKOFF_S = (1.0, 3.0)          # attempt 1 → 1 s → attempt 2 → 3 s → attempt 3
+_OVERPASS_ATTEMPT_TIMEOUT_S = 25.0        # matches the [timeout:25] we ask the server for
+_OVERPASS_DEADLINE_S = 40.0               # give up rather than retry into a 90 s wait
+_UA = {"User-Agent": "EntomologicalCollection/1.0"}
+
+
+async def _overpass_post(query: str, *, timeout: float = _OVERPASS_ATTEMPT_TIMEOUT_S,
+                         deadline: float = _OVERPASS_DEADLINE_S) -> tuple[list[dict] | None, str]:
+    """POST an Overpass QL query.
+
+    Returns ``(elements, "")`` on success, or ``(None, reason)`` where *reason* is a short
+    human-readable cause ("timed out", "HTTP 429", …) for the message shown to the user —
+    "Overpass unavailable" alone tells them nothing they can act on.
+    """
+    started = time.monotonic()
+    reason = "no response"
+    for attempt in range(len(_OVERPASS_BACKOFF_S) + 1):
+        # The deadline is a hard cap on the whole call, not just on the sleeps: a fresh
+        # 25 s attempt started at t=26 s would run to 51 s. Shrink it to what is left.
+        remaining = deadline - (time.monotonic() - started)
+        if remaining <= 0:
+            return None, f"{reason} (gave up after {deadline:.0f} s)"
+        try:
+            async with httpx.AsyncClient(timeout=min(timeout, remaining)) as cl:
+                r = await cl.post(_OVERPASS_URL, data={"data": query}, headers=_UA)
+            if r.status_code in _OVERPASS_RETRY_STATUS:
+                reason = f"HTTP {r.status_code}"
+                if attempt < len(_OVERPASS_BACKOFF_S):
+                    if time.monotonic() - started + _OVERPASS_BACKOFF_S[attempt] < deadline:
+                        await asyncio.sleep(_OVERPASS_BACKOFF_S[attempt])
+                        continue
+                    return None, f"{reason} (gave up after {deadline:.0f} s)"
+            r.raise_for_status()
+            return r.json().get("elements", []), ""
+        except httpx.TimeoutException:
+            reason = "timed out"
+        except httpx.TransportError as ex:
+            reason = f"network error ({type(ex).__name__})"
+        except httpx.HTTPStatusError as ex:
+            code = ex.response.status_code
+            if code not in _OVERPASS_RETRY_STATUS:
+                # A 4xx is our bug (a malformed query), not a busy server: fail fast.
+                return None, f"HTTP {code}"
+            reason = f"HTTP {code}"
+        except Exception as ex:                       # malformed JSON, etc.
+            return None, f"{type(ex).__name__}"
+        if attempt >= len(_OVERPASS_BACKOFF_S):
+            break
+        if time.monotonic() - started + _OVERPASS_BACKOFF_S[attempt] >= deadline:
+            return None, f"{reason} (gave up after {deadline:.0f} s)"
+        await asyncio.sleep(_OVERPASS_BACKOFF_S[attempt])
+    return None, reason
+
+
+async def _overpass_status() -> str | None:
+    """Ask Overpass why it is unhappy: the slot budget for this IP.
+
+    `/api/status` is plain text and reports the per-IP rate limit and free slots, e.g.
+
+        Rate limit: 2
+        2 slots available now.
+        Slot available after: 2026-07-10T11:42:29Z, in 14 seconds.
+
+    Returns a short phrase for the notification, or None if the status page is unreachable
+    (in which case the caller must *suggest* a rate limit rather than assert one).
+    """
+    try:
+        async with httpx.AsyncClient(timeout=8) as cl:
+            r = await cl.get(_OVERPASS_STATUS_URL, headers=_UA)
+        r.raise_for_status()
+        text = r.text
+    except Exception:
+        return None
+
+    limit = re.search(r"Rate limit:\s*(\d+)", text)
+    free = re.search(r"(\d+)\s+slots? available now", text)
+    wait = re.search(r"in\s+(\d+)\s+seconds", text)
+    if free and limit:
+        if int(free.group(1)) > 0:
+            return (f"{free.group(1)} of {limit.group(1)} query slots are free, so this looks "
+                    "like server load rather than a rate limit")
+        return f"0 of {limit.group(1)} query slots are free for this computer"
+    if wait:
+        return (f"all query slots for this computer are in use — "
+                f"the next frees up in about {wait.group(1)} s")
+    if limit:
+        return f"the server allows {limit.group(1)} concurrent queries from this computer"
+    return None
+
+
+async def _overpass_failure_message(reason: str) -> str:
+    """Compose an actionable 'why did Overpass not answer' sentence."""
+    status = await _overpass_status()
+    if status is None:
+        return (f"Overpass did not answer ({reason}); its status page is unreachable too. "
+                "The per-computer query-rate limit may have been exceeded — wait a minute "
+                "and try again.")
+    return f"Overpass did not answer ({reason}): {status}."
+
+
+class _VocabInput:
+    """Adapts a ``build_vocab_field`` handle to the ``ui.input`` interface this form uses.
+
+    The geography levels are FK-backed controlled vocabularies and must behave like one
+    (existing entries, "✚ add" for a new name, keyboard nav, live options) — but the form
+    reads and writes them as ``.value`` in a dozen places, and the field registry drives
+    collect / load / reset / readonly generically. This keeps that contract.
+
+    ``.code`` exposes the ISO code of the *picked row*: two rows can share a name (Limburg
+    BE-VLI / NL-LI), so the name alone does not identify the pick.
+    """
+
+    __slots__ = ("_h",)
+
+    def __init__(self, handle: dict):
+        self._h = handle
+
+    @property
+    def value(self) -> str:
+        return self._h["get_value"]() or ""
+
+    @value.setter
+    def value(self, val) -> None:
+        self._h["set_value"]((str(val) if val is not None else "") or None)
+
+    @property
+    def code(self) -> str | None:
+        return self._h["get_code"]()
+
+    def set_value(self, name: str | None, code: str | None = None) -> None:
+        self._h["set_value"](name or None, code)
+
+    def props(self, add: str | None = None, *, remove: str | None = None):
+        """Only 'readonly' is ever toggled on these fields by _set_readonly()."""
+        if add and "readonly" in add:
+            self._h["set_readonly"](True)
+        if remove and "readonly" in remove:
+            self._h["set_readonly"](False)
+        return self
 
 
 def build_collecting_event_form(
@@ -150,6 +366,9 @@ def build_collecting_event_form(
         _fire_edit()
 
     def _on_state_change(_=None):
+        # The picked row's ISO code lives on the field itself: choosing "Bavaria (DE-BY)"
+        # from the dropdown carries DE-BY, while a free-typed name carries none. Nothing
+        # to clear here.
         if not _st["populating"]:
             _wipe_from("state")
         _fire_edit()
@@ -164,10 +383,25 @@ def build_collecting_event_form(
             _wipe_from("muni")
         _fire_edit()
 
-    def _geocode_input(label, on_change=None, placeholder=""):
-        """Input + hidden inline warning menu + ok icon. Returns (input, btn, tip, items_col, ok_icon)."""
+    def _geocode_input(label, on_change=None, placeholder="", vocab=None):
+        """Input + hidden inline warning menu + ok icon + pending spinner.
+
+        Returns (input, btn, tip, items_col, ok_icon, spinner). The spinner marks *this*
+        field as awaiting its own source, so a slow lookup shows where it is still working
+        instead of the whole form sitting inert.
+
+        With *vocab*, the field is the controlled-vocabulary dropdown (the same UX as the
+        person field) rather than a bare text input — these levels are FK-backed vocabs and
+        should look like it. The warning menu / ✓ / spinner stay as siblings in the row.
+        """
         with ui.row().classes("col-span-1 items-center gap-0 w-full"):
-            inp = ui.input(label, on_change=on_change, placeholder=placeholder).classes("flex-1 min-w-0")
+            if vocab is not None:
+                inp = _VocabInput(build_vocab_field(
+                    session_factory, vocab, label,
+                    on_change=on_change, classes="flex-1 min-w-0"))
+            else:
+                inp = ui.input(label, on_change=on_change,
+                               placeholder=placeholder).classes("flex-1 min-w-0")
             with (
                 ui.button(icon="warning_amber")
                 .props("flat dense round size=xs color=orange")
@@ -184,7 +418,12 @@ def build_collecting_event_form(
                 .props("color=positive")
                 .classes("hidden")
             )
-        return inp, btn, tip, items_col, ok_icon
+            spinner = ui.spinner(size="xs").props("color=primary").classes("hidden")
+        return inp, btn, tip, items_col, ok_icon, spinner
+
+    def _spin(spinners, on: bool) -> None:
+        for sp in spinners:
+            sp.classes(remove="hidden") if on else sp.classes(add="hidden")
 
     def _on_lat_change(e):
         # Fallback when the JS paste interceptor isn't installed yet.
@@ -265,174 +504,173 @@ def build_collecting_event_form(
     ui.timer(0.3, _inject_coord_paste_js, once=True)
 
     async def _reverse_geocode(lat: float, lon: float) -> dict | None:
-        """Reverse-geocode via Photon (address) + Overpass is_in (enclosing areas).
-        Fills fields as a side effect; returns Photon props or None."""
-        for _b in (_cntry_warn, _code_warn, _state_warn, _county_warn, _muni_warn):
+        """Fill the geography fields from Overpass is_in (containment) + Photon (nearby names).
+
+        The two services answer different questions and must not be swapped (CLAUDE.md
+        "Geocoding: containment vs proximity"):
+
+        * Overpass ``is_in`` returns the polygons that CONTAIN the point → the whole
+          administrative hierarchy. The state is the relation tagged ``ISO3166-2``, not a
+          fixed admin_level.
+        * Photon ``/reverse`` is a PROXIMITY search: its country/state/county/city describe
+          the NEAREST FEATURE, not the query point, so they are read only as a degraded
+          fallback when Overpass fails. Its features are the locality candidates, filtered
+          to those actually inside the uncertainty circle.
+
+        Returns ``{"photon": props|None}`` — ``None`` only when the lookup truly failed.
+        An empty Photon response is NOT a failure: it means "no named feature nearby"
+        (open sea, steppe, 26.015/101.883), which leaves `locality` blank, not the form.
+        """
+        for _b in (_cntry_warn, _state_warn, _county_warn, _muni_warn):
             _b.classes(add="hidden")
         _locality_warn.classes(add="hidden")
 
-        # The 'around' search radius scales with the coordinate uncertainty: a precise
-        # point → just the very nearest features; a vague one → a wider net. Floor keeps
-        # the nearest named feature reachable; cap keeps it sane when uncertainty is huge.
+        # Blank every geocode-owned field before starting. Sources now land one at a time, so
+        # without this the previous point's values sit in the form while the new lookup runs —
+        # and a source that finds nothing (Photon at 26.015/101.883 returns no feature) would
+        # leave them there for good. A locality silently carried over from another specimen's
+        # coordinates is exactly the "silent wrong value" this project refuses (CLAUDE.md §2).
+        # Empty field + spinner = "being looked up"; empty field after = "nothing there".
+        _st["populating"] = True
+        for _f in (country_in, state_in, region_in, county_in, muni_in,
+                   locality_in, island_in):
+            _f.value = ""          # clears the vocab fields' ISO codes with them
+        _st["populating"] = False
+        _fire_edit()
+
+        # The locality circle scales with the coordinate uncertainty: a precise point → only
+        # the very nearest features; a vague one → a wider net. Floor keeps the nearest named
+        # feature reachable; cap keeps it sane when uncertainty is huge.
         try:
             _unc = float(uncert_in.value or 0)
         except (TypeError, ValueError):
             _unc = 0.0
-        radius_m = int(max(300, min(_unc or 1000, 3000)))
+        circle_m = int(max(300, min(_unc or 1000, 3000)))
 
         async def _photon() -> list[dict]:
+            """Nearby named features with a computed distance (Photon carries no distance)."""
             async with httpx.AsyncClient(timeout=10) as cl:
                 r = await cl.get(
                     "https://photon.komoot.io/reverse",
-                    params={"lat": lat, "lon": lon, "lang": "en", "limit": 15},
+                    # Photon's radius ceiling is ~1.5 km — 3 km and 10 km return the same
+                    # results — so the circle filter below, not this hint, is what binds.
+                    params={"lat": lat, "lon": lon, "lang": "en", "limit": 15,
+                            "radius": circle_m / 1000},
                     headers={"User-Agent": "EntomologicalCollection/1.0"},
                 )
                 r.raise_for_status()
-                return [f["properties"] for f in r.json().get("features", [])]
+                out = []
+                for f in r.json().get("features", []):
+                    props = f["properties"]
+                    geom = (f.get("geometry") or {}).get("coordinates")
+                    props["_dist"] = (_haversine_m(lat, lon, geom[1], geom[0])
+                                      if geom else float("inf"))
+                    out.append(props)
+                return out
 
-        async def _overpass() -> dict:
-            # One query: (1) enclosing admin_level-5 boundary → administrative_region;
-            # (2) enclosing named areas (reserves / forests / islands); (3) nearby named
-            # natural features (peaks / water / caves / OSM localities) by radius — because
-            # Photon only returns buildings/streets here, not meaningful collecting spots.
+        async def _overpass() -> dict | None:
+            """Enclosing admin hierarchy + named areas/islands, in ONE request. None on failure.
+
+            Deliberately one query, not two parallel ones. The public Overpass instance grants
+            an IP only a couple of concurrent slots, so a second request queues behind the
+            first rather than running beside it. Measured (6 runs, alternating, 20 s apart):
+
+                one combined query   median  3.7 s, max 13.8 s, 6/6 succeeded
+                two parallel queries median 29.2 s, max 37.2 s, 0/6 succeeded
+
+            Splitting serialised the work and added retry backoff on top. The `is_in` is
+            evaluated once and both blocks pivot off it, so bundling is also cheaper server-side.
+            """
             q = (
                 "[out:json][timeout:25];"
                 f"is_in({lat},{lon})->.a;"
+                # `is_in` yields AREAS — relation(pivot.a) is required; rel.a[...] silently
+                # matches nothing. `convert` flattens the tags we need (absent → "").
+                "relation(pivot.a)[boundary=administrative][name];"
+                'convert adm ::id=id(), lvl=t["admin_level"], nm=t["name"], en=t["name:en"],'
+                ' iso1=t["ISO3166-1"], iso2=t["ISO3166-2"];'
+                "out;"
                 "("
-                "  relation(pivot.a)[boundary=administrative][admin_level=5][name];"
                 "  way(pivot.a)[name][boundary=protected_area];"
                 "  way(pivot.a)[name][leisure=nature_reserve];"
                 '  way(pivot.a)[name][landuse~"^(forest|wood)$"];'
                 '  way(pivot.a)[name][place~"^(island|islet)$"];'
-                "  relation(pivot.a)[name][boundary~\"^(protected_area|national_park)$\"];"
+                '  relation(pivot.a)[name][boundary~"^(protected_area|national_park)$"];'
                 "  relation(pivot.a)[name][leisure=nature_reserve];"
                 '  relation(pivot.a)[name][landuse~"^(forest|wood)$"];'
                 '  relation(pivot.a)[name][place~"^(island|islet)$"];'
-                ")->.areas;"
-                "("
-                f"  node(around:{radius_m},{lat},{lon})[natural=peak][name];"
-                f"  nwr(around:{radius_m},{lat},{lon})[natural=water][name];"
-                f'  way(around:{radius_m},{lat},{lon})[waterway~"^(river|stream|canal)$"][name];'
-                f"  node(around:{radius_m},{lat},{lon})[place=locality][name];"
-                f'  node(around:{radius_m},{lat},{lon})[natural~"^(spring|cave_entrance|saddle|glacier)$"][name];'
-                ")->.pts;"
-                ".areas out tags;"
-                ".pts out center tags;"
+                ");"
+                "out tags;"
             )
-            out = {"admin_region": "", "islands": [], "candidates": []}
-            try:
-                async with httpx.AsyncClient(timeout=20) as cl:
-                    r = await cl.post(
-                        "https://overpass-api.de/api/interpreter",
-                        data={"data": q},
-                        headers={"User-Agent": "EntomologicalCollection/1.0"},
-                    )
-                    r.raise_for_status()
-                    seen: set[str] = set()
-                    for el in r.json().get("elements", []):
-                        tags = el.get("tags", {})
-                        n = tags.get("name", "")
-                        if not n:
-                            continue
-                        place_val, natural = tags.get("place", ""), tags.get("natural", "")
-                        waterway = tags.get("waterway", "")
-                        if tags.get("admin_level") == "5" and tags.get("boundary") == "administrative":
-                            out["admin_region"] = out["admin_region"] or n
-                            continue
-                        if place_val in ("island", "islet"):
-                            if n not in out["islands"]:
-                                out["islands"].append(n)
-                            continue
-                        if n in seen:
-                            continue
-                        seen.add(n)
-                        # Two groups: "area" = the point is INSIDE it (reserve / forest /
-                        # protected area) → always listed, no distance; "point" = a nearby
-                        # named feature (peak / water / spring / cave / OSM locality) →
-                        # listed with distance, sorted by distance (filled in by the caller).
-                        if natural == "peak":
-                            ele = tags.get("ele")
-                            kind = f"peak {ele} m" if ele else "peak"
-                            group = "point"
-                        elif natural == "water" or waterway in ("river", "stream", "canal"):
-                            kind, group = (waterway or "water"), "point"
-                        elif natural in ("spring", "cave_entrance", "saddle", "glacier"):
-                            kind, group = natural.replace("_entrance", ""), "point"
-                        elif place_val == "locality":
-                            kind, group = "locality", "point"
-                        else:
-                            kind = (tags.get("leisure") or tags.get("boundary")
-                                    or tags.get("landuse") or "area")
-                            group = "area"
-                        c = el.get("center") or {"lat": el.get("lat"), "lon": el.get("lon")}
-                        d = (_haversine_m(lat, lon, c["lat"], c["lon"])
-                             if c.get("lat") is not None else 0.0)
-                        out["candidates"].append({"name": n, "kind": kind, "group": group, "dist": d})
-                    return out
-            except Exception:
-                return out
+            elements, err = await _overpass_post(q)
+            if elements is None:
+                _geo["overpass_error"] = err
+                return None
+            adm_rows, areas, islands, seen = [], [], [], set()
+            for el in elements:
+                tags = el.get("tags", {})
+                if el.get("type") == "adm":          # converted admin relation
+                    adm_rows.append(tags)
+                    continue
+                n = tags.get("name", "")
+                if not n or n in seen:
+                    continue
+                seen.add(n)
+                if tags.get("place") in ("island", "islet"):
+                    islands.append(n)
+                    continue
+                kind = (tags.get("leisure") or tags.get("boundary")
+                        or tags.get("landuse") or "area")
+                areas.append({"name": n, "kind": kind})
+            return {"hier": _resolve_hierarchy(adm_rows),
+                    "areas": areas, "islands": islands}
 
-        try:
-            all_props, overpass = await asyncio.gather(_photon(), _overpass())
-        except Exception as ex:
-            ui.notify(f"Reverse geocoding failed: {ex}", type="negative")
-            return None
+        # ── progressive fill ────────────────────────────────────────────────────
+        # Photon answers in ~0.15 s, Overpass in ~3.7 s (median). Each writes its own fields
+        # the moment it lands rather than both being gathered and applied together, so the
+        # locality appears immediately instead of waiting on the containment query.
+        _geo: dict = {"best": None, "areas": [], "points": [], "auto": "",
+                      "photon_done": False, "areas_done": False, "overpass_error": ""}
 
-        if not all_props:
-            ui.notify("Reverse geocoding returned no results.", type="warning")
-            return None
-
-        p = all_props[0]
-        # Enclosing areas (point is inside → no distance, always listed) vs nearby point
-        # features (with distance, sorted by distance, capped to a shortlist).
-        areas  = [c for c in overpass["candidates"] if c["group"] == "area"]
-        points = sorted((c for c in overpass["candidates"] if c["group"] == "point"),
-                        key=lambda x: x["dist"])[:_MAX_LOCALITY_POINTS]
-        _st["populating"] = True
-        # country / stateProvince already English (Photon lang=en). administrative_region
-        # (Regierungsbezirk) only exists at OSM admin_level 5 → from Overpass.
-        country_in.value = p.get("country", "")
-        code_in.value    = p.get("countrycode", "").upper()
-        state_in.value   = p.get("state", "")
-        region_in.value  = overpass["admin_region"]
-        county_in.value  = p.get("county", "")
-        muni_in.value    = p.get("city") or p.get("locality") or ""
-        # Photon only returns buildings/streets here, so the best collecting locality is
-        # the NEAREST specific feature (not the broad enclosing area).
-        photon_locality  = _pick_locality(all_props)
-        locality_in.value = (photon_locality
-                             or (points[0]["name"] if points else "")
-                             or (areas[0]["name"] if areas else ""))
-        island_in.value   = overpass["islands"][0] if overpass["islands"] else ""
-        _st["populating"] = False
-        _fire_edit()
-
-        # "Also nearby" picker: enclosing areas first (no distance), then nearby features
-        # with their distance, click to set locality. De-dup by name.
         def _fmt_dist(d: float) -> str:
             return f"{round(d)} m" if d < 1000 else f"{d / 1000:.1f} km"
-        _alts: list[tuple[str, str]] = []   # (display label, name to set)
-        _seen_locs: set[str] = {locality_in.value}
-        for c in areas:
-            if c["name"] not in _seen_locs:
-                _seen_locs.add(c["name"])
-                _alts.append((f"{c['name']}  ·  {c['kind']}", c["name"]))
-        for c in points:
-            if c["name"] not in _seen_locs:
-                _seen_locs.add(c["name"])
-                _alts.append((f"{c['name']}  ·  {c['kind']}  ·  {_fmt_dist(c['dist'])}", c["name"]))
-        for pr in all_props:
-            name = pr.get("name", "")
-            kv = (pr.get("osm_key", ""), pr.get("osm_value", ""))
-            if kv in _LOCALITY_KV and name and name not in _seen_locs:
-                _seen_locs.add(name)
-                _alts.append((name, name))
-        if _alts:
+
+        def _apply_locality() -> None:
+            """Recompute locality from whatever has arrived; never clobber the user's typing.
+
+            Order-independent: a Photon feature outranks an enclosing area, whichever landed
+            first. Re-running with more data can only improve the value.
+            """
+            val = ((_geo["best"]["name"] if _geo["best"] else "")
+                   or (_geo["areas"][0]["name"] if _geo["areas"] else ""))
+            if not val or locality_in.value not in ("", _geo["auto"]):
+                return
+            _st["populating"] = True
+            locality_in.value = val
+            _st["populating"] = False
+            _geo["auto"] = val
+            _fire_edit()
+
+        def _rebuild_picker() -> None:
+            """"Also nearby" menu: enclosing areas (no distance) then nearby points."""
+            _alts: list[tuple[str, str]] = []
+            _seen_locs: set[str] = {locality_in.value}
+            for c in _geo["areas"]:
+                if c["name"] not in _seen_locs:
+                    _seen_locs.add(c["name"])
+                    _alts.append((f"{c['name']}  ·  {c['kind']}", c["name"]))
+            for c in _geo["points"]:
+                if c["name"] not in _seen_locs:
+                    _seen_locs.add(c["name"])
+                    _alts.append((f"{c['name']}  ·  {c['kind']}  ·  {_fmt_dist(c['dist'])}", c["name"]))
+            if not _alts:
+                return
             _locality_items.clear()
             with _locality_items:
                 for _label, _name in _alts:
                     async def _pick_alt(nm=_name):
                         locality_in.value = nm
+                        _geo["auto"] = nm
                         _fire_edit()
                         _locality_warn.classes(add="hidden")
                     ui.menu_item(_label, on_click=_pick_alt)
@@ -440,10 +678,107 @@ def build_collecting_event_form(
             _locality_tip.update()
             _locality_warn.classes(remove="hidden")
 
-        return p
+        def _locality_settled() -> None:
+            """Stop the locality spinner only once both of its sources have reported."""
+            if _geo["photon_done"] and _geo["areas_done"]:
+                _spin([_locality_sp], False)
+
+        async def _fill_photon() -> list[dict]:
+            try:
+                props = await _photon()
+            except Exception:
+                props = []
+            # Only features genuinely INSIDE the uncertainty circle. Photon happily returns a
+            # road 2.8 km away when nothing is near (26.015/101.883) — not a collecting
+            # locality, and an empty locality is the correct answer there.
+            near = sorted((p for p in props if p["_dist"] <= circle_m),
+                          key=lambda p: p["_dist"])[:_MAX_LOCALITY_POINTS]
+            ranked = sorted(
+                ((_LOCALITY_KV.get((p.get("osm_key", ""), p.get("osm_value", "")), -1),
+                  -p["_dist"], p) for p in near if p.get("name")),
+                key=lambda t: (t[0], t[1]), reverse=True)
+            _geo["best"] = next((p for pri, _, p in ranked if pri >= 0), None)
+            _geo["points"] = [
+                {"name": p["name"], "kind": p.get("osm_value") or p.get("osm_key") or "place",
+                 "dist": p["_dist"]} for p in near if p.get("name")]
+            _geo["photon_done"] = True
+            _apply_locality()
+            _rebuild_picker()
+            _locality_settled()
+            return props
+
+        async def _fill_overpass() -> dict | None:
+            """One wave: the containment hierarchy, the island, and the enclosing areas."""
+            res = await _overpass()
+            _geo["areas"] = res["areas"] if res else []
+            _geo["areas_done"] = True
+            if res is not None:
+                hier = res["hier"]
+                _st["populating"] = True
+                # The ISO codes ride along with the names: the geocoder identified *these*
+                # rows (Bavaria = DE-BY), so the save must resolve to them and not to a
+                # same-named uncoded row.
+                country_in.set_value(hier["country"], hier["country_code"])
+                state_in.set_value(hier["state"], hier["state_code"])
+                region_in.value  = hier["region"]
+                county_in.value  = hier["county"]
+                muni_in.value    = hier["municipality"]
+                # Written unconditionally: no enclosing island means the island field is
+                # empty for *this* point, not left showing the previous one.
+                island_in.value  = res["islands"][0] if res["islands"] else ""
+                _st["populating"] = False
+                _fire_edit()
+            _spin(_admin_spinners + [_island_sp], False)
+            _apply_locality()
+            _rebuild_picker()
+            _locality_settled()
+            return res["hier"] if res else None
+
+        _spin(_admin_spinners + _locality_spinners, True)
+        try:
+            all_props, hier = await asyncio.gather(_fill_photon(), _fill_overpass())
+        finally:
+            _spin(_admin_spinners + _locality_spinners, False)
+
+        if hier is None and not all_props:
+            # Both sources silent. Say which one failed and why — "geocoding failed" alone
+            # leaves the user with nothing to act on (wait? fix coordinates? check the net?).
+            msg = await _overpass_failure_message(_geo["overpass_error"] or "no response")
+            ui.notify(f"Reverse geocoding failed. {msg} Photon returned nothing either.",
+                      type="negative", multi_line=True, timeout=12000,
+                      classes="text-left", close_button="OK")
+            return None
+
+        if hier is None:
+            # Degraded fallback: Photon's hierarchy describes its nearest feature, so it can
+            # name a neighbouring municipality — and in Greece a different admin tier entirely.
+            # Loud, and it says *why*, because the values may be wrong.
+            p0 = all_props[0]
+            msg = await _overpass_failure_message(_geo["overpass_error"] or "no response")
+            ui.notify(f"{msg} The administrative fields below were taken from the nearest "
+                      "named feature instead of the areas containing the point, so they may "
+                      "be wrong (and admin. region is left empty). Please check them.",
+                      type="warning", multi_line=True, timeout=15000,
+                      classes="text-left", close_button="OK")
+            _st["populating"] = True
+            country_in.set_value(p0.get("country", ""),
+                                 (p0.get("countrycode", "") or "").upper())
+            # No state code: Photon names the nearest feature's tier, which in Greece is the
+            # Decentralized Administration, not the ISO region. Claiming an ISO code for it
+            # would be a lie; the field stays uncoded.
+            state_in.set_value(p0.get("state", "") or None, None)
+            region_in.value  = ""
+            county_in.value  = p0.get("county", "")
+            muni_in.value    = p0.get("city") or p0.get("locality") or ""
+            _st["populating"] = False
+            _fire_edit()
+
+        # The boundary check compares Photon perimeter samples; with no Photon centre props
+        # there is nothing to compare against, so the caller skips it rather than guess.
+        return {"photon": all_props[0] if all_props else None}
 
     async def _check_boundary_crossing(
-        lat: float, lon: float, radius_m: float, photon_props: dict,
+        lat: float, lon: float, radius_m: float,
         ok_icons: list | None = None,
     ) -> bool:
         """Warn when the uncertainty circle crosses admin boundaries (samples 4 cardinal points)."""
@@ -458,8 +793,18 @@ def build_collecting_event_form(
                 "locality": _pick_locality(props_list),
             }
 
-        centre = _props_to_snap([photon_props])
-        centre["locality"] = locality_in.value
+        # The centre snapshot is what the form actually shows (Overpass containment), NOT
+        # photon_props — otherwise "keep the centre value" would overwrite a correct field
+        # with Photon's nearest-feature guess. The perimeter samples below are still Photon,
+        # so a crossing warning is advisory only; see CLAUDE.md "Boundary-crossing check".
+        centre = {
+            "country":  country_in.value or "",
+            "code":     country_in.code or "",
+            "state":    state_in.value or "",
+            "county":   county_in.value or "",
+            "muni":     muni_in.value or "",
+            "locality": locality_in.value or "",
+        }
         snapshots: list[dict] = [centre]
 
         perimeter_pts = []
@@ -501,23 +846,30 @@ def build_collecting_event_form(
         _ok_shown: list = []
 
         def _show_warn(btn, tip, items_col, field_key, on_pick, ok_icon=None, label_fn=None):
+            centre_val = centre[field_key]
+            # Empty is never an offerable value. A sample that names nothing at this tier
+            # (no municipality inside a kreisfreie Stadt; no named feature near the point)
+            # carries no information, and "set this field to nothing" is not a choice worth
+            # a menu row — it rendered as a bare " (centre)" or "(no named feature) (centre)".
             seen: dict[str, dict] = {}
             for snap in snapshots:
                 val = snap[field_key]
-                if val not in seen:
+                if val and val not in seen:
                     seen[val] = snap
-            if len(seen) <= 1:
+            # Warn when some *named* alternative differs from what the field holds. This still
+            # fires when the field is empty and a perimeter sample names something (the circle
+            # reaches into a municipality the centre is not in) — the case that matters.
+            alts = [v for v in seen if v != centre_val]
+            if not alts:
                 if ok_icon is not None:
                     ok_icon.classes(remove="hidden", add="lookup-ok-fade")
                     _ok_shown.append(ok_icon)
                 return
-            centre_val = centre[field_key]
-            alts = [v for v in seen if v != centre_val]
             items_col.clear()
             with items_col:
-                for i, (val, snap) in enumerate(seen.items()):
+                for val, snap in seen.items():
                     display = label_fn(val, snap) if label_fn else val
-                    marker  = " (centre)" if i == 0 else ""
+                    marker  = " (centre)" if val == centre_val else ""
 
                     async def _cb(s=snap):
                         await on_pick(s)
@@ -532,26 +884,27 @@ def build_collecting_event_form(
 
         async def _apply_snap(snap: dict) -> None:
             _st["populating"] = True
-            country_in.value  = snap["country"]
-            code_in.value     = snap["code"]
-            state_in.value    = snap["state"]
+            country_in.set_value(snap["country"] or None, snap["code"] or None)
+            # Perimeter samples are Photon's; they carry no ISO 3166-2 code, so picking one
+            # sets the state name without claiming a code for it.
+            state_in.set_value(snap["state"] or None, None)
             county_in.value   = snap["county"]
             muni_in.value     = snap["muni"]
             locality_in.value = snap["locality"]
             _st["populating"] = False
-            for _b in (_cntry_warn, _code_warn, _state_warn, _county_warn, _muni_warn, _locality_warn):
+            for _b in (_cntry_warn, _state_warn, _county_warn, _muni_warn, _locality_warn):
                 _b.classes(add="hidden")
             _fire_edit()
 
-        icons = ok_icons or [None] * 6
+        icons = ok_icons or [None] * 5
         _show_warn(_cntry_warn,    _cntry_tip,    _cntry_items,    "country",  _apply_snap, ok_icon=icons[0])
-        _show_warn(_code_warn,     _code_tip,     _code_items,     "code",     _apply_snap, ok_icon=icons[1],
-                   label_fn=lambda c, s: f"{c} ({s['country']})")
-        _show_warn(_state_warn,    _state_tip,    _state_items,    "state",    _apply_snap, ok_icon=icons[2])
-        _show_warn(_county_warn,   _county_tip,   _county_items,   "county",   _apply_snap, ok_icon=icons[3])
-        _show_warn(_muni_warn,     _muni_tip,     _muni_items,     "muni",     _apply_snap, ok_icon=icons[4])
-        _show_warn(_locality_warn, _locality_tip, _locality_items, "locality", _apply_snap, ok_icon=icons[5],
-                   label_fn=lambda v, s: v if v else "(no named feature)")
+        _show_warn(_state_warn,    _state_tip,    _state_items,    "state",    _apply_snap, ok_icon=icons[1])
+        _show_warn(_county_warn,   _county_tip,   _county_items,   "county",   _apply_snap, ok_icon=icons[2])
+        _show_warn(_muni_warn,     _muni_tip,     _muni_items,     "muni",     _apply_snap, ok_icon=icons[3])
+        # No label_fn: an unnamed sample can no longer reach the menu, so the old
+        # "(no named feature)" placeholder is unreachable.
+        _show_warn(_locality_warn, _locality_tip, _locality_items, "locality", _apply_snap,
+                   ok_icon=icons[4])
 
         if _ok_shown:
             _fading = list(_ok_shown)
@@ -613,17 +966,36 @@ def build_collecting_event_form(
                 unc = float(uncert_in.value) if uncert_in.value else None
             except ValueError:
                 pass
-            _lookup_btn.props("loading=true")
+            # The lookup can take 25 s (measured: the Overpass hierarchy query varies from
+            # 2 s to 24 s), so say so plainly. `loading` on a flat button is easy to miss;
+            # the label change + disabled state + the per-field spinners are not.
+            _lookup_btn.props("loading=true disable")
+            _lookup_btn.set_text("Detecting…")
+            _lookup_status.set_text("Looking up nearby features and the enclosing "
+                                    "administrative areas…")
+            _lookup_status.classes(remove="hidden")
             for _ok in _geocode_ok_icons:
                 _ok.classes(add="hidden", remove="lookup-ok-fade")
             _locality_warn.classes(add="hidden")
-            p = await _reverse_geocode(lat, lon)
-            _lookup_btn.props(remove="loading")
-            if p is None:
+            try:
+                res = await _reverse_geocode(lat, lon)
+            finally:
+                _lookup_btn.props(remove="loading disable")
+                _lookup_btn.set_text("Detect Locations from Coordinates")
+                _lookup_status.classes(add="hidden")
+            if res is None:
                 return
             ui.notify("Location fields filled from coordinates.", type="positive")
-            if unc and unc > 0:
-                await _check_boundary_crossing(lat, lon, unc, p, ok_icons=_geocode_ok_icons)
+            p = res["photon"]
+            # No Photon features (open sea, steppe) → no perimeter hierarchies to diff.
+            if unc and unc > 0 and p is not None:
+                _lookup_status.set_text("Checking whether the uncertainty circle crosses "
+                                        "an administrative boundary…")
+                _lookup_status.classes(remove="hidden")
+                try:
+                    await _check_boundary_crossing(lat, lon, unc, ok_icons=_geocode_ok_icons)
+                finally:
+                    _lookup_status.classes(add="hidden")
             else:
                 for _ok in _geocode_ok_icons:
                     _ok.classes(remove="hidden", add="lookup-ok-fade")
@@ -634,36 +1006,54 @@ def build_collecting_event_form(
         _lookup_btn = (
             ui.button("Detect Locations from Coordinates", icon="auto_fix_high", on_click=_fill_from_coords)
             .props("flat dense size=sm")
-            .tooltip("Fill country / state / county from coordinates via Photon")
+            .tooltip("Fill the administrative hierarchy (Overpass) and locality (Photon) "
+                     "from the coordinates")
+        )
+        _lookup_status = (
+            ui.label("").classes("hidden text-xs text-grey-6 italic")
         )
 
     # ── Location ────────────────────────────────────────────────────────────
     ui.label("Location").classes("text-xs font-semibold uppercase tracking-wider text-grey-6 mt-4")
-    with ui.grid(columns=5).classes("w-full gap-3 mt-1"):
-        country_in, _cntry_warn, _cntry_tip, _cntry_items, _cntry_ok = _geocode_input(
-            "country", on_change=_on_country_change)
-        code_in, _code_warn, _code_tip, _code_items, _code_ok = _geocode_input(
-            "countryCode", on_change=_fire_edit, placeholder="DE")
-        state_in, _state_warn, _state_tip, _state_items, _state_ok = _geocode_input(
-            "stateProvince", on_change=_on_state_change)
-        # administrative region (Regierungsbezirk tier) — a controlled vocab too, but
-        # NOT in the Photon cascade (no DwC term; auto-filled from the OSM admin_level-5
-        # boundary). Plain input here; resolved name→id in the events service.
-        region_in = (ui.input("admin. region", on_change=_fire_edit).classes("col-span-1")
-                     .tooltip("Sub-state region (e.g. Oberbayern / Regierungsbezirk) — "
-                              "for permit-level queries"))
-        county_in, _county_warn, _county_tip, _county_items, _county_ok = _geocode_input(
-            "county", on_change=_on_county_change)
-        muni_in, _muni_warn, _muni_tip, _muni_items, _muni_ok = _geocode_input(
+    # The five administrative levels are FK-backed controlled vocabularies (migration 0041),
+    # so they get the vocab dropdown; municipality / locality / verbatimLocality are
+    # deliberately free text and stay plain inputs. There is no countryCode field: the
+    # code belongs to the country vocab row (pill in its dropdown) and is derived at
+    # export/label time — a second editable copy drifted (migration 0057).
+    with ui.grid(columns=4).classes("w-full gap-3 mt-1"):
+        country_in, _cntry_warn, _cntry_tip, _cntry_items, _cntry_ok, _cntry_sp = _geocode_input(
+            "country", on_change=_on_country_change, vocab=country_vocab)
+        state_in, _state_warn, _state_tip, _state_items, _state_ok, _state_sp = _geocode_input(
+            "stateProvince", on_change=_on_state_change, vocab=state_province_vocab)
+        # administrative region (Regierungsbezirk tier) — a controlled vocab too, but no DwC
+        # term. Filled from the enclosing admin_level-5 boundary (Overpass is_in), when that
+        # L5 is not itself the ISO state. Resolved name→id in the events service.
+        with ui.row().classes("col-span-1 items-center gap-0 w-full"):
+            region_in = _VocabInput(build_vocab_field(
+                session_factory, administrative_region_vocab, "admin. region",
+                on_change=_fire_edit, classes="flex-1 min-w-0"))
+            _region_sp = ui.spinner(size="xs").props("color=primary").classes("hidden")
+        county_in, _county_warn, _county_tip, _county_items, _county_ok, _county_sp = _geocode_input(
+            "county", on_change=_on_county_change, vocab=county_vocab)
+        muni_in, _muni_warn, _muni_tip, _muni_items, _muni_ok, _muni_sp = _geocode_input(
             "municipality", on_change=_on_muni_change)
-    _geocode_ok_icons = [_cntry_ok, _code_ok, _state_ok, _county_ok, _muni_ok]
+    _geocode_ok_icons = [_cntry_ok, _state_ok, _county_ok, _muni_ok]
 
     with ui.grid(columns=3).classes("w-full gap-3 mt-3"):
-        locality_in, _locality_warn, _locality_tip, _locality_items, _locality_ok = _geocode_input(
-            "locality", on_change=_fire_edit)
-        island_in    = ui.input("island", on_change=_fire_edit).classes("col-span-1")
+        locality_in, _locality_warn, _locality_tip, _locality_items, _locality_ok, _locality_sp = \
+            _geocode_input("locality", on_change=_fire_edit)
+        with ui.row().classes("col-span-1 items-center gap-0 w-full"):
+            island_in = _VocabInput(build_vocab_field(
+                session_factory, island_vocab, "island",
+                on_change=_fire_edit, classes="flex-1 min-w-0"))
+            _island_sp = ui.spinner(size="xs").props("color=primary").classes("hidden")
         verblocal_in = ui.input("verbatimLocality", on_change=_fire_edit).classes("col-span-1")
     _geocode_ok_icons.append(_locality_ok)
+
+    # Which spinner belongs to which source — the hierarchy fields come from the Overpass
+    # admin query, island/locality from the (slower) enclosing-areas query + Photon.
+    _admin_spinners    = [_cntry_sp, _state_sp, _region_sp, _county_sp, _muni_sp]
+    _locality_spinners = [_locality_sp, _island_sp]
 
     # ── Date ────────────────────────────────────────────────────────────────
     ui.label("Date").classes("text-xs font-semibold uppercase tracking-wider text-grey-6 mt-4")
@@ -718,7 +1108,6 @@ def build_collecting_event_form(
     # ── field registry: single source for collect / load / reset / readonly ──
     _event_widgets = {
         "country":                          country_in,
-        "country_code":                     code_in,
         "state_province":                   state_in,
         "administrative_region":            region_in,
         "county":                           county_in,
@@ -743,6 +1132,11 @@ def build_collecting_event_form(
         # validation (which calls collect_fields) has no get_or_create side effect.
         out = {name: w.value for name, w in _event_widgets.items()}
         out["confidential"] = 1 if conf_chk.value else 0
+        # Not event columns: consumed by events._resolve_geo_fields, which resolves the
+        # vocab row by (name, iso_code). Empty when the level was typed by hand, picked
+        # from an uncoded row, or the geocoder found no ISO tag.
+        out["country_iso"] = country_in.code or ""
+        out["state_province_iso"] = state_in.code or ""
         return out
 
     def _commit(s) -> dict:
@@ -782,6 +1176,13 @@ def build_collecting_event_form(
         _st["populating"] = True
         for name, w in _event_widgets.items():
             w.value = _s(snapshot.get(name))
+        # Re-apply the two coded levels *with* their codes. Without this a name shared by
+        # two rows (Limburg BE-VLI / NL-LI) is ambiguous, the field adopts no code, and
+        # re-saving would silently re-point the event at the uncoded row.
+        country_in.set_value(_s(snapshot.get("country")) or None,
+                             snapshot.get("country_iso"))
+        state_in.set_value(_s(snapshot.get("state_province")) or None,
+                           snapshot.get("state_province_iso"))
         conf_chk.value = bool(snapshot.get("confidential"))
         recby_state["set_value"](snapshot.get("recorded_by") or None)
         habitat_field["set_value"](snapshot.get("habitat") or None)

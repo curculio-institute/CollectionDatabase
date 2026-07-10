@@ -223,7 +223,7 @@ def test_event_preview_uses_label_text_with_highlighted_date():
     from app.models import CollectingEvent
     from app.models.geography import Country
     from app.services.label_text import format_event_preview_html
-    ev = CollectingEvent(country_obj=Country(name="Germany"), country_code="DE",
+    ev = CollectingEvent(country_obj=Country(name="Germany", iso_code="DE"),
                          locality="Kramerplateau", event_date="2025-06-14")
     html = format_event_preview_html(ev)
     assert "Kramerplateau" in html           # same locality text as the label
@@ -298,3 +298,74 @@ def test_grouped_css_default_is_black_everywhere():
     css = _grouped_css(None)
     assert "border: none;" not in css
     assert css.count("0.1mm solid #000") >= 3            # all three bands
+
+
+# ── "Country, State:" prefix — collapse ONE of the two, never both ───────────────
+# An 18x7 mm label has no room for "Germany, Baden-Württemberg", but "DE, BY" is a cipher.
+# One name always stays written out. See label_text.format_geo_prefix.
+
+import pytest
+from app.services.label_text import format_geo_prefix, format_locality_label
+
+
+@pytest.mark.parametrize("country,ccode,state,scode,expected", [
+    # both short: nothing to do
+    ("Germany", "DE", "Bavaria", "DE-BY", ("Germany", "Bavaria")),
+    ("China", "CN", "Yunnan", "CN-YN", ("China", "Yunnan")),
+    ("India", "IN", "Punjab", "IN-PB", ("India", "Punjab")),
+    # the longer name gives way — here the state, to its subdivision suffix
+    ("Germany", "DE", "Baden-Württemberg", "DE-BW", ("Germany", "BW")),
+    ("Kazakhstan", "KZ", "Almaty Region", "KZ-ALM", ("Kazakhstan", "ALM")),
+    # the suffix must read as an abbreviation: >=2 letters, no digits. Otherwise the
+    # state keeps its name and the COUNTRY collapses instead.
+    ("Greece", "GR", "Peloponnese Region", "GR-J", ("GR", "Peloponnese Region")),      # 1 char
+    ("Sri Lanka", "LK", "Central Province", "LK-2", ("LK", "Central Province")),       # digit
+    ("Kenya", "KE", "Eastern Province", "KE-400", ("KE", "Eastern Province")),         # digits
+    ("Nepal", "NP", "Madhesh Province", "NP-P2", ("NP", "Madhesh Province")),          # "P2"
+    ("Czechia", "CZ", "Central Bohemian Region", "CZ-20", ("CZ", "Central Bohemian Region")),
+    # under the budget (6 + 14 = 20): nothing collapses, so FR-2A never even comes up
+    ("France", "FR", "Corsica Region", "FR-2A", ("France", "Corsica Region")),
+    # country is the longer one
+    ("Switzerland", "CH", "Basel-City", "CH-BS", ("CH", "Basel-City")),
+    # an uncoded row cannot collapse; the other one does
+    ("Germany", "DE", "Baden-Württemberg", None, ("DE", "Baden-Württemberg")),
+    # no codes at all: keep both names, let the label grow rather than lose the locality
+    ("Germany", None, "Baden-Württemberg", None, ("Germany", "Baden-Württemberg")),
+    # no state → the plain long-country rule still applies
+    ("United Kingdom", "GB", None, None, ("GB", "")),
+    ("Germany", "DE", None, None, ("Germany", "")),
+    # no country
+    (None, None, "Bavaria", "DE-BY", ("", "Bavaria")),
+])
+def test_geo_prefix_collapses_exactly_one_side(country, ccode, state, scode, expected):
+    assert format_geo_prefix(country, ccode, state, scode) == expected
+
+
+@pytest.mark.parametrize("country,ccode,state,scode", [
+    ("Germany", "DE", "Baden-Württemberg", "DE-BW"),
+    ("Greece", "GR", "Peloponnese Region", "GR-J"),
+    ("Switzerland", "CH", "Basel-City", "CH-BS"),
+])
+def test_never_both_collapsed(country, ccode, state, scode):
+    """At least one side stays a readable name — "DE, BW" must never be printed."""
+    c, s = format_geo_prefix(country, ccode, state, scode)
+    assert c == country or s == state, f"both collapsed: {c!r}, {s!r}"
+
+
+def test_locality_label_uses_the_comma_prefix():
+    from app.models import CollectingEvent
+    from app.models.geography import Country, StateProvince
+    ev = CollectingEvent(
+        country_obj=Country(name="Germany", iso_code="DE"),
+        state_province_obj=StateProvince(name="Baden-Württemberg", iso_code="DE-BW"),
+        locality="Kramerplateau", event_date="2025-06-14")
+    assert format_locality_label(ev).startswith("Germany, BW: Kramerplateau")
+
+
+def test_data_label_line1_uses_the_comma_prefix():
+    from app.services.labels import _data_line1
+    line = _data_line1(DataLabel(
+        country="Greece", country_code="GR",
+        state_province="Peloponnese Region", state_province_code="GR-J",
+        locality="Tripoli"))
+    assert line.startswith("GR, Peloponnese Region: Tripoli")

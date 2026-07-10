@@ -90,6 +90,8 @@ def test_event_field_keys_are_all_resolvable_or_columns():
     from app.models import CollectingEvent
     cols = {c.key for c in inspect(CollectingEvent).mapper.column_attrs}
     resolved = {"recorded_by", "habitat", "sampling_protocol",
-                "country", "state_province", "administrative_region", "county", "island"}
+                "country", "state_province", "administrative_region", "county", "island",
+                # not columns: they identify WHICH vocab row the name means (0056/0057)
+                "country_iso", "state_province_iso"}
     unknown = set(row_to_event_fields({})) - cols - resolved
     assert not unknown, f"unresolved/unknown collecting_event keys: {sorted(unknown)}"

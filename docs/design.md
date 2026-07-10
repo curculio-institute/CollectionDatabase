@@ -1089,3 +1089,36 @@ sheet** (`labels.py::grouped_sheet`, fed by `print_queue.py::queued_groups`):
 The `enqueue_*` services are standalone, so this is an "enqueue for an existing
 `collection_object`, no `assign_code`" path (its own group, `SOURCE_REPRINT`);
 `finalize_specimen` is create-time only and need not change.
+
+---
+
+## Controlled Vocabularies tab — section tabs
+
+The tab renders **one section per tab** (People, Collections / Institutions, then one per
+`VOCAB_REGISTRY` entry) inside `ui.tabs()` + `ui.tab_panels(...)`, with labelled **Prev /
+Next** buttons that wrap around, so the sections form a ring. Always enabled — unlike the
+Digitize stepper (a layout *preference*), this is the only layout here, because the lists
+(people, countries, states) grow without bound.
+
+Two build constraints, both learned the hard way:
+
+- **Do not reuse the Digitize `.tp-stepper-bar` chip bar.** Its ←/→ handler is a *global*
+  `keydown` listener doing `document.querySelector('.tp-stepper-bar')` — the **first** such
+  bar in the document. This is a single-page app, so a second bar with that class lets one
+  steal the other's arrow keys. NiceGUI's own tabs need no JS.
+- **Label the Prev / Next buttons.** Quasar draws its own `‹ ›` arrows *inside* the tab strip
+  to scroll it when it overflows; two unlabelled arrow pairs side by side read as one control
+  with two meanings.
+
+### The ISO-code pill (`.pf-code`)
+
+A code-bearing vocabulary (`Vocabulary(code_attr=…)`: `country`, `state_province`) renders its
+ISO code as a muted monospace chip after the name — in the dropdown rows, in the selected
+display, and **inside the `✚ add` badge** (a geocoded name can be new to the vocab and already
+carry a code, so `✚ add Greece  GR` must not hide the `GR` it is about to create).
+
+`.pf-code` lives in `vocab_field.py`, **not** in person_field's shared `_CSS`: a person has no
+ISO code, and only this widget renders one. Shared means shared; widget-specific stays local.
+
+The dropdown lists `vocab.entries()` (one item per DB row), never `options()` — the latter is a
+`{name: name}` dict, and `Limburg` (BE-VLI) / `Limburg` (NL-LI) would collapse to one entry.

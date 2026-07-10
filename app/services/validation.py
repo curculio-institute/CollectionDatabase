@@ -14,7 +14,7 @@ def validate_event_fields(fields: dict) -> str | None:
     coordinate / uncertainty bounds — and returns a human-readable error string,
     or None if everything is in range. Empty values are allowed (optional fields).
     """
-    cc = (fields.get("country_code") or "").strip()
+    cc = (fields.get("country_iso") or "").strip()
     if cc and len(cc) != 2:
         return "countryCode must be exactly 2 characters (or empty)."
 
