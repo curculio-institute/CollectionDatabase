@@ -143,6 +143,35 @@ def row_scientific_name(row: dict) -> str:
     return (row.get("scientificName") or "").strip()
 
 
+def normalise_row_dates(row: dict) -> tuple[dict, str | None]:
+    """Parse a row's eventDate + dateIdentified to ISO 8601, preserving the raw (#1).
+
+    Returns ``(overrides, error)``. On success *overrides* carries ISO ``event_date`` /
+    ``date_identified`` (and ``verbatim_event_date`` when parsing reformatted the eventDate
+    and the row gave no verbatim of its own) to apply over ``row_to_event_fields`` /
+    ``row_to_determination_fields``. On a parse failure it returns ``({}, message)`` so the
+    caller **refuses the row** — a spreadsheet's ``15.07.2005`` must never land verbatim in
+    ``dwc:eventDate`` (CLAUDE.md §2). The raw string is kept in verbatimEventDate so a
+    European-order misread (DD.MM) is always auditable.
+    """
+    from app.services.dates import parse_dwc_date
+
+    raw_ed = (row.get("eventDate") or "").strip()
+    iso_ed, err = parse_dwc_date(raw_ed, allow_interval=True)
+    if err:
+        return ({}, f"eventDate {raw_ed!r}: {err}")
+
+    raw_di = (row.get("dateIdentified") or "").strip()
+    iso_di, err = parse_dwc_date(raw_di, allow_interval=True, no_future=True)
+    if err:
+        return ({}, f"dateIdentified {raw_di!r}: {err}")
+
+    overrides = {"event_date": iso_ed, "date_identified": iso_di}
+    if raw_ed and raw_ed != iso_ed and not (row.get("verbatimEventDate") or "").strip():
+        overrides["verbatim_event_date"] = raw_ed
+    return (overrides, None)
+
+
 def row_to_event_fields(row: dict) -> dict:
     return {
         "country":                          row.get("country") or "",

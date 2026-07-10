@@ -296,6 +296,19 @@ def build_import_assign_tab(session_factory, refreshers: dict, on_saved=None) ->
 
             taxon_status.clear()
 
+            # A local miss on an authorship-laden name is expected — dwc:scientificName is the
+            # name only (authorship goes in scientificNameAuthorship), so it can never match a
+            # stored composed name. Say so, instead of leaving the user to wonder (#2).
+            if taxa_svc.scientific_name_has_authorship(name):
+                with taxon_status:
+                    with ui.row().classes("items-start gap-2 mb-2"):
+                        ui.icon("info", size="sm").style("color:#d97706; margin-top:2px")
+                        ui.label(
+                            f'"{name}" looks like it includes authorship. scientificName should '
+                            "be the name only — move the author into the scientificNameAuthorship "
+                            "column so it matches the local database.").classes("text-xs") \
+                          .style("color:#d97706")
+
             if results:
                 with taxon_status:
                     ui.label("Not found locally. Select from TaxonWorks:") \
@@ -434,6 +447,10 @@ def build_import_assign_tab(session_factory, refreshers: dict, on_saved=None) ->
             cc = ev["country_iso"].strip()
             if cc and len(cc) != 2:
                 return "countryCode must be exactly 2 characters."
+            # Refuse a bad date rather than store it verbatim (#1).
+            _, date_err = dwc_svc.normalise_row_dates(state["selected"])
+            if date_err:
+                return date_err
             for label, val, lo, hi in [
                 ("latitude",  ev["decimal_latitude"],  -90,  90),
                 ("longitude", ev["decimal_longitude"], -180, 180),
@@ -497,6 +514,13 @@ def build_import_assign_tab(session_factory, refreshers: dict, on_saved=None) ->
                         event_fields["recorded_by_id"] = (
                             persons_svc.get_or_create_person(session, full_name=_rec).id
                             if _rec else None)
+                        # Normalise dates to ISO, preserving the raw eventDate in
+                        # verbatimEventDate (#1). _validate already refused a bad date.
+                        _date_ovr, _ = dwc_svc.normalise_row_dates(row)
+                        event_fields["event_date"] = _date_ovr["event_date"]
+                        if "verbatim_event_date" in _date_ovr:
+                            event_fields["verbatim_event_date"] = _date_ovr["verbatim_event_date"]
+                        det["date_identified"] = _date_ovr["date_identified"]
                         co = svc.save_specimen_entry(
                             session,
                             taxon_id=state["taxon_id"],

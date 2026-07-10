@@ -62,8 +62,52 @@ def test_interval_disallowed():
 def test_bad_month():          bad("2026-13")
 def test_bad_day():            bad("2026-02-30")
 def test_bad_eu_day():         bad("31.02.2026")
-def test_bad_format():         bad("June 2026")
+def test_bad_format():         bad("sometime in June")   # was "June 2026" — now valid (#95)
 def test_interval_reversed():  bad("2026-06-20/2026-06-15", allow_interval=True)
+
+
+# ── Spelled-out months: English + German, full + abbreviations (#95) ──────────
+
+def test_month_name_en_full():     ok("10 June 2026",     "2026-06-10")
+def test_month_name_de_full():     ok("10. Juni 2026",    "2026-06-10")
+def test_month_name_de_dots():     ok("10.Juni.2026",     "2026-06-10")
+def test_month_name_month_year():  ok("Juni 2026",        "2026-06")
+def test_month_name_umlaut():      ok("März 2020",        "2020-03")
+def test_month_name_maerz():       ok("Maerz 2020",       "2020-03")
+def test_month_name_abbrev():      ok("10. Sept. 2026",   "2026-09-10")   # Sept → 9, day kept
+def test_month_name_mai_shared():  ok("Mai 2020",         "2020-05")
+def test_month_name_case():        ok("10 JUNE 2026",     "2026-06-10")
+def test_month_name_unknown():     bad("10. Foobar 2026")
+def test_month_name_validates_day():bad("31. Juni 2026")  # June has 30 days
+
+
+# ── Roman-numeral months (entomological label convention) ─────────────────────
+
+def test_roman_full():             ok("10.IV.2020",   "2020-04-10")
+def test_roman_lower():            ok("10.iv.2020",   "2020-04-10")
+def test_roman_spaces():           ok("10. IV. 2020", "2020-04-10")
+def test_roman_month_year():       ok("IV.2020",      "2020-04")
+def test_roman_xii():              ok("10.XII.2020",  "2020-12-10")
+def test_roman_i():                ok("I.2020",       "2020-01")
+def test_roman_invalid_iiii():     bad("10.IIII.2020")
+def test_roman_invalid_xx():       bad("10.XX.2020")
+
+
+# ── Intervals with names / roman (allow_interval=True) ────────────────────────
+
+def test_interval_month_names():
+    ok("10. Juni 2026/15. Juni 2026", "2026-06-10/2026-06-15", allow_interval=True)
+
+def test_interval_roman():
+    ok("10.IV.2020/20.IV.2020", "2020-04-10/2020-04-20", allow_interval=True)
+
+
+# ── Risk cases: refuse, never guess ───────────────────────────────────────────
+
+def test_two_digit_year_refused():     bad("10.06.20")       # ambiguous century
+def test_slash_day_month_refused():    bad("03/04/2020")     # DD/MM vs MM/DD unknowable
+def test_eu_order_is_european():
+    ok("06.05.2020", "2020-05-06")   # 6 May, deliberately NOT 5 June (DD.MM assumed)
 
 
 # ── no_future constraint ──────────────────────────────────────────────────────
