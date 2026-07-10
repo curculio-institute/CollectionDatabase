@@ -792,23 +792,30 @@ def build_collecting_event_form(
         _ok_shown: list = []
 
         def _show_warn(btn, tip, items_col, field_key, on_pick, ok_icon=None, label_fn=None):
+            centre_val = centre[field_key]
+            # Empty is never an offerable value. A sample that names nothing at this tier
+            # (no municipality inside a kreisfreie Stadt; no named feature near the point)
+            # carries no information, and "set this field to nothing" is not a choice worth
+            # a menu row — it rendered as a bare " (centre)" or "(no named feature) (centre)".
             seen: dict[str, dict] = {}
             for snap in snapshots:
                 val = snap[field_key]
-                if val not in seen:
+                if val and val not in seen:
                     seen[val] = snap
-            if len(seen) <= 1:
+            # Warn when some *named* alternative differs from what the field holds. This still
+            # fires when the field is empty and a perimeter sample names something (the circle
+            # reaches into a municipality the centre is not in) — the case that matters.
+            alts = [v for v in seen if v != centre_val]
+            if not alts:
                 if ok_icon is not None:
                     ok_icon.classes(remove="hidden", add="lookup-ok-fade")
                     _ok_shown.append(ok_icon)
                 return
-            centre_val = centre[field_key]
-            alts = [v for v in seen if v != centre_val]
             items_col.clear()
             with items_col:
-                for i, (val, snap) in enumerate(seen.items()):
+                for val, snap in seen.items():
                     display = label_fn(val, snap) if label_fn else val
-                    marker  = " (centre)" if i == 0 else ""
+                    marker  = " (centre)" if val == centre_val else ""
 
                     async def _cb(s=snap):
                         await on_pick(s)
@@ -841,8 +848,10 @@ def build_collecting_event_form(
         _show_warn(_state_warn,    _state_tip,    _state_items,    "state",    _apply_snap, ok_icon=icons[2])
         _show_warn(_county_warn,   _county_tip,   _county_items,   "county",   _apply_snap, ok_icon=icons[3])
         _show_warn(_muni_warn,     _muni_tip,     _muni_items,     "muni",     _apply_snap, ok_icon=icons[4])
-        _show_warn(_locality_warn, _locality_tip, _locality_items, "locality", _apply_snap, ok_icon=icons[5],
-                   label_fn=lambda v, s: v if v else "(no named feature)")
+        # No label_fn: an unnamed sample can no longer reach the menu, so the old
+        # "(no named feature)" placeholder is unreachable.
+        _show_warn(_locality_warn, _locality_tip, _locality_items, "locality", _apply_snap,
+                   ok_icon=icons[5])
 
         if _ok_shown:
             _fading = list(_ok_shown)
