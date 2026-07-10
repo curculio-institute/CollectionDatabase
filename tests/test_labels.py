@@ -223,7 +223,7 @@ def test_event_preview_uses_label_text_with_highlighted_date():
     from app.models import CollectingEvent
     from app.models.geography import Country
     from app.services.label_text import format_event_preview_html
-    ev = CollectingEvent(country_obj=Country(name="Germany"), country_code="DE",
+    ev = CollectingEvent(country_obj=Country(name="Germany", iso_code="DE"),
                          locality="Kramerplateau", event_date="2025-06-14")
     html = format_event_preview_html(ev)
     assert "Kramerplateau" in html           # same locality text as the label

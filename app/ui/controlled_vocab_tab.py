@@ -564,17 +564,26 @@ def _build_vocab_section(session_factory, spec) -> None:
             ui.label(spec.help).classes("text-sm").style("color:var(--tp-base-soft)")
         ui.separator().classes("mb-3")
 
+        # A code-bearing vocab (country / state_province) shows its ISO code: since 0056
+        # the name alone is not an identity — two "Limburg" rows differ only by code — so
+        # the column is what makes the table, the merge dialog and the edits unambiguous.
+        _has_code = bool(getattr(vocab, "code_attr", None))
+
         def _load_rows() -> list[dict]:
             with session_factory() as s:
                 return [{"id": str(o.id), "name": vocab.display(o),
+                         "code": (getattr(o, vocab.code_attr) or "") if _has_code else "",
                          "is_default": bool(getattr(o, "is_default", 0))}
                         for o in vocab.list(s)]
 
+        _cols = [{"name": "name", "label": "Name", "field": "name", "align": "left", "sortable": True}]
+        if _has_code:
+            _cols.append({"name": "code", "label": "ISO code", "field": "code",
+                          "align": "left", "sortable": True})
+        _cols.append({"name": "actions", "label": "", "field": "actions", "align": "right"})
+
         table = ui.table(
-            columns=[
-                {"name": "name", "label": "Name", "field": "name", "align": "left", "sortable": True},
-                {"name": "actions", "label": "", "field": "actions", "align": "right"},
-            ],
+            columns=_cols,
             rows=_load_rows(),
             row_key="id",
         ).classes("w-full").props("flat dense")
@@ -612,6 +621,12 @@ def _build_vocab_section(session_factory, spec) -> None:
         with ui.dialog() as edit_dialog, ui.card().classes("w-96"):
             ui.label(f"Edit {vocab.noun}").classes("section-label mb-2")
             dlg_name = ui.input("Name *").classes("w-full")
+            dlg_code = None
+            if _has_code:
+                dlg_code = (ui.input("ISO code", placeholder="DE-BY")
+                            .classes("w-full")
+                            .tooltip("ISO 3166-1 for a country (DE), ISO 3166-2 for a "
+                                     "state / province (DE-BY). Blank if unknown."))
 
             def _save_edit():
                 if not (dlg_name.value or "").strip():
@@ -620,7 +635,11 @@ def _build_vocab_section(session_factory, spec) -> None:
                 try:
                     with session_factory() as s:
                         with s.begin():
-                            vocab.update(s, edit_state["id"], name=dlg_name.value)
+                            if _has_code:
+                                vocab.update(s, edit_state["id"], name=dlg_name.value,
+                                             code=dlg_code.value)
+                            else:
+                                vocab.update(s, edit_state["id"], name=dlg_name.value)
                     edit_dialog.close()
                     _refresh_table()
                     ui.notify(f"{spec.title[:-1] if spec.title.endswith('s') else spec.title} updated.", type="positive")
@@ -634,6 +653,8 @@ def _build_vocab_section(session_factory, spec) -> None:
         def _open_edit(row: dict):
             edit_state["id"] = int(row["id"])
             dlg_name.value = row["name"]
+            if _has_code:
+                dlg_code.value = row.get("code", "")
             edit_dialog.open()
 
         def _delete_row(row: dict):
@@ -719,8 +740,8 @@ def _build_vocab_section(session_factory, spec) -> None:
             absorb_id = int(row["id"])
             with session_factory() as s:
                 allrows = vocab.list(s)
-                others = {o.id: vocab.display(o) for o in allrows if o.id != absorb_id}
-                absorb_name = next((vocab.display(o) for o in allrows if o.id == absorb_id), "?")
+                others = {o.id: vocab.display_label(o) for o in allrows if o.id != absorb_id}
+                absorb_name = next((vocab.display_label(o) for o in allrows if o.id == absorb_id), "?")
             default_keep = next(iter(others), None)
             _mctx.update(absorb_id=absorb_id, keep_id=default_keep, others=others)
             merge_absorb_label.set_text(absorb_name)
@@ -734,8 +755,8 @@ def _build_vocab_section(session_factory, spec) -> None:
                 return
             with session_factory() as s:
                 allrows = vocab.list(s)
-                others = {o.id: vocab.display(o) for o in allrows if o.id != new_absorb}
-                absorb_name = next((vocab.display(o) for o in allrows if o.id == new_absorb), "?")
+                others = {o.id: vocab.display_label(o) for o in allrows if o.id != new_absorb}
+                absorb_name = next((vocab.display_label(o) for o in allrows if o.id == new_absorb), "?")
             keep_id = new_keep if new_keep in others else next(iter(others), None)
             _mctx.update(absorb_id=new_absorb, keep_id=keep_id, others=others)
             merge_absorb_label.set_text(absorb_name)
@@ -787,6 +808,9 @@ def _build_vocab_section(session_factory, spec) -> None:
         ui.label(spec.add_label).classes("text-sm font-semibold mb-2")
         with ui.row().classes("w-full gap-3 items-end"):
             add_name = ui.input("Name *").classes("flex-1")
+            add_code = None
+            if _has_code:
+                add_code = ui.input("ISO code", placeholder="DE-BY").classes("w-40")
 
             def _add_row():
                 if not (add_name.value or "").strip():
@@ -795,8 +819,13 @@ def _build_vocab_section(session_factory, spec) -> None:
                 try:
                     with session_factory() as s:
                         with s.begin():
-                            vocab.create(s, name=add_name.value)
+                            if _has_code:
+                                vocab.create(s, name=add_name.value, code=add_code.value)
+                            else:
+                                vocab.create(s, name=add_name.value)
                     add_name.value = ""
+                    if _has_code:
+                        add_code.value = ""
                     _refresh_table()
                     ui.notify("Added.", type="positive")
                 except Exception as exc:

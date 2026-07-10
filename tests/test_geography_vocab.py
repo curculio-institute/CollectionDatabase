@@ -130,7 +130,7 @@ def test_uncoded_name_does_not_duplicate_endlessly(session):
 
 def test_country_carries_its_iso_code_the_same_way(session):
     from app.models import Country
-    ev_svc.create_collecting_event(session, country="Germany", country_code="DE")
+    ev_svc.create_collecting_event(session, country="Germany", country_iso="DE")
     session.flush()
     assert session.query(Country).filter_by(name="Germany").one().iso_code == "DE"
 
@@ -151,13 +151,13 @@ def test_state_outside_its_country_is_refused(session):
     import pytest
     with pytest.raises(ValueError, match="lies in country DE, not in GR"):
         ev_svc.create_collecting_event(
-            session, country="Greece", country_code="GR",
+            session, country="Greece", country_iso="GR",
             state_province="Bavaria", state_province_iso="DE-BY")
 
 
 def test_matching_country_and_state_codes_save_fine(session):
     ev = ev_svc.create_collecting_event(
-        session, country="Germany", country_code="DE",
+        session, country="Germany", country_iso="DE",
         state_province="Bavaria", state_province_iso="DE-BY")
     session.flush()
     assert ev.state_province_obj.iso_code == "DE-BY"
@@ -166,16 +166,15 @@ def test_matching_country_and_state_codes_save_fine(session):
 def test_uncoded_levels_assert_nothing_and_are_not_checked(session):
     """A hand-typed state has no code; it cannot contradict the country."""
     ev = ev_svc.create_collecting_event(
-        session, country="Greece", country_code="GR", state_province="Bavaria")
+        session, country="Greece", country_iso="GR", state_province="Bavaria")
     session.flush()
     assert ev.state_province_obj.iso_code is None
 
 
-def test_country_iso_from_the_picked_vocab_row_wins_over_countrycode(session):
-    """The dropdown pick identifies the row; dwc:countryCode is only the fallback."""
+def test_country_iso_identifies_the_vocab_row(session):
+    """There is no dwc:countryCode column any more (0057) — the code identifies the row."""
     from app.models import Country
-    ev_svc.create_collecting_event(session, country="Germany", country_iso="DE",
-                                   country_code="")
+    ev_svc.create_collecting_event(session, country="Germany", country_iso="DE")
     session.flush()
     assert session.query(Country).filter_by(name="Germany").one().iso_code == "DE"
 

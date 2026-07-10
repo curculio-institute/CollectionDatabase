@@ -521,7 +521,7 @@ def build_collecting_event_form(
         An empty Photon response is NOT a failure: it means "no named feature nearby"
         (open sea, steppe, 26.015/101.883), which leaves `locality` blank, not the form.
         """
-        for _b in (_cntry_warn, _code_warn, _state_warn, _county_warn, _muni_warn):
+        for _b in (_cntry_warn, _state_warn, _county_warn, _muni_warn):
             _b.classes(add="hidden")
         _locality_warn.classes(add="hidden")
 
@@ -532,7 +532,7 @@ def build_collecting_event_form(
         # coordinates is exactly the "silent wrong value" this project refuses (CLAUDE.md §2).
         # Empty field + spinner = "being looked up"; empty field after = "nothing there".
         _st["populating"] = True
-        for _f in (country_in, code_in, state_in, region_in, county_in, muni_in,
+        for _f in (country_in, state_in, region_in, county_in, muni_in,
                    locality_in, island_in):
             _f.value = ""          # clears the vocab fields' ISO codes with them
         _st["populating"] = False
@@ -719,7 +719,6 @@ def build_collecting_event_form(
                 # rows (Bavaria = DE-BY), so the save must resolve to them and not to a
                 # same-named uncoded row.
                 country_in.set_value(hier["country"], hier["country_code"])
-                code_in.value    = hier["country_code"]
                 state_in.set_value(hier["state"], hier["state_code"])
                 region_in.value  = hier["region"]
                 county_in.value  = hier["county"]
@@ -764,7 +763,6 @@ def build_collecting_event_form(
             _st["populating"] = True
             country_in.set_value(p0.get("country", ""),
                                  (p0.get("countrycode", "") or "").upper())
-            code_in.value    = (p0.get("countrycode", "") or "").upper()
             # No state code: Photon names the nearest feature's tier, which in Greece is the
             # Decentralized Administration, not the ISO region. Claiming an ISO code for it
             # would be a lie; the field stays uncoded.
@@ -801,7 +799,7 @@ def build_collecting_event_form(
         # so a crossing warning is advisory only; see CLAUDE.md "Boundary-crossing check".
         centre = {
             "country":  country_in.value or "",
-            "code":     code_in.value or "",
+            "code":     country_in.code or "",
             "state":    state_in.value or "",
             "county":   county_in.value or "",
             "muni":     muni_in.value or "",
@@ -887,7 +885,6 @@ def build_collecting_event_form(
         async def _apply_snap(snap: dict) -> None:
             _st["populating"] = True
             country_in.set_value(snap["country"] or None, snap["code"] or None)
-            code_in.value     = snap["code"]
             # Perimeter samples are Photon's; they carry no ISO 3166-2 code, so picking one
             # sets the state name without claiming a code for it.
             state_in.set_value(snap["state"] or None, None)
@@ -895,21 +892,19 @@ def build_collecting_event_form(
             muni_in.value     = snap["muni"]
             locality_in.value = snap["locality"]
             _st["populating"] = False
-            for _b in (_cntry_warn, _code_warn, _state_warn, _county_warn, _muni_warn, _locality_warn):
+            for _b in (_cntry_warn, _state_warn, _county_warn, _muni_warn, _locality_warn):
                 _b.classes(add="hidden")
             _fire_edit()
 
-        icons = ok_icons or [None] * 6
+        icons = ok_icons or [None] * 5
         _show_warn(_cntry_warn,    _cntry_tip,    _cntry_items,    "country",  _apply_snap, ok_icon=icons[0])
-        _show_warn(_code_warn,     _code_tip,     _code_items,     "code",     _apply_snap, ok_icon=icons[1],
-                   label_fn=lambda c, s: f"{c} ({s['country']})")
-        _show_warn(_state_warn,    _state_tip,    _state_items,    "state",    _apply_snap, ok_icon=icons[2])
-        _show_warn(_county_warn,   _county_tip,   _county_items,   "county",   _apply_snap, ok_icon=icons[3])
-        _show_warn(_muni_warn,     _muni_tip,     _muni_items,     "muni",     _apply_snap, ok_icon=icons[4])
+        _show_warn(_state_warn,    _state_tip,    _state_items,    "state",    _apply_snap, ok_icon=icons[1])
+        _show_warn(_county_warn,   _county_tip,   _county_items,   "county",   _apply_snap, ok_icon=icons[2])
+        _show_warn(_muni_warn,     _muni_tip,     _muni_items,     "muni",     _apply_snap, ok_icon=icons[3])
         # No label_fn: an unnamed sample can no longer reach the menu, so the old
         # "(no named feature)" placeholder is unreachable.
         _show_warn(_locality_warn, _locality_tip, _locality_items, "locality", _apply_snap,
-                   ok_icon=icons[5])
+                   ok_icon=icons[4])
 
         if _ok_shown:
             _fading = list(_ok_shown)
@@ -1021,13 +1016,13 @@ def build_collecting_event_form(
     # ── Location ────────────────────────────────────────────────────────────
     ui.label("Location").classes("text-xs font-semibold uppercase tracking-wider text-grey-6 mt-4")
     # The five administrative levels are FK-backed controlled vocabularies (migration 0041),
-    # so they get the vocab dropdown. countryCode is a 2-char DwC code, and municipality /
-    # locality / verbatimLocality are deliberately free text — those stay plain inputs.
-    with ui.grid(columns=5).classes("w-full gap-3 mt-1"):
+    # so they get the vocab dropdown; municipality / locality / verbatimLocality are
+    # deliberately free text and stay plain inputs. There is no countryCode field: the
+    # code belongs to the country vocab row (pill in its dropdown) and is derived at
+    # export/label time — a second editable copy drifted (migration 0057).
+    with ui.grid(columns=4).classes("w-full gap-3 mt-1"):
         country_in, _cntry_warn, _cntry_tip, _cntry_items, _cntry_ok, _cntry_sp = _geocode_input(
             "country", on_change=_on_country_change, vocab=country_vocab)
-        code_in, _code_warn, _code_tip, _code_items, _code_ok, _code_sp = _geocode_input(
-            "countryCode", on_change=_fire_edit, placeholder="DE")
         state_in, _state_warn, _state_tip, _state_items, _state_ok, _state_sp = _geocode_input(
             "stateProvince", on_change=_on_state_change, vocab=state_province_vocab)
         # administrative region (Regierungsbezirk tier) — a controlled vocab too, but no DwC
@@ -1042,7 +1037,7 @@ def build_collecting_event_form(
             "county", on_change=_on_county_change, vocab=county_vocab)
         muni_in, _muni_warn, _muni_tip, _muni_items, _muni_ok, _muni_sp = _geocode_input(
             "municipality", on_change=_on_muni_change)
-    _geocode_ok_icons = [_cntry_ok, _code_ok, _state_ok, _county_ok, _muni_ok]
+    _geocode_ok_icons = [_cntry_ok, _state_ok, _county_ok, _muni_ok]
 
     with ui.grid(columns=3).classes("w-full gap-3 mt-3"):
         locality_in, _locality_warn, _locality_tip, _locality_items, _locality_ok, _locality_sp = \
@@ -1057,7 +1052,7 @@ def build_collecting_event_form(
 
     # Which spinner belongs to which source — the hierarchy fields come from the Overpass
     # admin query, island/locality from the (slower) enclosing-areas query + Photon.
-    _admin_spinners    = [_cntry_sp, _code_sp, _state_sp, _region_sp, _county_sp, _muni_sp]
+    _admin_spinners    = [_cntry_sp, _state_sp, _region_sp, _county_sp, _muni_sp]
     _locality_spinners = [_locality_sp, _island_sp]
 
     # ── Date ────────────────────────────────────────────────────────────────
@@ -1113,7 +1108,6 @@ def build_collecting_event_form(
     # ── field registry: single source for collect / load / reset / readonly ──
     _event_widgets = {
         "country":                          country_in,
-        "country_code":                     code_in,
         "state_province":                   state_in,
         "administrative_region":            region_in,
         "county":                           county_in,

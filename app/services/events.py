@@ -37,7 +37,8 @@ def _resolve_geo_fields(session: Session, fields: dict) -> dict:
     """Convert any geography NAME keys in `fields` to their FK *_id (creating the
     vocab row when needed; blank → None). Mutates and returns `fields`.
 
-    Also consumes the non-column key `state_province_iso` (see `_stamp_state_iso`).
+    Also consumes the non-column keys `country_iso` / `state_province_iso`, which identify
+    *which* vocab row a name means (Limburg BE-VLI vs NL-LI) — neither is an event column.
     """
     from app.services.vocabularies import (
         country_vocab, state_province_vocab, administrative_region_vocab,
@@ -53,11 +54,10 @@ def _resolve_geo_fields(session: Session, fields: dict) -> dict:
     # existing row, never a refused save. "Limburg" (BE-VLI) and "Limburg" (NL-LI) coexist;
     # a hand-typed uncoded "Limburg" is a third row the user can merge later. Migration 0056.
     state_iso = (fields.pop("state_province_iso", "") or "").strip().upper()
-    # The country's code may come from the picked vocab row or, failing that, from
-    # dwc:countryCode — which stays an event column because it is the DwC term the export
-    # emits, and is not the vocab row's identity.
-    country_iso = ((fields.pop("country_iso", "") or "").strip().upper()
-                   or (fields.get("country_code") or "").strip().upper())
+    # The country's code identifies its vocab row. There is no event column to fall back on:
+    # dwc:countryCode was dropped in 0057 because a stored copy drifted from country.iso_code
+    # (`Germany` could carry `FR`). The DwC export derives it from the row.
+    country_iso = (fields.pop("country_iso", "") or "").strip().upper()
     _check_state_inside_country(country_iso, state_iso)
 
     codes = {"state_province": state_iso, "country": country_iso}
@@ -148,8 +148,9 @@ def event_form_snapshot(session: Session, event_id: int) -> dict | None:
         return None
     return {
         "country":                          ev.country_obj.name if ev.country_obj else None,
-        "country_code":                     ev.country_code,
+        "country_iso":                      ev.country_obj.iso_code if ev.country_obj else None,
         "state_province":                   ev.state_province_obj.name if ev.state_province_obj else None,
+        "state_province_iso":               ev.state_province_obj.iso_code if ev.state_province_obj else None,
         "administrative_region":            ev.administrative_region_obj.name if ev.administrative_region_obj else None,
         "county":                           ev.county_obj.name if ev.county_obj else None,
         "municipality":                     ev.municipality,

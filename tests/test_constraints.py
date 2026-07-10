@@ -211,20 +211,23 @@ def test_check_uncertainty_negative(session):
         session.flush()
 
 
-def test_check_country_code_length(session):
-    ce = CollectingEvent(
-        country_code="DEU",  # 3 chars — must be exactly 2
-        created_at=_utcnow(), updated_at=_utcnow(),
-    )
-    session.add(ce)
-    with pytest.raises(IntegrityError):
-        session.flush()
+def test_event_has_no_country_code_column(session):
+    """dwc:countryCode was dropped in 0057 — it is derived from country.iso_code.
+
+    A stored copy drifted from the FK (`Germany` could carry `FR`), the same failure that
+    removed dwc:taxonomicStatus in 0030. Guard against re-introduction.
+    """
+    from sqlalchemy import inspect
+    cols = {c.key for c in inspect(CollectingEvent).mapper.column_attrs}
+    assert "country_code" not in cols
+    with pytest.raises(TypeError):
+        CollectingEvent(country_code="DE", created_at=_utcnow(), updated_at=_utcnow())
 
 
 def test_valid_coordinates_accepted(session):
     ce = CollectingEvent(
         decimal_latitude=48.137, decimal_longitude=11.575,
-        country_code="DE", coordinate_uncertainty_in_meters=50.0,
+        coordinate_uncertainty_in_meters=50.0,
         created_at=_utcnow(), updated_at=_utcnow(),
     )
     session.add(ce)

@@ -85,7 +85,10 @@ def format_locality_label(
     # shows state → municipality → locality).
     _country = ev.country_obj.name if ev.country_obj else None
     _state = ev.state_province_obj.name if ev.state_province_obj else None
-    country_str = format_country(_country, ev.country_code, html=html)
+    # The ISO code comes from the country vocab row, not from the event (migration 0057):
+    # one fact, one home. An uncoded row simply has no code to shorten the name with.
+    _country_code = ev.country_obj.iso_code if ev.country_obj else None
+    country_str = format_country(_country, _country_code, html=html)
 
     parts: list[str] = []
 

@@ -146,7 +146,8 @@ def row_scientific_name(row: dict) -> str:
 def row_to_event_fields(row: dict) -> dict:
     return {
         "country":                          row.get("country") or "",
-        "country_code":                     row.get("countryCode") or "",
+        # Not an event column (0057): resolves the country vocab row by (name, code).
+        "country_iso":                      row.get("countryCode") or "",
         "state_province":                   row.get("stateProvince") or "",
         "county":                           row.get("county") or "",
         "municipality":                     row.get("municipality") or "",

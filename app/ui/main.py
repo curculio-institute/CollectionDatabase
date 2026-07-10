@@ -1111,8 +1111,7 @@ def index():
                             snapshot = {
                                 "country":                          ev.country_obj.name if ev.country_obj else None,
                                 "country_iso":                      ev.country_obj.iso_code if ev.country_obj else None,
-                                "country_code":                     ev.country_code,
-                                "state_province":                   ev.state_province_obj.name if ev.state_province_obj else None,
+                                                "state_province":                   ev.state_province_obj.name if ev.state_province_obj else None,
                                 "state_province_iso":               ev.state_province_obj.iso_code if ev.state_province_obj else None,
                                 "administrative_region":            ev.administrative_region_obj.name if ev.administrative_region_obj else None,
                                 "county":                           ev.county_obj.name if ev.county_obj else None,

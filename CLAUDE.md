@@ -307,7 +307,7 @@ attributes. Mermaid diagrams use plain camelCase. Do not deviate from this patte
 | Table | Purpose |
 |-------|---------|
 | `collection_object` | One physical specimen or lot. `catalog_number` (NOT NULL) is the stable, immutable sync join key. `repository_id` FK → `repository` (NOT NULL, ON DELETE RESTRICT — migration 0047, #75) is the **single source of truth for collection membership**; the old denormalised `dwc:collectionCode` + `dwc:institutionCode` text columns were dropped (codes resolve through the repository at export; `UNIQUE(repository_id, catalogNumber)`). `dwc:basisOfRecord`, `dwc:sex`, `dwc:typeStatus`, etc. `preparation_id` FK → `preparation` and `disposition_id` FK → `disposition` (controlled vocabs, not free text — migrations 0039/0048; see "Controlled vocabularies"). `dwc:otherCatalogNumbers` (free text) records prior catalog numbers from previous owning institutions (migration 0049, #77; previous institutions themselves are not recorded). |
-| `collecting_event` | Where/when collected; shared by many specimens. Full DwC locality + coordinate block. `dwc:eventDate` supports ISO 8601 intervals (`2024-06-15/2024-06-20`). `dwc:recordedBy` FK → `person(full_name)`. `habitat_id` + `sampling_protocol_id` (migration 0040) and the geography hierarchy `country_id` / `state_province_id` / `administrative_region_id` / `county_id` / `island_id` (migration 0041) are all controlled-vocab FKs (see "Controlled vocabularies"). `municipality` + `locality` stay free text; `dwc:countryCode` stays a per-event column. |
+| `collecting_event` | Where/when collected; shared by many specimens. Full DwC locality + coordinate block. `dwc:eventDate` supports ISO 8601 intervals (`2024-06-15/2024-06-20`). `dwc:recordedBy` FK → `person(full_name)`. `habitat_id` + `sampling_protocol_id` (migration 0040) and the geography hierarchy `country_id` / `state_province_id` / `administrative_region_id` / `county_id` / `island_id` (migration 0041) are all controlled-vocab FKs (see "Controlled vocabularies"). `municipality` + `locality` stay free text. **No `dwc:countryCode` column** — dropped in 0057; it is derived from `country.iso_code` (a stored copy drifted: `Germany` could carry `FR`). |
 | `taxon` | Local OTU analogue. DwC parent-link model (GBIF best practices). Columns: `name_element` (atomic source of truth — this rank's own epithet/uninomial, e.g. `crypticus`; migration 0032, Epic #30), `dwc:scientificName` (the *composed* full name without authorship, e.g. `Otiorhynchus crypticus`, maintained from `name_element` + the parent chain), `dwc:taxonRank`, `dwc:scientificNameAuthorship`, `dwc:parentNameUsageID` (self-FK, encodes hierarchy), `dwc:acceptedNameUsageID` (self-FK, marks synonyms — its presence *is* synonym status; `taxonomicStatus` is derived at export, not stored, see below), `taxonworksOtuID`, `ipniID` (the IPNI id of the name a row was imported from — identity like `taxonworksOtuID`, not a `dwc:` term; migration 0053). `dwc:nomenclaturalCode` is **NOT NULL + CHECK**-constrained to the closed list (migration 0054, #96): it is a property of the source or inherited from the parent, never guessed. No denormalised rank columns. |
 | `taxon_determination` | `collection_object` → `taxon` link. `is_current` flag. `taxon_id` may reference a synonym row (deliberate design). `dwc:identifiedBy` FK → `person(full_name)`. |
 | `biological_relationship` | Kind of association (`collected_on`, `feeds_on`, …). |
@@ -478,7 +478,7 @@ canonical value). Current single-name vocabularies (more may follow — built on
 | disposition | `collection_object.disposition_id` | `disposition` | 0048 | was `dwc:disposition` TEXT + a **closed** CHECK; opened up (#76) so holdings like "loaned to Jeffrey" are recordable. **Seeded** with the former six values. DwC `[Not mapped]` by TW |
 | habitat | `collecting_event.habitat_id` | `habitat` | 0040 | was `dwc:habitat` TEXT |
 | samplingProtocol | `collecting_event.sampling_protocol_id` | `sampling_protocol` | 0040 | was a hardcoded UI list; table **seeded** with the curated set |
-| country | `collecting_event.country_id` | `country` | 0041, **0056** | English name (OSM `name:en`); **`iso_code`** = ISO 3166-1 (`DE`). `dwc:countryCode` stays per-event (the DwC term the export emits) |
+| country | `collecting_event.country_id` | `country` | 0041, **0056/0057** | English name (OSM `name:en`); **`iso_code`** = ISO 3166-1 (`DE`). `dwc:countryCode` is **derived from it at export/label time**, not stored (0057) |
 | stateProvince | `collecting_event.state_province_id` | `state_province` | 0041, **0055/0056** | English name (OSM `name:en`); **`iso_code`** = ISO 3166-2 (`DE-BY`) |
 | administrative region | `collecting_event.administrative_region_id` | `administrative_region` | 0041 | Regierungsbezirk tier; **no DwC term** (local field); local name |
 | county | `collecting_event.county_id` | `county` | 0041 | local name (Landkreis) |
@@ -515,6 +515,14 @@ hand-typed save create yet another uncoded duplicate. Result: exactly one uncode
 plus one row per distinct code. `Vocabulary(code_attr=…)` implements the match; `display_label()`
 renders `Limburg (NL-LI)` where a bare name would be ambiguous. Existing rows keep `iso_code =
 NULL` and are **not** back-filled — 40 names are ambiguous, so a name→code backfill would be a guess.
+
+**`dwc:countryCode` is not stored (0057).** Once the country row carries `iso_code`, an event
+column holding the same fact is a second source that drifts — nothing tied them, so `country =
+Germany` with `countryCode = FR` saved happily. Same rule, same reason as `dwc:taxonomicStatus`
+(0030): **derive it at export, never store it.** `label_text.format_country()` reads
+`country_obj.iso_code`; the DwC-CSV importer's `countryCode` now *resolves the country row* by
+`(name, code)` instead of populating a column. The migration first folds each event's code onto
+its country row (only where the events agree on one code) so nothing is lost.
 
 Below the first-order subdivision **there is no ISO code**, so `county` / `island` /
 `administrative_region` keep `UNIQUE(name)` and remain wrong in the same way, with no honest fix.

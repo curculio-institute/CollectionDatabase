@@ -24,6 +24,10 @@ from sqlalchemy.orm import Session
 
 from app.models.base import _utcnow
 
+# Sentinel: "the caller said nothing about the code" — distinct from an explicit None,
+# which means "clear it". Only meaningful for a code-bearing vocab (see ``code_attr``).
+_UNSET: str = "\x00__unset__"
+
 
 @dataclass(frozen=True)
 class MergePreview:
@@ -189,11 +193,19 @@ class Vocabulary:
         session.flush()
         return obj
 
-    def update(self, session: Session, obj_id: int, *, name: str):
+    def update(self, session: Session, obj_id: int, *, name: str, code: str | None = _UNSET):
+        """Rename an entry, and (for a code-bearing vocab) set or clear its ISO code.
+
+        ``code`` defaults to ``_UNSET`` so a caller that does not mention it leaves the
+        existing code alone — passing ``None`` explicitly *clears* it. Editing the code is
+        how a user corrects or supplies a code the geocoder never provided.
+        """
         obj = session.get(self.model, obj_id)
         if obj is None:
             raise ValueError(f"{self.noun} {obj_id} not found")
         setattr(obj, self.name_attr, (name or "").strip())
+        if self.code_attr and code is not _UNSET:
+            setattr(obj, self.code_attr, (code or "").strip().upper() or None)
         obj.updated_at = _utcnow()
         session.flush()
         return obj

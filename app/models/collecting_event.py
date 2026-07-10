@@ -26,7 +26,9 @@ class CollectingEvent(Base, TimestampMixin):
     country_id: Mapped[Optional[int]] = mapped_column(
         Integer, ForeignKey("country.id", ondelete="RESTRICT"), nullable=True)
     country_obj: Mapped[Optional["Country"]] = relationship("Country", lazy="select")
-    country_code: Mapped[Optional[str]] = mapped_column("dwc:countryCode", String, nullable=True)
+    # No dwc:countryCode column: it is derived from country_obj.iso_code at DwC-export and
+    # label time (migration 0057). Storing it alongside the FK let `Germany` carry `FR` —
+    # the same drift that removed dwc:taxonomicStatus in 0030.
     state_province_id: Mapped[Optional[int]] = mapped_column(
         Integer, ForeignKey("state_province.id", ondelete="RESTRICT"), nullable=True)
     state_province_obj: Mapped[Optional["StateProvince"]] = relationship("StateProvince", lazy="select")
@@ -102,10 +104,6 @@ class CollectingEvent(Base, TimestampMixin):
         CheckConstraint(
             '"dwc:coordinateUncertaintyInMeters" IS NULL OR "dwc:coordinateUncertaintyInMeters" >= 0.0',
             name="ck_ce_uncertainty_positive",
-        ),
-        CheckConstraint(
-            '"dwc:countryCode" IS NULL OR length("dwc:countryCode") = 2',
-            name="ck_ce_country_code_len",
         ),
         CheckConstraint(
             "habitat_ambiguous IS NULL OR habitat_ambiguous IN (0, 1)",

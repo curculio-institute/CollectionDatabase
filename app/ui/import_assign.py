@@ -431,7 +431,7 @@ def build_import_assign_tab(session_factory, refreshers: dict, on_saved=None) ->
             if state["selected"] is None:
                 return "No record selected."
             ev = dwc_svc.row_to_event_fields(state["selected"])
-            cc = ev["country_code"].strip()
+            cc = ev["country_iso"].strip()
             if cc and len(cc) != 2:
                 return "countryCode must be exactly 2 characters."
             for label, val, lo, hi in [

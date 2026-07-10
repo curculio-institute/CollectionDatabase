@@ -144,7 +144,7 @@ def _co_to_data_label(co: CollectionObject, text_override: str | None = None) ->
     return lbl.DataLabel(
         text_override            = text_override,
         country                  = (ev.country_obj.name if ev and ev.country_obj else None),
-        country_code             = ev.country_code                    if ev else None,
+        country_code             = (ev.country_obj.iso_code if ev and ev.country_obj else None),
         state_province           = (ev.state_province_obj.name if ev and ev.state_province_obj else None),
         municipality             = ev.municipality                    if ev else None,
         county                   = (ev.county_obj.name if ev and ev.county_obj else None),
