@@ -316,10 +316,15 @@ from app.services.label_text import format_geo_prefix, format_locality_label
     # the longer name gives way — here the state, to its subdivision suffix
     ("Germany", "DE", "Baden-Württemberg", "DE-BW", ("Germany", "BW")),
     ("Kazakhstan", "KZ", "Almaty Region", "KZ-ALM", ("Kazakhstan", "ALM")),
-    # the state's suffix is useless ("J", "2", "400") → the COUNTRY collapses instead
-    ("Greece", "GR", "Peloponnese Region", "GR-J", ("GR", "Peloponnese Region")),
-    ("Sri Lanka", "LK", "Central Province", "LK-2", ("LK", "Central Province")),
-    ("Kenya", "KE", "Eastern Province", "KE-400", ("KE", "Eastern Province")),
+    # the suffix must read as an abbreviation: >=2 letters, no digits. Otherwise the
+    # state keeps its name and the COUNTRY collapses instead.
+    ("Greece", "GR", "Peloponnese Region", "GR-J", ("GR", "Peloponnese Region")),      # 1 char
+    ("Sri Lanka", "LK", "Central Province", "LK-2", ("LK", "Central Province")),       # digit
+    ("Kenya", "KE", "Eastern Province", "KE-400", ("KE", "Eastern Province")),         # digits
+    ("Nepal", "NP", "Madhesh Province", "NP-P2", ("NP", "Madhesh Province")),          # "P2"
+    ("Czechia", "CZ", "Central Bohemian Region", "CZ-20", ("CZ", "Central Bohemian Region")),
+    # under the budget (6 + 14 = 20): nothing collapses, so FR-2A never even comes up
+    ("France", "FR", "Corsica Region", "FR-2A", ("France", "Corsica Region")),
     # country is the longer one
     ("Switzerland", "CH", "Basel-City", "CH-BS", ("CH", "Basel-City")),
     # an uncoded row cannot collapse; the other one does

@@ -88,9 +88,10 @@ def format_geo_prefix(
 
     The longer name gives way, since that is what buys the space. The state collapses to
     the **subdivision suffix** ("BY"), which is unambiguous precisely because the country
-    is spelled out beside it. When that suffix would be useless — a single character or a
-    bare number, as in ``GR-J`` → "J" or ``LK-2`` → "2" — the state keeps its name and the
-    **country** collapses instead.
+    is spelled out beside it — but only when that suffix reads as an abbreviation: **at
+    least two letters, no digits**. ``GR-J`` → "J" says nothing; ``LK-2`` → "2" and
+    ``FR-2A`` → "2A" read as a typo or a measurement, not a place. In those cases the state
+    keeps its name and the **country** collapses instead.
 
     A row with no ISO code cannot collapse; its name stays and the label grows rather than
     losing the locality. With no state at all, the country falls back to the plain
@@ -108,7 +109,12 @@ def format_geo_prefix(
         return country, state
 
     suffix = _state_suffix(state_code)
-    state_collapsible = bool(state_code) and len(suffix) >= 2 and not suffix.isdigit()
+    # The suffix must read as an abbreviation of a name: at least two letters, no digits.
+    # One character says nothing ("Greece, J"), and a code with digits reads as a typo or a
+    # measurement rather than a place ("Kenya, 400", "France, 2A"). Anything that fails this
+    # keeps its full name, and the country collapses instead — there is always that fallback,
+    # so refusing an unhelpful abbreviation costs nothing.
+    state_collapsible = bool(state_code) and len(suffix) >= 2 and suffix.isalpha()
 
     # Collapse the longer name — that is where the space is. Fall back to the other when
     # the preferred one has nothing to collapse to.

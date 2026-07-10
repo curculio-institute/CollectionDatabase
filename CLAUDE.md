@@ -527,10 +527,13 @@ of the two always stays written out**, and the *longer* name gives way
 | Germany / Baden-Württemberg | `Germany, BW:` | the state is longer → its subdivision suffix |
 | Greece / Peloponnese Region | `GR, Peloponnese Region:` | `GR-J` → suffix `J` is useless → the **country** collapses |
 | Sri Lanka / Central Province | `LK, Central Province:` | `LK-2` → a bare digit is useless |
+| France / Corsica Region | `FR, Corsica Region:` | `FR-2A` → a letter-digit code is not an abbreviation |
 | Germany / Baden-Württemberg (uncoded row) | `DE, Baden-Württemberg:` | no state code to collapse to |
 
 The state collapses to the **suffix** (`BY`), unambiguous precisely because the country stands
-beside it; a suffix that is one character or all digits is refused. A row with **no ISO code**
+beside it — but only when that suffix reads as an abbreviation: **≥2 characters, all letters**.
+Measured against all 5,351 ISO 3166-2 codes, that refuses 18 mixed letter-digit codes (`FR-2A`,
+`NP-P2`, `CZ-20A`, `GR-A1`, `NL-BQ1`) on top of the 353 single-character and ~49% numeric ones. A row with **no ISO code**
 cannot collapse: its name stays and the label grows rather than losing the locality. With no state,
 the old long-country rule (`format_country`) still applies, so a lone `United Kingdom` prints `GB`.
 
