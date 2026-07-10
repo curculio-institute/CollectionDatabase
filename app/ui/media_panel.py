@@ -29,6 +29,36 @@ _CAT_ICON = {
 _CATEGORIES = list(_CAT_ICON.keys())
 
 
+def _license_options(current: str | None) -> list[str]:
+    """The licence dropdown's options, always able to display *current* (#64).
+
+    `media.license` is free TEXT — an imported record, or a `config.default_license` typed in
+    Settings, can hold a value outside `LICENSE_OPTIONS` (a CC URL, say). NiceGUI's
+    `ChoiceElement.__init__` **raises** `ValueError: Invalid value` when the value is not
+    among the options, which killed the popup's rebuild mid-render and left the gallery blank.
+
+    So an unknown stored value is appended to the list rather than dropped: the popup opens,
+    the real licence is shown, and the user can switch to a standard one. Silently coercing it
+    to "" would discard a rights statement — the one thing a licence field must not do.
+    """
+    cur = (current or "").strip()
+    if cur in LICENSE_OPTIONS:
+        return list(LICENSE_OPTIONS)
+    return [*LICENSE_OPTIONS, cur]
+
+
+def _apply_default_license(select) -> None:
+    """Push-pin: insert `config.default_license`, widening the options if it is non-standard.
+
+    The default is a free string in config.json, so it can be outside LICENSE_OPTIONS too —
+    `set_value` on a value the select does not know would be dropped silently.
+    """
+    default = (get_config().default_license or "").strip()
+    if default and default not in select.options:
+        select.set_options([*select.options, default])
+    select.set_value(default)
+
+
 def build_media_button(
     session_factory,
     *,
@@ -253,11 +283,16 @@ def build_media_button(
 
             # licence (Tier-2: push_pin inserts the configured default)
             with ui.row().classes("items-center gap-1 w-full"):
-                lic = ui.select(LICENSE_OPTIONS, value=it["license"], label="licence") \
+                # One normalised string for BOTH the options and the value: _license_options
+                # strips, so passing the raw value here would re-introduce the mismatch that
+                # makes ui.select raise (#64).
+                _lic_val = (it["license"] or "").strip()
+                lic = ui.select(_license_options(_lic_val),
+                                value=_lic_val, label="licence") \
                     .props("dense").classes("flex-1 text-xs")
                 lic.on_value_change(lambda ev, e=it: _set_license(e, ev.value))
                 ui.button(icon="push_pin",
-                          on_click=lambda el=lic: el.set_value(get_config().default_license or "")) \
+                          on_click=lambda el=lic: _apply_default_license(el)) \
                     .props("flat dense round size=xs").tooltip("Insert default licence")
 
             # rightsHolder (person field, Tier-2 push_pin inside the field)
