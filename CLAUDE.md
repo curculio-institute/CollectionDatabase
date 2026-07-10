@@ -682,11 +682,27 @@ The shared mechanism:
   escape; reuses person_field's CSS/nav). `get_value()` is the name; **`commit(session)`
   resolves name → id (get_or_create) inside the save transaction and returns the FK** (exactly
   like person `commit`). Used in Digitize/Records (shared `specimen_form`), Import & Assign,
-  and Mounting.
+  Mounting, and — since the geography levels are vocabs too — the **collecting-event form**
+  (`country` / `stateProvince` / `admin. region` / `county` / `island`; `_VocabInput` adapts
+  the handle to the `.value` interface the form's field registry drives).
+  - **Code-bearing vocabs** (`code_attr`) additionally carry `get_code()` / `set_value(name,
+    code)`, and render the ISO code as a **pill** — on existing rows *and* on `✚ add Greece
+    GR`, because a geocoded name can be new to the vocab yet already carry a code. The widget
+    lists **`vocab.entries()`** (one row per DB row), never `options()` (a `{name: name}` dict
+    that silently collapses `Limburg` BE-VLI / NL-LI into one).
+  - The event form does **not** use `commit()` for country/state: `events._resolve_geo_fields`
+    stays the single owner of `(name, iso_code)` resolution, so every write path (Digitize,
+    Records, Import) resolves identically.
 - **DwC export** resolves `preparation_id` → `preparation.name` → `dwc:preparations` at export
   time (mirrors `recordedBy`/`identifiedBy`; nothing denormalised on `collection_object`).
 - **Controlled Vocabularies tab** renders one card per registry entry (`_build_vocab_section`)
-  with edit / merge / delete / add — the generic mirror of the People card.
+  with edit / merge / delete / add — the generic mirror of the People card. **One section per
+  tab** (People, Collections/Institutions, then the registry), always on — these lists grow
+  without bound. Code-bearing vocabs show an **`ISO code` column**, editable in the add + edit
+  dialogs (the user must be able to supply a code the geocoder never found), and the **merge
+  dialog labels rows with `display_label()`** — without the code, the two `Limburg` rows are
+  indistinguishable in the very dialog that permanently deletes one. Build detail (why NiceGUI
+  tabs and not the Digitize chip bar) → design.md.
 - **Person stays separate** (not folded into `Vocabulary`): it carries extra columns
   (`abbreviated_name`, `orcid`) and label-printing logic. `Vocabulary` is for the *single-name*
   case only.
