@@ -129,6 +129,18 @@ TaxonWorks weevil catalogue covers ~456 of 946 real names; the other ~490 fall t
 - Consider a GBIF / Catalogue of Life fallback in `_resolve_taxon` after the TaxonWorks miss,
   before manual add.
 
+### 12. Date parsing assumes European order — no American support (deferred)
+`parse_dwc_date` commits to **European DD.MM** (correct: the current data is all European, and
+`04.07.2005` is genuinely ambiguous — 7 Apr vs 4 Jul — so a value alone cannot decide). Today:
+American slash-dates (`07/15/2005`) are **refused** (safe, caught loudly), but a dot-separated
+American date with both parts ≤ 12 (`07.04.2005` meaning 4 July) is **silently read as European**
+(7 Apr). The raw is kept in `verbatimEventDate`, so a misread is auditable.
+
+**We will need to deal with this later** when non-European data appears. The fix is not
+auto-detection (impossible for the ambiguous cases) but an **explicit per-file format toggle** on
+the import — "dates are: European / American / ISO" — that the user declares and the parser obeys.
+Until then, any American-sourced file must be pre-converted to European or ISO.
+
 ---
 
 ## Suggested order
