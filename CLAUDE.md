@@ -528,10 +528,41 @@ the one that answers *containment*:
   returns **zero features** (open sea, steppe), which must not blank the form: Overpass still
   answers, and Photon's hierarchy stays only as an explicit degraded fallback when Overpass fails.
 
+**One Overpass request per lookup — never two in parallel (measured 2026-07-10; dead end, do
+not retry).** The hierarchy and the enclosing-areas blocks look separable (`is_in` admin ≈ 2–24 s,
+areas ≈ 1.2 s), and splitting them into two concurrent requests to fill the island/locality fields
+sooner is the obvious move. It is **8× slower and fails outright** — the public instance grants an
+IP only a couple of concurrent slots, so the second request queues behind the first, times out, and
+the retry backoff compounds. Six runs, alternating, 20 s apart:
+
+| shape | median | max | succeeded |
+|---|---|---|---|
+| one combined query | **3.72 s** | 13.75 s | 6/6 |
+| two parallel queries | 29.19 s | 37.18 s | **0/6** |
+
+`is_in` is evaluated once and both blocks pivot off it, so bundling is cheaper server-side too.
+The failure is *silent-ish* in the UI: a failed admin query drops into the degraded Photon
+fallback, which sets `administrative_region = ""` (Photon has no Regierungsbezirk), so the symptom
+is a mysteriously empty admin-region field, not an error.
+
+**Progressive fill (decided).** Photon (~0.15 s) and Overpass (~3.7 s median) each write **their
+own** fields the moment they land — never one `gather` applied after the slowest returns, which
+made a locality known at 150 ms wait on a 24 s containment query. Each geocode-owned field carries
+its own spinner; the button reads "Detecting…" and disables. **All geocode-owned fields are blanked
+before a lookup starts**: with sources landing separately the previous point's values would
+otherwise sit in the form during the new lookup, and a source that finds nothing (Photon returns
+zero features at 26.015/101.883) would leave them there permanently. Empty + spinner = being looked
+up; empty after = nothing there. A locality carried over from another specimen's coordinates is the
+"silent wrong value" of §2.
+
 **Nominatim is not used** (rejected for per-IP rate limiting after 429s from firing on every pin
 drag; the manual Lookup button removed that condition, but the `ISO3166-2` tag makes its only
 remaining advantage — per-country level→field mapping — unnecessary). Its 1 req/s policy also
 rules it out for the 4-point perimeter boundary check.
+
+**Overpass retries** (`_overpass_post`): 429/502/503/504 + transport errors, backoff 1 s then 3 s,
+three attempts. A 4xx is **not** retried — that is a bug in our query, not a busy server. Measured:
+`is_in` at 26.015/101.883 returned 504 once, then answered on retry.
 
 **Boundary-crossing check — one combined `is_in` (measured 2026-07-10).** Whether the uncertainty
 *circle* crosses a boundary cannot be answered by any single query at the centre. Two dead ends are
@@ -559,7 +590,11 @@ where Photon returns no features.
 **Open (do not guess):** `county` / `municipality` have **no ISO tag** below the first-order
 subdivision. `L6`=county and lowest `L7+`=municipality held across DE/GR/KZ, but that is a
 three-country regularity, not a standard — validate it before relying on it. France already
-strains it (`L5 European Collectivity of Alsace` is not a Regierungsbezirk tier).
+strains it (`L5 European Collectivity of Alsace` is not a Regierungsbezirk tier). Germany strains
+it too: a **kreisfreie Stadt** is both Kreis and Gemeinde and appears **once**, at L6 — so at
+Augsburg (48.3324519, 10.9251308) `county=Augsburg` and `municipality` is **empty**. Copying county
+→ municipality would be a guess; leave it empty until the tier can be identified from the data
+(e.g. `de:place=city` / `admin_level` + `place` tags), not from its position.
 
 The shared mechanism:
 
