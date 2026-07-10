@@ -146,6 +146,7 @@ def _co_to_data_label(co: CollectionObject, text_override: str | None = None) ->
         country                  = (ev.country_obj.name if ev and ev.country_obj else None),
         country_code             = (ev.country_obj.iso_code if ev and ev.country_obj else None),
         state_province           = (ev.state_province_obj.name if ev and ev.state_province_obj else None),
+        state_province_code      = (ev.state_province_obj.iso_code if ev and ev.state_province_obj else None),
         municipality             = ev.municipality                    if ev else None,
         county                   = (ev.county_obj.name if ev and ev.county_obj else None),
         locality                 = ev.locality                        if ev else None,

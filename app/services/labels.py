@@ -46,7 +46,8 @@ import qrcode
 from weasyprint import HTML
 from weasyprint.formatting_structure.boxes import LineBox as _LineBox
 
-from app.services.label_text import abbreviate_name, format_coords, format_country
+from app.services.label_text import (abbreviate_name, format_coords,
+                                     format_geo_prefix)
 from app.vocab import SEX_SYMBOLS
 
 
@@ -112,14 +113,18 @@ em {{ font-style: italic; }}
 # Data labels  (18 × 2.5 mm, 2 lines)
 # ---------------------------------------------------------------------------
 # Format matches original:
-#   Line 1:  Country: Region, Locality lat, lon, habitat
+#   Line 1:  Country, Region: Locality lat, lon, habitat
 #   Line 2:  leg. Collector  Date
+# The "Country, Region" prefix collapses ONE of the two to its ISO code when the pair is
+# too long for 18 mm ("Germany, BW" / "GR, Peloponnese Region") — never both, so the label
+# keeps a name a human can read. See label_text.format_geo_prefix.
 
 @dataclass
 class DataLabel:
     country: Optional[str]                  = None
-    country_code: Optional[str]             = None
+    country_code: Optional[str]             = None      # ISO 3166-1, from country.iso_code
     state_province: Optional[str]           = None
+    state_province_code: Optional[str]      = None      # ISO 3166-2, from state_province.iso_code
     municipality: Optional[str]             = None
     county: Optional[str]                   = None
     locality: Optional[str]                 = None
@@ -258,11 +263,13 @@ def _data_inner_html(lbl: DataLabel) -> str:
 
 
 def _data_line1(lbl: DataLabel) -> str:
-    country_str = format_country(lbl.country, lbl.country_code, html=True)
+    _c_text, _s_text = format_geo_prefix(lbl.country, lbl.country_code,
+                                         lbl.state_province, lbl.state_province_code)
+    prefix = ", ".join(_e(t) for t in (_c_text, _s_text) if t)
 
     parts: list[str] = []
 
-    for f in (lbl.state_province, lbl.municipality, lbl.verbatim_locality or lbl.locality):
+    for f in (lbl.municipality, lbl.verbatim_locality or lbl.locality):
         if f:
             parts.append(_e(f))
 
@@ -284,8 +291,8 @@ def _data_line1(lbl: DataLabel) -> str:
             parts.append(f"<em>{_html.escape(sp)}</em>")
 
     body = ", ".join(parts)
-    if country_str:
-        return f"{country_str}: {body}" if body else country_str
+    if prefix:
+        return f"{prefix}: {body}" if body else prefix
     return body
 
 

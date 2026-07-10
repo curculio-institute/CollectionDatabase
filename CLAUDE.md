@@ -516,6 +516,24 @@ plus one row per distinct code. `Vocabulary(code_attr=…)` implements the match
 renders `Limburg (NL-LI)` where a bare name would be ambiguous. Existing rows keep `iso_code =
 NULL` and are **not** back-filled — 40 names are ambiguous, so a name→code backfill would be a guess.
 
+**The label's "Country, State:" prefix collapses exactly one side (decided 2026-07-10).** An
+18x7 mm label has no room for `Germany, Baden-Württemberg`, but `DE, BW` is a cipher — so **one
+of the two always stays written out**, and the *longer* name gives way
+(`label_text.format_geo_prefix`, used by both the PDF and the previews):
+
+| country / state | prints | why |
+|---|---|---|
+| Germany / Bavaria | `Germany, Bavaria:` | both short |
+| Germany / Baden-Württemberg | `Germany, BW:` | the state is longer → its subdivision suffix |
+| Greece / Peloponnese Region | `GR, Peloponnese Region:` | `GR-J` → suffix `J` is useless → the **country** collapses |
+| Sri Lanka / Central Province | `LK, Central Province:` | `LK-2` → a bare digit is useless |
+| Germany / Baden-Württemberg (uncoded row) | `DE, Baden-Württemberg:` | no state code to collapse to |
+
+The state collapses to the **suffix** (`BY`), unambiguous precisely because the country stands
+beside it; a suffix that is one character or all digits is refused. A row with **no ISO code**
+cannot collapse: its name stays and the label grows rather than losing the locality. With no state,
+the old long-country rule (`format_country`) still applies, so a lone `United Kingdom` prints `GB`.
+
 **`dwc:countryCode` is not stored (0057).** Once the country row carries `iso_code`, an event
 column holding the same fact is a second source that drifts — nothing tied them, so `country =
 Germany` with `countryCode = FR` saved happily. Same rule, same reason as `dwc:taxonomicStatus`
