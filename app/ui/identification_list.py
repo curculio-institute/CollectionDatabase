@@ -1,10 +1,20 @@
 """Shared identification (determination) list widget.
 
-Two modes controlled by co_id:
-  In-memory  (co_id is None):  for Digitize — operates on a local list.
+Three modes:
+  In-memory  (co_id is None):        for Digitize — operates on a local list.
              state["get_dets"]()  → list of det dicts for the save handler.
              state["clear"]()     → resets the list (called after save).
-  Live       (co_id is int):   for Records — each action hits the DB immediately.
+  Deferred   (co_id, deferred=True): for Records — rows are loaded from the DB once and
+             every edit/add/delete/set-current is STAGED in memory. Nothing is written
+             until the card's "Save changes" calls state["commit"](session). The Records
+             dirty-poll asks state["has_changes"]().
+  Live       (co_id, deferred=False): each action hits the DB immediately. No caller uses
+             this any more; kept because Import & Assign and Mounting may want it.
+
+Why deferred is the default in Records: the card has one "Save changes" button, so an
+identification silently committing on click contradicts it — a Delete could not be undone
+by walking away, and there was no confirmation either. Staging makes the whole card atomic
+and puts identification edits under the unsaved-changes banner (#54).
 
 Auto-current logic:
   After every Add, the det with the most recent dateIdentified is automatically
@@ -43,21 +53,29 @@ def build_identification_list(
     co_id: int | None = None,
     initial_dets: list[dict] | None = None,
     on_changed: callable | None = None,
+    deferred: bool = False,
 ) -> dict:
     """Render a determination list widget and return a state dict.
 
-    co_id=None  → in-memory mode (Digitize):
-                  state["get_dets"]() returns current list for the save handler.
-                  state["clear"]()    resets the list.
-    co_id=int   → live-DB mode (Records): each action persists immediately.
+    co_id=None                 → in-memory mode (Digitize).
+    co_id=int, deferred=True   → staged mode (Records): edits live in memory until
+                                 state["commit"](session) runs inside the card's Save.
+    co_id=int, deferred=False  → live mode: each action persists immediately.
     """
     ui.add_head_html(AUTO_CHANGED_CSS)
+
+    # Only live mode writes on click. Deferred and in-memory modes both mutate `_dets`;
+    # the difference is that deferred rows carry a DB id and are reconciled against it
+    # in commit().
+    _persist = co_id is not None and not deferred
 
     def _default_idby() -> str | None:
         with session_factory() as s:
             return pd_svc.get_defaults(s)[0]
 
     _dets: list[dict] = list(initial_dets or [])
+    # Rows the user removed from a staged list; deleted from the DB on commit.
+    _deleted_ids: list[int] = []
 
     # taxon_id of the most recently auto-set current determination.
     # None = no auto-selection active (user is in manual control).
@@ -100,6 +118,44 @@ def build_identification_list(
                 })
         return result
 
+    # Deferred mode loads the rows once; every later change stays in memory until commit().
+    # (Live mode reloads on every _refresh; in-memory mode starts from `initial_dets`.)
+    if co_id is not None and deferred:
+        _dets = _reload_from_db()
+        for _d in _dets:
+            _d["_orig_taxon_id"] = _d["taxon_id"]
+
+    def _taxon_display(taxon_id: int) -> dict:
+        """Read-only lookup for a staged taxon pick: name, synonym marker, frozen preview.
+
+        Opens a session but writes nothing. The verbatim name shown here is what commit()
+        will freeze — computed the same way (compose_scientific_name), so the row never
+        previews a name different from the one it will store.
+        """
+        with session_factory() as s:
+            t = s.get(Taxon, taxon_id)
+            if t is None:
+                return {}
+            verbatim = compose_scientific_name(s, t)
+            is_syn = t.accepted_name_usage_id is not None
+            acc_label = None
+            if is_syn and t.accepted_name_usage_id:
+                acc = s.get(Taxon, t.accepted_name_usage_id)
+                acc_label = format_scientific_name(acc) if acc else None
+        return {"taxon_id": taxon_id, "verbatim_identification": verbatim,
+                "taxon_label": verbatim, "is_synonym": is_syn,
+                "accepted_label": acc_label}
+
+    _DIRTY_KEYS = ("id", "taxon_id", "sex", "type_status", "identified_by",
+                   "date_identified", "identification_qualifier",
+                   "identification_remarks", "is_current")
+
+    def _snapshot() -> list[tuple]:
+        """Comparable view of the staged list, for the unsaved-changes poll."""
+        return [tuple(d.get(k) for k in _DIRTY_KEYS) for d in _dets]
+
+    _baseline: list[list[tuple]] = [_snapshot()]
+
     # ── Auto-current helpers ──────────────────────────────────────────────────
 
     def _pick_current_idx() -> int:
@@ -118,6 +174,7 @@ def build_identification_list(
             return max(dated, key=lambda x: x[1])[0]
         return 0 if co_id is not None else len(_dets) - 1
 
+
     def _auto_assign_and_mark() -> None:
         """Make the most-recent det current and light up its icon.
 
@@ -132,7 +189,7 @@ def build_identification_list(
         target = _dets[target_idx]
 
         if not target["is_current"]:
-            if co_id is not None:
+            if _persist:
                 with session_factory() as s:
                     with s.begin():
                         sp_svc.set_determination_as_current(s, co_id, target["id"])
@@ -152,7 +209,7 @@ def build_identification_list(
 
     def _refresh() -> None:
         nonlocal _dets
-        if co_id is not None:
+        if _persist:
             _dets = _reload_from_db()
         list_col.clear()
         with list_col:
@@ -223,7 +280,7 @@ def build_identification_list(
                 if not d["is_current"]:
                     def _do_set_current(_=None, det=d, ix=idx):
                         _auto_tid[0] = None  # user takes manual control
-                        if co_id is not None:
+                        if _persist:
                             try:
                                 with session_factory() as s:
                                     with s.begin():
@@ -264,6 +321,18 @@ def build_identification_list(
             _edit_ref.append(edit_panel)
 
             with edit_panel:
+                # Correcting a mis-picked taxon (#54). This is a *correction*, not a
+                # re-identification: it re-points taxon_id and re-freezes the verbatim name
+                # on the same determination, leaving identifiedBy / dateIdentified alone. A
+                # genuine re-identification is a new determination — use "Add identification"
+                # below, which keeps the old one in the history.
+                with ui.row().classes("w-full items-center gap-2 mb-2"):
+                    e_taxon = build_taxon_search(
+                        session_factory,
+                        initial_taxon_id=d["taxon_id"],
+                        initial_label=d["taxon_label"],
+                        placeholder="Correct the taxon…",
+                    )
                 with ui.grid(columns=3).classes("w-full gap-2 mb-2"):
                     with ui.element("div").classes("col-span-1 flex items-center gap-1"):
                         e_idby_state = build_person_field(
@@ -300,8 +369,13 @@ def build_identification_list(
                 def _do_save_edit(
                     _=None, det=d, ix=idx,
                     idby=e_idby_state, sx=e_sex, ts=e_type, dt=e_dtid, ql=e_qual, rm=e_rem,
+                    tx=e_taxon,
                 ):
-                    if co_id is not None:
+                    new_tid = tx["taxon_id"] or det["taxon_id"]
+                    if new_tid == -1:
+                        ui.notify("Taxon is still importing — wait a moment.", type="warning")
+                        return
+                    if _persist:
                         try:
                             with session_factory() as s:
                                 with s.begin():
@@ -315,24 +389,30 @@ def build_identification_list(
                                         identification_qualifier=ql.value or None,
                                         identification_remarks=rm.value or None,
                                     )
+                                    if new_tid != det["taxon_id"]:
+                                        sp_svc.update_determination_taxon(
+                                            s, det["id"], taxon_id=new_tid)
                             if on_changed:
                                 on_changed()
                         except Exception as exc:
                             ui.notify(f"Failed: {exc}", type="negative")
                             return
                     else:
-                        with session_factory() as s:
-                            with s.begin():
-                                idby_id = idby["commit"](s)
+                        # Staged: nothing is written — not even the person. A new determiner
+                        # typed here used to be created immediately, so abandoning the
+                        # specimen left a stray name in the People list (#60). The NAME is
+                        # held; commit()/the Digitize save resolves it to an id.
                         _dets[ix].update({
                             "sex":              sx.value or None,
                             "type_status":      ts["get_value"]() or None,
                             "identified_by":    idby["get_value"](),
-                            "identified_by_id": idby_id,
+                            "identified_by_id": None,
                             "date_identified":          dt.value or None,
                             "identification_qualifier": ql.value or None,
                             "identification_remarks":   rm.value or None,
                         })
+                        if new_tid != _dets[ix]["taxon_id"]:
+                            _dets[ix].update(_taxon_display(new_tid))
                         # Re-render the name: the qualifier is shown inline. (Live
                         # mode re-renders automatically via _reload_from_db.)
                         _dets[ix]["taxon_label"] = render_identification(
@@ -341,7 +421,7 @@ def build_identification_list(
                     _refresh()
 
                 def _do_delete(_=None, det=d, ix=idx):
-                    if co_id is not None:
+                    if _persist:
                         try:
                             with session_factory() as s:
                                 with s.begin():
@@ -352,9 +432,15 @@ def build_identification_list(
                             ui.notify(f"Failed: {exc}", type="negative")
                             return
                     else:
+                        # Staged rows already in the DB are deleted on commit; a row added
+                        # in this session (no id) simply disappears.
+                        if det.get("id") is not None:
+                            _deleted_ids.append(det["id"])
                         _dets.pop(ix)
                         if _auto_tid[0] == det.get("taxon_id"):
                             _auto_tid[0] = None
+                        if on_changed:
+                            on_changed()
                     _refresh()
 
                 with ui.row().classes("items-center w-full"):
@@ -393,7 +479,7 @@ def build_identification_list(
             ui.notify("Taxon is still importing — wait a moment.", type="warning")
             return
 
-        if co_id is not None:
+        if _persist:
             # Live-DB mode: always create not-current, then auto-assign.
             try:
                 with session_factory() as s:
@@ -437,12 +523,12 @@ def build_identification_list(
                     is_syn, acc_label, verbatim = False, None, f"taxon #{new_tid}"
             t_label = render_identification(verbatim, add_qual.value or None)
 
-            with session_factory() as s:
-                with s.begin():
-                    idby_id = add_idby_state["commit"](s)
-
+            # No person is created here: a determiner typed for a specimen that is never
+            # saved would linger in the People list (#60). The name is carried; the save
+            # transaction resolves it.
             _dets.append({
                 "id":                       None,
+                "_orig_taxon_id":           None,
                 "taxon_id":                 new_tid,
                 "taxon_label":              t_label,
                 "verbatim_identification":  verbatim,
@@ -451,13 +537,15 @@ def build_identification_list(
                 "sex":                      add_sex.value or None,
                 "type_status":              add_type["get_value"]() or None,
                 "identified_by":            add_idby_state["get_value"](),
-                "identified_by_id":         idby_id,
+                "identified_by_id":         None,
                 "date_identified":          add_dtid.value or None,
                 "identification_qualifier": add_qual.value or None,
                 "identification_remarks":   add_rem.value or None,
                 "is_current":               False,
             })
             _auto_assign_and_mark()
+            if on_changed:
+                on_changed()
 
         add_taxon_state["clear"]()
         add_idby_state["set_value"](None)
@@ -507,9 +595,77 @@ def build_identification_list(
             or bool(add_sex.value) or bool(add_type["get_value"]()) \
             or bool(add_qual.value) or bool(add_rem.value)
 
+    def _state_has_changes() -> bool:
+        """Staged mode: has anything been added, edited, deleted or re-flagged?"""
+        return bool(_deleted_ids) or _snapshot() != _baseline[0]
+
+    def _state_commit(session) -> None:
+        """Apply the staged determinations to the DB, inside the card's Save transaction.
+
+        Reconciles against the rows loaded at build time: deletions first (so a delete +
+        re-add of the same taxon cannot collide), then updates, then creations, and finally
+        exactly one `is_current`. Person names are resolved here — not when they were typed
+        (#60) — so abandoning the card leaves no stray person.
+        """
+        if co_id is None:
+            raise RuntimeError("commit() requires co_id (staged Records mode)")
+        import app.services.persons as persons_svc
+
+        def _person_id(name: str | None) -> int | None:
+            name = (name or "").strip()
+            if not name:
+                return None
+            return persons_svc.get_or_create_person(session, full_name=name).id
+
+        for det_id in _deleted_ids:
+            sp_svc.delete_determination(session, det_id)
+        _deleted_ids.clear()
+
+        for d in _dets:
+            idby_id = d.get("identified_by_id") or _person_id(d.get("identified_by"))
+            if d.get("id") is None:
+                t = session.get(Taxon, d["taxon_id"])
+                created = sp_svc.create_determination(
+                    session,
+                    collection_object_id=co_id,
+                    taxon_id=d["taxon_id"],
+                    sex=d.get("sex"),
+                    type_status=d.get("type_status"),
+                    identified_by_id=idby_id,
+                    date_identified=d.get("date_identified"),
+                    identification_qualifier=d.get("identification_qualifier"),
+                    identification_remarks=d.get("identification_remarks"),
+                    # Frozen at save time, from the taxon actually stored.
+                    verbatim_identification=compose_scientific_name(session, t) if t else None,
+                    is_current=0,
+                )
+                d["id"] = created.id
+            else:
+                sp_svc.update_determination_metadata(
+                    session, d["id"],
+                    sex=d.get("sex"),
+                    type_status=d.get("type_status"),
+                    identified_by_id=idby_id,
+                    date_identified=d.get("date_identified"),
+                    identification_qualifier=d.get("identification_qualifier"),
+                    identification_remarks=d.get("identification_remarks"),
+                )
+                if d.get("taxon_id") != d.get("_orig_taxon_id"):
+                    # Re-points taxon_id AND re-freezes the verbatim name (#54).
+                    sp_svc.update_determination_taxon(session, d["id"], taxon_id=d["taxon_id"])
+            d["_orig_taxon_id"] = d["taxon_id"]
+
+        current = next((d for d in _dets if d["is_current"]), None)
+        if current is not None:
+            sp_svc.set_determination_as_current(session, co_id, current["id"])
+
+        _baseline[0] = _snapshot()
+
     return {
         "get_dets": _state_get_dets,
         "clear": _state_clear,
         "has_content": _state_has_content,
+        "has_changes": _state_has_changes,
+        "commit": _state_commit,
         "refresh_person_opts": _state_refresh_person_opts,
     }

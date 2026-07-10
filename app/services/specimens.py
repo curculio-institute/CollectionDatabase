@@ -251,6 +251,43 @@ def update_determination_metadata(
     return d
 
 
+def update_determination_taxon(
+    session: Session,
+    det_id: int,
+    *,
+    taxon_id: int,
+) -> TaxonDetermination:
+    """Re-point a determination at another taxon, **re-freezing the name** (#54).
+
+    This is the *correction* of a mis-picked taxon, not a re-identification: a genuine
+    re-identification is a new determination (add one, it becomes current) so the specimen
+    keeps its determination history. Correcting a data-entry slip has no history worth
+    keeping — the determination as recorded never happened.
+
+    `dwc:verbatimIdentification` is recomposed from the newly chosen taxon. That does not
+    breach the freeze contract (CLAUDE.md §2): the contract forbids a *later re-classification
+    of the taxon* from rewriting a saved determination. Here the user deliberately says this
+    determination names the wrong taxon, and leaving the old verbatim would make the row claim
+    a name that does not match its own `taxon_id` — the row would lie about itself.
+
+    `identifiedBy` / `dateIdentified` are untouched: who determined it, and when, has not
+    changed just because the name was recorded wrongly.
+    """
+    from app.services.taxa import compose_scientific_name
+
+    d = session.get(TaxonDetermination, det_id)
+    if d is None:
+        raise ValueError(f"TaxonDetermination {det_id} not found")
+    t = session.get(Taxon, taxon_id)
+    if t is None:
+        raise ValueError(f"Taxon {taxon_id} not found")
+    d.taxon_id                = taxon_id
+    d.verbatim_identification = compose_scientific_name(session, t)
+    d.updated_at              = _utcnow()
+    session.flush()
+    return d
+
+
 def set_determination_as_current(
     session: Session,
     co_id: int,

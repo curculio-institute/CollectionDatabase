@@ -362,11 +362,14 @@ def build_records_tab(session_factory, *, on_saved: callable | None = None) -> N
         with ui.card().classes("w-full shadow-sm"):
             ui.label("Identifications").classes("section-label mb-2")
             ui.separator().classes("mb-2")
-            build_identification_list(
+            # Staged: identification edits live in memory until "Save changes" runs
+            # id_state["commit"](s). on_changed only nudges the dirty poll — nothing is
+            # written, so the cross-tab refresh must not fire here either (#54).
+            id_state = build_identification_list(
                 session_factory,
                 co_id=co_id,
                 initial_dets=det_snaps,
-                on_changed=lambda: on_saved() if on_saved else None,
+                deferred=True,
             )
 
         # ── Collecting Event card ─────────────────────────────────────────
@@ -570,6 +573,10 @@ def build_records_tab(session_factory, *, on_saved: callable | None = None) -> N
                 with session_factory() as s:
                     with s.begin():
                         sp_svc.update_collection_object(s, co_id, **_collect_co_fields(s))
+                        # Staged identifications (add / edit / delete / set-current, and any
+                        # new determiner name) are applied in the SAME transaction, so the
+                        # card saves atomically or not at all.
+                        id_state["commit"](s)
                         ev_fields = _collect_ev_fields()
                         # Only write the shared event if the user unlocked it; in
                         # view mode this is a specimen-only save (the event — and
@@ -624,7 +631,9 @@ def build_records_tab(session_factory, *, on_saved: callable | None = None) -> N
                 ev["sampling_protocol"] = ev_ce["protocol_get"]()
             return _norm({"co": co, "ev": ev})
         _baseline = _current_values()
-        _dirty["fn"] = lambda: _current_values() != _baseline
+        # Staged identifications count as unsaved changes too — the whole point of #54.
+        _dirty["fn"] = lambda: (_current_values() != _baseline
+                                or id_state["has_changes"]())
 
     # ── Event form ─────────────────────────────────────────────────────────────
     def _build_event_form(ev_id, n, cos, ev_snap):

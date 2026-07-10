@@ -24,6 +24,7 @@ import app.services.taxonomy as tax_svc
 import app.services.identifiers as id_svc
 import app.services.labels as lbl_svc
 import app.services.repositories as repo_svc
+import app.services.persons as persons_svc
 import app.services.print_queue as pq_svc
 import app.services.wcvp as wcvp_svc
 from app.config import get_config, save_config, printed_pdf_dir, media_dir
@@ -1477,6 +1478,19 @@ def index():
                         code = active["get_identifier_fields"]()["catalog_number"]
                         with _sf() as session:
                             with session.begin():
+                                # Determiner names are resolved HERE, in the save
+                                # transaction — the identification card no longer creates a
+                                # person the moment one is typed, so abandoning the specimen
+                                # leaves no stray name in the People list (#60).
+                                def _det_person_id(d: dict) -> int | None:
+                                    if d.get("identified_by_id"):
+                                        return d["identified_by_id"]
+                                    name = (d.get("identified_by") or "").strip()
+                                    if not name:
+                                        return None
+                                    return persons_svc.get_or_create_person(
+                                        session, full_name=name).id
+
                                 event_ids = ce["commit"](session)
                                 co = svc.save_specimen_entry(
                                     session,
@@ -1490,7 +1504,7 @@ def index():
                                     determination_fields={
                                         "sex":                      cur_det.get("sex"),
                                         "type_status":              cur_det.get("type_status"),
-                                        "identified_by_id":         cur_det.get("identified_by_id"),
+                                        "identified_by_id":         _det_person_id(cur_det),
                                         "date_identified":          cur_det["date_identified"],
                                         "identification_qualifier": cur_det["identification_qualifier"],
                                         "identification_remarks":   cur_det["identification_remarks"],
@@ -1504,7 +1518,7 @@ def index():
                                         taxon_id=d["taxon_id"],
                                         sex=d.get("sex"),
                                         type_status=d.get("type_status"),
-                                        identified_by_id=d.get("identified_by_id"),
+                                        identified_by_id=_det_person_id(d),
                                         date_identified=d["date_identified"],
                                         identification_qualifier=d["identification_qualifier"],
                                         identification_remarks=d["identification_remarks"],
