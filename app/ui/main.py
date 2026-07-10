@@ -2873,9 +2873,13 @@ def index():
             ui.label(
                 "Inserted with one click in a media file's licence field."
             ).classes("text-xs mb-2").style("color:var(--tp-base-soft)")
-            from app.vocab import LICENSE_OPTIONS as _LICENSE_OPTIONS
+            # _license_options(), not the bare list: a config.json edited by hand can hold a
+            # licence outside LICENSE_OPTIONS, and ui.select RAISES on a value it does not
+            # know — which would make the whole Settings tab fail to render (#64).
+            from app.ui.media_panel import _license_options
+            _cur_license = (get_config().default_license or "").strip()
             default_license_sel = ui.select(
-                _LICENSE_OPTIONS, value=get_config().default_license or "",
+                _license_options(_cur_license), value=_cur_license,
                 label="Default licence",
             ).classes("w-full mt-1")
 
