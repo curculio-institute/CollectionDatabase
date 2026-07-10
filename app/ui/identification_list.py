@@ -31,7 +31,8 @@ from app.ui.type_status_field import build_type_status_field
 from app.models import Taxon
 import app.services.person_defaults as pd_svc
 # Controlled vocabulary — single source of truth (app/vocab.py).
-from app.vocab import SEX_OPTIONS as _SEX_OPTIONS, SEX_SYMBOLS as _SEX_SYMBOL
+from app.vocab import (SEX_OPTIONS as _SEX_OPTIONS, SEX_SYMBOLS as _SEX_SYMBOL,
+                       IDENTIFICATION_QUALIFIER_OPTIONS as _QUAL_OPTIONS)
 
 _TYPE_STATUS_OPTIONS = [
     "Holotype", "Paratype", "Lectotype", "Paralectotype", "Neotype", "Syntype",
@@ -356,11 +357,14 @@ def build_identification_list(
                         initial_value=d.get("type_status") or None,
                         classes="col-span-1",
                     )
-                    e_qual = ui.input(
-                        "qualifier",
+                    # Closed open-nomenclature set (DB CHECK). cf. is first, blank (last) =
+                    # definite; starts empty so an untouched determination stays definite.
+                    # (One-key auto-open snap to cf. is a separate keyboard follow-up.)
+                    e_qual = ui.select(
+                        _QUAL_OPTIONS, label="qualifier", with_input=True,
                         value=d["identification_qualifier"] or "",
-                        placeholder="cf. / aff.",
                     ).classes("col-span-1")
+
                     e_rem = ui.input(
                         "remarks",
                         value=d["identification_remarks"] or "",
@@ -467,7 +471,9 @@ def build_identification_list(
         attach_date_validation(add_dtid, no_future=True, allow_interval=True)
         add_sex  = ui.select(_SEX_OPTIONS, label="sex").classes("w-28")
         add_type = build_type_status_field(classes="w-36")
-        add_qual = ui.input("qualifier", placeholder="cf. / aff.").classes("w-28")
+        add_qual = ui.select(_QUAL_OPTIONS, label="qualifier", with_input=True, value="") \
+            .classes("w-28")
+
         add_rem  = ui.input("remarks").classes("flex-1 min-w-40")
 
     def _do_add(_=None):

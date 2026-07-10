@@ -34,6 +34,7 @@ _DWC_TERMS: tuple[str, ...] = (
     # Taxon / identification
     "scientificName", "scientificNameAuthorship", "acceptedNameUsage",
     "genus", "specificEpithet", "identifiedBy", "dateIdentified",
+    "identificationQualifier", "identificationRemarks",
     # Collecting event
     "eventDate", "verbatimEventDate", "recordedBy",
     "country", "countryCode", "stateProvince", "county", "municipality",
@@ -204,6 +205,8 @@ def row_to_determination_fields(row: dict) -> dict:
         "type_status":     row.get("typeStatus") or "",
         "identified_by":   row.get("identifiedBy") or "",
         "date_identified": row.get("dateIdentified") or "",
+        "identification_qualifier": (row.get("identificationQualifier") or "").strip(),
+        "identification_remarks":   (row.get("identificationRemarks") or "").strip(),
         "verbatim_identification": row_scientific_name(row),
     }
 

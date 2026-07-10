@@ -49,16 +49,21 @@ longer auto-matches locally (it goes to TW / manual, which is the point of the c
 
 ## P1 — blocks or breaks visible rows
 
-### 3. No identificationQualifier column
+### 3. No identificationQualifier column — DONE
 `identificationQualifier` is not in `_DWC_TERMS`; `_on_assign` hardcodes
-`"identification_qualifier": None` (`import_assign.py:519`). Model column exists
-(`models/taxon_determination.py:30`) and `render_identification()` already inserts the qualifier
-after the genus group. Pure plumbing.
+`"identification_qualifier": None`. Model column exists and `render_identification()` already
+inserts the qualifier after the genus group.
 
-- Add `identificationQualifier` to `_DWC_TERMS`, read it in `row_to_determination_fields`, pass
-  it through `_on_assign`.
-- Constrain to the open-nomenclature set (`cf.`, `aff.`, `sp.`, `?`, …) or validate softly.
-- ~23 rows depend on this (`Trechus cf. quadristriatus`, `Orinocarabus indet.`).
+**Fixed, with hard enforcement** (the user chose a closed CHECK-constrained set — it aligns with
+CLAUDE.md §4, which lists identificationQualifier among the closed standard vocabularies): the set
+`cf. · aff. · nr. · agg. · gr. · ? · sp. · spp. · indet.` lives in
+`app/vocab.py::IDENTIFICATION_QUALIFIER_OPTIONS`, enforced by DB CHECK `ck_td_identification_qualifier`
+(migration 0058, STRICT-table rebuild), validated in the import `_validate`, and read through
+`_on_assign`. The interactive form's free-text qualifier became a dropdown (cf. first, blank last).
+`identificationRemarks` (free text, NOT constrained — distinct from the qualifier) is imported too.
+
+Follow-up: a one-keystroke auto-open snap to cf. on the qualifier dropdown (a keyboard concern that
+should apply to all fixed-list selects) — not done here.
 
 ### 4. individualCount not hardened against non-numeric / zero
 `_select_row` runs `int(sp["individual_count"] or 1)` (`import_assign.py:242`). A value like `F`

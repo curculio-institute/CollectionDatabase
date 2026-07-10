@@ -35,7 +35,7 @@ from app.services.vocabularies import (
     preparation_vocab, habitat_vocab, sampling_protocol_vocab,
 )
 # Controlled vocabularies — single source of truth (app/vocab.py).
-from app.vocab import SEX_OPTIONS, NEW_SPECIMEN_DEFAULTS
+from app.vocab import SEX_OPTIONS, NEW_SPECIMEN_DEFAULTS, IDENTIFICATION_QUALIFIERS
 
 # ---------------------------------------------------------------------------
 # Example CSV — downloadable from the upload card
@@ -451,6 +451,12 @@ def build_import_assign_tab(session_factory, refreshers: dict, on_saved=None) ->
             _, date_err = dwc_svc.normalise_row_dates(state["selected"])
             if date_err:
                 return date_err
+            # identificationQualifier is a closed set (DB CHECK) — refuse an off-list value
+            # up front with the allowed list, rather than letting the save hit the constraint.
+            q = (state["selected"].get("identificationQualifier") or "").strip()
+            if q and q not in IDENTIFICATION_QUALIFIERS:
+                return (f"identificationQualifier {q!r} is not one of: "
+                        + ", ".join(IDENTIFICATION_QUALIFIERS) + ".")
             for label, val, lo, hi in [
                 ("latitude",  ev["decimal_latitude"],  -90,  90),
                 ("longitude", ev["decimal_longitude"], -180, 180),
@@ -540,7 +546,9 @@ def build_import_assign_tab(session_factory, refreshers: dict, on_saved=None) ->
                                 "type_status":              det.get("type_status") or None,
                                 "identified_by_id":         idby_id,
                                 "date_identified":          det.get("date_identified") or None,
-                                "identification_qualifier": None,
+                                # From the CSV now (#3); _validate has checked it is on-list.
+                                "identification_qualifier": det.get("identification_qualifier") or None,
+                                "identification_remarks":   det.get("identification_remarks") or None,
                                 "verbatim_identification":  dwc_svc.row_scientific_name(row),
                             },
                         )
