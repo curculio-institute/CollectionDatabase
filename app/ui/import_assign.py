@@ -33,6 +33,8 @@ from app.services.biological import get_relationship_options
 from app.config import get_config
 from app.ui.taxon_search import build_taxon_search, _render_tw_label
 from app.ui.taxon_editor import open_new_taxon_dialog
+from app.ui.choice_field import build_choice_field
+from app.vocab import IDENTIFICATION_QUALIFIER_OPTIONS
 from app.ui.vocab_field import build_vocab_field
 from app.services.vocabularies import (
     preparation_vocab, habitat_vocab, sampling_protocol_vocab,
@@ -218,6 +220,13 @@ def build_import_assign_tab(session_factory, refreshers: dict, on_saved=None) ->
                         sources=("local", "taxonworks", "wcvp"),
                         placeholder="Host plant name…",
                     )
+                    # The qualifier the CSV carried ("Betula sp." → sp.). It is stripped from
+                    # the search query so the taxon resolves, but it is a scientific claim in
+                    # its own right — the species is undetermined — so it is recovered here,
+                    # shown, and saved on the association. Editable: the user confirms it like
+                    # every other imported value. Same widget as the Digitize assoc card.
+                    host_qual = build_choice_field(
+                        IDENTIFICATION_QUALIFIER_OPTIONS, "Qualifier", classes="w-40")
 
         # ================================================================
         # Logic: select / clear a row
@@ -230,6 +239,7 @@ def build_import_assign_tab(session_factory, refreshers: dict, on_saved=None) ->
             host_area.set_visibility(False)
             host_ts["clear"]()
             host_rel_sel.value = None
+            host_qual["set_value"](None)
 
         def _summary_line(label: str, value: str) -> None:
             if not value:
@@ -305,10 +315,14 @@ def build_import_assign_tab(session_factory, refreshers: dict, on_saved=None) ->
                 # Seed with the qualifier stripped ("Betula sp." → "Betula") so a
                 # multi-token search actually matches; the user confirms the taxon.
                 host_ts["set_query"](dwc_svc.host_search_query(_host))
+                # …and keep the stripped qualifier rather than discarding it: "sp." says
+                # the species is undetermined, which is part of what the row recorded.
+                host_qual["set_value"](dwc_svc.host_qualifier(_host))
             else:
                 host_area.set_visibility(False)
                 host_ts["clear"]()
                 host_rel_sel.value = None
+                host_qual["set_value"](None)
 
             # Refresh identifier dropdown; leave it empty for the user to pick.
             cat_num.options = {c: c for c in _reserved_opts()}
@@ -640,8 +654,11 @@ def build_import_assign_tab(session_factory, refreshers: dict, on_saved=None) ->
                             _htid = host_ts["taxon_id"]
                             _hrel = host_rel_sel.value
                             if _htid and _htid != -1 and _hrel:
-                                associations.append(
-                                    {"rel_id": _hrel, "taxon_id": _htid})
+                                associations.append({
+                                    "rel_id": _hrel,
+                                    "taxon_id": _htid,
+                                    "qualifier": host_qual["get_value"]() or None,
+                                })
                             else:
                                 host_unresolved = dwc_svc.row_host_name(row)
                         # Retroactive digitisation: the specimen already carries
