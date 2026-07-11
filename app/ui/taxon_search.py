@@ -407,7 +407,14 @@ async def _show_import_preview_dialog(
 
         dlg.open()
 
-    return await dlg
+    # #65: this dialog is rebuilt on every import and was never removed, so each pick left a
+    # hidden dialog behind for the life of the session. It is *awaited*, so it cannot use the
+    # on-close delete guard — the result has to be read first. `finally` so it dies even if the
+    # await is cancelled.
+    try:
+        return await dlg
+    finally:
+        dlg.delete()
 
 
 # ── widget ────────────────────────────────────────────────────────────────────

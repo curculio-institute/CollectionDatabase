@@ -474,6 +474,10 @@ def build_taxon_editor(session_factory, on_saved: callable) -> dict:
                             ui.notify(f"Failed: {exc}", type="negative")
 
                     ui.button("Delete", icon="delete", on_click=_confirmed).props("color=negative")
+        # #65: built fresh on every Delete click, so it must be removed on close — otherwise
+        # each click leaves a hidden dialog behind for the life of the session.
+        confirm_dlg.on_value_change(
+            lambda e: confirm_dlg.delete() if not e.value else None)
         confirm_dlg.open()
 
     def _open_edit_for(taxon_id: int) -> None:

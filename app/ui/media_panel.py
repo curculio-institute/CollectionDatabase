@@ -437,6 +437,10 @@ def build_media_button(
             with ui.row().classes("w-full justify-end mt-1"):
                 ui.button("Close", on_click=dlg.close).props("flat")
         dlg.on_value_change(lambda ev: (_sync_after_close() if not ev.value else None))
+        # #65: rebuilt on every open, so it must be removed on close — otherwise each
+        # open leaves a hidden dialog behind, and the person/vocab fields inside it keep
+        # their 2 s DB-refresh timers running forever.
+        dlg.on_value_change(lambda e: dlg.delete() if not e.value else None)
         dlg.open()
 
     def _sync_after_close():
