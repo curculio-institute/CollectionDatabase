@@ -30,6 +30,7 @@ TARGET_FK = {
     "collection_object": "collection_object_id",
     "collecting_event": "collecting_event_id",
     "biological_association": "biological_association_id",
+    "field_occurrence": "field_occurrence_id",
 }
 
 # ── Category vocabulary (the per-file filter key, stored on media.category) ──────────
