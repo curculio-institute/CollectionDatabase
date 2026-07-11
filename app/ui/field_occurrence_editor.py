@@ -79,7 +79,7 @@ def open_field_occurrence_editor(session_factory, fo_id: int, *,
         ts = build_taxon_search(
             session_factory,
             nomenclatural_codes=bio_codes,
-            sources=("local", "taxonworks", "wcvp"),
+            sources=("local", "taxonworks", "wcvp", "datasets"),
             placeholder="Taxon…",
             initial_taxon_id=cur["taxon_id"],
             initial_label=cur["taxon_label"],

@@ -217,7 +217,7 @@ def build_import_assign_tab(session_factory, refreshers: dict, on_saved=None) ->
                     host_ts = build_taxon_search(
                         session_factory,
                         nomenclatural_codes=list(get_config().bio_assoc_default_codes),
-                        sources=("local", "taxonworks", "wcvp"),
+                        sources=("local", "taxonworks", "wcvp", "datasets"),
                         placeholder="Host plant name…",
                     )
                     # The qualifier the CSV carried ("Betula sp." → sp.). It is stripped from

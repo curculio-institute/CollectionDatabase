@@ -27,6 +27,8 @@ import app.services.repositories as repo_svc
 import app.services.persons as persons_svc
 import app.services.print_queue as pq_svc
 import app.services.wcvp as wcvp_svc
+import app.services.name_source as ns_svc
+import app.services.datasets as ds_svc
 from app.config import get_config, save_config, printed_pdf_dir, media_dir
 
 # Serve the managed media store so attached images/files render in the browser
@@ -1218,7 +1220,7 @@ def index():
                     bio_obj_state = build_taxon_search(
                         _sf,
                         nomenclatural_codes=bio_codes,
-                        sources=("local", "taxonworks", "wcvp"),
+                        sources=("local", "taxonworks", "wcvp", "datasets"),
                         placeholder="Type plant or fungus name…",
                     )
 
@@ -2790,6 +2792,220 @@ def index():
                 )
 
             _wcvp_refresh_installed()
+
+            # ── Name datasets (experimental) ──────────────────────────────
+            # A user-added Darwin Core Archive, searched LAST (after local / TW / WCVP). The
+            # archive states its own nomenclaturalCode and columns (meta.xml), so nothing here
+            # is configured by hand — the file is copied into data/name_sources/<slug>/ and
+            # indexed. See services/name_source.py + services/datasets.py.
+            ui.separator().classes("my-3")
+            with ui.row().classes("items-center gap-2 mb-1"):
+                ui.label("Name datasets").classes("text-sm font-medium")
+                ui.label("EXPERIMENTAL").classes("text-xs px-1 rounded").style(
+                    "background:var(--tp-warning,#fef9c3); color:#854d0e; font-weight:700;")
+            ui.label(
+                "Extra offline checklists (Darwin Core Archives) to import names from — e.g. a "
+                "beetle catalogue. Searched last, after the local database, TaxonWorks and "
+                "WCVP. The archive declares its own nomenclatural code and columns, so nothing "
+                "needs configuring: pick the file and it is copied into this collection's data "
+                "folder and indexed. Imported names are copied into the database, so a dataset "
+                "can be removed at any time without touching them."
+            ).classes("text-xs mb-2").style("color:var(--tp-base-soft)")
+
+            _ds_list = ui.column().classes("w-full gap-1")
+            _ds_status = ui.label().classes("text-xs mt-1")
+
+            def _ds_refresh() -> None:
+                _ds_list.clear()
+                datasets = ds_svc.list_datasets()
+                if not datasets:
+                    with _ds_list:
+                        ui.label("No datasets added.").classes("text-xs").style(
+                            "color:var(--tp-base-soft)")
+                    return
+                for ds in datasets:
+                    with _ds_list:
+                        with ui.row().classes("w-full items-center gap-2"):
+                            if not ds.installed:
+                                ui.icon("error_outline").classes("text-xs text-negative")
+                                ui.label(f"{ds.label} — index missing").classes("text-xs")
+                            else:
+                                db = ds.open()
+                                try:
+                                    meta = ns_svc.index_meta(db)
+                                    importable, total = ns_svc.count(db, ds.spec)
+                                finally:
+                                    db.close()
+                                ui.label(
+                                    f"{ds.label} · {ds.code} · {total:,} names"
+                                    + (f" ({total - importable:,} not importable)"
+                                       if importable != total else "")
+                                ).classes("text-xs")
+                            ui.space()
+                            ui.button(
+                                "Import all", icon="download",
+                                on_click=lambda d=ds: _ds_import_all(d),
+                            ).props("flat dense no-caps size=sm").tooltip(
+                                "Create a local taxon row for EVERY name in this dataset")
+                            ui.button(
+                                "Rebuild", icon="refresh",
+                                on_click=lambda d=ds: _ds_rebuild(d),
+                            ).props("flat dense no-caps size=sm")
+                            ui.button(
+                                "Remove", icon="delete",
+                                on_click=lambda d=ds: _ds_remove(d),
+                            ).props("flat dense no-caps size=sm color=negative")
+
+            async def _ds_upload(e) -> None:
+                """Copy the chosen archive into data/name_sources/<slug>/ and index it."""
+                name = e.name
+                content = e.content.read()
+                _ds_status.set_text(f"Indexing {name}…")
+                _ds_status.style("color:var(--tp-base-soft)")
+                try:
+                    ds, report = await run.io_bound(ds_svc.install, content, name)
+                except Exception as exc:      # noqa: BLE001 — the message IS the product
+                    _ds_status.set_text(f"Could not add {name}: {exc}")
+                    _ds_status.style("color:var(--tp-danger)")
+                    ui.notify(f"Could not add dataset: {exc}", type="negative",
+                              timeout=0, close_button="Got it")
+                    return
+                _ds_status.set_text(
+                    f"Added {ds.label} — {report.rows:,} names ({ds.code}), "
+                    f"{report.replaced:,} synonyms. Searched after WCVP."
+                )
+                _ds_status.style("color:var(--tp-base)")
+                _ds_refresh()
+                ui.notify(f"{ds.label}: {report.rows:,} names indexed.", type="positive")
+
+            async def _ds_rebuild(ds) -> None:
+                _ds_status.set_text(f"Rebuilding {ds.label}…")
+                try:
+                    report = await run.io_bound(ds_svc.rebuild, ds)
+                except Exception as exc:      # noqa: BLE001
+                    _ds_status.set_text(f"Rebuild failed: {exc}")
+                    _ds_status.style("color:var(--tp-danger)")
+                    return
+                _ds_status.set_text(f"Rebuilt {ds.label} — {report.rows:,} names.")
+                _ds_status.style("color:var(--tp-base)")
+                _ds_refresh()
+
+            def _ds_remove(ds) -> None:
+                dlg = ui.dialog()
+                with dlg, ui.card():
+                    ui.label(f"Remove “{ds.label}”?").classes("font-medium mb-2")
+                    ui.label(
+                        "The archive and its index are deleted. Names already imported from "
+                        "it stay in the database — they are local taxon rows now."
+                    ).classes("text-xs mb-3").style("color:var(--tp-base-soft)")
+                    with ui.row().classes("gap-2 justify-end w-full"):
+                        ui.button("Cancel", on_click=dlg.close).props("flat")
+
+                        def _go():
+                            ds_svc.remove(ds)
+                            dlg.close()
+                            _ds_refresh()
+                            _ds_status.set_text(f"Removed {ds.label}.")
+                            ui.notify(f"{ds.label} removed.", type="positive")
+
+                        ui.button("Remove", icon="delete", on_click=_go) \
+                            .props("color=negative")
+                dlg.on_value_change(lambda e: dlg.delete() if not e.value else None)
+                dlg.open()
+
+            def _ds_import_all(ds) -> None:
+                """Import EVERY name in the dataset. Warned first — it is a bulk write."""
+                try:
+                    db = ds.open()
+                    try:
+                        importable, total = ns_svc.count(db, ds.spec)
+                    finally:
+                        db.close()
+                except Exception as exc:      # noqa: BLE001
+                    ui.notify(f"Cannot read {ds.label}: {exc}", type="negative")
+                    return
+
+                dlg = ui.dialog()
+                with dlg, ui.card().classes("min-w-[420px]"):
+                    ui.label(f"Import all names from “{ds.label}”?").classes(
+                        "font-medium mb-2")
+                    ui.label(
+                        f"This creates a local taxon row for each of the {importable:,} "
+                        f"importable names (of {total:,}), plus their parent ranks. It is a "
+                        f"large, one-way write to your database: there is no undo, and the "
+                        f"Taxonomy tree will contain the whole checklist whether or not you "
+                        f"hold specimens of those taxa."
+                    ).classes("text-xs mb-2").style("color:var(--tp-danger)")
+                    ui.label(
+                        "You do not need this to record specimens: picking a name in the "
+                        "taxon search imports it (and its parents) on demand. Import all is "
+                        "for working offline from a complete checklist."
+                    ).classes("text-xs mb-3").style("color:var(--tp-base-soft)")
+                    prog = ui.linear_progress(value=0, show_value=False).classes("w-full")
+                    prog.set_visibility(False)
+                    prog_lbl = ui.label("").classes("text-xs")
+                    with ui.row().classes("gap-2 justify-end w-full mt-2") as btn_row:
+                        ui.button("Cancel", on_click=dlg.close).props("flat")
+
+                        async def _go():
+                            btn_row.set_visibility(False)
+                            prog.set_visibility(True)
+                            state = {"done": 0, "total": importable or 1}
+
+                            def _progress(done, total):
+                                state["done"], state["total"] = done, total
+
+                            timer = ui.timer(0.2, lambda: (
+                                prog.set_value(state["done"] / max(state["total"], 1)),
+                                prog_lbl.set_text(
+                                    f"{state['done']:,} / {state['total']:,} names…"),
+                            ))
+
+                            def _work():
+                                with _sf() as session:
+                                    with session.begin():
+                                        return ds_svc.import_all(
+                                            session, ds, progress=_progress)
+
+                            try:
+                                report = await run.io_bound(_work)
+                            except Exception as exc:   # noqa: BLE001
+                                ui.notify(f"Import failed: {exc}", type="negative",
+                                          timeout=0, close_button="Got it")
+                                dlg.close()
+                                return
+                            finally:
+                                timer.deactivate()
+                                timer.delete()     # per the dialog timer-leak rule
+
+                            dlg.close()
+                            msg = (f"{ds.label}: imported {report.imported:,} names "
+                                   f"({report.created:,} new taxon rows)")
+                            if report.refused or report.failed:
+                                msg += (f" · {report.refused:,} refused, "
+                                        f"{report.failed:,} failed")
+                            ui.notify(msg, type="positive", timeout=0,
+                                      close_button="Got it")
+                            for r in report.refusals[:5]:
+                                ui.notify(r, type="warning", timeout=8000)
+                            # The Taxonomy tab's refreshers live in its own scope; the
+                            # registry is how any tab reaches them (see _refreshers).
+                            for _key in ("taxonomy_stats", "taxonomy_tree"):
+                                fn = _refreshers.get(_key)
+                                if fn:
+                                    fn()
+
+                        ui.button("Import all", icon="download", on_click=_go) \
+                            .props("color=negative")
+                dlg.on_value_change(lambda e: dlg.delete() if not e.value else None)
+                dlg.open()
+
+            ui.upload(
+                on_upload=_ds_upload, auto_upload=True, max_files=1,
+            ).props('accept=".zip" flat dense').classes("w-full").tooltip(
+                "Choose a Darwin Core Archive (.zip) on your computer")
+
+            _ds_refresh()
 
             async def _wcvp_check_update() -> None:
                 # Re-read the index first: it may have been rebuilt since this page loaded,

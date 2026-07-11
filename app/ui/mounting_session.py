@@ -80,7 +80,7 @@ def build_mounting_session_section(
 
                 ts = build_taxon_search(
                     session_factory,
-                    sources=("local", "taxonworks"),
+                    sources=("local", "taxonworks", "datasets"),
                     placeholder="Enter genus or species name…",
                     initial_taxon_id=prefill.get("taxon_id"),
                     initial_label=prefill.get("taxon_label") or "",

@@ -70,6 +70,22 @@ class AppConfig:
     # is a read-only lookup table, rebuilt from the archive, never edited.
     wcvp_dir: str = ""
 
+    # User-added offline name datasets (EXPERIMENTAL, see services/name_source.py). Each entry
+    # is {"slug", "label", "code", "archive", "experimental"} — the archive filename inside
+    # data/name_sources/<slug>/, beside the index built from it. Registered here rather than in
+    # the DB because these are FILES and settings, not DB entities: nothing references them by
+    # FK, so the person-defaults rule ("a default that references a DB entity belongs in the
+    # DB") does not apply. Searched AFTER local / TaxonWorks / WCVP.
+    name_sources: list[dict] = field(default_factory=list)
+
+
+def name_sources_dir() -> Path:
+    """Root folder holding every user-added name dataset, one sub-folder per slug.
+
+    Not created here: its absence simply means no dataset is installed.
+    """
+    return _DATA_DIR / "name_sources"
+
 
 def printed_pdf_dir() -> Path:
     """Resolved archival folder for printed label PDFs (created if missing)."""

@@ -803,6 +803,57 @@ catch at write time (e.g. a raw-SQL edit that chains a synonym after the fact). 
 follow GBIF's `NameUsageIssue` vocabulary (`CHAINED_SYNONYM`, `PARENT_NAME_USAGE_ID_INVALID`,
 `ACCEPTED_NAME_USAGE_ID_INVALID`). It is **not** run at startup.
 
+### Offline name sources — WCVP and user-added datasets (decided 2026-07-11, **experimental**)
+
+A *name source* is a static Darwin Core Archive (Taxon core) indexed into a read-only SQLite
+lookup table, searched from the taxon widget and imported name-by-name (or in bulk). WCVP is
+one instance (plants, ICN, downloaded from Kew); the user may **add others from a file on their
+computer** — e.g. a Coleoptera checklist (ICZN). Engine: `services/name_source.py`; registry:
+`services/datasets.py`. Marked **EXPERIMENTAL** in the UI.
+
+- **The archive describes itself; nothing is configured by hand.** `meta.xml` declares the core
+  file, its delimiter, and every field **by DwC term URI + column index** — so a field is found
+  by *term*, never by the spelling of a CSV header. This is load-bearing: Kew misspells two
+  headers (`scientfiicname`), a correctly-spelled archive writes `scientificName`, and both must
+  work. `_key()` collapses every spelling — term URI, `taxonID`, `taxonid`, `dwc:taxonID`,
+  `dwc_taxon_id`, `taxon_id` — to one lookup key (but never by blindly splitting on `_`, which
+  would turn `scientific_name` into `name`). A `default` field in meta.xml is how an archive
+  states its own **`nomenclaturalCode`** — so the code is *read*, never guessed from the taxa.
+- **Storage:** the chosen file is **copied into** `data/name_sources/<slug>/` (archive + built
+  `index.sqlite`) — never referenced in place, exactly as with the media store. Registered in
+  `config.json` (`name_sources`), because these are *files and settings*, not DB entities: no FK
+  points at them, so the person-defaults rule does not apply.
+- **Last in the search chain, always:** local → TaxonWorks → WCVP → *datasets*. A user checklist
+  is the fallback when no other source knows the name, never a competitor to them. (`sources`
+  tuple in `taxon_search.py`; `"datasets"` is in the default.)
+- **Representability, not coercion (§2):** a `NameSourceSpec` carries the code, the selectable
+  ranks (**`RANKS_BY_CODE[code]`** — an ICZN source may not offer `variety`), and the status
+  partition (accepted / replaced-by-X / refused). An **unknown `taxonomicStatus` raises at build
+  time** — whether it means accepted, replaced, or unrepresentable is a decision, not a guess.
+  Refused names are still **shown** in search (greyed, no ✚ add), so the user learns the name
+  exists instead of hand-inventing it.
+- **Import walks the archive's OWN parent chain** (`lineage()` → `chain_for()` →
+  `taxa.get_or_create_from_chain()`), rather than reconstructing lineage from denormalised
+  family/genus columns the way the WCVP path must (WCVP models no rank above genus). A chain can
+  express any lineage the source has — notably **a species under its subgenus** — and it is the
+  source's own statement of placement, not our reconstruction. Own-lineage (Epic #30) is
+  preserved: a synonym keeps *its own* parents; its accepted name is built as a separate chain.
+- **A source may skip a rank the model needs.** All 692 subspecies in the Coleoptera archive are
+  parented straight under a **subgenus**, so the chain contains no species row and the
+  infraspecific name had nothing to compose from — which silently produced
+  `Carabus (Megodontus) None germarii`. Two fixes, both kept: `compose_scientific_name` **never
+  interpolates a missing part** (a bare-epithet name is a visible fault, not a plausible lie),
+  and `_species_ancestor()` recovers the species from the trinomial — preferring the archive's
+  own species row (it carries the authorship), synthesising only the name otherwise, with
+  authorship left NULL rather than guessed.
+- **`import_all`** creates a taxon row for every importable name (idempotent — same seam as a
+  single pick). It is warned first: a large one-way write that puts the whole checklist in the
+  Taxonomy tree whether or not specimens are held. It is **not** needed to record specimens —
+  picking a name in the search imports it and its parents on demand.
+- Removing a dataset deletes the archive + index but **not the names imported from it**: those
+  are local taxon rows now (same rule as an imported WCVP name — `docs/plant_names.md` §5).
+- The **distribution extension** (locality / threatStatus) is deliberately **ignored** for now.
+
 ### Ranks are code-specific, and so is the genus group (decided 2026-07-11)
 
 **A rank belongs to a nomenclatural code, not to a global vocabulary.** TaxonWorks is the
@@ -1020,6 +1071,8 @@ arrow-key event, chip styling) is design.md's concern → "Digitize layout modes
 | `vocabularies.py` | Vocabulary instances + `VOCAB_REGISTRY` (the Controlled Vocabularies tab renders one section per entry) |
 | `repositories.py` | Collections/institutions CRUD (multi-column vocab, #56) + `name_map` (collectionCode→full name) for the identifier label + `resolve_id` (get-or-create the repository for a code, the save-time seam for `collection_object.repository_id`, #75) + `delete_repository` guard (blocked while specimens reference it, #72) |
 | `explore.py` | Explore-tab querying (#40): `search_facets`, `query_specimens(filters)`, `checklist(filters)` (drawer-order taxa+lots), `events(filters)`, `to_csv`, `counts` |
+| `name_source.py` | The generic offline-name-source engine (DwC Archive → SQLite index → search → import chain). WCVP is one instance; user datasets are others. See "Offline name sources" below |
+| `datasets.py` | User-added name datasets (**experimental**): install from a chosen file → `data/name_sources/<slug>/`, rebuild, remove, `import_all` |
 | `batch_ops.py` | Batch tools (#78): `fetch_by_taxon` / `match_catalog_numbers` (both **scoped to a working `repository_id`**) + `apply_disposition` / `apply_repository`. **Cross-collection safety is structural** — `_load_in_scope` re-asserts every specimen belongs to the working collection before any write, so a bulk op can never touch a specimen held in another collection. `catalog_number` is never changed. |
 
 ### Taxon search widget (`app/ui/taxon_search.py`)
