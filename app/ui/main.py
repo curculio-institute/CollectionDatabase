@@ -1414,7 +1414,8 @@ def index():
                     # Clear bio associations
                     bio_state["associations"].clear()
                     bio_obj_state["clear"]()
-                    rel_sel.value = None
+                    rel_field["set_value"](None)
+                    bio_qual["set_value"](None)
                     _refresh_assoc_list()
                     if not keep_event.value:
                         event_sel.value = None
@@ -1442,7 +1443,8 @@ def index():
                 def _clear_bio_card():
                     bio_state["associations"].clear()
                     bio_obj_state["clear"]()
-                    rel_sel.value = None
+                    rel_field["set_value"](None)
+                    bio_qual["set_value"](None)
                     _refresh_assoc_list()
 
                 def _has_any_content() -> bool:
@@ -1628,7 +1630,8 @@ def index():
                     det_state["clear"]()
                     bio_state["associations"].clear()
                     bio_obj_state["clear"]()
-                    rel_sel.value = None
+                    rel_field["set_value"](None)
+                    bio_qual["set_value"](None)
                     _refresh_assoc_list()
                     spec_media["clear"](); spec_media_v["clear"](); event_media["clear"]()
                     spec_extid["clear"](); spec_extid_v["clear"]()
