@@ -23,6 +23,8 @@ from types import SimpleNamespace
 from nicegui import context as _nicegui_context, ui
 
 import app.services.wcvp as wcvp_svc
+import app.services.name_source as ns_svc
+import app.services.datasets as ds_svc
 import app.services.taxonworks as tw_svc
 import app.services.taxa as svc_taxa
 import app.services.import_preview as import_preview_svc
@@ -65,6 +67,44 @@ def _local_item_html(
     if accepted:
         return f"{n} &#10060; = <i>{_html_mod.escape(accepted)}</i> &#10003;"
     return f"{n} &#10060;"
+
+
+def _ds_item_html(row, accepted, reason: str, spec) -> str:
+    """One row of a user-added dataset. Same shape as the WCVP row, but the refusal test is
+    spec-driven (a dataset's ranks/statuses are its own) and the icon is neutral."""
+    e = _html_mod.escape
+    html = f'📖 <i>{e(row.name)}</i>'
+    if row.authorship:
+        html += f' {e(row.authorship)}'
+
+    if row.is_refused(spec):
+        badge = (f"rank {row.rank or 'none'}" if row.rank_unsupported(spec)
+                 else row.status.lower())
+        html += f' <span class="wcvp-blocked-badge">⊘ {e(badge)}</span>'
+        if reason:
+            html += f'<div class="wcvp-blocked-reason">{e(reason)}</div>'
+        return html
+
+    if accepted is not None:
+        html += (
+            ' &#10060; = '
+            f'<i>{e(accepted.name)}</i>'
+            + (f' {e(accepted.authorship)}' if accepted.authorship else "")
+            + ' &#10003;'
+        )
+    if row.family:
+        html += (
+            f' <span style="color:var(--tp-base-soft);font-size:.8rem">'
+            f'{e(row.family)}</span>'
+        )
+    return html
+
+
+_DS_BADGE = (
+    '<span class="wcvp-import-badge"'
+    ' title="This taxon is imported from a user-added name dataset (experimental)">'
+    '✚ add</span>'
+)
 
 
 def _wcvp_item_html(row, accepted, reason: str) -> str:
@@ -367,7 +407,14 @@ async def _show_import_preview_dialog(
 
         dlg.open()
 
-    return await dlg
+    # #65: this dialog is rebuilt on every import and was never removed, so each pick left a
+    # hidden dialog behind for the life of the session. It is *awaited*, so it cannot use the
+    # on-close delete guard — the result has to be read first. `finally` so it dies even if the
+    # await is cancelled.
+    try:
+        return await dlg
+    finally:
+        dlg.delete()
 
 
 # ── widget ────────────────────────────────────────────────────────────────────
@@ -377,7 +424,7 @@ def build_taxon_search(
     on_select=None,
     *,
     nomenclatural_codes: list[str] | None = None,
-    sources: tuple | list = ("local", "taxonworks"),
+    sources: tuple | list = ("local", "taxonworks", "datasets"),
     placeholder: str = "Enter genus or species name…",
     initial_taxon_id: int | None = None,
     initial_label: str = "",
@@ -388,9 +435,12 @@ def build_taxon_search(
 
     sources controls which sources run and in what order. Each listed source
     always runs — no conditional fallback. Valid values: 'local', 'taxonworks',
-    'wcvp'. Default: ('local', 'taxonworks'). Bio-association use case passes
+    'wcvp', 'datasets'. Default: ('local', 'taxonworks'). Bio-association use case passes
     ('local', 'taxonworks', 'wcvp') — TaxonWorks stays primary, for consistency with
     the published mirror; WCVP supplies plant names neither source knows.
+
+    'datasets' runs every user-added name dataset (experimental) and is always LAST: such a
+    checklist is the fallback when no other source knows the name, not a competitor to them.
 
     nomenclatural_codes filters the local DB section (e.g. ['ICN'] for plants).
     Does not filter TW or WCVP results — those are authoritative for their own
@@ -765,6 +815,120 @@ def build_taxon_search(
         if on_select:
             on_select(tid)
 
+    # ── user-added name datasets (experimental) — LAST in the chain ────────────
+    # Each registered dataset gets its own section, searched only after local / TaxonWorks /
+    # WCVP have had their say. Index handles are opened per query and closed immediately, for
+    # the same reasons as WCVP's (a held handle blocks a rebuild on Windows, pins a stale inode
+    # on POSIX). A dataset whose index is missing is skipped in silence — it is registered but
+    # not built, which the Settings card reports; a search box is not the place to nag.
+
+    def _append_dataset_sections(term: str) -> None:
+        for ds in ds_svc.list_datasets():
+            try:
+                spec = ds.spec
+                db = ds.open()
+            except (ns_svc.NameSourceError, OSError):
+                continue
+            try:
+                results = ns_svc.search(db, term, spec, limit=8)
+                if not results:
+                    continue
+                rendered = [
+                    (row,
+                     None if row.is_refused(spec) else ns_svc.accepted_name(db, row),
+                     ns_svc.refusal_reason(db, row, spec) if row.is_refused(spec) else "")
+                    for row in results
+                ]
+            finally:
+                db.close()
+
+            with dropdown:
+                sec = ui.element("div")
+            with sec:
+                ui.label(f"{ds.label} · experimental").classes("wcvp-section-label")
+                for row, accepted, reason in rendered:
+                    body = _ds_item_html(row, accepted, reason, spec)
+                    if row.is_refused(spec):
+                        # No ✚ add badge and no click handler: the row informs, it does not act.
+                        item = ui.element("div").classes(
+                            "tw-result tw-dropdown-item tw-dropdown-item--blocked")
+                        item.props(f'title="{_WCVP_BLOCKED_TITLE}"')
+                        with item:
+                            ui.html(body)
+                        continue
+                    item_html = _DS_BADGE + body
+                    item = ui.element("div").classes(
+                        "tw-result tw-dropdown-item tw-dropdown-item--wcvp")
+                    with item:
+                        ui.html(item_html)
+                    item.on(
+                        "click",
+                        lambda _, r=row, d=ds, lbl=row.label, h=item_html:
+                            asyncio.ensure_future(_on_dataset_pick(r, d, lbl, h)),
+                    )
+            _show_dropdown()
+
+    async def _on_dataset_pick(row, ds, label: str, item_html: str) -> None:
+        _enter_selected(item_html, label=label)
+        state["taxon_id"] = -1  # import in progress
+
+        # Read everything needed from the index, then close it: an open handle blocks a rebuild
+        # on Windows (#104), and the preview below awaits a user decision.
+        db = ds.open()
+        try:
+            chain = ns_svc.chain_for(db, row, ds.spec)
+        except ns_svc.NotImportable as exc:
+            # A refused row has no click handler, so this is a data problem (e.g. a synonym
+            # whose accepted name is missing from the archive). Say so; never guess.
+            with client:
+                ui.notify(f"Cannot import: {exc}", type="negative", timeout=8000)
+            _clear()
+            return
+        finally:
+            db.close()
+
+        mismatch_msgs: list[str] = []
+
+        def _run(session, mismatches=None):
+            return svc_taxa.get_or_create_from_chain(
+                session, chain["chain"],
+                accepted_chain=chain["accepted_chain"],
+                mismatches=mismatches,
+            )
+
+        try:
+            with session_factory() as session:
+                changes = import_preview_svc.collect_import_preview(
+                    session, lambda: _run(session, mismatch_msgs)
+                )
+        except Exception as exc:
+            with client:
+                ui.notify(f"Preview failed: {exc}", type="negative")
+            _clear()
+            return
+
+        confirmed = await _show_import_preview_dialog(changes, ds.label, client)
+        if not confirmed:
+            _clear()
+            return
+
+        try:
+            with session_factory() as session:
+                with session.begin():
+                    tid = _run(session).id
+        except Exception as exc:
+            with client:
+                ui.notify(f"Local DB error: {exc}", type="negative")
+            _clear()
+            return
+
+        state["taxon_id"] = tid
+        with client:
+            for msg in mismatch_msgs:
+                ui.notify(f"Taxonomy mismatch: {msg}", type="warning", timeout=8000)
+        if on_select:
+            on_select(tid)
+
     # ── debounced search ──────────────────────────────────────────────────────
 
     async def _on_search(e):
@@ -803,6 +967,12 @@ def build_taxon_search(
                 if "wcvp" in sources:
                     # Local index: no await, no network, no failure to swallow.
                     _append_wcvp_section(term)
+
+                if "datasets" in sources:
+                    # LAST in the chain, deliberately: a user-added checklist is the fallback
+                    # when local / TaxonWorks / WCVP do not know the name, never a competitor
+                    # to them. Local index, so no await and nothing to swallow.
+                    _append_dataset_sections(term)
 
             except asyncio.CancelledError:
                 pass

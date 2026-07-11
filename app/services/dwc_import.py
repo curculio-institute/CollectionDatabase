@@ -10,6 +10,8 @@ import csv
 import io
 import re
 
+from app.vocab import IDENTIFICATION_QUALIFIERS
+
 
 # ---------------------------------------------------------------------------
 # Column-name normalisation
@@ -226,13 +228,31 @@ def row_host_name(row: dict) -> str:
     return (row.get("associatedOrganisms") or "").strip()
 
 
-# Open-nomenclature / rank tokens that qualify a name but are not part of it, so
-# they must be dropped before the name is used as a taxon-search query (real host
-# data carries "Betula sp.", "Silene cf. otites", bare genera like "Salix").
-_HOST_QUALIFIER_TOKENS = frozenset({
-    "cf", "cf.", "aff", "aff.", "nr", "nr.", "sp", "sp.", "spp", "spp.",
-    "gr", "gr.", "agg", "agg.", "?", "indet", "indet.",
-})
+# Open-nomenclature / rank tokens that qualify a host name but are not part of it, so they
+# must be dropped before the name is used as a taxon-search query (real host data carries
+# "Betula sp.", "Silene cf. otites", bare genera like "Salix").
+#
+# Each token maps to its CANONICAL form — which is deliberately one of the values the DB's
+# CHECK on dwc:identificationQualifier already allows (vocab.IDENTIFICATION_QUALIFIERS). The
+# qualifier is not noise to be discarded: "Betula sp." asserts the species is undetermined,
+# and dropping it would record the host as a flat determination of *Betula*, a claim the data
+# never made. So the same table both strips the token from the search query AND recovers it as
+# the association's qualifier (§2: never silently drop input).
+_HOST_QUALIFIER_CANONICAL: dict[str, str] = {
+    "cf": "cf.",      "cf.": "cf.",
+    "aff": "aff.",    "aff.": "aff.",
+    "nr": "nr.",      "nr.": "nr.",
+    "sp": "sp.",      "sp.": "sp.",
+    "spp": "spp.",    "spp.": "spp.",
+    "gr": "gr.",      "gr.": "gr.",
+    "agg": "agg.",    "agg.": "agg.",
+    "indet": "indet.", "indet.": "indet.",
+    "?": "?",
+}
+_HOST_QUALIFIER_TOKENS = frozenset(_HOST_QUALIFIER_CANONICAL)
+
+# Guard: a canonical form that the DB would reject is a bug, not a runtime surprise.
+assert set(_HOST_QUALIFIER_CANONICAL.values()) <= set(IDENTIFICATION_QUALIFIERS)
 
 
 def host_search_query(name: str) -> str:
@@ -243,6 +263,21 @@ def host_search_query(name: str) -> str:
     kept = [t for t in (name or "").split()
             if t.lower() not in _HOST_QUALIFIER_TOKENS]
     return " ".join(kept)
+
+
+def host_qualifier(name: str) -> str | None:
+    """The open-nomenclature qualifier carried by a host name, canonicalised to the
+    identificationQualifier vocabulary — the other half of host_search_query().
+
+    ``Betula sp.`` → ``sp.``; ``Silene cf. otites`` → ``cf.``; ``Salix`` → ``None``.
+    The first qualifying token wins (a name carrying two is malformed, not meaningful).
+    It seeds the import's qualifier field, which the user still confirms before saving.
+    """
+    for tok in (name or "").split():
+        canonical = _HOST_QUALIFIER_CANONICAL.get(tok.lower())
+        if canonical:
+            return canonical
+    return None
 
 
 def parse_individual_count(raw) -> tuple[int, str | None]:

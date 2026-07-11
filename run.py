@@ -22,6 +22,15 @@ import app.services.db_bootstrap as db_bootstrap
 db_safety.run_startup_safety(get_engine())
 db_bootstrap.upgrade_to_head()
 
+# WCVP is a name source like any other, so it lives under data/name_sources/wcvp. Move an
+# older data/wcvp there once, before anything reads the index — a rename, never a re-download
+# (the archive is ~88 MB, the index ~270 MB).
+from app import config as _config
+
+_moved = _config.migrate_legacy_dirs()
+if _moved:
+    logging.getLogger(__name__).info("Name sources: %s", _moved)
+
 import app.ui.main  # registers the @ui.page('/') route  # noqa: F401
 
 ui.run(

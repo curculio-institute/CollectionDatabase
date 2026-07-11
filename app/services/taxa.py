@@ -15,9 +15,48 @@ TAXON_RANKS: list[str] = [
     "kingdom", "phylum", "subphylum", "class", "subclass",
     "superorder", "order", "suborder", "superfamily",
     "family", "subfamily", "supertribe", "tribe", "subtribe",
-    "genus", "subgenus", "species", "subspecies",
+    "genus", "subgenus", "section", "subsection", "species", "subspecies",
     "variety", "subvariety", "form", "subform",
 ]
+
+# A rank belongs to a NOMENCLATURAL CODE, not to a global vocabulary — TaxonWorks models
+# the four codes as four separate hierarchies (app/models/nomenclatural_rank/{iczn,icn,
+# icnp,icvcn}/, TW @ 897f385), and the same rank NAME can be a different rank in each.
+# TAXON_RANKS above stays the one high→low ordering (hierarchy validation indexes into it);
+# these are the subsets that may be SELECTED for a taxon governed by each code. Each list is
+# a subsequence of TAXON_RANKS, so ordering comparisons remain valid across codes.
+#
+# This is a curated subset of TW's ranks, not a mirror: we model the ranks this collection
+# actually uses. What it must get right is the code SPLIT — offering 'variety' for a beetle
+# (ICZN has no rank below subspecies) or 'superfamily' for a plant (ICN's family group is
+# only family/subfamily/tribe/subtribe) invites a silently wrong name.
+RANKS_BY_CODE: dict[str, list[str]] = {
+    # Zoology: no infraspecific ranks below subspecies, no botanical genus-group sections.
+    "ICZN": [
+        "kingdom", "phylum", "subphylum", "class", "subclass",
+        "superorder", "order", "suborder", "superfamily",
+        "family", "subfamily", "supertribe", "tribe", "subtribe",
+        "genus", "subgenus", "species", "subspecies",
+    ],
+    # Botany/mycology: no super-ranks in the family group, but sections (Taraxacum sect.
+    # Ruderalia) and the infraspecific series var./f. that zoology lacks.
+    "ICN": [
+        "kingdom", "phylum", "subphylum", "class", "subclass",
+        "order", "suborder",
+        "family", "subfamily", "tribe", "subtribe",
+        "genus", "subgenus", "section", "subsection", "species", "subspecies",
+        "variety", "subvariety", "form", "subform",
+    ],
+    "ICNP": [
+        "kingdom", "phylum", "class", "subclass", "order", "suborder",
+        "family", "subfamily", "tribe", "subtribe",
+        "genus", "subgenus", "species", "subspecies",
+    ],
+    "ICVCN": [
+        "kingdom", "phylum", "class", "order",
+        "family", "subfamily", "genus", "species",
+    ],
+}
 
 # Display order for rank-selection dropdowns: the ranks used daily for beetle
 # work go on top (finest first), then the rarer higher categories descend the
@@ -26,13 +65,30 @@ TAXON_RANKS: list[str] = [
 TAXON_RANKS_BY_USE: list[str] = [
     "subspecies", "species", "subgenus", "genus",
     "variety", "subvariety", "form", "subform",
+    "section", "subsection",
     "subtribe", "tribe", "supertribe",
     "subfamily", "family", "superfamily",
     "suborder", "order", "superorder",
     "subclass", "class", "subphylum", "phylum", "kingdom",
 ]
-# Guard against drift: both lists must cover exactly the same ranks.
+# Guard against drift: both lists must cover exactly the same ranks, and every per-code
+# subset must draw only from them.
 assert set(TAXON_RANKS_BY_USE) == set(TAXON_RANKS)
+assert all(set(rs) <= set(TAXON_RANKS) for rs in RANKS_BY_CODE.values())
+
+
+def ranks_for(nomenclatural_code: str | None) -> list[str]:
+    """The ranks selectable under *nomenclatural_code*, in TAXON_RANKS_BY_USE display order.
+
+    An unknown/absent code yields every rank — the caller does not yet know the code (a new
+    taxon before its parent is chosen), and refusing to offer anything would be worse than
+    offering too much. The editor re-filters as soon as a parent supplies the code, and
+    validate() refuses a rank the code does not have.
+    """
+    allowed = RANKS_BY_CODE.get((nomenclatural_code or "").strip().upper())
+    if not allowed:
+        return list(TAXON_RANKS_BY_USE)
+    return [r for r in TAXON_RANKS_BY_USE if r in set(allowed)]
 
 
 @dataclass(frozen=True)
@@ -136,11 +192,26 @@ _ICN_INFRA_CONNECTOR = {
     "form": "f.", "subform": "subf.",
 }
 
+# Genus-group connectors, the same idea one rank-group up. The two codes write the genus
+# group differently and BOTH halves matter:
+#   ICZN  brackets the subgenus and carries it into the binomial —
+#         'Otiorhynchus (Nihus)', 'Otiorhynchus (Nihus) armadillo'
+#   ICN   spells the connector out and does NOT carry it into the binomial —
+#         'Taraxacum subg. Palustria', 'Taraxacum sect. Ruderalia', but the species under
+#         either is plain 'Taraxacum officinale' (a botanical binomial is genus + epithet).
+_ICN_GENUS_CONNECTOR = {
+    "subgenus": "subg.", "section": "sect.", "subsection": "subsect.",
+}
+
+
+def _is_zoological(nomenclatural_code: str | None) -> bool:
+    return (nomenclatural_code or "").upper() == "ICZN"
+
 
 def _infra_connector(rank: str, nomenclatural_code: str | None) -> str:
-    if (nomenclatural_code or "").upper() == "ICN":
-        return _ICN_INFRA_CONNECTOR.get(rank, "")
-    return ""  # ICZN: bare trinomial
+    if _is_zoological(nomenclatural_code):
+        return ""  # ICZN: bare trinomial
+    return _ICN_INFRA_CONNECTOR.get(rank, "")
 
 
 def compose_scientific_name(session: Session, taxon: Taxon) -> str:
@@ -176,16 +247,32 @@ def compose_scientific_name(session: Session, taxon: Taxon) -> str:
             species_epithet = cur_el
         cur_id = cur.parent_name_usage_id
 
-    sub = f" ({subgenus})" if subgenus else ""
+    # The subgenus rides along inside the binomial in ZOOLOGY only: 'Otiorhynchus (Nihus)
+    # armadillo'. A botanical binomial is genus + epithet — the subgenus/section is a
+    # classificatory rank, not part of the name — so `sub` stays empty under ICN.
+    zoological = _is_zoological(taxon.nomenclatural_code)
+    sub = f" ({subgenus})" if (subgenus and zoological) else ""
 
-    if rank == "subgenus":
+    if rank == "subgenus" and zoological:
         return f"{genus} ({element})".strip() if genus else f"({element})"
+
+    if rank in _ICN_GENUS_CONNECTOR:   # subgenus / section / subsection, botanical form
+        connector = _ICN_GENUS_CONNECTOR[rank]
+        parts = [p for p in (genus, connector, element) if p]
+        return " ".join(parts)
 
     if rank == "species":
         return f"{genus}{sub} {element}".strip() if genus else element
 
     if rank in ("subspecies", "variety", "subvariety", "form", "subform"):
-        head = f"{genus}{sub} {species_epithet}".strip() if genus else (species_epithet or "")
+        # An infraspecific name is built from its SPECIES ancestor. If the chain has no species
+        # row the name cannot be composed — and the one thing we must not do is interpolate the
+        # missing part, which silently produced names like "Carabus (Megodontus) None germarii"
+        # (a source that parents subspecies straight under a subgenus). Drop the missing piece;
+        # the caller is responsible for supplying the species parent (name_source.chain_for
+        # inserts it), and a bare-epithet name is a visible fault, not a plausible-looking lie.
+        head_parts = [p for p in (genus, sub.strip() or None, species_epithet) if p]
+        head = " ".join(head_parts)
         connector = _infra_connector(rank, taxon.nomenclatural_code)
         parts = [p for p in (head, connector, element) if p]
         return " ".join(parts)
@@ -1301,3 +1388,115 @@ def get_or_create_from_wcvp_data(
     session.add(t)
     session.flush()
     return t
+
+
+def get_or_create_from_chain(
+    session: Session,
+    chain: list[dict],
+    *,
+    accepted_chain: list[dict] | None = None,
+    mismatches: list[str] | None = None,
+) -> Taxon:
+    """Find or create a Taxon from an explicit ROOT→LEAF lineage chain, returning the leaf.
+
+    The chain is the *source's own* statement of where a name sits — `name_source.chain_for()`
+    builds it by walking the archive's parentNameUsageID links. This is deliberately unlike
+    `get_or_create_from_wcvp_data`, which reconstructs a family/genus lineage from denormalised
+    columns because WCVP models no rank above genus. A chain can express any lineage the source
+    has — notably a species under its **subgenus** — without a column per rank.
+
+    Own-lineage (Epic #30): `accepted_chain` is the accepted name's OWN chain, built and created
+    independently. A synonym is never parented under its accepted name's lineage — doing so
+    would *rename* it, since scientific_name is composed from the parent chain.
+
+    Import policy matches the other importers: fill NULL fields on an existing row, report a
+    conflict with a non-NULL local value into `mismatches` rather than overwriting. The local
+    DB is the source of truth.
+    """
+    if not chain:
+        raise ValueError("empty lineage chain — nothing to import")
+
+    accepted_taxon: Taxon | None = None
+    if accepted_chain:
+        accepted_taxon = get_or_create_from_chain(
+            session, accepted_chain, mismatches=mismatches)
+
+    node: Taxon | None = None
+    parent_id: int | None = None
+    for i, entry in enumerate(chain):
+        is_leaf = i == len(chain) - 1
+        rank = (entry["rank"] or "").lower()
+        code = entry["code"]
+        element = element_from_name(entry["name"], rank)
+        auth = entry.get("authorship")
+        _require_code(code, f"{entry['name']!r} [{rank}]")
+
+        composed = _compose_transient(
+            session, name_element=element, taxon_rank=rank,
+            parent_id=parent_id, nomenclatural_code=code,
+        )
+        existing = (
+            session.query(Taxon)
+            .filter(Taxon.scientific_name == composed, Taxon.taxon_rank == rank)
+            .first()
+        )
+
+        # A name can never be its own accepted name. This fires when a synonym composes to the
+        # same name as its accepted name — the signature of a lineage bug — which would
+        # otherwise merge the two rows silently, taking the synonym's determinations with it.
+        if (is_leaf and accepted_taxon is not None and existing is not None
+                and existing.id == accepted_taxon.id):
+            raise ValueError(
+                f"{entry['name']!r} composes to {composed!r}, which is its own accepted "
+                "name — refusing to merge a synonym into the name it is a synonym of"
+            )
+
+        if existing is not None:
+            dirty = False
+            if not existing.name_element:
+                existing.name_element = element
+                dirty = True
+            if auth:
+                if not existing.scientific_name_authorship:
+                    existing.scientific_name_authorship = auth
+                    dirty = True
+                elif existing.scientific_name_authorship != auth and mismatches is not None:
+                    mismatches.append(
+                        f"{composed}: authorship is "
+                        f"{existing.scientific_name_authorship!r} locally, "
+                        f"import says {auth!r}"
+                    )
+            if parent_id is not None and existing.parent_name_usage_id is None:
+                existing.parent_name_usage_id = parent_id
+                dirty = True
+            if is_leaf and accepted_taxon is not None and existing.accepted_name_usage_id is None:
+                existing.accepted_name_usage_id = _terminal_accepted(
+                    session, accepted_taxon).id
+                dirty = True
+            if dirty:
+                existing.updated_at = _utcnow()
+                session.flush()
+            node = existing
+        else:
+            node = Taxon(
+                name_element=element,
+                scientific_name=composed,
+                taxon_rank=rank,
+                scientific_name_authorship=auth,
+                parent_name_usage_id=parent_id,
+                # Resolve to the TERMINAL accepted name: trg_taxon_accepted_is_terminal
+                # RAISEs on a chained synonym, and a source's links are not guaranteed
+                # terminal.
+                accepted_name_usage_id=(
+                    _terminal_accepted(session, accepted_taxon).id
+                    if (is_leaf and accepted_taxon is not None) else None
+                ),
+                nomenclatural_code=code,
+                created_at=_utcnow(),
+                updated_at=_utcnow(),
+            )
+            session.add(node)
+            session.flush()
+        parent_id = node.id
+
+    return node

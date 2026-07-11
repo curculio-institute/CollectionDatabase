@@ -70,6 +70,22 @@ class AppConfig:
     # is a read-only lookup table, rebuilt from the archive, never edited.
     wcvp_dir: str = ""
 
+    # User-added offline name datasets (EXPERIMENTAL, see services/name_source.py). Each entry
+    # is {"slug", "label", "code", "archive", "experimental"} — the archive filename inside
+    # data/name_sources/<slug>/, beside the index built from it. Registered here rather than in
+    # the DB because these are FILES and settings, not DB entities: nothing references them by
+    # FK, so the person-defaults rule ("a default that references a DB entity belongs in the
+    # DB") does not apply. Searched AFTER local / TaxonWorks / WCVP.
+    name_sources: list[dict] = field(default_factory=list)
+
+
+def name_sources_dir() -> Path:
+    """Root folder holding every user-added name dataset, one sub-folder per slug.
+
+    Not created here: its absence simply means no dataset is installed.
+    """
+    return _DATA_DIR / "name_sources"
+
 
 def printed_pdf_dir() -> Path:
     """Resolved archival folder for printed label PDFs (created if missing)."""
@@ -95,14 +111,42 @@ def media_dir() -> Path:
 def wcvp_dir() -> Path:
     """Resolved folder holding the WCVP archive, the index built from it, and its README.
 
+    WCVP is a *name source* like any other (services/name_source.py), so it lives beside the
+    user-added ones under `data/name_sources/wcvp` — one place to look for every offline
+    checklist, one place to back up. `migrate_legacy_dirs()` moves an older `data/wcvp` there.
+
     Not created here: its absence means "no plant backbone installed", which the caller
     reports and the Settings card offers to fix.
     """
     raw = get_config().wcvp_dir
-    path = Path(raw) if raw else (_DATA_DIR / "wcvp")
+    path = Path(raw) if raw else (name_sources_dir() / "wcvp")
     if not path.is_absolute():
         path = _DATA_DIR / path
     return path
+
+
+def _legacy_wcvp_dir() -> Path:
+    """Where WCVP lived before it became a name source (data/wcvp)."""
+    return _DATA_DIR / "wcvp"
+
+
+def migrate_legacy_dirs() -> str | None:
+    """Move an existing `data/wcvp` into `data/name_sources/wcvp`. Idempotent.
+
+    Called once at startup (run.py), before anything reads the index. A rename within the same
+    data folder — never a re-download: the archive is ~88 MB and the index ~270 MB, and a
+    "missing" index would otherwise send the user to fetch both again. Only moves when the
+    destination does not exist, so a half-migrated state can never overwrite a good install.
+    Returns a message for the log, or None when there was nothing to do.
+    """
+    if get_config().wcvp_dir:
+        return None                       # the user configured an explicit path; leave it alone
+    legacy, target = _legacy_wcvp_dir(), name_sources_dir() / "wcvp"
+    if not legacy.is_dir() or target.exists():
+        return None
+    target.parent.mkdir(parents=True, exist_ok=True)
+    legacy.rename(target)
+    return f"moved {legacy} → {target}"
 
 
 def wcvp_db_path() -> Path:

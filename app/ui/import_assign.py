@@ -9,7 +9,10 @@ specimens): the CSV row already carries every datum, so per specimen the user on
 
 Everything else (event fields, determination meta, lifeStage, remarks) is saved
 straight from the CSV, never shown — see `_on_assign`. The taxon auto-resolves in the
-background (local DB → TaxonWorks) and only surfaces a picker when resolution fails.
+background (local DB → TaxonWorks → installed name datasets, the same order the taxon-search
+widget uses) and only surfaces a picker when resolution fails. A user-added checklist is
+exactly the source that knows the names TaxonWorks does not, so the loop must consult it —
+otherwise the user is sent to "Add manually" for a name the database can already resolve.
 
 Design decision (2026-07-07): the tab is deliberately condensed to this fast path
 rather than a full editable form — the reference table is the source of the data; the
@@ -29,10 +32,14 @@ import app.services as svc
 import app.services.repositories as repo_svc
 import app.services.persons as persons_svc
 import app.services.biological as bio_svc
+import app.services.name_source as ns_svc
+import app.services.datasets as ds_svc
 from app.services.biological import get_relationship_options
 from app.config import get_config
 from app.ui.taxon_search import build_taxon_search, _render_tw_label
 from app.ui.taxon_editor import open_new_taxon_dialog
+from app.ui.choice_field import build_choice_field
+from app.vocab import IDENTIFICATION_QUALIFIER_OPTIONS
 from app.ui.vocab_field import build_vocab_field
 from app.services.vocabularies import (
     preparation_vocab, habitat_vocab, sampling_protocol_vocab,
@@ -215,9 +222,16 @@ def build_import_assign_tab(session_factory, refreshers: dict, on_saved=None) ->
                     host_ts = build_taxon_search(
                         session_factory,
                         nomenclatural_codes=list(get_config().bio_assoc_default_codes),
-                        sources=("local", "taxonworks", "wcvp"),
+                        sources=("local", "taxonworks", "wcvp", "datasets"),
                         placeholder="Host plant name…",
                     )
+                    # The qualifier the CSV carried ("Betula sp." → sp.). It is stripped from
+                    # the search query so the taxon resolves, but it is a scientific claim in
+                    # its own right — the species is undetermined — so it is recovered here,
+                    # shown, and saved on the association. Editable: the user confirms it like
+                    # every other imported value. Same widget as the Digitize assoc card.
+                    host_qual = build_choice_field(
+                        IDENTIFICATION_QUALIFIER_OPTIONS, "Qualifier", classes="w-40")
 
         # ================================================================
         # Logic: select / clear a row
@@ -230,6 +244,7 @@ def build_import_assign_tab(session_factory, refreshers: dict, on_saved=None) ->
             host_area.set_visibility(False)
             host_ts["clear"]()
             host_rel_sel.value = None
+            host_qual["set_value"](None)
 
         def _summary_line(label: str, value: str) -> None:
             if not value:
@@ -305,10 +320,14 @@ def build_import_assign_tab(session_factory, refreshers: dict, on_saved=None) ->
                 # Seed with the qualifier stripped ("Betula sp." → "Betula") so a
                 # multi-token search actually matches; the user confirms the taxon.
                 host_ts["set_query"](dwc_svc.host_search_query(_host))
+                # …and keep the stripped qualifier rather than discarding it: "sp." says
+                # the species is undetermined, which is part of what the row recorded.
+                host_qual["set_value"](dwc_svc.host_qualifier(_host))
             else:
                 host_area.set_visibility(False)
                 host_ts["clear"]()
                 host_rel_sel.value = None
+                host_qual["set_value"](None)
 
             # Refresh identifier dropdown; leave it empty for the user to pick.
             cat_num.options = {c: c for c in _reserved_opts()}
@@ -341,7 +360,7 @@ def build_import_assign_tab(session_factory, refreshers: dict, on_saved=None) ->
 
             # 2. Search TaxonWorks
             with taxon_status:
-                searching_lbl = ui.label(f'Searching TaxonWorks for \"{name}\"…') \
+                searching_lbl = ui.label(f'Searching TaxonWorks and installed datasets for \"{name}\"…') \
                     .classes("text-sm italic").style("color:var(--tp-base-soft)")
 
             try:
@@ -376,11 +395,20 @@ def build_import_assign_tab(session_factory, refreshers: dict, on_saved=None) ->
                             "column so it matches the local database.").classes("text-xs") \
                           .style("color:#d97706")
 
-            if results:
+            # 3. Installed name datasets — LAST in the chain, after local and TaxonWorks (the
+            # same order the taxon-search widget uses). A beetle catalogue is exactly the source
+            # that knows the names TaxonWorks does not, so this loop must consult it or the user
+            # is sent to "Add manually" for a name the database can already resolve.
+            ds_hits = _dataset_hits(name)
+
+            if results or ds_hits:
                 with taxon_status:
-                    ui.label("Not found locally. Select from TaxonWorks:") \
+                    ui.label("Not found locally. Select a name:") \
                       .classes("text-xs mb-1").style("color:var(--tp-base-soft)")
-                    _build_tw_results(taxon_status, results, detail)
+                    if results:
+                        _build_tw_results(taxon_status, results, detail)
+                    for ds, rows in ds_hits:
+                        _build_dataset_results(taxon_status, ds, rows)
                     with ui.row().classes("items-center gap-2 mt-2"):
                         ui.label("or").classes("text-xs").style("color:var(--tp-base-soft)")
                         ui.button("Add manually", icon="add").props("flat dense size=sm") \
@@ -389,11 +417,79 @@ def build_import_assign_tab(session_factory, refreshers: dict, on_saved=None) ->
                 with taxon_status:
                     with ui.row().classes("items-center gap-2 mb-2"):
                         ui.icon("warning", size="sm").style("color:#d97706")
-                        ui.label(f'"{name}" not found in TaxonWorks.') \
-                          .classes("text-sm")
+                        ui.label(
+                            f'"{name}" not found in TaxonWorks or any installed dataset.'
+                        ).classes("text-sm")
                     ui.button("Add taxon manually", icon="add") \
                       .props("color=secondary dense") \
                       .on_click(lambda: _open_manual_dialog(row))
+
+        def _dataset_hits(name: str) -> list[tuple]:
+            """(dataset, importable rows) for every installed dataset that knows *name*.
+
+            Exact name matches only. This is the confirm-and-stamp loop, not a browser: a
+            fuzzy suggestion here would invite stamping a specimen with a neighbouring name.
+            Refused rows (a status or rank the model cannot hold) are dropped rather than shown
+            as unclickable — the manual dialog is the escape hatch for those.
+            """
+            hits = []
+            for ds in ds_svc.list_datasets():
+                try:
+                    spec = ds.spec
+                    db = ds.open()
+                except (ns_svc.NameSourceError, OSError):
+                    continue
+                try:
+                    rows = [r for r in ns_svc.search(db, name, spec, limit=5)
+                            if r.name.lower() == name.lower() and not r.is_refused(spec)]
+                finally:
+                    db.close()
+                if rows:
+                    hits.append((ds, rows))
+            return hits
+
+        def _build_dataset_results(container, ds, rows: list):
+            """Clickable rows from one installed dataset, rendered like the TaxonWorks ones."""
+            with container:
+                ui.label(f"{ds.label} · experimental").classes("text-xs mt-2") \
+                  .style("color:var(--tp-base-soft)")
+                for r in rows:
+                    item = ui.element("div").classes("tw-result tw-dropdown-item") \
+                        .style("padding:6px 10px; cursor:pointer; border-radius:4px; "
+                               "border:1px solid var(--tp-base-border); margin-bottom:3px;")
+                    with item:
+                        ui.html(f"📖 <i>{r.name}</i>"
+                                + (f" {r.authorship}" if r.authorship else ""))
+                    item.on("click", lambda _, r=r, d=ds: _import_from_dataset(r, d))
+
+        def _import_from_dataset(row, ds) -> None:
+            """Import a name (and its lineage) from a dataset, then stamp it on this specimen."""
+            try:
+                db = ds.open()
+                try:
+                    chain = ns_svc.chain_for(db, row, ds.spec)
+                finally:
+                    db.close()
+            except ns_svc.NotImportable as exc:
+                ui.notify(f"Cannot import: {exc}", type="negative", timeout=8000)
+                return
+
+            mismatches: list[str] = []
+            try:
+                with session_factory() as session:
+                    with session.begin():
+                        taxon = taxa_svc.get_or_create_from_chain(
+                            session, chain["chain"],
+                            accepted_chain=chain["accepted_chain"],
+                            mismatches=mismatches,
+                        )
+                        tid = taxon.id
+            except Exception as exc:      # noqa: BLE001
+                ui.notify(f"DB error: {exc}", type="negative")
+                return
+            _set_taxon(tid, f"imported from {ds.label}")
+            for msg in mismatches:
+                ui.notify(f"Taxonomy mismatch: {msg}", type="warning", timeout=8000)
 
         def _build_tw_search(container, row: dict):
             """Embed the standard TW search widget (for rows with no scientificName)."""
@@ -640,8 +736,11 @@ def build_import_assign_tab(session_factory, refreshers: dict, on_saved=None) ->
                             _htid = host_ts["taxon_id"]
                             _hrel = host_rel_sel.value
                             if _htid and _htid != -1 and _hrel:
-                                associations.append(
-                                    {"rel_id": _hrel, "taxon_id": _htid})
+                                associations.append({
+                                    "rel_id": _hrel,
+                                    "taxon_id": _htid,
+                                    "qualifier": host_qual["get_value"]() or None,
+                                })
                             else:
                                 host_unresolved = dwc_svc.row_host_name(row)
                         # Retroactive digitisation: the specimen already carries

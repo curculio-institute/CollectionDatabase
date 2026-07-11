@@ -6,9 +6,11 @@ term onto a different column.
 """
 import pytest
 
+from app.services.dwc_import import _HOST_QUALIFIER_CANONICAL  # noqa: F401
 from app.services.dwc_import import (
     _ALIASES, _norm_key, parse_csv, parse_individual_count,
-    host_search_query, row_host_name, row_to_event_fields, row_to_specimen_prefill,
+    host_qualifier, host_search_query, row_host_name, row_to_event_fields,
+    row_to_specimen_prefill,
 )
 
 
@@ -34,6 +36,44 @@ class TestHostAssociation:
         assert host_search_query("Quercus spp.") == "Quercus"
         assert host_search_query("Salix") == "Salix"          # bare genus unchanged
         assert host_search_query("Rumex acetosella") == "Rumex acetosella"
+
+    # The qualifier that host_search_query() strips is not noise — "Betula sp." asserts the
+    # species is undetermined. Dropping it recorded the host as a flat determination of
+    # *Betula*, a claim the row never made. host_qualifier() recovers it (§2).
+
+    def test_host_qualifier_recovers_what_the_query_strips(self):
+        assert host_qualifier("Betula sp.") == "sp."
+        assert host_qualifier("Silene cf. otites") == "cf."
+        assert host_qualifier("Quercus spp.") == "spp."
+        assert host_qualifier("Rubus agg.") == "agg."
+        assert host_qualifier("Salix aff. caprea") == "aff."
+
+    def test_host_qualifier_is_none_for_a_plain_name(self):
+        assert host_qualifier("Salix") is None
+        assert host_qualifier("Rumex acetosella") is None
+        assert host_qualifier("") is None
+
+    def test_host_qualifier_canonicalises_a_dotless_token(self):
+        # Real data is inconsistent; the DB CHECK only accepts the dotted forms.
+        assert host_qualifier("Betula sp") == "sp."
+        assert host_qualifier("Silene cf otites") == "cf."
+
+    def test_host_qualifier_is_always_a_storable_value(self):
+        # Every value it can return must satisfy ck_td_identification_qualifier —
+        # otherwise a valid CSV would blow up at save time with an IntegrityError.
+        from app.vocab import IDENTIFICATION_QUALIFIERS
+        from app.services.dwc_import import _HOST_QUALIFIER_CANONICAL
+        assert set(_HOST_QUALIFIER_CANONICAL.values()) <= set(IDENTIFICATION_QUALIFIERS)
+
+    def test_query_and_qualifier_split_the_name_between_them(self):
+        # Nothing in the host cell is lost: it is either part of the name or the qualifier.
+        for raw in ("Betula sp.", "Silene cf. otites", "Salix", "Quercus spp."):
+            kept = host_search_query(raw).split()
+            qual = host_qualifier(raw)
+            n_qual_tokens = sum(1 for t in raw.split()
+                                if t.lower() in _HOST_QUALIFIER_CANONICAL)
+            assert len(kept) + n_qual_tokens == len(raw.split())
+            assert (qual is not None) == (n_qual_tokens > 0)
 
 
 class TestParseIndividualCount:

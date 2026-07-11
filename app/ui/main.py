@@ -27,6 +27,8 @@ import app.services.repositories as repo_svc
 import app.services.persons as persons_svc
 import app.services.print_queue as pq_svc
 import app.services.wcvp as wcvp_svc
+import app.services.name_source as ns_svc
+import app.services.datasets as ds_svc
 from app.config import get_config, save_config, printed_pdf_dir, media_dir
 
 # Serve the managed media store so attached images/files render in the browser
@@ -63,12 +65,19 @@ from app.services.biological import (
     get_relationship_options,
 )
 from app.services.validation import validate_event_fields
+from app.services.taxa import TAXON_RANKS as _TAXON_RANKS
 from app.vocab import IDENTIFICATION_QUALIFIER_OPTIONS
 
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
 # Controlled-vocabulary lists live in app/vocab.py (single source of truth).
+
+# Ranks the checklist tree prints as a rank label beside the name: everything above
+# species. Derived from TAXON_RANKS rather than hand-listed — a hand-listed subset
+# silently omitted the ranks above 'order', so a superorder rendered with no label
+# and no heading style, reading as a different kind of row rather than a higher one.
+_TREE_RANK_LABELS: list[str] = _TAXON_RANKS[:_TAXON_RANKS.index("species")]
 
 # ---------------------------------------------------------------------------
 # Engine (module-level, created once)
@@ -376,6 +385,14 @@ def index():
         }
       }, true);
     })();
+    // Bridge for emitting a Python event from inside a Vue TEMPLATE (the checklist
+    // tree's row actions, added via add_slot). Vue's runtime-compiled template proxy
+    // resolves any identifier that is not on its small allow-list to `undefined` —
+    // so neither `emitEvent(...)` nor `window.emitEvent(...)` works there (the latter
+    // because `window` itself resolves to undefined). Names starting with '_' are the
+    // documented escape: the proxy's has() trap returns false for them, so they fall
+    // through to the real global scope. Hence the underscore.
+    window._tpEmit = function(name, arg){ emitEvent(name, arg); };
     </script>""")
 
     # ── Unsaved-changes guard (beforeunload) ─────────────────────────────
@@ -642,22 +659,48 @@ def index():
       .tax-move-hint { opacity:0; transition:opacity .12s; margin-left:4px;
                        color:var(--tp-base-soft); cursor:default; }
       .checklist-tree.reorder-on .q-tree__node-header:hover .tax-move-hint { opacity:.45; }
+      /* Per-row actions (edit, open in TaxonPages): hidden until the row is hovered, so
+         the checklist stays clean to READ — it is a checklist first — while the actions
+         are one hover away on the row they belong to. Both carry a q-tooltip: an icon
+         that appears on hover must still say what it does. */
+      .tax-row-action { opacity:0; transition:opacity .12s; margin-left:2px;
+                        color:var(--tp-base-soft); cursor:pointer; }
+      .checklist-tree .q-tree__node-header:hover .tax-row-action { opacity:.55; }
+      .tax-row-action:hover { opacity:1 !important; color:var(--tp-secondary); }
+      .tax-tw-link   { font-size:.72rem; text-decoration:none; line-height:1; }
+      /* Every rank in TAXON_RANKS must have a style. A rank with none falls through to
+         the default body size and reads as a different KIND of row rather than a higher
+         one — which is exactly how a mis-ranked 'superorder' hid in plain sight. The
+         ranks above order are the rarest, so they were the ones missing. */
+      .rank-kingdom,
+      .rank-phylum,
+      .rank-subphylum,
+      .rank-class,
+      .rank-subclass,
+      .rank-infraclass,
+      .rank-superorder,
       .rank-order,
       .rank-suborder,
       .rank-infraorder,
+      .rank-series,
       .rank-superfamily { font-size:1.45rem; font-weight:700;
                         text-transform:uppercase; letter-spacing:.05em; }
       .rank-family    { font-size:1.35rem; font-weight:800;
                         text-transform:uppercase; letter-spacing:.03em; }
       .rank-subfamily { font-size:1.12rem; font-weight:700; }
+      .rank-supertribe { font-size:1.0rem; font-weight:600; }
       .rank-tribe     { font-size:1.0rem;  font-weight:600; }
       .rank-subtribe  { font-size:.92rem; font-weight:600; }
       .rank-genus     { font-size:1.05rem; font-weight:700; font-style:italic; }
       .rank-subgenus  { font-size:.875rem; font-style:italic; }
+      .rank-section    { font-size:.875rem; font-style:italic; }
+      .rank-subsection { font-size:.875rem; font-style:italic; }
       .rank-species     { font-size:.875rem; font-style:italic; }
       .rank-subspecies  { font-size:.875rem; font-style:italic; }
       .rank-variety     { font-size:.875rem; font-style:italic; }
+      .rank-subvariety  { font-size:.875rem; font-style:italic; }
       .rank-form        { font-size:.875rem; font-style:italic; }
+      .rank-subform     { font-size:.875rem; font-style:italic; }
       .rank-synonym   { font-size:.85rem; font-style:italic;
                         color:var(--tp-base-soft); }
       /* count chips */
@@ -1177,7 +1220,7 @@ def index():
                     bio_obj_state = build_taxon_search(
                         _sf,
                         nomenclatural_codes=bio_codes,
-                        sources=("local", "taxonworks", "wcvp"),
+                        sources=("local", "taxonworks", "wcvp", "datasets"),
                         placeholder="Type plant or fungus name…",
                     )
 
@@ -1895,7 +1938,21 @@ def index():
                             _refresh_taxonomy_stats()
                             _refresh_tree()
 
-                        build_taxon_editor(_sf, _on_saved_taxon)
+                        _taxon_editor = build_taxon_editor(_sf, _on_saved_taxon)
+
+                        # The tree's per-row pencil (see _NODE_SLOT) emits the node id —
+                        # 'taxon-<id>' for a name, 'syn-<id>' for a synonym row (itself a
+                        # taxon, so it is editable the same way).
+                        def _on_tax_edit(e):
+                            node_id = str(e.args or "")
+                            _, _, raw = node_id.rpartition("-")
+                            if not raw.isdigit():
+                                ui.notify(f"Cannot edit: unrecognised row {node_id!r}.",
+                                          type="warning")
+                                return
+                            _taxon_editor["open_edit"](int(raw))
+
+                        ui.on("tax_edit", _on_tax_edit)
 
                         def _check_consistency():
                             from app.services.taxa import verify_taxon_consistency
@@ -2038,7 +2095,7 @@ def index():
                           <span v-if="props.node.synonym"
                                 style="color:var(--tp-base-soft); font-size:.8rem;
                                        font-style:normal; margin-right:-2px;">=</span>
-                          <span class="tax-rank">{{ ['order','suborder','infraorder','superfamily','family','subfamily','tribe','subtribe','genus','subgenus'].includes(props.node.rank) ? props.node.rank : '' }}</span>
+                          <span class="tax-rank">{{ __RANK_LABELS__.includes(props.node.rank) ? props.node.rank : '' }}</span>
                           <span :class="'rank-' + props.node.rank">{{ props.node.name }}</span>
                           <span v-if="props.node.auth"
                                 style="font-style:normal; font-size:.78rem;
@@ -2053,17 +2110,20 @@ def index():
                           </span>
                           <a v-if="props.node.tw_url"
                              :href="props.node.tw_url" target="_blank"
-                             title="Open in TaxonPages" @click.stop
-                             style="color:var(--tp-secondary); font-size:.72rem;
-                                    text-decoration:none; opacity:.6; line-height:1; margin-left:2px;"
-                             onmouseover="this.style.opacity='1'"
-                             onmouseout="this.style.opacity='.6'">↗</a>
+                             class="tax-row-action tax-tw-link" @click.stop>↗
+                            <q-tooltip>Open in TaxonPages</q-tooltip>
+                          </a>
+                          <q-icon name="edit" size="14px"
+                                  class="tax-row-action tax-edit-hint"
+                                  @click.stop="_tpEmit('tax_edit', props.node.id)">
+                            <q-tooltip>Edit this taxon</q-tooltip>
+                          </q-icon>
                           <q-icon v-if="props.node.orderable" name="swap_vert"
                                   size="15px" class="tax-move-hint">
                             <q-tooltip>Click the row, then use the ↑/↓ buttons above to set the taxonomic sequence</q-tooltip>
                           </q-icon>
                         </div>
-                    """
+                    """.replace("__RANK_LABELS__", json.dumps(_TREE_RANK_LABELS))
 
                     # Always create the tree widget so it can be updated after saves.
                     tax_tree = ui.tree(
@@ -2627,33 +2687,101 @@ def index():
             # runs before the UI serves), so nothing here may touch the network at startup.
             ui.label("Plant names (WCVP)").classes("text-sm font-medium mb-1")
             ui.label(
-                "Offline checklist used to import plant names for biological "
-                "associations. Not a dependency of your data: imported names are copied "
-                "into the database, so the index can be rebuilt or removed at any time."
+                "Offline checklist used to import plant names for biological associations. "
+                "Names are not part of your database, just as the names from TaxonWorks they "
+                "are imported on demand."
             ).classes("text-xs mb-2").style("color:var(--tp-base-soft)")
 
-            _wcvp_status = ui.label().classes("text-xs")
+            # The same row shape as a Name-datasets row: an installed icon, the facts
+            # (version · names · licence), and a ⋮ menu holding the actions. WCVP *is* a name
+            # source (it lives in data/name_sources/wcvp), so it should not look like a
+            # different kind of thing — and its actions, Remove above all, should not stand on
+            # the page as permanent buttons.
+            with ui.row().classes("w-full items-center gap-2"):
+                _wcvp_icon = ui.icon("check_circle").classes("text-positive")
+                ui.label("WCVP").classes("text-xs font-medium")
+                _wcvp_status = ui.label().classes("text-xs")
+                ui.space()
+                with ui.button(icon="more_vert").props("flat dense round size=sm"):
+                    with ui.menu() as _wcvp_menu:
+                        # The label changes with install state (download → re-download), and a
+                        # MenuItem is not a TextElement — its label is baked in at construction.
+                        # So carry a ui.label inside it and update that.
+                        _wcvp_install_item = ui.menu_item(
+                            on_click=lambda: (_wcvp_menu.close(), _wcvp_install()),
+                        )
+                        with _wcvp_install_item:
+                            _wcvp_install_lbl = ui.label("Download and install")
+                        _wcvp_check_item = ui.menu_item(
+                            "Check for a new release",
+                            on_click=lambda: (_wcvp_menu.close(), _wcvp_check_update()),
+                        )
+                        _wcvp_check_item.tooltip("Downloads ~32 KB, not the whole archive")
+                        ui.separator()
+                        _wcvp_remove_item = ui.menu_item(
+                            "Remove",
+                            on_click=lambda: (_wcvp_menu.close(), _wcvp_remove()),
+                        ).classes("text-negative")
+
+            # Progress / update-check line. It is empty most of the time, and an empty
+            # label still reserves its line — which was most of this card's dead space.
+            # Bind its visibility to its own text so it occupies nothing until it has
+            # something to say.
             _wcvp_remote = ui.label().classes("text-xs mt-1 break-all")
+            _wcvp_remote.bind_visibility_from(_wcvp_remote, "text", backward=bool)
+            # A dialog must be created in a LIVE slot, never inside a menu-item handler: a menu
+            # item's slot is the q-menu, which has already closed by then, so the dialog lands
+            # in a dead container and the click silently does nothing at all.
+            _wcvp_dialogs = ui.element("div")
+
+            def _wcvp_remove() -> None:
+                with _wcvp_dialogs:
+                    dlg = ui.dialog()
+                with dlg, ui.card():
+                    ui.label("Remove the WCVP index?").classes("font-medium mb-2")
+                    ui.label(
+                        "The downloaded archive and the index built from it are deleted "
+                        "(~360 MB). Plant names already imported stay in the database — they "
+                        "are local taxon rows now. It can be downloaded again at any time."
+                    ).classes("text-xs mb-3").style("color:var(--tp-base-soft)")
+                    with ui.row().classes("gap-2 justify-end w-full"):
+                        ui.button("Cancel", on_click=dlg.close).props("flat")
+
+                        def _go():
+                            wcvp_svc.uninstall()
+                            dlg.close()
+                            _wcvp_remote.set_text("")
+                            _wcvp_refresh_installed()
+                            ui.notify("WCVP index removed.", type="positive")
+
+                        ui.button("Remove", icon="delete", on_click=_go) \
+                            .props("color=negative")
+                dlg.on_value_change(lambda e: dlg.delete() if not e.value else None)
+                dlg.open()
 
             def _wcvp_refresh_installed() -> str | None:
                 """Installed release label, or None. Reads the index file, never the network."""
                 try:
                     db = wcvp_svc.open_index()
                 except wcvp_svc.IndexMissing:
-                    _wcvp_status.set_text(
-                        "Not installed — plant search is unavailable."
-                    )
+                    _wcvp_icon.props("name=error_outline")
+                    _wcvp_icon.classes(replace="text-warning")
+                    _wcvp_status.set_text("Not installed — plant search is unavailable.")
                     _wcvp_status.style("color:var(--tp-base-soft)")
-                    _wcvp_install_btn.set_text("Download and install")
+                    _wcvp_install_lbl.set_text("Download and install")
+                    _wcvp_remove_item.set_visibility(False)
                     return None
                 meta = wcvp_svc.index_meta(db)
                 db.close()
+                _wcvp_icon.props("name=check_circle")
+                _wcvp_icon.classes(replace="text-positive")
                 _wcvp_status.set_text(
                     f"{meta.get('label', 'WCVP')} · {int(meta.get('rows', 0)):,} names · "
                     f"{meta.get('license', '')}"
                 )
-                _wcvp_status.style("color:var(--tp-base)")
-                _wcvp_install_btn.set_text("Re-download and rebuild")
+                _wcvp_status.style("color:var(--tp-base-soft)")
+                _wcvp_install_lbl.set_text("Re-download and rebuild")
+                _wcvp_remove_item.set_visibility(True)
                 return meta.get("version")
 
             async def _wcvp_install() -> None:
@@ -2664,8 +2792,8 @@ def index():
                 build_index() writes to a temp file and atomically replaces the target, so a
                 failed download or a corrupt archive leaves an existing index untouched.
                 """
-                _wcvp_install_btn.disable()
-                _wcvp_check_btn.disable()
+                _wcvp_install_item.disable()
+                _wcvp_check_item.disable()
 
                 # Progress is written from a worker thread; the UI reads it on a timer. Never
                 # touch UI elements from the thread itself.
@@ -2702,8 +2830,8 @@ def index():
                 finally:
                     timer.deactivate()
                     timer.delete()          # per the dialog timer-leak rule
-                    _wcvp_install_btn.enable()
-                    _wcvp_check_btn.enable()
+                    _wcvp_install_item.enable()
+                    _wcvp_check_item.enable()
 
                 _wcvp_refresh_installed()
                 # No restart needed: the taxon widgets open the index per search rather than
@@ -2718,21 +2846,318 @@ def index():
                     type="positive", timeout=0, close_button="Got it",
                 )
 
-            with ui.row().classes("gap-2 mt-1"):
-                _wcvp_install_btn = (
-                    ui.button("Download and install", on_click=_wcvp_install)
-                    .props("flat dense no-caps size=sm")
-                    .tooltip("Downloads Kew's archive into this collection's data folder "
-                             "and builds the index. The size is reported as it downloads.")
-                )
-                _wcvp_check_btn = (
-                    ui.button("Check for a new release", on_click=lambda: _wcvp_check_update())
-                    .props("flat dense no-caps size=sm")
-                    .tooltip("Downloads ~32 KB, not the whole archive")
-                )
-
             _wcvp_refresh_installed()
 
+            # ── Name datasets (experimental) ──────────────────────────────
+            # A user-added Darwin Core Archive, searched LAST (after local / TW / WCVP). The
+            # archive states its own nomenclaturalCode and columns (meta.xml), so nothing here
+            # is configured by hand — the file is copied into data/name_sources/<slug>/ and
+            # indexed. See services/name_source.py + services/datasets.py.
+            #
+            # UI shape is deliberate. Adding a dataset happens ONCE; importing every name is a
+            # rare, heavy, one-way write. So the add flow lives in a dialog behind a small
+            # button (a full-width drop zone shouted the least-used control on the page), and
+            # "Import all" sits in a per-row ⋮ menu rather than beside the row as a blue button
+            # — where it read as the confirm action for the install that had just finished.
+            ui.separator().classes("my-3")
+            with ui.row().classes("items-center gap-2 mb-1"):
+                ui.label("Add more taxonomy import checklists").classes("text-sm font-medium")
+                ui.label("EXPERIMENTAL").classes("text-xs px-1 rounded").style(
+                    "background:#fef9c3; color:#854d0e; font-weight:700;")
+            ui.label(
+                "Add more offline checklists (Darwin Core Archives) to import names from — "
+                "e.g. a beetle catalogue. Just as with WCVP, names are not automatically "
+                "imported into your collection database, they are imported on demand. "
+                "Searched last, after the local database, TaxonWorks and WCVP. Experimental, "
+                "as the importer was built around one specific dataset and may choke on other "
+                "datasets. You may need to adjust the importer on your own if you need to add "
+                "another dataset. The expected structure is following the Darwin Core Archive "
+                "from WCVP."
+            ).classes("text-xs mb-2").style("color:var(--tp-base-soft)")
+
+            _ds_list = ui.column().classes("w-full gap-1")
+            # Dialogs opened from a row's ⋮ menu MUST be created in this host, not inside the
+            # click handler. NiceGUI attaches a new element to the slot its creator belongs to,
+            # and a menu item's slot is the q-menu — which has just closed by then. A dialog
+            # built there lands in a dead container and never renders: the click silently did
+            # nothing at all (no error, no dialog). Anchoring them here keeps the slot alive.
+            _ds_dialogs = ui.element("div")
+
+            def _ds_refresh() -> None:
+                _ds_list.clear()
+                datasets = ds_svc.list_datasets()
+                if not datasets:
+                    with _ds_list:
+                        ui.label("No datasets added.").classes("text-xs").style(
+                            "color:var(--tp-base-soft)")
+                    return
+                for ds in datasets:
+                    with _ds_list:
+                        with ui.row().classes("w-full items-center gap-2"):
+                            if not ds.installed:
+                                # Registered but not built: offer Rebuild, never Import all —
+                                # importing from an index that does not exist can only fail.
+                                ui.icon("error_outline").classes("text-negative")
+                                ui.label(f"{ds.label} — index missing").classes("text-xs")
+                            else:
+                                db = ds.open()
+                                try:
+                                    _, total = ns_svc.count(db, ds.spec)
+                                finally:
+                                    db.close()
+                                ui.icon("check_circle").classes("text-positive")
+                                ui.label(f"{ds.label}").classes("text-xs font-medium")
+                                ui.label(f"{ds.code} · {total:,} names").classes(
+                                    "text-xs").style("color:var(--tp-base-soft)")
+                            ui.space()
+                            with ui.button(icon="more_vert").props("flat dense round size=sm"):
+                                with ui.menu() as menu:
+                                    if ds.installed:
+                                        ui.menu_item(
+                                            "Import all names…",
+                                            on_click=lambda d=ds, m=menu: (
+                                                m.close(), _ds_import_all(d)),
+                                        )
+                                    ui.menu_item(
+                                        "Rebuild index",
+                                        on_click=lambda d=ds, m=menu: (
+                                            m.close(), _ds_rebuild(d)),
+                                    )
+                                    ui.separator()
+                                    ui.menu_item(
+                                        "Remove dataset…",
+                                        on_click=lambda d=ds, m=menu: (
+                                            m.close(), _ds_remove(d)),
+                                    ).classes("text-negative")
+
+            # ── Add dataset (dialog) ──────────────────────────────────────
+            def _ds_add_dialog() -> None:
+                with _ds_dialogs:
+                    dlg = ui.dialog()
+                with dlg, ui.card().classes("min-w-[460px] gap-2"):
+                    ui.label("Add a name dataset").classes("section-label")
+                    hint = ui.label(
+                        "Choose a Darwin Core Archive (.zip). It is copied into this "
+                        "collection's data folder and indexed. The archive declares its own "
+                        "nomenclatural code and columns, so there is nothing to configure."
+                    ).classes("text-xs").style("color:var(--tp-base-soft)")
+
+                    up_area = ui.column().classes("w-full")
+                    busy = ui.row().classes("w-full items-center gap-2")
+                    busy.set_visibility(False)
+                    with busy:
+                        ui.spinner(size="sm")
+                        busy_lbl = ui.label("Copying the archive…").classes("text-xs")
+
+                    done = ui.column().classes("w-full gap-1")
+                    done.set_visibility(False)
+
+                    state = {"rows": 0}
+
+                    def _tick():
+                        # The total is unknown until the archive is read, so this counts up.
+                        # An index build that shows NOTHING reads as a hang (WCVP is 1.45 M
+                        # rows) — which is exactly what it looked like before.
+                        if state["rows"]:
+                            busy_lbl.set_text(f"Indexing… {state['rows']:,} names read")
+
+                    timer = ui.timer(0.2, _tick, active=False)
+
+                    async def _on_upload(e) -> None:
+                        name, content = e.name, e.content.read()
+                        up_area.set_visibility(False)
+                        hint.set_visibility(False)
+                        busy.set_visibility(True)
+                        busy_lbl.set_text("Copying the archive…")
+                        timer.activate()
+                        try:
+                            ds, report = await run.io_bound(
+                                ds_svc.install, content, name,
+                                progress=lambda n: state.__setitem__("rows", n),
+                            )
+                        except Exception as exc:      # noqa: BLE001 — the message IS the product
+                            timer.deactivate()
+                            busy.set_visibility(False)
+                            with done:
+                                ui.label(f"Could not add {name}").classes(
+                                    "text-sm font-medium").style("color:var(--tp-danger)")
+                                ui.label(str(exc)).classes("text-xs")
+                            done.set_visibility(True)
+                            return
+                        finally:
+                            timer.deactivate()
+
+                        busy.set_visibility(False)
+                        with done:
+                            with ui.row().classes("items-center gap-2"):
+                                ui.icon("check_circle").classes("text-positive")
+                                ui.label(f"{ds.label} installed").classes(
+                                    "text-sm font-medium")
+                            ui.label(
+                                f"{report.rows:,} names · {ds.code} · "
+                                f"{report.replaced:,} synonyms"
+                            ).classes("text-xs").style("color:var(--tp-base-soft)")
+                            ui.label(
+                                "These names now appear in the taxon search, after the local "
+                                "database, TaxonWorks and WCVP. Picking one imports it (and its "
+                                "parent ranks) — you do not need to import anything up front."
+                            ).classes("text-xs").style("color:var(--tp-base-soft)")
+                        done.set_visibility(True)
+                        _ds_refresh()
+
+                    with up_area:
+                        ui.upload(on_upload=_on_upload, auto_upload=True, max_files=1) \
+                            .props('accept=".zip" flat dense').classes("w-full")
+
+                    with ui.row().classes("w-full justify-end mt-1"):
+                        ui.button("Close", on_click=dlg.close).props("flat")
+
+                # Per the dialog timer-leak rule: the timer dies with the dialog.
+                dlg.on_value_change(lambda e: dlg.delete() if not e.value else None)
+                dlg.open()
+
+            async def _ds_rebuild(ds) -> None:
+                n = ui.notification(f"Rebuilding {ds.label}…", spinner=True, timeout=None)
+                try:
+                    report = await run.io_bound(
+                        ds_svc.rebuild, ds,
+                        progress=lambda k: n.message(f"Indexing… {k:,} names read"),
+                    )
+                except Exception as exc:      # noqa: BLE001
+                    n.dismiss()
+                    ui.notify(f"Rebuild failed: {exc}", type="negative",
+                              timeout=0, close_button="Got it")
+                    return
+                n.dismiss()
+                ui.notify(f"Rebuilt {ds.label} — {report.rows:,} names.", type="positive")
+                _ds_refresh()
+
+            def _ds_remove(ds) -> None:
+                with _ds_dialogs:
+                    dlg = ui.dialog()
+                with dlg, ui.card():
+                    ui.label(f"Remove “{ds.label}”?").classes("font-medium mb-2")
+                    ui.label(
+                        "The archive and its index are deleted. Names already imported from "
+                        "it stay in the database — they are local taxon rows now."
+                    ).classes("text-xs mb-3").style("color:var(--tp-base-soft)")
+                    with ui.row().classes("gap-2 justify-end w-full"):
+                        ui.button("Cancel", on_click=dlg.close).props("flat")
+
+                        def _go():
+                            ds_svc.remove(ds)
+                            dlg.close()
+                            _ds_refresh()
+                            ui.notify(f"{ds.label} removed.", type="positive")
+
+                        ui.button("Remove", icon="delete", on_click=_go) \
+                            .props("color=negative")
+                dlg.on_value_change(lambda e: dlg.delete() if not e.value else None)
+                dlg.open()
+
+            def _ds_import_all(ds) -> None:
+                """Import EVERY name in the dataset. Warned first — it is a bulk write."""
+                try:
+                    db = ds.open()
+                    try:
+                        importable, total = ns_svc.count(db, ds.spec)
+                    finally:
+                        db.close()
+                except Exception as exc:      # noqa: BLE001
+                    ui.notify(f"Cannot read {ds.label}: {exc}", type="negative")
+                    return
+
+                with _ds_dialogs:
+                    dlg = ui.dialog()
+                with dlg, ui.card().classes("min-w-[440px]"):
+                    ui.label(f"Import all names from “{ds.label}”?").classes(
+                        "font-medium mb-2")
+                    ui.label(
+                        f"This creates a local taxon row for each of the {importable:,} "
+                        f"importable names (of {total:,}), plus their parent ranks. It is a "
+                        f"large, one-way write to your database: there is no undo, and the "
+                        f"Taxonomy tree will contain the whole checklist whether or not you "
+                        f"hold specimens of those taxa."
+                    ).classes("text-xs mb-2").style("color:var(--tp-danger)")
+                    ui.label(
+                        "You do not need this to record specimens: picking a name in the "
+                        "taxon search imports it (and its parents) on demand. Import all is "
+                        "for working offline from a complete checklist."
+                    ).classes("text-xs mb-3").style("color:var(--tp-base-soft)")
+                    prog = ui.linear_progress(value=0, show_value=False).classes("w-full")
+                    prog.set_visibility(False)
+                    prog_lbl = ui.label("").classes("text-xs")
+                    with ui.row().classes("gap-2 justify-end w-full mt-2") as btn_row:
+                        ui.button("Cancel", on_click=dlg.close).props("flat")
+
+                        async def _go():
+                            btn_row.set_visibility(False)
+                            prog.set_visibility(True)
+                            state = {"done": 0, "total": importable or 1}
+
+                            def _progress(done, total):
+                                state["done"], state["total"] = done, total
+
+                            timer = ui.timer(0.2, lambda: (
+                                prog.set_value(state["done"] / max(state["total"], 1)),
+                                prog_lbl.set_text(
+                                    f"{state['done']:,} / {state['total']:,} names…"),
+                            ))
+
+                            def _work():
+                                with _sf() as session:
+                                    with session.begin():
+                                        return ds_svc.import_all(
+                                            session, ds, progress=_progress)
+
+                            try:
+                                report = await run.io_bound(_work)
+                            except Exception as exc:   # noqa: BLE001
+                                ui.notify(f"Import failed: {exc}", type="negative",
+                                          timeout=0, close_button="Got it")
+                                dlg.close()
+                                return
+                            finally:
+                                timer.deactivate()
+                                timer.delete()     # per the dialog timer-leak rule
+
+                            dlg.close()
+                            msg = (f"{ds.label}: imported {report.imported:,} names "
+                                   f"({report.created:,} new taxon rows)")
+                            if report.refused or report.failed:
+                                msg += (f" · {report.refused:,} refused, "
+                                        f"{report.failed:,} failed")
+                            ui.notify(msg, type="positive", timeout=0,
+                                      close_button="Got it")
+                            if report.reconstructed_species:
+                                # A well-formed archive reconstructs NOTHING. If this fires, the
+                                # archive is missing species rows its own subspecies depend on —
+                                # say so plainly instead of quietly papering over it.
+                                ui.notify(
+                                    f"{report.reconstructed_species:,} names had no species "
+                                    "parent in the archive, so it was reconstructed from the "
+                                    "trinomial (authorship left blank). The archive should "
+                                    "supply those species rows.",
+                                    type="warning", timeout=0, close_button="Got it",
+                                )
+                            for r in report.refusals[:5]:
+                                ui.notify(r, type="warning", timeout=8000)
+                            # The Taxonomy tab's refreshers live in its own scope; the
+                            # registry is how any tab reaches them (see _refreshers).
+                            for _key in ("taxonomy_stats", "taxonomy_tree"):
+                                fn = _refreshers.get(_key)
+                                if fn:
+                                    fn()
+
+                        ui.button("Import all", icon="download", on_click=_go) \
+                            .props("color=negative")
+                dlg.on_value_change(lambda e: dlg.delete() if not e.value else None)
+                dlg.open()
+
+            ui.button("Add dataset…", icon="add", on_click=_ds_add_dialog) \
+                .props("flat dense no-caps size=sm").classes("mt-1")
+
+            _ds_refresh()
             async def _wcvp_check_update() -> None:
                 # Re-read the index first: it may have been rebuilt since this page loaded,
                 # and reporting "a newer release is available" for one already installed

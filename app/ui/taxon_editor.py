@@ -6,27 +6,33 @@ from sqlalchemy import or_
 
 from app.services.taxa import (
     TAXON_RANKS,
-    TAXON_RANKS_BY_USE,
     _compose_transient,
     create_taxon_direct,
     delete_taxon,
     element_from_name,
+    ranks_for,
     search_taxa,
     update_taxon,
 )
 from app.models import BiologicalAssociation, Taxon, TaxonDetermination
 
 
-def rank_options(init_rank: str | None) -> list[str]:
-    """Rank choices for the editor, always including the taxon's current rank.
+def rank_options(init_rank: str | None, nomenclatural_code: str | None = None) -> list[str]:
+    """Rank choices for the editor: the ranks *this code* has, always including the taxon's
+    current rank.
+
+    Ranks are code-specific (ranks_for()), so a beetle is never offered 'variety' and a plant
+    is never offered 'superfamily'. With no code known yet (a new taxon before its parent is
+    chosen) every rank is offered and the list narrows as soon as the parent supplies one.
 
     A row may hold a rank outside our vocabulary — e.g. 'spec.', IPNI's abbreviation, stored
-    by the old POWO path when its fetch failed silently (#96). `ui.select` raises ValueError
-    on a value that is not among its options, which aborted the whole form build and left such
-    a taxon uneditable AND undeletable: the one row you most need to repair was the one row the
-    editor refused to open. A bad state must always be reachable by the tool that repairs it.
+    by the old POWO path when its fetch failed silently (#96) — or one that is simply wrong for
+    its code. Either way it is kept in the list: `ui.select` raises ValueError on a value that
+    is not among its options, which aborted the whole form build and left such a taxon
+    uneditable AND undeletable — the one row you most need to repair was the one row the editor
+    refused to open. A bad state must always be reachable by the tool that repairs it.
     """
-    opts = list(TAXON_RANKS_BY_USE)
+    opts = ranks_for(nomenclatural_code)
     if init_rank and init_rank not in opts:
         opts.insert(0, init_rank)
     return opts
@@ -97,35 +103,13 @@ def _build_taxon_form(
         # Live preview of the full composed name (element + parent chain).
         preview_lbl = ui.label("").classes("text-sm text-secondary italic -mt-1")
 
-        # Includes the taxon's current rank even when it is outside our vocabulary, so a
-        # bad rank can be corrected here rather than making the row uneditable — see
-        # rank_options() above.
         _init_rank = taxon.taxon_rank if taxon else pf.get("taxon_rank")
 
-        rank_sel = ui.select(
-            rank_options(_init_rank),
-            label="Rank *",
-            value=_init_rank,
-        ).classes("w-full")
-        if _init_rank and _init_rank not in TAXON_RANKS_BY_USE:
-            ui.label(
-                f"“{_init_rank}” is not a rank this database models — pick the correct one."
-            ).classes("text-xs -mt-1").style("color:var(--tp-danger)")
-        # Synonymy is controlled solely by the accepted-name link below: a taxon
-        # is a synonym iff an accepted name is set. There is no separate status
-        # field (taxonomicStatus is derived from the link at DwC export time).
-
-        auth_in = ui.input(
-            "Authorship, e.g. Linnaeus, 1758 or (Linnaeus, 1758)",
-            value=(taxon.scientific_name_authorship or "") if taxon
-            else (pf.get("scientific_name_authorship") or ""),
-        ).classes("w-full")
-
-        # Parent taxon: filtered to valid parents (rank above child). The
-        # nomenclatural code is inherited from whichever parent is chosen.
-        init_parent_opts = _make_parent_opts(
-            taxon.taxon_rank if taxon else pf.get("taxon_rank")
-        )
+        # Parent BEFORE rank: a rank belongs to a nomenclatural code (TaxonWorks models the
+        # four codes as four hierarchies), and the code is inherited from the parent — so the
+        # parent is what tells us which ranks may even be offered. Picking the parent first is
+        # also the natural order: say where the name goes, then what it is.
+        init_parent_opts = _make_parent_opts(_init_rank)
         if editing_root:
             init_parent_opts = {None: "(root — no parent)", **init_parent_opts}
             parent_val = None
@@ -138,6 +122,33 @@ def _build_taxon_form(
             clearable=not editing_root,
             label="Parent taxon *" if not editing_root else "Parent taxon",
             value=parent_val,
+        ).classes("w-full")
+
+        def _current_code() -> str | None:
+            """The code governing this taxon: inherited from the selected parent; for an
+            existing taxon (incl. a root, which has no parent) its own stored code."""
+            pid = parent_sel.value or None
+            if pid and code_by_id.get(pid):
+                return code_by_id[pid]
+            return taxon.nomenclatural_code if taxon else None
+
+        # Includes the taxon's current rank even when it is outside our vocabulary (or not
+        # valid for its code), so a bad rank can be corrected here rather than making the row
+        # uneditable — see rank_options() above.
+        rank_sel = ui.select(
+            rank_options(_init_rank, _current_code()),
+            label="Rank *",
+            value=_init_rank,
+        ).classes("w-full")
+        rank_warn = ui.label("").classes("text-xs -mt-1").style("color:var(--tp-danger)")
+        # Synonymy is controlled solely by the accepted-name link below: a taxon
+        # is a synonym iff an accepted name is set. There is no separate status
+        # field (taxonomicStatus is derived from the link at DwC export time).
+
+        auth_in = ui.input(
+            "Authorship, e.g. Linnaeus, 1758 or (Linnaeus, 1758)",
+            value=(taxon.scientific_name_authorship or "") if taxon
+            else (pf.get("scientific_name_authorship") or ""),
         ).classes("w-full")
 
         # Accepted-name link — all taxa, no rank filter. Setting this is what
@@ -167,6 +178,25 @@ def _build_taxon_form(
         parent_sel.options = new_opts
         parent_sel.update()
 
+    def _refresh_rank_opts():
+        """The parent supplies the nomenclatural code, and the code decides which ranks exist —
+        so re-filter the rank list whenever the parent changes. A rank that the new code does
+        not have is kept in the list but flagged, never silently swapped for a lookalike."""
+        code = _current_code()
+        cur = rank_sel.value
+        rank_sel.options = rank_options(cur, code)
+        rank_sel.update()
+        if cur and code and cur not in ranks_for(code):
+            rank_warn.set_text(
+                f"“{cur}” is not a rank under {code} — pick one this code has."
+            )
+        elif cur and cur not in TAXON_RANKS:
+            rank_warn.set_text(
+                f"“{cur}” is not a rank this database models — pick the correct one."
+            )
+        else:
+            rank_warn.set_text("")
+
     def _update_preview():
         element = (name_in.value or "").strip()
         rank = rank_sel.value or ""
@@ -186,7 +216,8 @@ def _build_taxon_form(
 
     rank_sel.on_value_change(lambda _: (_refresh_parent_opts(), _update_preview()))
     name_in.on_value_change(lambda _: _update_preview())
-    parent_sel.on_value_change(lambda _: _update_preview())
+    parent_sel.on_value_change(lambda _: (_refresh_rank_opts(), _update_preview()))
+    _refresh_rank_opts()  # seed the code-specific list + any rank/code warning
     _update_preview()  # seed for edit mode / prefill
 
     def get_fields() -> dict:
@@ -223,6 +254,18 @@ def _build_taxon_form(
         # has no code (a data-integrity problem, not a missing user input).
         if not fields["nomenclatural_code"]:
             return "Cannot determine nomenclatural code: the selected parent has none."
+
+        # A rank belongs to a code. The dropdown already only offers the code's ranks, but an
+        # existing row can carry a rank its code does not have (a pre-split record, or a bad
+        # import) and that row stays editable — so refuse it here rather than let the save
+        # through and freeze the mismatch. Loud, not silent (§2).
+        _code = fields["nomenclatural_code"]
+        _rank = fields["taxon_rank"]
+        if _rank not in ranks_for(_code):
+            return (
+                f"Rank {_rank!r} does not exist under {_code}. "
+                f"Pick a rank this code has."
+            )
 
         parent_id  = fields.get("parent_name_usage_id")
         child_rank = fields.get("taxon_rank", "")
@@ -287,8 +330,12 @@ def open_new_taxon_dialog(
     dialog.open()
 
 
-def build_taxon_editor(session_factory, on_saved: callable) -> None:
-    """Render New Taxon and Edit Taxon buttons + their dialogs in the current container."""
+def build_taxon_editor(session_factory, on_saved: callable) -> dict:
+    """Render New Taxon and Edit Taxon buttons + their dialogs in the current container.
+
+    Returns ``{"open_edit": fn(taxon_id)}`` so another widget — the checklist tree's
+    per-row pencil — can open the same dialog on a given taxon.
+    """
 
     def _open_new():
         open_new_taxon_dialog(session_factory, on_created=lambda _id: on_saved())
@@ -427,7 +474,25 @@ def build_taxon_editor(session_factory, on_saved: callable) -> None:
                             ui.notify(f"Failed: {exc}", type="negative")
 
                     ui.button("Delete", icon="delete", on_click=_confirmed).props("color=negative")
+        # #65: built fresh on every Delete click, so it must be removed on close — otherwise
+        # each click leaves a hidden dialog behind for the life of the session.
+        confirm_dlg.on_value_change(
+            lambda e: confirm_dlg.delete() if not e.value else None)
         confirm_dlg.open()
+
+    def _open_edit_for(taxon_id: int) -> None:
+        """Open the Edit dialog with *taxon_id* already selected — the entry point for
+        the checklist tree's per-row pencil, so a taxon can be corrected where it is
+        seen instead of being hunted for again in the select."""
+        edit_form_col.clear()
+        edit_form_api.clear()
+        _edit_state["taxon_id"] = None
+        edit_sel.options = _taxon_opts(session_factory)
+        edit_sel.value = None          # so re-opening the SAME taxon still fires the change
+        edit_sel.update()
+        delete_btn.disable()
+        edit_dialog.open()
+        edit_sel.value = taxon_id      # → _on_edit_select builds the form
 
     save_edit_btn.on_click(_save_edit)
     delete_btn.on_click(_delete_taxon)
@@ -442,3 +507,5 @@ def build_taxon_editor(session_factory, on_saved: callable) -> None:
             ui.button("Edit Taxon", icon="edit", on_click=_open_edit)
             .props("flat")
         )
+
+    return {"open_edit": _open_edit_for}

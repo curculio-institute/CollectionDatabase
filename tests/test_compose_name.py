@@ -127,3 +127,75 @@ def test_compose_icn_subvariety_and_subform(session):
     subform = _add(session, element="minor", rank="subform", parent=sp, code="ICN")
     assert compose_scientific_name(session, subvar) == "Achillea millefolium subvar. alpina"
     assert compose_scientific_name(session, subform) == "Achillea millefolium subf. minor"
+
+
+# ── Code-specific ranks + genus-group form (ICZN brackets vs ICN connectors) ──────────
+# A rank belongs to a nomenclatural code, and the two codes write the genus group
+# differently. Zoology brackets the subgenus and carries it into the binomial; botany
+# spells the connector out and does NOT — a botanical binomial is genus + epithet, so a
+# species under a subgenus OR a section still composes as a plain two-word name.
+
+def test_compose_icn_subgenus_uses_connector_not_brackets(session):
+    """Taraxacum subg. Palustria — not 'Taraxacum (Palustria)', which is the ICZN form."""
+    genus = _add(session, element="Taraxacum", rank="genus", code="ICN")
+    subg = _add(session, element="Palustria", rank="subgenus", parent=genus, code="ICN")
+    assert compose_scientific_name(session, subg) == "Taraxacum subg. Palustria"
+
+
+def test_compose_icn_section(session):
+    """Sections are ICN genus-group ranks: Taraxacum sect. Ruderalia."""
+    genus = _add(session, element="Taraxacum", rank="genus", code="ICN")
+    sect = _add(session, element="Ruderalia", rank="section", parent=genus, code="ICN")
+    subsect = _add(session, element="Vulgaria", rank="subsection", parent=genus, code="ICN")
+    assert compose_scientific_name(session, sect) == "Taraxacum sect. Ruderalia"
+    assert compose_scientific_name(session, subsect) == "Taraxacum subsect. Vulgaria"
+
+
+def test_compose_icn_species_under_section_is_a_plain_binomial(session):
+    """The section is classificatory, not part of the name: Taraxacum officinale."""
+    genus = _add(session, element="Taraxacum", rank="genus", code="ICN")
+    sect = _add(session, element="Ruderalia", rank="section", parent=genus, code="ICN")
+    sp = _add(session, element="officinale", rank="species", parent=sect, code="ICN")
+    var = _add(session, element="alpinum", rank="variety", parent=sp, code="ICN")
+    assert compose_scientific_name(session, sp) == "Taraxacum officinale"
+    assert compose_scientific_name(session, var) == "Taraxacum officinale var. alpinum"
+
+
+def test_compose_icn_species_under_subgenus_is_a_plain_binomial(session):
+    """Likewise for a botanical subgenus — no '(Palustria)' inside the binomial."""
+    genus = _add(session, element="Taraxacum", rank="genus", code="ICN")
+    subg = _add(session, element="Palustria", rank="subgenus", parent=genus, code="ICN")
+    sp = _add(session, element="palustre", rank="species", parent=subg, code="ICN")
+    assert compose_scientific_name(session, sp) == "Taraxacum palustre"
+
+
+def test_compose_iczn_genus_group_still_brackets(session):
+    """Regression guard: the zoological form must be untouched by the ICN work."""
+    genus = _add(session, element="Otiorhynchus", rank="genus")
+    subg = _add(session, element="Nihus", rank="subgenus", parent=genus)
+    sp = _add(session, element="armadillo", rank="species", parent=subg)
+    assert compose_scientific_name(session, subg) == "Otiorhynchus (Nihus)"
+    assert compose_scientific_name(session, sp) == "Otiorhynchus (Nihus) armadillo"
+
+
+def test_ranks_are_code_specific(session):
+    """A beetle is never offered 'variety'; a plant is never offered 'superfamily'."""
+    from app.services.taxa import RANKS_BY_CODE, TAXON_RANKS, ranks_for
+
+    iczn, icn = ranks_for("ICZN"), ranks_for("ICN")
+    for botanical_only in ("variety", "subvariety", "form", "subform", "section", "subsection"):
+        assert botanical_only not in iczn
+        assert botanical_only in icn
+    for zoological_only in ("superfamily", "supertribe", "superorder"):
+        assert zoological_only in iczn
+        assert zoological_only not in icn
+    # Shared backbone still present in both.
+    for shared in ("genus", "subgenus", "species", "subspecies", "family"):
+        assert shared in iczn and shared in icn
+    # Every per-code list stays a SUBSEQUENCE of the master ordering, so the index-based
+    # hierarchy comparisons (parent rank must be above child rank) remain valid.
+    for code, rs in RANKS_BY_CODE.items():
+        idx = [TAXON_RANKS.index(r) for r in rs]
+        assert idx == sorted(idx), f"{code} ranks are not in TAXON_RANKS order"
+    # An unknown code offers everything rather than nothing (the editor narrows it later).
+    assert set(ranks_for(None)) == set(TAXON_RANKS)
