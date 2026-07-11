@@ -12,7 +12,8 @@ from app.models import (
     TaxonDetermination,
 )
 from app.models.base import _utcnow
-from app.services.biological import save_biological_association
+from app.services.biological import (
+    save_biological_association, save_association_as_field_occurrence)
 from app.services.events import create_collecting_event
 from app.services.identifiers import assign_code
 from app.services.print_queue import (
@@ -159,10 +160,12 @@ def finalize_specimen(
     them under one origin header (only used when `queue_labels`; allocate the id
     once per batch via ``print_queue.next_print_group_id``).
 
-    `associations` is an iterable of ``{"rel_id", "taxon_id"}`` dicts — the
-    specimen is the subject, the taxon the object. Returns the created
-    BiologicalAssociation rows in input order (so callers can attach per-association
-    extras such as staged media to the new ids); empty list when none.
+    `associations` is an iterable of ``{"rel_id", "taxon_id", "qualifier"?}`` dicts — the
+    specimen is the subject; the object taxon is always recorded as its own HumanObservation
+    ``field_occurrence`` sharing this specimen's event (decided 2026-07-11), with only the
+    optional open-nomenclature ``qualifier`` surfaced at data entry. Returns the created
+    BiologicalAssociation rows in input order (so callers can attach per-association extras
+    such as staged media to the new ids); empty list when none.
     """
     if code is not None:
         lc = assign_code(session, code, collection_object_id)
@@ -175,11 +178,12 @@ def finalize_specimen(
                                   print_group_id=print_group_id, source=source)
     created = []
     for assoc in associations:
-        ba = save_biological_association(
+        ba = save_association_as_field_occurrence(
             session,
             collection_object_id=collection_object_id,
             biological_relationship_id=assoc["rel_id"],
-            object_taxon_id=assoc["taxon_id"],
+            taxon_id=assoc["taxon_id"],
+            identification_qualifier=assoc.get("qualifier"),
         )
         created.append(ba)
     return created

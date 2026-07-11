@@ -58,7 +58,8 @@ class Media(Base, TimestampMixin):
 
 class MediaAttachment(Base, TimestampMixin):
     """Links a Media asset to exactly one record — a collection_object, a
-    collecting_event, or a biological_association (exclusive-arc, exactly one non-null).
+    collecting_event, a biological_association, or a field_occurrence (exclusive-arc,
+    exactly one non-null).
 
     Per-attachment fields (caption, is_primary, sort_order) live here, not on Media, so
     the same asset can be attached to several records with different captions — mirroring
@@ -77,6 +78,8 @@ class MediaAttachment(Base, TimestampMixin):
         Integer, ForeignKey("collecting_event.id", ondelete="CASCADE"), nullable=True)
     biological_association_id: Mapped[Optional[int]] = mapped_column(
         Integer, ForeignKey("biological_association.id", ondelete="CASCADE"), nullable=True)
+    field_occurrence_id: Mapped[Optional[int]] = mapped_column(
+        Integer, ForeignKey("field_occurrence.id", ondelete="CASCADE"), nullable=True)
 
     caption: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     is_primary: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
@@ -84,9 +87,8 @@ class MediaAttachment(Base, TimestampMixin):
 
     __table_args__ = (
         CheckConstraint(
-            "(collection_object_id IS NOT NULL AND collecting_event_id IS NULL AND biological_association_id IS NULL) OR "
-            "(collection_object_id IS NULL AND collecting_event_id IS NOT NULL AND biological_association_id IS NULL) OR "
-            "(collection_object_id IS NULL AND collecting_event_id IS NULL AND biological_association_id IS NOT NULL)",
+            "((collection_object_id IS NOT NULL) + (collecting_event_id IS NOT NULL) + "
+            "(biological_association_id IS NOT NULL) + (field_occurrence_id IS NOT NULL)) = 1",
             name="ck_media_attachment_exclusive_arc",
         ),
         CheckConstraint("is_primary IN (0, 1)", name="ck_media_attachment_is_primary"),

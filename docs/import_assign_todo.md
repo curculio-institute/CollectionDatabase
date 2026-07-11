@@ -65,29 +65,49 @@ CLAUDE.md §4, which lists identificationQualifier among the closed standard voc
 Follow-up: a one-keystroke auto-open snap to cf. on the qualifier dropdown (a keyboard concern that
 should apply to all fixed-list selects) — not done here.
 
-### 4. individualCount not hardened against non-numeric / zero
+### 4. individualCount not hardened against non-numeric / zero — DONE
 `_select_row` runs `int(sp["individual_count"] or 1)` (`import_assign.py:242`). A value like `F`
 raises inside the value-change callback → the form silently fails to populate. And
 `int(count_in.value or 1)` in `_on_assign` turns an explicit `0` into `1`.
 
-- Parse defensively in `row_to_specimen_prefill` (non-int → `1` or flag as a bad row).
-- Distinguish `0`/empty intentionally.
+**Fixed.** `dwc_import.parse_individual_count(raw) -> (int, warning)` parses defensively: the
+standard value is **1** (empty/missing/non-numeric fall back to 1, and the user can adjust the
+`n` field before saving), a non-empty unparseable value (`F`, `-2`) also returns a warning string
+surfaced in `assign_status` rather than coerced silently (§2), and a deliberate `0` is preserved
+(the DB CHECK allows `>= 0`). `_select_row` uses it (no more crash on `F`); `_on_assign` now saves
+`1 if count_in.value is None else int(count_in.value)`, so a chosen `0` is kept. Covered by
+`test_dwc_import.py::TestParseIndividualCount`.
 
-### 5. Coordinate pair validated per-axis
+### 5. Coordinate pair validated per-axis — DONE
 `_validate` (`import_assign.py:437-447`) checks latitude and longitude independently, so a
 latitude with an empty longitude saves half a georeference.
 
-- Reject one-without-the-other.
-- Warn when a coordinate has no `coordinateUncertaintyInMeters` (currently blank passes silently;
-  it's the one thing point-radius exists to prevent).
+**Fixed.** `_validate` now hard-rejects a half pair (`bool(lat) != bool(lon)` → "both present or
+both empty — a half georeference cannot be saved") after the per-axis range checks. Missing
+uncertainty is a **soft** warning, not a block: `_select_row` surfaces "No
+coordinateUncertaintyInMeters — the georeference has no radius" in `assign_status` (joined with the
+individualCount warning) when a coordinate pair carries no radius, so the save still proceeds but
+the gap is visible.
 
-### 6. Host plants / biological associations can't be imported
+### 6. Host plants / biological associations can't be imported — DONE
 No `associatedTaxa` term; `_on_assign` never passes the `associations=` arg that
 `finalize_specimen` already accepts (`specimens.py`). ~82 real rows carry host plants.
 
-- Add an `associatedTaxa` (or similar) term, resolve to taxon + relationship, pass through
-  `finalize_specimen(..., associations=...)`.
-- Depends on the biological-relationship vocab being loaded.
+**Fixed** — as a biological association, **no new DB column**. `associatedOrganisms` (the term
+the staged `Käfersammlung` file uses; `associatedTaxa` is a distinct term and is *not* aliased
+onto it) is added to `_DWC_TERMS` so the parser reads it; `row_host_name()` returns the raw host.
+When a selected row carries a host, an inline **Host / association** block appears in the assign
+card: a relationship dropdown defaulting to **"collected from"** (editable) and a taxon-search box
+auto-seeded with the host name via the new additive `taxon_search.set_query()` (local→TW→WCVP).
+The seed is cleaned by `host_search_query()` — open-nomenclature qualifiers are stripped
+(`Betula sp.` → `Betula`, `Silene cf. otites` → `Silene otites`; bare genera like `Salix` pass
+through) because the multi-token search needs every token to match; the user confirms the actual
+taxon rather than a silent `candidates[0]`. On Save the resolved `{rel_id, taxon_id}` rides the
+existing `finalize_specimen(..., associations=...)`. A present-but-unresolved host is **not**
+dropped silently — the specimen saves and a warning names the host to add in Records. Real data
+grounding: the 82 hosts still live in `LEGACY:Hinweis` (mixed with notes/German common names) and
+are hand-triaged into `associatedOrganisms` before export. Covered by
+`test_dwc_import.py::TestHostAssociation`.
 
 ---
 

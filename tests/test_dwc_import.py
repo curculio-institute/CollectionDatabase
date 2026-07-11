@@ -7,8 +7,63 @@ term onto a different column.
 import pytest
 
 from app.services.dwc_import import (
-    _ALIASES, _norm_key, parse_csv, row_to_event_fields, row_to_specimen_prefill,
+    _ALIASES, _norm_key, parse_csv, parse_individual_count,
+    host_search_query, row_host_name, row_to_event_fields, row_to_specimen_prefill,
 )
+
+
+class TestHostAssociation:
+    """associatedOrganisms → host biological association (#6)."""
+
+    def test_associated_organisms_is_a_recognised_term(self):
+        # A real DwC term, normalised only for casing — reaches the row dict.
+        rows = parse_csv("scientificName,associatedOrganisms\nSitona sp.,Salix\n")
+        assert row_host_name(rows[0]) == "Salix"
+
+    def test_associated_taxa_is_not_aliased_onto_it(self):
+        # associatedTaxa is a distinct DwC term — deliberately NOT conflated.
+        assert _norm_key("associatedTaxa") not in _ALIASES
+
+    def test_row_host_name_blank_when_absent(self):
+        assert row_host_name({"scientificName": "Sitona lineatus"}) == ""
+        assert row_host_name({"associatedOrganisms": "   "}) == ""
+
+    def test_host_search_query_strips_open_nomenclature(self):
+        assert host_search_query("Betula sp.") == "Betula"
+        assert host_search_query("Silene cf. otites") == "Silene otites"
+        assert host_search_query("Quercus spp.") == "Quercus"
+        assert host_search_query("Salix") == "Salix"          # bare genus unchanged
+        assert host_search_query("Rumex acetosella") == "Rumex acetosella"
+
+
+class TestParseIndividualCount:
+    """individualCount is parsed defensively (#4): the standard value is 1, a
+    deliberate 0 is preserved, and a non-numeric cell must not raise."""
+
+    def test_empty_and_none_default_to_one(self):
+        assert parse_individual_count(None) == (1, None)
+        assert parse_individual_count("") == (1, None)
+        assert parse_individual_count("   ") == (1, None)
+
+    def test_valid_positive_integer_kept(self):
+        assert parse_individual_count("3") == (3, None)
+        assert parse_individual_count(" 12 ") == (12, None)
+        assert parse_individual_count(5) == (5, None)
+
+    def test_deliberate_zero_is_preserved(self):
+        # The DB CHECK allows >= 0, so an explicit 0 is a real value, not empty.
+        assert parse_individual_count("0") == (0, None)
+        assert parse_individual_count(0) == (0, None)
+
+    def test_non_numeric_defaults_to_one_with_warning(self):
+        count, warn = parse_individual_count("F")
+        assert count == 1
+        assert warn is not None and "F" in warn
+
+    def test_negative_defaults_to_one_with_warning(self):
+        count, warn = parse_individual_count("-2")
+        assert count == 1
+        assert warn is not None
 
 
 def test_surplus_columns_row_refuses_loudly():

@@ -18,6 +18,7 @@ from __future__ import annotations
 import asyncio
 import html as _html_mod
 import re
+from types import SimpleNamespace
 
 from nicegui import context as _nicegui_context, ui
 
@@ -809,6 +810,17 @@ def build_taxon_search(
         state["_task"] = asyncio.create_task(_do())
 
     search_inp.on_value_change(_on_search)
+
+    def _set_query(text: str) -> None:
+        """Seed the box with `text` and run the search — used to auto-fetch a
+        name known ahead of time (e.g. an imported host plant, #6). Clears any
+        prior selection first so `_on_search` is not short-circuited."""
+        _clear()
+        term = (text or "").strip()
+        search_inp.value = term
+        _on_search(SimpleNamespace(value=term))
+
+    state["set_query"] = _set_query
 
     async def _on_blur(_):
         await asyncio.sleep(0.2)

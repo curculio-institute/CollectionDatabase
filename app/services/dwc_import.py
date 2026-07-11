@@ -45,6 +45,10 @@ _DWC_TERMS: tuple[str, ...] = (
     # Specimen
     "sex", "individualCount", "preparations", "lifeStage", "typeStatus",
     "materialEntityRemarks",
+    # Biological association (host plant etc. — the specimen is the subject,
+    # this the object; #6). associatedOrganisms is the term the staged data uses;
+    # associatedTaxa is a distinct DwC term and is NOT aliased onto it.
+    "associatedOrganisms",
     # Identifiers / provenance
     "occurrenceID", "catalogNumber", "verbatimLabel",
 )
@@ -209,6 +213,60 @@ def row_to_determination_fields(row: dict) -> dict:
         "identification_remarks":   (row.get("identificationRemarks") or "").strip(),
         "verbatim_identification": row_scientific_name(row),
     }
+
+
+def row_host_name(row: dict) -> str:
+    """The associated-organism (host plant) name for this row, or "" (#6).
+
+    A single scientific name (possibly open-nomenclature, e.g. ``Silene cf. otites``
+    or a bare genus ``Salix sp.``). The specimen is the association subject; this is
+    the object. One host per row. Returned verbatim — the raw is what a
+    "not attached" warning shows.
+    """
+    return (row.get("associatedOrganisms") or "").strip()
+
+
+# Open-nomenclature / rank tokens that qualify a name but are not part of it, so
+# they must be dropped before the name is used as a taxon-search query (real host
+# data carries "Betula sp.", "Silene cf. otites", bare genera like "Salix").
+_HOST_QUALIFIER_TOKENS = frozenset({
+    "cf", "cf.", "aff", "aff.", "nr", "nr.", "sp", "sp.", "spp", "spp.",
+    "gr", "gr.", "agg", "agg.", "?", "indet", "indet.",
+})
+
+
+def host_search_query(name: str) -> str:
+    """Strip open-nomenclature qualifiers from a host name so it can seed a
+    taxon search (#6). ``Betula sp.`` → ``Betula``; ``Silene cf. otites`` →
+    ``Silene otites``; a bare genus is returned unchanged. The user still
+    confirms the actual taxon from the search results."""
+    kept = [t for t in (name or "").split()
+            if t.lower() not in _HOST_QUALIFIER_TOKENS]
+    return " ".join(kept)
+
+
+def parse_individual_count(raw) -> tuple[int, str | None]:
+    """Parse a DwC individualCount cell defensively.
+
+    Returns ``(count, warning)``. The standard value is **1**: an empty/missing
+    cell, or a value that is not a whole number (e.g. ``"F"``), falls back to 1 —
+    but a non-empty unparseable value also yields a ``warning`` string so the
+    caller can surface it rather than coerce it silently (§2). A deliberate,
+    valid ``0`` is preserved (the DB CHECK allows ``>= 0``); a negative value is
+    treated as unparseable (the DB would reject it) and falls back to 1 + warning.
+    """
+    if raw is None:
+        return 1, None
+    s = str(raw).strip()
+    if not s:
+        return 1, None
+    try:
+        n = int(s)
+    except ValueError:
+        return 1, f"individualCount {s!r} is not a whole number — defaulted to 1."
+    if n < 0:
+        return 1, f"individualCount {s!r} is negative — defaulted to 1."
+    return n, None
 
 
 def row_to_specimen_prefill(row: dict) -> dict:

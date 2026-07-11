@@ -541,8 +541,74 @@ def test_finalize_specimen_visiting_no_code_no_queue(session):
     assert session.query(PrintQueue).count() == 0
 
 
-def test_finalize_specimen_saves_biological_associations(session):
-    """Associations are persisted regardless of mode (here: visiting, code=None)."""
+def test_update_field_occurrence_edits_observation_and_determination(session):
+    """The full-edit escape hatch: update_field_occurrence changes both the observation
+    fields and its determination, re-freezing verbatimIdentification when the taxon changes."""
+    from app.models import FieldOccurrence
+    import app.services.biological as bio_svc
+    import app.services.field_occurrence as fo_svc
+
+    co, _ = _saved_co_with_code(session)
+    oak = _taxon(session, "Quercus", "robur", authorship="L.")
+    willow = _taxon(session, "Salix", "caprea", authorship="L.")
+    rel = BiologicalRelationship(name="collected_from",
+                                 created_at=_utcnow(), updated_at=_utcnow())
+    session.add(rel); session.flush()
+    ba = bio_svc.save_association_as_field_occurrence(
+        session, collection_object_id=co.id, biological_relationship_id=rel.id,
+        taxon_id=oak.id, identification_qualifier="cf.")
+    session.flush()
+    fo_id = ba.object_field_occurrence_id
+
+    fo_svc.update_field_occurrence(
+        session, fo_id,
+        fo_fields={"individual_count": 3, "sex": "female", "confidential": 1},
+        det_fields={"taxon_id": willow.id, "identification_qualifier": "aff."},
+    )
+    session.flush()
+
+    fo = session.get(FieldOccurrence, fo_id)
+    assert fo.individual_count == 3 and fo.sex == "female" and fo.confidential == 1
+    det = fo_svc.current_determination(session, fo)
+    assert det.taxon_id == willow.id
+    assert det.identification_qualifier == "aff."
+    # Changing the taxon re-freezes the composed name (qualifier-free).
+    assert det.verbatim_identification == "Salix caprea"
+
+
+def test_association_field_occurrence_round_trips_through_reader(session):
+    """The Records direct-save path (save_association_as_field_occurrence) creates the
+    observation, and get_associations_for_specimen reads it back — resolving the fo's
+    determination to taxon + qualifier + fo id for the UI (the round trip the user drives)."""
+    import app.services.biological as bio_svc
+
+    co, _ = _saved_co_with_code(session)
+    host = _taxon(session, "Salix", "caprea", authorship="L.")
+    rel = BiologicalRelationship(name="collected_from",
+                                 created_at=_utcnow(), updated_at=_utcnow())
+    session.add(rel); session.flush()
+
+    ba = bio_svc.save_association_as_field_occurrence(
+        session, collection_object_id=co.id, biological_relationship_id=rel.id,
+        taxon_id=host.id, identification_qualifier="cf.")
+    session.flush()
+    assert ba.object_field_occurrence_id is not None
+
+    [row] = bio_svc.get_associations_for_specimen(session, co.id)
+    assert row.object_field_occurrence_id == ba.object_field_occurrence_id
+    assert row.object_taxon_id == host.id          # resolved via the fo's determination
+    assert row.identification_qualifier == "cf."
+    assert "Salix" in row.object_label
+    assert row.rel_name == "collected_from"
+
+
+def test_finalize_specimen_saves_associations_as_field_occurrences(session):
+    """An association's object taxon is recorded as its own HumanObservation
+    field_occurrence sharing the specimen's event, with identifiedBy defaulting to the
+    event's recordedBy and only a qualifier optionally surfaced (decided 2026-07-11)."""
+    from app.models import FieldOccurrence
+    import app.services.field_occurrence as fo_svc
+
     co, _ = _saved_co_with_code(session)
     host = _taxon(session, "Quercus", "robur", authorship="L.")
     rel = BiologicalRelationship(name="collected_on",
@@ -552,19 +618,33 @@ def test_finalize_specimen_saves_biological_associations(session):
 
     finalize_specimen(
         session, collection_object_id=co.id, code=None,
-        associations=[{"rel_id": rel.id, "taxon_id": host.id}],
+        associations=[{"rel_id": rel.id, "taxon_id": host.id, "qualifier": "cf."}],
     )
     session.flush()
 
     ba = session.query(BiologicalAssociation).filter_by(
         subject_collection_object_id=co.id).one()
-    assert ba.object_taxon_id == host.id
+    # The object is a field occurrence, NOT a bare taxon.
+    assert ba.object_taxon_id is None
+    assert ba.object_field_occurrence_id is not None
     assert ba.biological_relationship_id == rel.id
+
+    fo = session.get(FieldOccurrence, ba.object_field_occurrence_id)
+    assert fo.basis_of_record == "HumanObservation"
+    assert fo.collecting_event_id == co.collecting_event_id      # shares the event
+    det = fo_svc.current_determination(session, fo)
+    assert det.taxon_id == host.id
+    assert det.identification_qualifier == "cf."
+    # identifiedBy defaults to the event's recordedBy.
+    assert det.identified_by_id == co.collecting_event.recorded_by_id
 
 
 def test_finalize_specimen_returns_created_associations_in_order(session):
     """finalize_specimen returns the new BiologicalAssociation rows (with ids) in input
     order, so callers can attach per-association media to them (#48)."""
+    from app.models import FieldOccurrence
+    import app.services.field_occurrence as fo_svc
+
     co, _ = _saved_co_with_code(session)
     oak = _taxon(session, "Quercus", "robur", authorship="L.")
     pine = _taxon(session, "Pinus", "sylvestris", authorship="L.")
@@ -578,8 +658,13 @@ def test_finalize_specimen_returns_created_associations_in_order(session):
                       {"rel_id": rel.id, "taxon_id": pine.id}],
     )
     session.flush()
-    assert [c.object_taxon_id for c in created] == [oak.id, pine.id]
     assert all(c.id is not None for c in created)
+    # Order preserved — resolve each association's field-occurrence determination.
+    taxa = []
+    for c in created:
+        fo = session.get(FieldOccurrence, c.object_field_occurrence_id)
+        taxa.append(fo_svc.current_determination(session, fo).taxon_id)
+    assert taxa == [oak.id, pine.id]
 
 
 # ---------------------------------------------------------------------------

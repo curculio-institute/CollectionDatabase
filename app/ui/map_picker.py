@@ -173,6 +173,10 @@ def build_map_picker(
           style="flex:1; min-width:0; accent-color:var(--tp-secondary,#0369a1); cursor:pointer;"
           title="Uncertainty radius (0–2000 m)">
       </span>
+      <button id="{uid}copy" class="_mp-btn" style="display:none;"
+        title="Copy latitude, longitude and radius (tab-separated)">
+        <i class="material-icons" style="font-size:1.1rem;">content_copy</i>Copy
+      </button>
       <span style="flex:1;"></span>
       <button onclick="document.getElementById('{uid}ov').style.display='none'"
         style="background:none;border:none;cursor:pointer;
@@ -186,9 +190,6 @@ def build_map_picker(
         display:flex; align-items:center; flex-shrink:0;
         padding:8px 16px; gap:12px;
         border-top:1px solid var(--tp-base-border,#e2e8f0);">
-      <button id="{uid}loc" class="_mp-btn">
-        <i class="material-icons" style="font-size:1.1rem;">my_location</i>Locate
-      </button>
       <span style="flex:1;"></span>
       <button onclick="document.getElementById('{uid}ov').style.display='none'"
         style="background:var(--tp-secondary,#0369a1);color:#fff;
@@ -302,12 +303,14 @@ def build_map_picker(
         var uncRow    = document.getElementById(uid + 'uncrow');
         var uncInput  = document.getElementById(uid + 'uncinput');
         var uncSlider = document.getElementById(uid + 'uncslider');
+        var copyBtn   = document.getElementById(uid + 'copy');
 
         function updateDisplay(lat, lng, u) {{
             if (coordEl)   coordEl.textContent    = lat.toFixed(6) + ', ' + lng.toFixed(6);
             if (uncRow)    uncRow.style.display   = 'flex';
             if (uncInput)  uncInput.value         = u ? Math.round(u) : '';
             if (uncSlider) uncSlider.value        = Math.min(u ? Math.round(u) : 0, 2000);
+            if (copyBtn)   copyBtn.style.display  = 'inline-flex';
         }}
 
         function resetDisplay() {{
@@ -315,6 +318,7 @@ def build_map_picker(
             if (uncRow)    uncRow.style.display = 'none';
             if (uncInput)  uncInput.value       = '';
             if (uncSlider) uncSlider.value      = 0;
+            if (copyBtn)   copyBtn.style.display = 'none';
         }}
 
         var mkIcon = L.divIcon({{
@@ -461,20 +465,42 @@ def build_map_picker(
             }}
         }};
 
-        /* "Locate" button — fly to coordinates currently entered in the form */
-        var locBtn = document.getElementById(uid + 'loc');
-        if (locBtn) {{
-            locBtn.onclick = function() {{
-                var latEl = document.querySelector('._coord-lat input');
-                var lonEl = document.querySelector('._coord-lon input');
-                var uncEl = document.querySelector('._coord-unc input');
-                if (!latEl || !lonEl) return;
-                var lat = parseFloat(latEl.value);
-                var lon = parseFloat(lonEl.value);
-                if (isNaN(lat) || isNaN(lon)) return;
-                var u = uncEl ? parseFloat(uncEl.value) : NaN;
-                placeAt(L.latLng(lat, lon), isNaN(u) ? (unc || 0) : u);
-                map.setView([lat, lon], Math.max(map.getZoom(), 10));
+        /* "Copy" button — lat, lon, radius (tab-separated) to the clipboard */
+        if (copyBtn) {{
+            var flashCopied = function() {{
+                var icon = copyBtn.querySelector('.material-icons');
+                if (!icon) return;
+                var prev = icon.textContent;
+                icon.textContent = 'check';
+                setTimeout(function() {{ icon.textContent = prev; }}, 1200);
+            }};
+            var execCopy = function(text) {{
+                var ta = document.createElement('textarea');
+                ta.value = text;
+                ta.style.position = 'fixed';
+                ta.style.top = '0'; ta.style.left = '0'; ta.style.opacity = '0';
+                document.body.appendChild(ta);
+                ta.focus(); ta.select();
+                var ok = false;
+                try {{ ok = document.execCommand('copy'); }} catch (e) {{}}
+                document.body.removeChild(ta);
+                if (ok) flashCopied();
+            }};
+            copyBtn.onclick = function() {{
+                if (!marker) return;
+                var c = marker.getLatLng();
+                var text = c.lat.toFixed(6) + '\\t' + c.lng.toFixed(6)
+                         + '\\t' + (unc ? Math.round(unc) : '');
+                /* Clipboard API can reject (focus/permission) even where it
+                   exists — always fall back to execCommand on failure. */
+                if (navigator.clipboard && navigator.clipboard.writeText) {{
+                    navigator.clipboard.writeText(text).then(
+                        flashCopied,
+                        function() {{ execCopy(text); }}
+                    );
+                }} else {{
+                    execCopy(text);
+                }}
             }};
         }}
     }}

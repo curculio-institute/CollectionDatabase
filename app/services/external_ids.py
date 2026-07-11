@@ -1,9 +1,9 @@
 """External resource identifiers (#49).
 
-CRUD for ``external_identifier`` rows attached to a collection_object or a
-biological_association (exclusive arc). The user supplies just the URI; ``source`` is an
-optional label left unpopulated for now (kept on the row for future flexibility — it can be
-derived from the URI at export/query time).
+CRUD for ``external_identifier`` rows attached to a collection_object, a
+biological_association, or a field_occurrence (exclusive arc). The user supplies just the
+URI; ``source`` is an optional label left unpopulated for now (kept on the row for future
+flexibility — it can be derived from the URI at export/query time).
 """
 from __future__ import annotations
 
@@ -18,6 +18,7 @@ from app.models import ExternalIdentifier
 TARGET_FK = {
     "collection_object": "collection_object_id",
     "biological_association": "biological_association_id",
+    "field_occurrence": "field_occurrence_id",
 }
 
 

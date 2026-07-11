@@ -17,6 +17,7 @@ from .media import Media, MediaAttachment
 from .external_identifier import ExternalIdentifier
 from .life_stage import LifeStageRecord
 from .repository import Repository
+from .field_occurrence import FieldOccurrence
 
 __all__ = [
     "Base",
@@ -45,4 +46,5 @@ __all__ = [
     "ExternalIdentifier",
     "LifeStageRecord",
     "Repository",
+    "FieldOccurrence",
 ]
