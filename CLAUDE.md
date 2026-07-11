@@ -189,6 +189,21 @@ not plain text, so an edit keeps the scientific name's italics/bold on the print
   auto text (`pq_svc.row_auto_html`) to decide store-vs-clear. This also sidesteps a
   `v-html`-bound contenteditable being clobbered mid-edit by an unrelated Vue patch.
 
+**One canonical form, stored not sniffed (#67, 2026-07-12).** An override is **sanitised on the
+way in** (`labels.canonical_override`, called by `set_override_for_identical`), so the DB holds
+exactly one form and rendering is a pass-through — *what the preview showed is what prints*.
+Four defects came from getting this wrong, and each is a rule now:
+
+| rule | what went wrong without it |
+|---|---|
+| **An override that renders to nothing is `None`, not an empty override.** `''`, whitespace, `<div></div>` all clear it → the auto text. | `text_override is not None` treated `''` as real, so the label printed **blank**. A blank label pinned to a specimen is a curation error; the record still holds the data, so falling back to auto is always the honest answer. |
+| **A tag we do not emit is text, not markup.** `_looks_like_html` matches only `div/p/br/b/i/em/strong`; the sanitizer emits any *unknown* tag escaped. | `<\w+` took `Quercus <robur>` for HTML and **silently deleted** `<robur>` from the label. |
+| **Input from the editor is always HTML — sanitise it, never sniff it.** (`_override_html` still sniffs, but only to render *legacy* plaintext overrides.) | innerHTML is already entity-encoded: `R & D` arrives as `R &amp; D`, looked tagless, was escaped a *second* time, and printed as the literal `R &amp; D`. |
+| **A row with no auto text has no identity — editable alone, never grouped.** | Identity is "same auto text". A determination label on a specimen with **no current ID** has none: the preview hashed the `—` placeholder (so it grouped them and offered an edit) while the store returned `0` and **dropped the edit silently**; `_co_to_det_label` then returned `None`, so even a stored override never reached the paper. Grouping them instead would be worse — they share only their *emptiness*, so one hand-written name would be stamped onto every unidentified specimen in the queue. |
+
+`canonical_override` is **idempotent** — the stored form is fed back through the editor on the
+next edit, so it must be a fixed point.
+
 Layout/rendering detail is design.md's concern; this section owns the *policy*.
 
 ## Open issues → GitHub
