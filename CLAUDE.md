@@ -680,9 +680,30 @@ returns the **centre's** full hierarchy, so it subsumes the separate hierarchy l
 **Cost: ~9–12 s** (a single `is_in` is ~0.9 s; five is roughly linear), and that shape has returned
 504. So it **must not block the form.** Fill from the fast calls first and let this land later —
 `is_in` is *areas*, so `relation(pivot.…)` is required (`rel.pN[…]` silently matches nothing).
-The current check is worse than slow: it samples perimeter points **via Photon**, whose hierarchy
-describes the nearest feature, so it both misses and invents crossings, and is skipped in silence
-where Photon returns no features.
+
+**Built (#110, 2026-07-12): `_boundary_hierarchies()` in `collecting_event_form.py`.** Centre and
+perimeter are now both **containment**, resolved through the **same `_resolve_hierarchy`** — which
+is the whole point: the old check sampled the perimeter with **Photon**, whose `/reverse` reports
+the *nearest feature's* tiers, so it both invented and missed crossings. Measured on the two points
+that matter:
+
+| point | before (Photon perimeter) | after (containment perimeter) |
+|---|---|---|
+| Peloponnese `37.5089, 22.3745` | perimeter said `Peloponnese, Western Greece and the Ionian` (the **L4** Decentralized Administration) vs the centre's `Peloponnese Region` (**GR-J**, L5) → **false crossing on every Greek lookup** | all 4 samples = `Peloponnese Region` (GR-J) → **no warning** (2.1 s) |
+| Basel tripoint | France was silently dropped (503s) | DE `Baden-Württemberg` / CH `Basel-City` / FR `Haut-Rhin` all detected (17.2 s) |
+
+Two consequences worth stating:
+
+- **A warning now offers a state WITH its ISO code** (`GR-J`, `DE-BW`) — containment identifies the
+  state *by* that tag. Photon carried none, so a state picked from a warning used to be stored as
+  an uncoded vocab row (and `(name, iso_code)` is the vocab's identity).
+- **Picking an alternative sets only that field.** `_apply_snap` used to write the whole snapshot,
+  so choosing a *municipality* alternative silently overwrote a correct `stateProvince`. A boundary
+  warning says "the circle also reaches X **at this tier**"; it is not a claim about the others.
+- **Locality is not an administrative tier**, so it is not part of the check. Its warning button
+  remains the "also nearby" candidate picker fed by the main geocode.
+- **A failed request warns about nothing and shows no ✓.** An empty result would read as "this
+  point lies in no administrative area" — the silent wrong value of §2.
 
 **Open (do not guess):** `county` / `municipality` have **no ISO tag** below the first-order
 subdivision. `L6`=county and lowest `L7+`=municipality held across DE/GR/KZ, but that is a
