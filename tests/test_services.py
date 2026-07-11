@@ -541,6 +541,32 @@ def test_finalize_specimen_visiting_no_code_no_queue(session):
     assert session.query(PrintQueue).count() == 0
 
 
+def test_association_field_occurrence_round_trips_through_reader(session):
+    """The Records direct-save path (save_association_as_field_occurrence) creates the
+    observation, and get_associations_for_specimen reads it back — resolving the fo's
+    determination to taxon + qualifier + fo id for the UI (the round trip the user drives)."""
+    import app.services.biological as bio_svc
+
+    co, _ = _saved_co_with_code(session)
+    host = _taxon(session, "Salix", "caprea", authorship="L.")
+    rel = BiologicalRelationship(name="collected_from",
+                                 created_at=_utcnow(), updated_at=_utcnow())
+    session.add(rel); session.flush()
+
+    ba = bio_svc.save_association_as_field_occurrence(
+        session, collection_object_id=co.id, biological_relationship_id=rel.id,
+        taxon_id=host.id, identification_qualifier="cf.")
+    session.flush()
+    assert ba.object_field_occurrence_id is not None
+
+    [row] = bio_svc.get_associations_for_specimen(session, co.id)
+    assert row.object_field_occurrence_id == ba.object_field_occurrence_id
+    assert row.object_taxon_id == host.id          # resolved via the fo's determination
+    assert row.identification_qualifier == "cf."
+    assert "Salix" in row.object_label
+    assert row.rel_name == "collected_from"
+
+
 def test_finalize_specimen_saves_associations_as_field_occurrences(session):
     """An association's object taxon is recorded as its own HumanObservation
     field_occurrence sharing the specimen's event, with identifiedBy defaulting to the
