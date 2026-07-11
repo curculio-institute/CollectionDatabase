@@ -8,8 +8,32 @@ import pytest
 
 from app.services.dwc_import import (
     _ALIASES, _norm_key, parse_csv, parse_individual_count,
-    row_to_event_fields, row_to_specimen_prefill,
+    host_search_query, row_host_name, row_to_event_fields, row_to_specimen_prefill,
 )
+
+
+class TestHostAssociation:
+    """associatedOrganisms → host biological association (#6)."""
+
+    def test_associated_organisms_is_a_recognised_term(self):
+        # A real DwC term, normalised only for casing — reaches the row dict.
+        rows = parse_csv("scientificName,associatedOrganisms\nSitona sp.,Salix\n")
+        assert row_host_name(rows[0]) == "Salix"
+
+    def test_associated_taxa_is_not_aliased_onto_it(self):
+        # associatedTaxa is a distinct DwC term — deliberately NOT conflated.
+        assert _norm_key("associatedTaxa") not in _ALIASES
+
+    def test_row_host_name_blank_when_absent(self):
+        assert row_host_name({"scientificName": "Sitona lineatus"}) == ""
+        assert row_host_name({"associatedOrganisms": "   "}) == ""
+
+    def test_host_search_query_strips_open_nomenclature(self):
+        assert host_search_query("Betula sp.") == "Betula"
+        assert host_search_query("Silene cf. otites") == "Silene otites"
+        assert host_search_query("Quercus spp.") == "Quercus"
+        assert host_search_query("Salix") == "Salix"          # bare genus unchanged
+        assert host_search_query("Rumex acetosella") == "Rumex acetosella"
 
 
 class TestParseIndividualCount:

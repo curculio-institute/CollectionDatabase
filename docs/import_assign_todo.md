@@ -89,13 +89,25 @@ coordinateUncertaintyInMeters — the georeference has no radius" in `assign_sta
 individualCount warning) when a coordinate pair carries no radius, so the save still proceeds but
 the gap is visible.
 
-### 6. Host plants / biological associations can't be imported
+### 6. Host plants / biological associations can't be imported — DONE
 No `associatedTaxa` term; `_on_assign` never passes the `associations=` arg that
 `finalize_specimen` already accepts (`specimens.py`). ~82 real rows carry host plants.
 
-- Add an `associatedTaxa` (or similar) term, resolve to taxon + relationship, pass through
-  `finalize_specimen(..., associations=...)`.
-- Depends on the biological-relationship vocab being loaded.
+**Fixed** — as a biological association, **no new DB column**. `associatedOrganisms` (the term
+the staged `Käfersammlung` file uses; `associatedTaxa` is a distinct term and is *not* aliased
+onto it) is added to `_DWC_TERMS` so the parser reads it; `row_host_name()` returns the raw host.
+When a selected row carries a host, an inline **Host / association** block appears in the assign
+card: a relationship dropdown defaulting to **"collected from"** (editable) and a taxon-search box
+auto-seeded with the host name via the new additive `taxon_search.set_query()` (local→TW→WCVP).
+The seed is cleaned by `host_search_query()` — open-nomenclature qualifiers are stripped
+(`Betula sp.` → `Betula`, `Silene cf. otites` → `Silene otites`; bare genera like `Salix` pass
+through) because the multi-token search needs every token to match; the user confirms the actual
+taxon rather than a silent `candidates[0]`. On Save the resolved `{rel_id, taxon_id}` rides the
+existing `finalize_specimen(..., associations=...)`. A present-but-unresolved host is **not**
+dropped silently — the specimen saves and a warning names the host to add in Records. Real data
+grounding: the 82 hosts still live in `LEGACY:Hinweis` (mixed with notes/German common names) and
+are hand-triaged into `associatedOrganisms` before export. Covered by
+`test_dwc_import.py::TestHostAssociation`.
 
 ---
 

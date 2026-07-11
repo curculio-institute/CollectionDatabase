@@ -28,6 +28,9 @@ import app.services.identifiers as id_svc
 import app.services as svc
 import app.services.repositories as repo_svc
 import app.services.persons as persons_svc
+import app.services.biological as bio_svc
+from app.services.biological import get_relationship_options
+from app.config import get_config
 from app.ui.taxon_search import build_taxon_search, _render_tw_label
 from app.ui.taxon_editor import open_new_taxon_dialog
 from app.ui.vocab_field import build_vocab_field
@@ -185,6 +188,37 @@ def build_import_assign_tab(session_factory, refreshers: dict, on_saved=None) ->
                 assign_status = ui.label("").classes("text-xs italic mt-1") \
                     .style("color:var(--tp-base-soft)")
 
+                # ── Host / biological association (#6) ────────────────────
+                # Shown only when the row carries an associatedOrganisms value.
+                # The specimen is the subject; the host plant is the object. The
+                # host name is auto-fetched into the taxon box (local→TW→WCVP) so
+                # the user confirms the highlighted match rather than trusting a
+                # silent candidates[0]; the relationship defaults to "collected
+                # from" (editable). Staged into finalize_specimen on Save.
+                host_area = ui.column().classes("w-full gap-2 mt-1")
+                host_area.set_visibility(False)
+                _rel_opts = _with_session(get_relationship_options)
+                _default_rel_id = next(
+                    (r.id for r in _rel_opts if r.name == "collected from"), None)
+                with host_area:
+                    ui.separator().classes("my-1")
+                    with ui.row().classes("w-full items-center gap-2"):
+                        ui.icon("eco").classes("text-green-600")
+                        ui.label("Host / association").classes("section-label")
+                    host_rel_sel = ui.select(
+                        options={r.id: r.name for r in _rel_opts},
+                        label="Relationship",
+                        clearable=True,
+                    ).classes("w-full")
+                    ui.timer(2.0, lambda: host_rel_sel.set_options(
+                        {r.id: r.name for r in _with_session(get_relationship_options)}))
+                    host_ts = build_taxon_search(
+                        session_factory,
+                        nomenclatural_codes=list(get_config().bio_assoc_default_codes),
+                        sources=("local", "taxonworks", "wcvp"),
+                        placeholder="Host plant name…",
+                    )
+
         # ================================================================
         # Logic: select / clear a row
         # ================================================================
@@ -193,6 +227,9 @@ def build_import_assign_tab(session_factory, refreshers: dict, on_saved=None) ->
             state["selected"] = None
             state["taxon_id"] = None
             form_area.set_visibility(False)
+            host_area.set_visibility(False)
+            host_ts["clear"]()
+            host_rel_sel.value = None
 
         def _summary_line(label: str, value: str) -> None:
             if not value:
@@ -257,6 +294,21 @@ def build_import_assign_tab(session_factory, refreshers: dict, on_saved=None) ->
                 assign_status.set_text("  ·  ".join(warns))
             sex_sel.value  = det["sex"] or None
             prep_field["set_value"](sp["preparations"] or None)
+
+            # Host / biological association (#6): only when the row carries one.
+            # Auto-fetch the plant name into the taxon box; default the
+            # relationship to "collected from" (both editable before Save).
+            _host = dwc_svc.row_host_name(row)
+            if _host:
+                host_area.set_visibility(True)
+                host_rel_sel.value = _default_rel_id
+                # Seed with the qualifier stripped ("Betula sp." → "Betula") so a
+                # multi-token search actually matches; the user confirms the taxon.
+                host_ts["set_query"](dwc_svc.host_search_query(_host))
+            else:
+                host_area.set_visibility(False)
+                host_ts["clear"]()
+                host_rel_sel.value = None
 
             # Refresh identifier dropdown; leave it empty for the user to pick.
             cat_num.options = {c: c for c in _reserved_opts()}
@@ -578,6 +630,20 @@ def build_import_assign_tab(session_factory, refreshers: dict, on_saved=None) ->
                                 "verbatim_identification":  dwc_svc.row_scientific_name(row),
                             },
                         )
+                        # Host / biological association (#6): attach it only when
+                        # a taxon actually resolved. A present-but-unresolved host
+                        # is NOT dropped silently — the specimen still saves and a
+                        # warning names the host to fix in Records.
+                        associations = []
+                        host_unresolved = ""
+                        if dwc_svc.row_host_name(row):
+                            _htid = host_ts["taxon_id"]
+                            _hrel = host_rel_sel.value
+                            if _htid and _htid != -1 and _hrel:
+                                associations.append(
+                                    {"rel_id": _hrel, "taxon_id": _htid})
+                            else:
+                                host_unresolved = dwc_svc.row_host_name(row)
                         # Retroactive digitisation: the specimen already carries
                         # its own data + identification labels and the identifier
                         # is pre-printed, so bind the code but queue no labels
@@ -587,13 +653,20 @@ def build_import_assign_tab(session_factory, refreshers: dict, on_saved=None) ->
                             collection_object_id=co.id,
                             code=code,
                             queue_labels=False,
+                            associations=associations,
                         )
                         saved_id = co.id
             except Exception as exc:
                 ui.notify(f"Save failed: {exc}", type="negative")
                 return
 
-            ui.notify(f"Saved — specimen #{saved_id}  [{code}]", type="positive")
+            if host_unresolved:
+                ui.notify(
+                    f"Saved #{saved_id} [{code}] — but host {host_unresolved!r} "
+                    "wasn't resolved, so no association was attached. Add it in "
+                    "Records.", type="warning", timeout=6000)
+            else:
+                ui.notify(f"Saved — specimen #{saved_id}  [{code}]", type="positive")
 
             # Reset for the next specimen: clear the selection + fields and drop
             # focus back on the row selector so the loop is keyboard-continuous.
