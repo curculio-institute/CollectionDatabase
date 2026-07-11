@@ -838,14 +838,22 @@ computer** — e.g. a Coleoptera checklist (ICZN). Engine: `services/name_source
   express any lineage the source has — notably **a species under its subgenus** — and it is the
   source's own statement of placement, not our reconstruction. Own-lineage (Epic #30) is
   preserved: a synonym keeps *its own* parents; its accepted name is built as a separate chain.
-- **A source may skip a rank the model needs.** All 692 subspecies in the Coleoptera archive are
-  parented straight under a **subgenus**, so the chain contains no species row and the
-  infraspecific name had nothing to compose from — which silently produced
-  `Carabus (Megodontus) None germarii`. Two fixes, both kept: `compose_scientific_name` **never
-  interpolates a missing part** (a bare-epithet name is a visible fault, not a plausible lie),
-  and `_species_ancestor()` recovers the species from the trinomial — preferring the archive's
-  own species row (it carries the authorship), synthesising only the name otherwise, with
-  authorship left NULL rather than guessed.
+- **A source may skip a rank the model needs — and the workaround must be loud.** The first
+  Coleoptera archive parented all 692 subspecies straight under a **subgenus**, so the chain had
+  no species row, the infraspecific name had nothing to compose from, and it silently produced
+  `Carabus (Megodontus) None germarii`. Two fixes, both kept:
+  - `compose_scientific_name` **never interpolates a missing part** — a bare-epithet name is a
+    visible fault, not a plausible-looking lie.
+  - `_species_ancestor()` recovers the species from the trinomial, **preferring the archive's own
+    species row** (it carries the authorship) and synthesising only the name otherwise, with
+    authorship left NULL rather than guessed.
+
+  **That reconstruction is a defect workaround, not a feature.** A reconstructed entry carries no
+  `source_id`, `datasets.import_all` counts them into `ImportReport.reconstructed_species`, and a
+  non-zero count is **reported to the user** ("the archive should supply those species rows"). A
+  well-formed archive reconstructs **nothing**. *(The archive was since fixed at source — it now
+  ships the 211 missing species, 10,831 taxa, all 691 subspecies under a Species — so this must
+  read 0 for it. If it ever fires again, something regressed; that is the point of the counter.)*
 - **`import_all`** creates a taxon row for every importable name (idempotent — same seam as a
   single pick). It is warned first: a large one-way write that puts the whole checklist in the
   Taxonomy tree whether or not specimens are held. It is **not** needed to record specimens —

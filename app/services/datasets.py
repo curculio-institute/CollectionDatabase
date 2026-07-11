@@ -167,6 +167,11 @@ class ImportReport:
     refused: int = 0
     failed: int = 0
     created: int = 0            # net new taxon rows
+    # Names whose SPECIES parent the archive did not supply, so it had to be reconstructed
+    # from the trinomial (name_source._species_ancestor). A well-formed archive reconstructs
+    # NOTHING: this is a defect counter, not a feature counter. Reported rather than silent —
+    # a workaround nobody can see is a workaround nobody knows has started firing.
+    reconstructed_species: int = 0
     mismatches: list[str] = None
     refusals: list[str] = None
 
@@ -203,6 +208,9 @@ def import_all(session, ds: Dataset, *, progress=None, batch: int = 200) -> Impo
             row = ns._to_name(raw)
             try:
                 chain = ns.chain_for(db, row, spec)
+                # A reconstructed ancestor carries no source_id: the archive did not supply it.
+                if any(e.get("source_id") is None for e in chain["chain"]):
+                    report.reconstructed_species += 1
                 get_or_create_from_chain(
                     session, chain["chain"],
                     accepted_chain=chain["accepted_chain"],

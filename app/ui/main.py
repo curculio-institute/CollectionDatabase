@@ -2986,6 +2986,17 @@ def index():
                                         f"{report.failed:,} failed")
                             ui.notify(msg, type="positive", timeout=0,
                                       close_button="Got it")
+                            if report.reconstructed_species:
+                                # A well-formed archive reconstructs NOTHING. If this fires, the
+                                # archive is missing species rows its own subspecies depend on —
+                                # say so plainly instead of quietly papering over it.
+                                ui.notify(
+                                    f"{report.reconstructed_species:,} names had no species "
+                                    "parent in the archive, so it was reconstructed from the "
+                                    "trinomial (authorship left blank). The archive should "
+                                    "supply those species rows.",
+                                    type="warning", timeout=0, close_button="Got it",
+                                )
                             for r in report.refusals[:5]:
                                 ui.notify(r, type="warning", timeout=8000)
                             # The Taxonomy tab's refreshers live in its own scope; the

@@ -201,9 +201,11 @@ class TestMissingSpeciesAncestor:
     to compose from, which silently produced names like 'Carabus (Megodontus) None germarii'.
     """
 
+    # A subspecies parented under the SUBGENUS (id 5), whose species ("Callisthenes elegans")
+    # is nowhere in the archive — the 475-of-692 case: a sheet that splits a species into
+    # subspecies lists only the subspecies, never the species itself.
     ROWS = _ROWS + [
-        # subspecies parented under the SUBGENUS (id 5), not under a species
-        "8|Carabidae|Callisthenes|Callisthenes reticulatus alpinus|Meier, 1900"
+        "8|Carabidae|Callisthenes|Callisthenes elegans alpinus|Meier, 1900"
         "|Subspecies|Accepted||5",
     ]
 
@@ -220,7 +222,7 @@ class TestMissingSpeciesAncestor:
         ranks = [e["rank"] for e in chain["chain"]]
         assert "species" in ranks, "the missing species parent must be inserted"
         names = [e["name"] for e in chain["chain"]]
-        assert names[-2] == "Callisthenes reticulatus"   # directly above the leaf
+        assert names[-2] == "Callisthenes elegans"   # directly above the leaf
 
     def test_no_name_is_ever_composed_with_a_missing_part(self, session, db):
         chain = ns.chain_for(db, ns.get(db, "8"), _spec())
@@ -228,4 +230,44 @@ class TestMissingSpeciesAncestor:
         session.flush()
         assert "None" not in leaf.scientific_name
         assert leaf.scientific_name == (
-            "Callisthenes (Callisphaena) reticulatus alpinus")
+            "Callisthenes (Callisphaena) elegans alpinus")
+
+    def test_a_reconstructed_ancestor_is_marked_as_not_from_the_archive(self, db):
+        """The reconstruction is a DEFECT WORKAROUND, and it must be visible as one.
+
+        A reconstructed entry carries no source_id — that is what `datasets.import_all` counts
+        into `ImportReport.reconstructed_species`. A well-formed archive (one that ships the
+        species its subspecies point at) reconstructs NOTHING, so a non-zero count is the
+        signal that an archive is missing rows, not a routine statistic.
+        """
+        chain = ns.chain_for(db, ns.get(db, "8"), _spec())["chain"]
+        reconstructed = [e for e in chain if e["source_id"] is None]
+        assert [e["rank"] for e in reconstructed] == ["species"]
+        # Authorship is left blank rather than guessed: the NAME is certain, the author is not.
+        assert reconstructed[0]["authorship"] is None
+        # Everything the archive DID supply keeps its id.
+        assert all(e["source_id"] for e in chain if e["rank"] != "species")
+
+
+class TestWellFormedArchiveReconstructsNothing:
+    """The counterpart: when the archive supplies the species, nothing is invented."""
+
+    ROWS = _ROWS + [
+        # the species the subspecies belongs to, present and correctly parented
+        "7|Carabidae|Callisthenes|Callisthenes reticulatus|(Fabricius, 1787)"
+        "|Species|Accepted||5",
+        "8|Carabidae|Callisthenes|Callisthenes reticulatus alpinus|Meier, 1900"
+        "|Subspecies|Accepted||7",
+    ]
+
+    def test_nothing_is_reconstructed(self, tmp_path):
+        p = tmp_path / "g.sqlite"
+        ns.build_index(_archive(tmp_path, self.ROWS, header=_HEADER_CORRECT), p, _spec())
+        db = ns.open_index(p)
+        try:
+            chain = ns.chain_for(db, ns.get(db, "8"), _spec())["chain"]
+        finally:
+            db.close()
+        assert all(e["source_id"] for e in chain), \
+            "a well-formed archive must reconstruct nothing"
+        assert [e["rank"] for e in chain][-2:] == ["species", "subspecies"]
