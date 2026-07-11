@@ -38,6 +38,7 @@ import app.services.db_safety as db_safety
 from app.services.label_text import format_event_preview_html
 from app.models import CollectionObject, CollectingEvent, TaxonDetermination
 from app.ui.taxon_search import build_taxon_search
+from app.ui.choice_field import build_choice_field
 from app.ui.identification_list import build_identification_list
 from app.ui.import_assign import build_import_assign_tab
 from app.ui.controlled_vocab_tab import build_controlled_vocab_tab
@@ -1164,18 +1165,13 @@ def index():
                             .tooltip("Clear staged associations")
                     ui.separator().classes("mb-3")
 
-                    # Relationship selector
+                    # Relationship — the custom-dropdown look of the taxon/person fields
+                    # (snap-to-first, one keystroke), so it reads as a peer of the taxon
+                    # field below and isn't overlooked. Names map back to their ids.
                     rel_options_list = _with_session(get_relationship_options)
-                    rel_sel = (
-                        ui.select(
-                            options={r.id: r.name for r in rel_options_list},
-                            label="Relationship",
-                            clearable=True,
-                        )
-                        .classes("w-full mb-3")
-                        .tooltip("Select the type of biological association")
-                    )
-                    ui.timer(2.0, lambda: rel_sel.set_options({r.id: r.name for r in _with_session(get_relationship_options)}))
+                    _rel_name_to_id = {r.name: r.id for r in rel_options_list}
+                    rel_field = build_choice_field(
+                        list(_rel_name_to_id.keys()), "Relationship", classes="w-full mb-2")
 
                     # Object taxon search — bio_codes list is read on each keystroke
                     bio_obj_state = build_taxon_search(
@@ -1184,13 +1180,6 @@ def index():
                         sources=("local", "taxonworks", "wcvp"),
                         placeholder="Type plant or fungus name…",
                     )
-                    # The object is recorded as a HumanObservation field occurrence; the
-                    # qualifier is the only identification field surfaced here (the rest is
-                    # automatic and stays editable via the observation's editor).
-                    bio_qual_sel = ui.select(
-                        options=IDENTIFICATION_QUALIFIER_OPTIONS, value="",
-                        label="Qualifier (cf./aff.…)",
-                    ).classes("w-full mt-2")
 
                     with ui.row().classes("items-center gap-3 mt-3"):
                         show_animals_cb = ui.checkbox(
@@ -1208,10 +1197,16 @@ def index():
 
                         show_animals_cb.on_value_change(_on_show_animals)
 
+                        # The qualifier is small — a compact snap-to-first field beside the
+                        # checkbox, not a full-width row. Only identification field exposed.
+                        bio_qual = build_choice_field(
+                            IDENTIFICATION_QUALIFIER_OPTIONS, "Qualifier", classes="w-40")
+
                         ui.space()
 
                         def _add_assoc():
-                            rel_id   = rel_sel.value
+                            rel_name = rel_field["get_value"]()
+                            rel_id   = _rel_name_to_id.get(rel_name)
                             taxon_id = bio_obj_state["taxon_id"]
                             if not rel_id:
                                 ui.notify("Select a relationship first.", type="warning")
@@ -1222,12 +1217,11 @@ def index():
                             if taxon_id == -1:
                                 ui.notify("Taxon is still being imported — please wait a moment.", type="warning")
                                 return
-                            rel_name = rel_sel.options.get(rel_id, str(rel_id))
                             bio_state["associations"].append({
                                 "rel_id":      rel_id,
                                 "rel_name":    rel_name,
                                 "taxon_id":    taxon_id,
-                                "qualifier":   bio_qual_sel.value or None,
+                                "qualifier":   bio_qual["get_value"](),
                                 "taxon_label": bio_obj_state["label"],
                                 # Per-association staged media + external links; persist
                                 # across list re-renders (passed as staged_store) and are
@@ -1236,8 +1230,8 @@ def index():
                                 "extid_items": [],
                             })
                             bio_obj_state["clear"]()
-                            rel_sel.value = None
-                            bio_qual_sel.value = ""
+                            rel_field["set_value"](None)
+                            bio_qual["set_value"](None)
                             _refresh_assoc_list()
 
                         (
@@ -1267,9 +1261,10 @@ def index():
                                     a.setdefault("media_items", [])
                                     a.setdefault("extid_items", [])
                                     build_external_id_button(
-                                        _sf, target_kind="biological_association",
+                                        _sf, target_kind="field_occurrence",
                                         staged=True, staged_store=a["extid_items"],
-                                        tooltip="Other party (resource identifier, on Save)")
+                                        tooltip="Observation resource identifier "
+                                                "(iNaturalist URL, on Save)")
                                     build_media_button(
                                         _sf, target_kind="biological_association",
                                         staged=True, staged_store=a["media_items"],
@@ -1573,11 +1568,15 @@ def index():
                                             rights_holder_id=_it["rights_holder_id"],
                                             is_primary=_it["is_primary"],
                                         )
+                                    # The iNaturalist URL / resource identifier belongs to
+                                    # the observation (the field occurrence), not the
+                                    # association; media above stays on the association.
                                     for _ex in _assoc.get("extid_items", []):
                                         extid_svc.add_identifier(
                                             session,
-                                            target_kind="biological_association",
-                                            target_id=_ba.id, value=_ex["value"],
+                                            target_kind="field_occurrence",
+                                            target_id=_ba.object_field_occurrence_id,
+                                            value=_ex["value"],
                                         )
                         event_sel.set_options(_event_opts())
                         spec["refresh_codes"]()

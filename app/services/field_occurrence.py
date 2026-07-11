@@ -72,6 +72,45 @@ def create_field_occurrence(
     return fo
 
 
+def update_field_occurrence(
+    session: Session,
+    fo_id: int,
+    *,
+    fo_fields: dict | None = None,
+    det_fields: dict | None = None,
+) -> FieldOccurrence:
+    """Full edit of a field occurrence and its current determination (the Records
+    escape hatch — data entry only ever sets the qualifier, but the whole observation
+    stays editable). ``fo_fields`` sets any of basis_of_record / individual_count / sex /
+    life_stage / occurrence_remarks / confidential; ``det_fields`` sets any of taxon_id /
+    identification_qualifier / identified_by_id / date_identified / type_status. Changing
+    the taxon re-freezes verbatim_identification from the new name (Epic #30) unless one is
+    supplied. Caller owns the transaction."""
+    fo = session.get(FieldOccurrence, fo_id)
+    if fo is None:
+        raise ValueError(f"field_occurrence {fo_id} not found")
+    now = _utcnow()
+    if fo_fields:
+        for k, v in fo_fields.items():
+            setattr(fo, k, v)
+        fo.updated_at = now
+    if det_fields:
+        det = current_determination(session, fo)
+        if det is None:
+            raise ValueError(f"field_occurrence {fo_id} has no current determination")
+        new_taxon_id = det_fields.get("taxon_id", det.taxon_id)
+        if "taxon_id" in det_fields and new_taxon_id != det.taxon_id \
+                and "verbatim_identification" not in det_fields:
+            from app.models import Taxon
+            tx = session.get(Taxon, new_taxon_id)
+            det.verbatim_identification = compose_scientific_name(session, tx) if tx else None
+        for k, v in det_fields.items():
+            setattr(det, k, v)
+        det.updated_at = now
+    session.flush()
+    return fo
+
+
 def current_determination(session: Session, fo: FieldOccurrence) -> TaxonDetermination | None:
     """The field occurrence's current determination (is_current=1), or None."""
     for det in fo.determinations:

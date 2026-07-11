@@ -541,6 +541,41 @@ def test_finalize_specimen_visiting_no_code_no_queue(session):
     assert session.query(PrintQueue).count() == 0
 
 
+def test_update_field_occurrence_edits_observation_and_determination(session):
+    """The full-edit escape hatch: update_field_occurrence changes both the observation
+    fields and its determination, re-freezing verbatimIdentification when the taxon changes."""
+    from app.models import FieldOccurrence
+    import app.services.biological as bio_svc
+    import app.services.field_occurrence as fo_svc
+
+    co, _ = _saved_co_with_code(session)
+    oak = _taxon(session, "Quercus", "robur", authorship="L.")
+    willow = _taxon(session, "Salix", "caprea", authorship="L.")
+    rel = BiologicalRelationship(name="collected_from",
+                                 created_at=_utcnow(), updated_at=_utcnow())
+    session.add(rel); session.flush()
+    ba = bio_svc.save_association_as_field_occurrence(
+        session, collection_object_id=co.id, biological_relationship_id=rel.id,
+        taxon_id=oak.id, identification_qualifier="cf.")
+    session.flush()
+    fo_id = ba.object_field_occurrence_id
+
+    fo_svc.update_field_occurrence(
+        session, fo_id,
+        fo_fields={"individual_count": 3, "sex": "female", "confidential": 1},
+        det_fields={"taxon_id": willow.id, "identification_qualifier": "aff."},
+    )
+    session.flush()
+
+    fo = session.get(FieldOccurrence, fo_id)
+    assert fo.individual_count == 3 and fo.sex == "female" and fo.confidential == 1
+    det = fo_svc.current_determination(session, fo)
+    assert det.taxon_id == willow.id
+    assert det.identification_qualifier == "aff."
+    # Changing the taxon re-freezes the composed name (qualifier-free).
+    assert det.verbatim_identification == "Salix caprea"
+
+
 def test_association_field_occurrence_round_trips_through_reader(session):
     """The Records direct-save path (save_association_as_field_occurrence) creates the
     observation, and get_associations_for_specimen reads it back — resolving the fo's

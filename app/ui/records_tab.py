@@ -17,6 +17,8 @@ from app.services.taxa import (
     render_identification,
 )
 from app.vocab import IDENTIFICATION_QUALIFIER_OPTIONS
+from app.ui.choice_field import build_choice_field
+from app.ui.field_occurrence_editor import open_field_occurrence_editor
 from app.ui.taxon_search import build_taxon_search, _local_item_html
 from app.ui.identification_list import build_identification_list
 from app.ui.collecting_event_form import build_collecting_event_form
@@ -469,13 +471,14 @@ def build_records_tab(session_factory, *, on_saved: callable | None = None) -> N
             # Staged, like the identifications above: the rows loaded from the DB, plus any
             # added in this session (id=None), minus any removed (their ids queued in
             # _assoc_deleted). Nothing is written until "Save changes" calls _assoc_commit.
-            _assoc_rows: list[dict] = _with_session(
-                lambda s: [{"id": a.id, "rel_id": a.rel_id, "rel_name": a.rel_name,
-                            "taxon_id": a.object_taxon_id, "object_label": a.object_label,
-                            "qualifier": a.identification_qualifier,
-                            "fo_id": a.object_field_occurrence_id}
-                           for a in bio_svc.get_associations_for_specimen(s, co_id)]
-            )
+            def _load_assoc_rows(s) -> list[dict]:
+                return [{"id": a.id, "rel_id": a.rel_id, "rel_name": a.rel_name,
+                         "taxon_id": a.object_taxon_id, "object_label": a.object_label,
+                         "qualifier": a.identification_qualifier,
+                         "fo_id": a.object_field_occurrence_id}
+                        for a in bio_svc.get_associations_for_specimen(s, co_id)]
+
+            _assoc_rows: list[dict] = _with_session(_load_assoc_rows)
             _assoc_deleted: list[int] = []
             _assoc_baseline = [(r["id"], r["rel_id"], r["taxon_id"]) for r in _assoc_rows]
 
@@ -483,6 +486,13 @@ def build_records_tab(session_factory, *, on_saved: callable | None = None) -> N
                 return (bool(_assoc_deleted)
                         or [(r["id"], r["rel_id"], r["taxon_id"]) for r in _assoc_rows]
                         != _assoc_baseline)
+
+            def _reload_assoc_from_db():
+                """After the full observation editor commits directly to the DB, refresh
+                the saved rows' labels/qualifiers while keeping any staged (unsaved) adds."""
+                staged = [r for r in _assoc_rows if r["id"] is None]
+                _assoc_rows[:] = _with_session(_load_assoc_rows) + staged
+                _refresh_assoc_list()
 
             def _refresh_assoc_list():
                 assoc_col.clear()
@@ -499,9 +509,21 @@ def build_records_tab(session_factory, *, on_saved: callable | None = None) -> N
                             ui.label(f"{a['rel_name']} — {_obj}") \
                                 .classes("text-sm flex-1")
                             if a["id"] is not None:
-                                _ext_btn(session_factory,
-                                         target_kind="biological_association",
-                                         target_id=a["id"], tooltip="Other party (resource identifier)")
+                                if a.get("fo_id"):
+                                    ui.button("", icon="edit_note") \
+                                        .props("flat dense round size=sm color=secondary") \
+                                        .tooltip("Edit the full observation (field occurrence)") \
+                                        .on_click(lambda _, fid=a["fo_id"]:
+                                                  open_field_occurrence_editor(
+                                                      session_factory, fid,
+                                                      on_saved=_reload_assoc_from_db))
+                                    # The iNaturalist URL / resource identifier belongs to
+                                    # the observation (the field occurrence it came from);
+                                    # media stays on the association.
+                                    _ext_btn(session_factory,
+                                             target_kind="field_occurrence",
+                                             target_id=a["fo_id"],
+                                             tooltip="Observation resource identifier (iNaturalist URL)")
                                 _media_btn(session_factory,
                                            target_kind="biological_association",
                                            target_id=a["id"], tooltip="Association media")
@@ -569,12 +591,11 @@ def build_records_tab(session_factory, *, on_saved: callable | None = None) -> N
             # The object is recorded as a HumanObservation field occurrence; the qualifier
             # is the only identification field surfaced at data entry (the rest —
             # basisOfRecord, identifiedBy=recordedBy, shared event — is automatic). The full
-            # observation stays editable afterwards via its editor.
-            assoc_qual_sel = ui.select(
-                options=IDENTIFICATION_QUALIFIER_OPTIONS,
-                value="",
-                label="Qualifier (cf./aff.…)",
-            ).classes("w-full mb-2")
+            # observation stays editable afterwards via its editor. Snap-to-first dropdown
+            # (cf. first, one keystroke), like the other closed-list fields.
+            assoc_qual = build_choice_field(
+                IDENTIFICATION_QUALIFIER_OPTIONS, "Qualifier (cf./aff.…)",
+                classes="w-full mb-2")
 
             def _add_assoc():
                 rel_id   = assoc_rel_sel.value
@@ -595,13 +616,13 @@ def build_records_tab(session_factory, *, on_saved: callable | None = None) -> N
                         "rel_id":       rel_id,
                         "rel_name":     next((r.name for r in rel_opts if r.id == rel_id), "?"),
                         "taxon_id":     taxon_id,
-                        "qualifier":    assoc_qual_sel.value or None,
+                        "qualifier":    assoc_qual["get_value"](),
                         "fo_id":        None,
                         "object_label": bio_state["label"] or f"taxon #{taxon_id}",
                     })
                     bio_state["clear"]()
                     assoc_rel_sel.value = None
-                    assoc_qual_sel.value = ""
+                    assoc_qual["set_value"](None)
                     _refresh_assoc_list()
                 except Exception as exc:
                     ui.notify(f"Failed: {exc}", type="negative")
