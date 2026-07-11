@@ -63,12 +63,19 @@ from app.services.biological import (
     get_relationship_options,
 )
 from app.services.validation import validate_event_fields
+from app.services.taxa import TAXON_RANKS as _TAXON_RANKS
 from app.vocab import IDENTIFICATION_QUALIFIER_OPTIONS
 
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
 # Controlled-vocabulary lists live in app/vocab.py (single source of truth).
+
+# Ranks the checklist tree prints as a rank label beside the name: everything above
+# species. Derived from TAXON_RANKS rather than hand-listed — a hand-listed subset
+# silently omitted the ranks above 'order', so a superorder rendered with no label
+# and no heading style, reading as a different kind of row rather than a higher one.
+_TREE_RANK_LABELS: list[str] = _TAXON_RANKS[:_TAXON_RANKS.index("species")]
 
 # ---------------------------------------------------------------------------
 # Engine (module-level, created once)
@@ -376,6 +383,14 @@ def index():
         }
       }, true);
     })();
+    // Bridge for emitting a Python event from inside a Vue TEMPLATE (the checklist
+    // tree's row actions, added via add_slot). Vue's runtime-compiled template proxy
+    // resolves any identifier that is not on its small allow-list to `undefined` —
+    // so neither `emitEvent(...)` nor `window.emitEvent(...)` works there (the latter
+    // because `window` itself resolves to undefined). Names starting with '_' are the
+    // documented escape: the proxy's has() trap returns false for them, so they fall
+    // through to the real global scope. Hence the underscore.
+    window._tpEmit = function(name, arg){ emitEvent(name, arg); };
     </script>""")
 
     # ── Unsaved-changes guard (beforeunload) ─────────────────────────────
@@ -642,14 +657,36 @@ def index():
       .tax-move-hint { opacity:0; transition:opacity .12s; margin-left:4px;
                        color:var(--tp-base-soft); cursor:default; }
       .checklist-tree.reorder-on .q-tree__node-header:hover .tax-move-hint { opacity:.45; }
+      /* Per-row actions (edit, open in TaxonPages): hidden until the row is hovered, so
+         the checklist stays clean to READ — it is a checklist first — while the actions
+         are one hover away on the row they belong to. Both carry a q-tooltip: an icon
+         that appears on hover must still say what it does. */
+      .tax-row-action { opacity:0; transition:opacity .12s; margin-left:2px;
+                        color:var(--tp-base-soft); cursor:pointer; }
+      .checklist-tree .q-tree__node-header:hover .tax-row-action { opacity:.55; }
+      .tax-row-action:hover { opacity:1 !important; color:var(--tp-secondary); }
+      .tax-tw-link   { font-size:.72rem; text-decoration:none; line-height:1; }
+      /* Every rank in TAXON_RANKS must have a style. A rank with none falls through to
+         the default body size and reads as a different KIND of row rather than a higher
+         one — which is exactly how a mis-ranked 'superorder' hid in plain sight. The
+         ranks above order are the rarest, so they were the ones missing. */
+      .rank-kingdom,
+      .rank-phylum,
+      .rank-subphylum,
+      .rank-class,
+      .rank-subclass,
+      .rank-infraclass,
+      .rank-superorder,
       .rank-order,
       .rank-suborder,
       .rank-infraorder,
+      .rank-series,
       .rank-superfamily { font-size:1.45rem; font-weight:700;
                         text-transform:uppercase; letter-spacing:.05em; }
       .rank-family    { font-size:1.35rem; font-weight:800;
                         text-transform:uppercase; letter-spacing:.03em; }
       .rank-subfamily { font-size:1.12rem; font-weight:700; }
+      .rank-supertribe { font-size:1.0rem; font-weight:600; }
       .rank-tribe     { font-size:1.0rem;  font-weight:600; }
       .rank-subtribe  { font-size:.92rem; font-weight:600; }
       .rank-genus     { font-size:1.05rem; font-weight:700; font-style:italic; }
@@ -657,7 +694,9 @@ def index():
       .rank-species     { font-size:.875rem; font-style:italic; }
       .rank-subspecies  { font-size:.875rem; font-style:italic; }
       .rank-variety     { font-size:.875rem; font-style:italic; }
+      .rank-subvariety  { font-size:.875rem; font-style:italic; }
       .rank-form        { font-size:.875rem; font-style:italic; }
+      .rank-subform     { font-size:.875rem; font-style:italic; }
       .rank-synonym   { font-size:.85rem; font-style:italic;
                         color:var(--tp-base-soft); }
       /* count chips */
@@ -1895,7 +1934,21 @@ def index():
                             _refresh_taxonomy_stats()
                             _refresh_tree()
 
-                        build_taxon_editor(_sf, _on_saved_taxon)
+                        _taxon_editor = build_taxon_editor(_sf, _on_saved_taxon)
+
+                        # The tree's per-row pencil (see _NODE_SLOT) emits the node id —
+                        # 'taxon-<id>' for a name, 'syn-<id>' for a synonym row (itself a
+                        # taxon, so it is editable the same way).
+                        def _on_tax_edit(e):
+                            node_id = str(e.args or "")
+                            _, _, raw = node_id.rpartition("-")
+                            if not raw.isdigit():
+                                ui.notify(f"Cannot edit: unrecognised row {node_id!r}.",
+                                          type="warning")
+                                return
+                            _taxon_editor["open_edit"](int(raw))
+
+                        ui.on("tax_edit", _on_tax_edit)
 
                         def _check_consistency():
                             from app.services.taxa import verify_taxon_consistency
@@ -2038,7 +2091,7 @@ def index():
                           <span v-if="props.node.synonym"
                                 style="color:var(--tp-base-soft); font-size:.8rem;
                                        font-style:normal; margin-right:-2px;">=</span>
-                          <span class="tax-rank">{{ ['order','suborder','infraorder','superfamily','family','subfamily','tribe','subtribe','genus','subgenus'].includes(props.node.rank) ? props.node.rank : '' }}</span>
+                          <span class="tax-rank">{{ __RANK_LABELS__.includes(props.node.rank) ? props.node.rank : '' }}</span>
                           <span :class="'rank-' + props.node.rank">{{ props.node.name }}</span>
                           <span v-if="props.node.auth"
                                 style="font-style:normal; font-size:.78rem;
@@ -2053,17 +2106,20 @@ def index():
                           </span>
                           <a v-if="props.node.tw_url"
                              :href="props.node.tw_url" target="_blank"
-                             title="Open in TaxonPages" @click.stop
-                             style="color:var(--tp-secondary); font-size:.72rem;
-                                    text-decoration:none; opacity:.6; line-height:1; margin-left:2px;"
-                             onmouseover="this.style.opacity='1'"
-                             onmouseout="this.style.opacity='.6'">↗</a>
+                             class="tax-row-action tax-tw-link" @click.stop>↗
+                            <q-tooltip>Open in TaxonPages</q-tooltip>
+                          </a>
+                          <q-icon name="edit" size="14px"
+                                  class="tax-row-action tax-edit-hint"
+                                  @click.stop="_tpEmit('tax_edit', props.node.id)">
+                            <q-tooltip>Edit this taxon</q-tooltip>
+                          </q-icon>
                           <q-icon v-if="props.node.orderable" name="swap_vert"
                                   size="15px" class="tax-move-hint">
                             <q-tooltip>Click the row, then use the ↑/↓ buttons above to set the taxonomic sequence</q-tooltip>
                           </q-icon>
                         </div>
-                    """
+                    """.replace("__RANK_LABELS__", json.dumps(_TREE_RANK_LABELS))
 
                     # Always create the tree widget so it can be updated after saves.
                     tax_tree = ui.tree(

@@ -287,8 +287,12 @@ def open_new_taxon_dialog(
     dialog.open()
 
 
-def build_taxon_editor(session_factory, on_saved: callable) -> None:
-    """Render New Taxon and Edit Taxon buttons + their dialogs in the current container."""
+def build_taxon_editor(session_factory, on_saved: callable) -> dict:
+    """Render New Taxon and Edit Taxon buttons + their dialogs in the current container.
+
+    Returns ``{"open_edit": fn(taxon_id)}`` so another widget — the checklist tree's
+    per-row pencil — can open the same dialog on a given taxon.
+    """
 
     def _open_new():
         open_new_taxon_dialog(session_factory, on_created=lambda _id: on_saved())
@@ -429,6 +433,20 @@ def build_taxon_editor(session_factory, on_saved: callable) -> None:
                     ui.button("Delete", icon="delete", on_click=_confirmed).props("color=negative")
         confirm_dlg.open()
 
+    def _open_edit_for(taxon_id: int) -> None:
+        """Open the Edit dialog with *taxon_id* already selected — the entry point for
+        the checklist tree's per-row pencil, so a taxon can be corrected where it is
+        seen instead of being hunted for again in the select."""
+        edit_form_col.clear()
+        edit_form_api.clear()
+        _edit_state["taxon_id"] = None
+        edit_sel.options = _taxon_opts(session_factory)
+        edit_sel.value = None          # so re-opening the SAME taxon still fires the change
+        edit_sel.update()
+        delete_btn.disable()
+        edit_dialog.open()
+        edit_sel.value = taxon_id      # → _on_edit_select builds the form
+
     save_edit_btn.on_click(_save_edit)
     delete_btn.on_click(_delete_taxon)
 
@@ -442,3 +460,5 @@ def build_taxon_editor(session_factory, on_saved: callable) -> None:
             ui.button("Edit Taxon", icon="edit", on_click=_open_edit)
             .props("flat")
         )
+
+    return {"open_edit": _open_edit_for}
