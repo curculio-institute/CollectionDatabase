@@ -190,6 +190,18 @@ class _OverrideSanitizer(_HTMLParser):
             mapped = _OVERRIDE_TAG_MAP[tag]
             self._open.append(mapped)
             self._cur.append(f"<{mapped}>")
+        else:
+            # An unknown tag is not markup we understand — it is TEXT the user wants printed.
+            # `Quercus <robur>` is a real thing to write on a label, and dropping it silently
+            # removed part of the label (#67). Emit it escaped, exactly as typed.
+            self._cur.append(_html.escape(self.get_starttag_text() or f"<{tag}>"))
+
+    def handle_startendtag(self, tag, attrs):
+        # `<br/>` is handled by handle_starttag; anything else self-closing is text.
+        if tag in _OVERRIDE_BLOCK or tag == "br" or tag in _OVERRIDE_TAG_MAP:
+            self.handle_starttag(tag, attrs)
+            return
+        self._cur.append(_html.escape(self.get_starttag_text() or f"<{tag}/>"))
 
     def handle_endtag(self, tag):
         if tag in _OVERRIDE_BLOCK:
@@ -204,6 +216,8 @@ class _OverrideSanitizer(_HTMLParser):
                     self._cur.append(f"</{t}>")
                     if t == mapped:
                         break
+        elif tag not in _OVERRIDE_TAG_MAP and tag != "br":
+            self._cur.append(_html.escape(f"</{tag}>"))
 
     def handle_data(self, data):
         self._cur.append(_html.escape(data))
@@ -227,7 +241,14 @@ def sanitize_override_html(html: str) -> str:
 
 
 def _looks_like_html(text: str) -> bool:
-    return bool(_re.search(r"<\w+|</\w+|<br", text or ""))
+    """True only for markup this label subset actually understands.
+
+    The old test was `<\\w+` — any angle-bracketed word — so a plain-text override reading
+    `Quercus <robur>` was taken for HTML and `<robur>` was stripped out of the printed label
+    (#67). A tag we do not emit is not markup: it is text. Only div/p/br/b/i/em/strong mean
+    "this override is formatted".
+    """
+    return bool(_re.search(r"</?(?:div|p|br|b|i|em|strong)\b", text or "", _re.I))
 
 
 def _override_html(text: str) -> str:
@@ -235,7 +256,38 @@ def _override_html(text: str) -> str:
     kept (italics/bold survive); legacy plaintext is escaped one <div> per line."""
     if _looks_like_html(text):
         return sanitize_override_html(text)
-    return "".join(f"<div>{_e(line)}</div>" for line in text.split("\n"))
+    return "".join(f"<div>{_e(line)}</div>" for line in text.split("\n") if line.strip())
+
+
+def canonical_override(text: str | None) -> str | None:
+    """The canonical stored form of an override — sanitized HTML, or None for "no override".
+
+    Store and render must agree (#67). The editor hands us a contenteditable's `innerHTML`,
+    which is already entity-encoded: typing `R & D` yields `R &amp; D`. Treated as plaintext
+    that was escaped a *second* time and printed as the literal `R &amp; D`. Sanitizing on the
+    way in makes the DB hold one canonical form, so rendering is a pass-through and the printed
+    label is what the preview showed.
+
+    Anything that reduces to nothing — '', whitespace, `<div></div>` — is **None**, not an empty
+    override: a blank label pinned to a specimen is a curation error, and the record still holds
+    the data, so falling back to the auto text is always the honest answer.
+
+    Input here is **always HTML** — it comes from a contenteditable's innerHTML (or the dialog's
+    raw-HTML source box) — so it is always sanitised, never sniffed. Sniffing is what broke
+    `R &amp; D`: no tags, so it looked like plaintext and was escaped a second time.
+    (`_override_html` still sniffs, because it must also render *legacy* plaintext overrides
+    stored before the editor existed.)
+    """
+    if text is None:
+        return None
+    return sanitize_override_html(text) or None
+
+
+def _rendered_override(text: str | None) -> str | None:
+    """The override as it will print, or None when there is effectively none (see above)."""
+    if text is None:
+        return None
+    return _override_html(text) or None
 
 
 def label_auto_html(lbl) -> str:
@@ -256,8 +308,11 @@ def label_plaintext(lbl) -> str:
 
 
 def _data_inner_html(lbl: DataLabel) -> str:
-    if lbl.text_override is not None:
-        return _override_html(lbl.text_override)
+    # An override that renders to nothing falls back to the auto text — it must never print a
+    # BLANK label (#67). `text_override is not None` treated '' as a real override.
+    ov = _rendered_override(lbl.text_override)
+    if ov is not None:
+        return ov
     return "".join(f"<div>{t}</div>"
                    for t in [_data_line1(lbl), _data_line2(lbl)] if t)
 
@@ -339,8 +394,9 @@ class DeterminationLabel:
 def _det_inner_html(lbl: "DeterminationLabel") -> str:
     """Full determination-label body — the print-only override verbatim if set,
     else the type-status line (if any) + composed name block + determiner/year."""
-    if lbl.text_override is not None:
-        return _override_html(lbl.text_override)
+    ov = _rendered_override(lbl.text_override)     # '' → fall back to auto, never blank (#67)
+    if ov is not None:
+        return ov
     ts = (f'<div style="text-transform:uppercase;letter-spacing:.04em">'
           f'{_e(lbl.type_status)}</div>') if lbl.type_status else ""
     det = _det_line3(lbl)

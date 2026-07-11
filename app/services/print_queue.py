@@ -166,6 +166,11 @@ def _co_to_data_label(co: CollectionObject, text_override: str | None = None) ->
 def _co_to_det_label(co: CollectionObject, text_override: str | None = None) -> lbl.DeterminationLabel | None:
     det = next((d for d in co.determinations if d.is_current), None)
     if not det or not det.taxon:
+        # No current identification → no auto text. But an override is print-only text that does
+        # not need a determination behind it (the user is writing the name by hand), and it used
+        # to be dropped here, so a stored edit never reached the paper (#67). Carry it through.
+        if lbl.canonical_override(text_override):
+            return lbl.DeterminationLabel(text_override=text_override)
         return None
     t = det.taxon
     genus, subgenus, specific, infra = taxa_svc.parse_scientific_name(t.scientific_name or "")
@@ -291,13 +296,18 @@ def preview_model(session: Session) -> list[dict]:
             col = _col(("co", row.collection_object_id))
             dl = _co_to_det_label(co)
             dl_ov = _co_to_det_label(co, row.text_override)
-            auto = lbl.label_plaintext(dl) if dl else "—"
-            col["det_auto"] = auto
-            col["det"] = row.text_override if row.text_override is not None else auto
-            col["det_html"] = lbl._det_inner_html(dl_ov) if dl_ov else "—"
-            col["det_auto_html"] = lbl.label_auto_html(dl_ov) if dl_ov else "—"
+            auto = lbl.label_plaintext(dl) if dl else ""
+            col["det_auto"] = auto or "—"
+            col["det"] = row.text_override if row.text_override is not None else (auto or "—")
+            col["det_html"] = lbl._det_inner_html(dl_ov) if dl_ov else ""
+            col["det_auto_html"] = lbl.label_auto_html(dl) if dl else ""
             col["det_qid"] = row.id
-            col["det_ident"] = _ident(auto)
+            # A row with no auto text has NO identity: it must not group with every other
+            # determination-less row (they share only their emptiness), or editing one would
+            # stamp that name onto all of them. It stays individually editable — see
+            # set_override_for_identical. Previously this hashed the "—" placeholder, so the
+            # preview grouped them and offered an edit the store then silently dropped (#67).
+            col["det_ident"] = _ident(auto) if auto else None
             col["co_id"] = co.id
         elif row.label_type == "identifier" and row.label_code:
             lc = row.label_code
@@ -329,14 +339,35 @@ def set_override_for_identical(session: Session, queue_id: int, text: str | None
     """Set a print-only override on the given row AND every other queued label
     that is identical to it (same type + same auto text — see _row_auto_identity).
     Editing one identical label thus edits them all. Empty/None clears (→ auto).
-    Returns how many rows were updated."""
+    Returns how many rows were updated.
+
+    The value is **canonicalised on the way in** (#67): the editor hands us a contenteditable's
+    innerHTML, already entity-encoded, so storing it raw and deciding how to read it at render
+    time meant store and render could disagree — `R & D` came back as the literal `R &amp; D`.
+    One sanitised form in the DB, rendering is a pass-through, and what printed is what the
+    preview showed. Anything that reduces to nothing clears the override rather than storing a
+    blank label.
+
+    A row with **no auto text** (a determination label on a specimen with no current
+    identification) has no identity to group by — but it is still individually editable, and its
+    override is still stored and printed. It must NOT group: every such row would otherwise share
+    one "identity" (their common emptiness) and editing one would stamp that name onto all of
+    them, across different specimens.
+    """
     row = session.get(PrintQueue, queue_id)
     if row is None or row.label_type == "identifier":
         return 0
+
+    value = lbl.canonical_override(text)
     target = _row_auto_identity(row)
+
     if target is None:
-        return 0
-    value = text or None
+        # No auto text → no group. Edit this row alone (previously: silently dropped).
+        row.text_override = value
+        row.updated_at = _utcnow()
+        session.flush()
+        return 1
+
     n = 0
     for r in session.query(PrintQueue).filter(PrintQueue.label_type == row.label_type).all():
         if _row_auto_identity(r) == target:
