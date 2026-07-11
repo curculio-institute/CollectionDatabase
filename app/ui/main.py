@@ -691,6 +691,8 @@ def index():
       .rank-subtribe  { font-size:.92rem; font-weight:600; }
       .rank-genus     { font-size:1.05rem; font-weight:700; font-style:italic; }
       .rank-subgenus  { font-size:.875rem; font-style:italic; }
+      .rank-section    { font-size:.875rem; font-style:italic; }
+      .rank-subsection { font-size:.875rem; font-style:italic; }
       .rank-species     { font-size:.875rem; font-style:italic; }
       .rank-subspecies  { font-size:.875rem; font-style:italic; }
       .rank-variety     { font-size:.875rem; font-style:italic; }

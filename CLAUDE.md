@@ -803,6 +803,47 @@ catch at write time (e.g. a raw-SQL edit that chains a synonym after the fact). 
 follow GBIF's `NameUsageIssue` vocabulary (`CHAINED_SYNONYM`, `PARENT_NAME_USAGE_ID_INVALID`,
 `ACCEPTED_NAME_USAGE_ID_INVALID`). It is **not** run at startup.
 
+### Ranks are code-specific, and so is the genus group (decided 2026-07-11)
+
+**A rank belongs to a nomenclatural code, not to a global vocabulary.** TaxonWorks is the
+authority here and models the four codes as **four separate hierarchies**
+(`app/models/nomenclatural_rank/{iczn,icn,icnp,icvcn}/`, each ordered by walking
+`parent_rank`; TW @ `897f385`) — the same rank *name* can be a different rank class in each,
+and TW has no `/ranks` API route, so the source is the only authority.
+
+We deliberately model a **curated subset**, not a mirror of TW's ~60 ranks — but the *code
+split* must be right, because offering a rank the code does not have invites a silently wrong
+name (§2):
+
+| | |
+|---|---|
+| ICZN only | `superorder`, `superfamily`, `supertribe` — ICN's family group is only family/subfamily/tribe/subtribe |
+| ICN only | `section`, `subsection` (genus group) + `variety`, `subvariety`, `form`, `subform` — ICZN has **no rank below subspecies** |
+
+`taxa.TAXON_RANKS` stays the single high→low ordering (hierarchy validation indexes into it);
+**`RANKS_BY_CODE` / `ranks_for(code)`** give the selectable subset per code. Each subset is a
+**subsequence** of `TAXON_RANKS`, so index-based parent/child rank comparisons stay valid
+across codes. An unknown code offers *everything* (a new taxon before its parent is chosen);
+the editor narrows the list as soon as a parent supplies the code, and `validate()` refuses a
+rank the code lacks. A row whose stored rank is wrong for its code is still **kept in the
+dropdown and editable** — a bad state must be reachable by the tool that repairs it.
+
+**The editor asks for the parent BEFORE the rank**, because the code is inherited from the
+parent and the code is what decides which ranks exist.
+
+**The two codes write the genus group differently, and both halves matter** (`taxa.py`,
+`_ICN_GENUS_CONNECTOR`):
+
+| | subgenus row | species under it |
+|---|---|---|
+| ICZN | `Otiorhynchus (Nihus)` — brackets | `Otiorhynchus (Nihus) armadillo` — carried into the binomial |
+| ICN | `Taraxacum subg. Palustria` — connector | `Taraxacum officinale` — **not** carried; a botanical binomial is genus + epithet |
+
+So the subgenus interpolation in `compose_scientific_name` is **ICZN-only**, and a species
+under a botanical subgenus *or* `section` composes as a plain binomial (the section is
+classificatory, not part of the name). `Taraxacum sect. Ruderalia` uses the same connector
+mechanism as the existing ICN infraspecific terms (`subsp.`/`var.`/`f.`).
+
 ### Parent-rank taxon rows
 
 Every TW species import creates dedicated `taxon` rows for each ancestor rank (genus,

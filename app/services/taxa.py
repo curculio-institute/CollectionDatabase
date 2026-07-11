@@ -15,9 +15,48 @@ TAXON_RANKS: list[str] = [
     "kingdom", "phylum", "subphylum", "class", "subclass",
     "superorder", "order", "suborder", "superfamily",
     "family", "subfamily", "supertribe", "tribe", "subtribe",
-    "genus", "subgenus", "species", "subspecies",
+    "genus", "subgenus", "section", "subsection", "species", "subspecies",
     "variety", "subvariety", "form", "subform",
 ]
+
+# A rank belongs to a NOMENCLATURAL CODE, not to a global vocabulary — TaxonWorks models
+# the four codes as four separate hierarchies (app/models/nomenclatural_rank/{iczn,icn,
+# icnp,icvcn}/, TW @ 897f385), and the same rank NAME can be a different rank in each.
+# TAXON_RANKS above stays the one high→low ordering (hierarchy validation indexes into it);
+# these are the subsets that may be SELECTED for a taxon governed by each code. Each list is
+# a subsequence of TAXON_RANKS, so ordering comparisons remain valid across codes.
+#
+# This is a curated subset of TW's ranks, not a mirror: we model the ranks this collection
+# actually uses. What it must get right is the code SPLIT — offering 'variety' for a beetle
+# (ICZN has no rank below subspecies) or 'superfamily' for a plant (ICN's family group is
+# only family/subfamily/tribe/subtribe) invites a silently wrong name.
+RANKS_BY_CODE: dict[str, list[str]] = {
+    # Zoology: no infraspecific ranks below subspecies, no botanical genus-group sections.
+    "ICZN": [
+        "kingdom", "phylum", "subphylum", "class", "subclass",
+        "superorder", "order", "suborder", "superfamily",
+        "family", "subfamily", "supertribe", "tribe", "subtribe",
+        "genus", "subgenus", "species", "subspecies",
+    ],
+    # Botany/mycology: no super-ranks in the family group, but sections (Taraxacum sect.
+    # Ruderalia) and the infraspecific series var./f. that zoology lacks.
+    "ICN": [
+        "kingdom", "phylum", "subphylum", "class", "subclass",
+        "order", "suborder",
+        "family", "subfamily", "tribe", "subtribe",
+        "genus", "subgenus", "section", "subsection", "species", "subspecies",
+        "variety", "subvariety", "form", "subform",
+    ],
+    "ICNP": [
+        "kingdom", "phylum", "class", "subclass", "order", "suborder",
+        "family", "subfamily", "tribe", "subtribe",
+        "genus", "subgenus", "species", "subspecies",
+    ],
+    "ICVCN": [
+        "kingdom", "phylum", "class", "order",
+        "family", "subfamily", "genus", "species",
+    ],
+}
 
 # Display order for rank-selection dropdowns: the ranks used daily for beetle
 # work go on top (finest first), then the rarer higher categories descend the
@@ -26,13 +65,30 @@ TAXON_RANKS: list[str] = [
 TAXON_RANKS_BY_USE: list[str] = [
     "subspecies", "species", "subgenus", "genus",
     "variety", "subvariety", "form", "subform",
+    "section", "subsection",
     "subtribe", "tribe", "supertribe",
     "subfamily", "family", "superfamily",
     "suborder", "order", "superorder",
     "subclass", "class", "subphylum", "phylum", "kingdom",
 ]
-# Guard against drift: both lists must cover exactly the same ranks.
+# Guard against drift: both lists must cover exactly the same ranks, and every per-code
+# subset must draw only from them.
 assert set(TAXON_RANKS_BY_USE) == set(TAXON_RANKS)
+assert all(set(rs) <= set(TAXON_RANKS) for rs in RANKS_BY_CODE.values())
+
+
+def ranks_for(nomenclatural_code: str | None) -> list[str]:
+    """The ranks selectable under *nomenclatural_code*, in TAXON_RANKS_BY_USE display order.
+
+    An unknown/absent code yields every rank — the caller does not yet know the code (a new
+    taxon before its parent is chosen), and refusing to offer anything would be worse than
+    offering too much. The editor re-filters as soon as a parent supplies the code, and
+    validate() refuses a rank the code does not have.
+    """
+    allowed = RANKS_BY_CODE.get((nomenclatural_code or "").strip().upper())
+    if not allowed:
+        return list(TAXON_RANKS_BY_USE)
+    return [r for r in TAXON_RANKS_BY_USE if r in set(allowed)]
 
 
 @dataclass(frozen=True)
@@ -136,11 +192,26 @@ _ICN_INFRA_CONNECTOR = {
     "form": "f.", "subform": "subf.",
 }
 
+# Genus-group connectors, the same idea one rank-group up. The two codes write the genus
+# group differently and BOTH halves matter:
+#   ICZN  brackets the subgenus and carries it into the binomial —
+#         'Otiorhynchus (Nihus)', 'Otiorhynchus (Nihus) armadillo'
+#   ICN   spells the connector out and does NOT carry it into the binomial —
+#         'Taraxacum subg. Palustria', 'Taraxacum sect. Ruderalia', but the species under
+#         either is plain 'Taraxacum officinale' (a botanical binomial is genus + epithet).
+_ICN_GENUS_CONNECTOR = {
+    "subgenus": "subg.", "section": "sect.", "subsection": "subsect.",
+}
+
+
+def _is_zoological(nomenclatural_code: str | None) -> bool:
+    return (nomenclatural_code or "").upper() == "ICZN"
+
 
 def _infra_connector(rank: str, nomenclatural_code: str | None) -> str:
-    if (nomenclatural_code or "").upper() == "ICN":
-        return _ICN_INFRA_CONNECTOR.get(rank, "")
-    return ""  # ICZN: bare trinomial
+    if _is_zoological(nomenclatural_code):
+        return ""  # ICZN: bare trinomial
+    return _ICN_INFRA_CONNECTOR.get(rank, "")
 
 
 def compose_scientific_name(session: Session, taxon: Taxon) -> str:
@@ -176,10 +247,19 @@ def compose_scientific_name(session: Session, taxon: Taxon) -> str:
             species_epithet = cur_el
         cur_id = cur.parent_name_usage_id
 
-    sub = f" ({subgenus})" if subgenus else ""
+    # The subgenus rides along inside the binomial in ZOOLOGY only: 'Otiorhynchus (Nihus)
+    # armadillo'. A botanical binomial is genus + epithet — the subgenus/section is a
+    # classificatory rank, not part of the name — so `sub` stays empty under ICN.
+    zoological = _is_zoological(taxon.nomenclatural_code)
+    sub = f" ({subgenus})" if (subgenus and zoological) else ""
 
-    if rank == "subgenus":
+    if rank == "subgenus" and zoological:
         return f"{genus} ({element})".strip() if genus else f"({element})"
+
+    if rank in _ICN_GENUS_CONNECTOR:   # subgenus / section / subsection, botanical form
+        connector = _ICN_GENUS_CONNECTOR[rank]
+        parts = [p for p in (genus, connector, element) if p]
+        return " ".join(parts)
 
     if rank == "species":
         return f"{genus}{sub} {element}".strip() if genus else element
