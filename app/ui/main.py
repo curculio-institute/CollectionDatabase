@@ -2798,22 +2798,25 @@ def index():
             # archive states its own nomenclaturalCode and columns (meta.xml), so nothing here
             # is configured by hand — the file is copied into data/name_sources/<slug>/ and
             # indexed. See services/name_source.py + services/datasets.py.
+            #
+            # UI shape is deliberate. Adding a dataset happens ONCE; importing every name is a
+            # rare, heavy, one-way write. So the add flow lives in a dialog behind a small
+            # button (a full-width drop zone shouted the least-used control on the page), and
+            # "Import all" sits in a per-row ⋮ menu rather than beside the row as a blue button
+            # — where it read as the confirm action for the install that had just finished.
             ui.separator().classes("my-3")
             with ui.row().classes("items-center gap-2 mb-1"):
                 ui.label("Name datasets").classes("text-sm font-medium")
                 ui.label("EXPERIMENTAL").classes("text-xs px-1 rounded").style(
-                    "background:var(--tp-warning,#fef9c3); color:#854d0e; font-weight:700;")
+                    "background:#fef9c3; color:#854d0e; font-weight:700;")
             ui.label(
                 "Extra offline checklists (Darwin Core Archives) to import names from — e.g. a "
                 "beetle catalogue. Searched last, after the local database, TaxonWorks and "
-                "WCVP. The archive declares its own nomenclatural code and columns, so nothing "
-                "needs configuring: pick the file and it is copied into this collection's data "
-                "folder and indexed. Imported names are copied into the database, so a dataset "
-                "can be removed at any time without touching them."
+                "WCVP. Imported names are copied into the database, so a dataset can be removed "
+                "at any time without touching them."
             ).classes("text-xs mb-2").style("color:var(--tp-base-soft)")
 
             _ds_list = ui.column().classes("w-full gap-1")
-            _ds_status = ui.label().classes("text-xs mt-1")
 
             def _ds_refresh() -> None:
                 _ds_list.clear()
@@ -2827,67 +2830,140 @@ def index():
                     with _ds_list:
                         with ui.row().classes("w-full items-center gap-2"):
                             if not ds.installed:
-                                ui.icon("error_outline").classes("text-xs text-negative")
+                                # Registered but not built: offer Rebuild, never Import all —
+                                # importing from an index that does not exist can only fail.
+                                ui.icon("error_outline").classes("text-negative")
                                 ui.label(f"{ds.label} — index missing").classes("text-xs")
                             else:
                                 db = ds.open()
                                 try:
-                                    meta = ns_svc.index_meta(db)
-                                    importable, total = ns_svc.count(db, ds.spec)
+                                    _, total = ns_svc.count(db, ds.spec)
                                 finally:
                                     db.close()
-                                ui.label(
-                                    f"{ds.label} · {ds.code} · {total:,} names"
-                                    + (f" ({total - importable:,} not importable)"
-                                       if importable != total else "")
-                                ).classes("text-xs")
+                                ui.icon("check_circle").classes("text-positive")
+                                ui.label(f"{ds.label}").classes("text-xs font-medium")
+                                ui.label(f"{ds.code} · {total:,} names").classes(
+                                    "text-xs").style("color:var(--tp-base-soft)")
                             ui.space()
-                            ui.button(
-                                "Import all", icon="download",
-                                on_click=lambda d=ds: _ds_import_all(d),
-                            ).props("flat dense no-caps size=sm").tooltip(
-                                "Create a local taxon row for EVERY name in this dataset")
-                            ui.button(
-                                "Rebuild", icon="refresh",
-                                on_click=lambda d=ds: _ds_rebuild(d),
-                            ).props("flat dense no-caps size=sm")
-                            ui.button(
-                                "Remove", icon="delete",
-                                on_click=lambda d=ds: _ds_remove(d),
-                            ).props("flat dense no-caps size=sm color=negative")
+                            with ui.button(icon="more_vert").props("flat dense round size=sm"):
+                                with ui.menu() as menu:
+                                    if ds.installed:
+                                        ui.menu_item(
+                                            "Import all names…",
+                                            on_click=lambda d=ds, m=menu: (
+                                                m.close(), _ds_import_all(d)),
+                                        )
+                                    ui.menu_item(
+                                        "Rebuild index",
+                                        on_click=lambda d=ds, m=menu: (
+                                            m.close(), _ds_rebuild(d)),
+                                    )
+                                    ui.separator()
+                                    ui.menu_item(
+                                        "Remove dataset…",
+                                        on_click=lambda d=ds, m=menu: (
+                                            m.close(), _ds_remove(d)),
+                                    ).classes("text-negative")
 
-            async def _ds_upload(e) -> None:
-                """Copy the chosen archive into data/name_sources/<slug>/ and index it."""
-                name = e.name
-                content = e.content.read()
-                _ds_status.set_text(f"Indexing {name}…")
-                _ds_status.style("color:var(--tp-base-soft)")
-                try:
-                    ds, report = await run.io_bound(ds_svc.install, content, name)
-                except Exception as exc:      # noqa: BLE001 — the message IS the product
-                    _ds_status.set_text(f"Could not add {name}: {exc}")
-                    _ds_status.style("color:var(--tp-danger)")
-                    ui.notify(f"Could not add dataset: {exc}", type="negative",
-                              timeout=0, close_button="Got it")
-                    return
-                _ds_status.set_text(
-                    f"Added {ds.label} — {report.rows:,} names ({ds.code}), "
-                    f"{report.replaced:,} synonyms. Searched after WCVP."
-                )
-                _ds_status.style("color:var(--tp-base)")
-                _ds_refresh()
-                ui.notify(f"{ds.label}: {report.rows:,} names indexed.", type="positive")
+            # ── Add dataset (dialog) ──────────────────────────────────────
+            def _ds_add_dialog() -> None:
+                dlg = ui.dialog()
+                with dlg, ui.card().classes("min-w-[460px] gap-2"):
+                    ui.label("Add a name dataset").classes("section-label")
+                    hint = ui.label(
+                        "Choose a Darwin Core Archive (.zip). It is copied into this "
+                        "collection's data folder and indexed. The archive declares its own "
+                        "nomenclatural code and columns, so there is nothing to configure."
+                    ).classes("text-xs").style("color:var(--tp-base-soft)")
+
+                    up_area = ui.column().classes("w-full")
+                    busy = ui.row().classes("w-full items-center gap-2")
+                    busy.set_visibility(False)
+                    with busy:
+                        ui.spinner(size="sm")
+                        busy_lbl = ui.label("Copying the archive…").classes("text-xs")
+
+                    done = ui.column().classes("w-full gap-1")
+                    done.set_visibility(False)
+
+                    state = {"rows": 0}
+
+                    def _tick():
+                        # The total is unknown until the archive is read, so this counts up.
+                        # An index build that shows NOTHING reads as a hang (WCVP is 1.45 M
+                        # rows) — which is exactly what it looked like before.
+                        if state["rows"]:
+                            busy_lbl.set_text(f"Indexing… {state['rows']:,} names read")
+
+                    timer = ui.timer(0.2, _tick, active=False)
+
+                    async def _on_upload(e) -> None:
+                        name, content = e.name, e.content.read()
+                        up_area.set_visibility(False)
+                        hint.set_visibility(False)
+                        busy.set_visibility(True)
+                        busy_lbl.set_text("Copying the archive…")
+                        timer.activate()
+                        try:
+                            ds, report = await run.io_bound(
+                                ds_svc.install, content, name,
+                                progress=lambda n: state.__setitem__("rows", n),
+                            )
+                        except Exception as exc:      # noqa: BLE001 — the message IS the product
+                            timer.deactivate()
+                            busy.set_visibility(False)
+                            with done:
+                                ui.label(f"Could not add {name}").classes(
+                                    "text-sm font-medium").style("color:var(--tp-danger)")
+                                ui.label(str(exc)).classes("text-xs")
+                            done.set_visibility(True)
+                            return
+                        finally:
+                            timer.deactivate()
+
+                        busy.set_visibility(False)
+                        with done:
+                            with ui.row().classes("items-center gap-2"):
+                                ui.icon("check_circle").classes("text-positive")
+                                ui.label(f"{ds.label} installed").classes(
+                                    "text-sm font-medium")
+                            ui.label(
+                                f"{report.rows:,} names · {ds.code} · "
+                                f"{report.replaced:,} synonyms"
+                            ).classes("text-xs").style("color:var(--tp-base-soft)")
+                            ui.label(
+                                "These names now appear in the taxon search, after the local "
+                                "database, TaxonWorks and WCVP. Picking one imports it (and its "
+                                "parent ranks) — you do not need to import anything up front."
+                            ).classes("text-xs").style("color:var(--tp-base-soft)")
+                        done.set_visibility(True)
+                        _ds_refresh()
+
+                    with up_area:
+                        ui.upload(on_upload=_on_upload, auto_upload=True, max_files=1) \
+                            .props('accept=".zip" flat dense').classes("w-full")
+
+                    with ui.row().classes("w-full justify-end mt-1"):
+                        ui.button("Close", on_click=dlg.close).props("flat")
+
+                # Per the dialog timer-leak rule: the timer dies with the dialog.
+                dlg.on_value_change(lambda e: dlg.delete() if not e.value else None)
+                dlg.open()
 
             async def _ds_rebuild(ds) -> None:
-                _ds_status.set_text(f"Rebuilding {ds.label}…")
+                n = ui.notification(f"Rebuilding {ds.label}…", spinner=True, timeout=None)
                 try:
-                    report = await run.io_bound(ds_svc.rebuild, ds)
+                    report = await run.io_bound(
+                        ds_svc.rebuild, ds,
+                        progress=lambda k: n.message(f"Indexing… {k:,} names read"),
+                    )
                 except Exception as exc:      # noqa: BLE001
-                    _ds_status.set_text(f"Rebuild failed: {exc}")
-                    _ds_status.style("color:var(--tp-danger)")
+                    n.dismiss()
+                    ui.notify(f"Rebuild failed: {exc}", type="negative",
+                              timeout=0, close_button="Got it")
                     return
-                _ds_status.set_text(f"Rebuilt {ds.label} — {report.rows:,} names.")
-                _ds_status.style("color:var(--tp-base)")
+                n.dismiss()
+                ui.notify(f"Rebuilt {ds.label} — {report.rows:,} names.", type="positive")
                 _ds_refresh()
 
             def _ds_remove(ds) -> None:
@@ -2905,7 +2981,6 @@ def index():
                             ds_svc.remove(ds)
                             dlg.close()
                             _ds_refresh()
-                            _ds_status.set_text(f"Removed {ds.label}.")
                             ui.notify(f"{ds.label} removed.", type="positive")
 
                         ui.button("Remove", icon="delete", on_click=_go) \
@@ -2926,7 +3001,7 @@ def index():
                     return
 
                 dlg = ui.dialog()
-                with dlg, ui.card().classes("min-w-[420px]"):
+                with dlg, ui.card().classes("min-w-[440px]"):
                     ui.label(f"Import all names from “{ds.label}”?").classes(
                         "font-medium mb-2")
                     ui.label(
@@ -3011,13 +3086,10 @@ def index():
                 dlg.on_value_change(lambda e: dlg.delete() if not e.value else None)
                 dlg.open()
 
-            ui.upload(
-                on_upload=_ds_upload, auto_upload=True, max_files=1,
-            ).props('accept=".zip" flat dense').classes("w-full").tooltip(
-                "Choose a Darwin Core Archive (.zip) on your computer")
+            ui.button("Add dataset…", icon="add", on_click=_ds_add_dialog) \
+                .props("flat dense no-caps size=sm").classes("mt-1")
 
             _ds_refresh()
-
             async def _wcvp_check_update() -> None:
                 # Re-read the index first: it may have been rebuilt since this page loaded,
                 # and reporting "a newer release is available" for one already installed

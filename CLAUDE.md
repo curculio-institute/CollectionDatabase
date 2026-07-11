@@ -823,6 +823,22 @@ computer** — e.g. a Coleoptera checklist (ICZN). Engine: `services/name_source
   `index.sqlite`) — never referenced in place, exactly as with the media store. Registered in
   `config.json` (`name_sources`), because these are *files and settings*, not DB entities: no FK
   points at them, so the person-defaults rule does not apply.
+  **WCVP lives there too** (`data/name_sources/wcvp/`) — it is a name source like any other, so
+  there is one place to look for every offline checklist and one place to back up.
+  `config.migrate_legacy_dirs()` (run once from `run.py`, before anything reads an index) moves
+  an older `data/wcvp` across: a **rename, never a re-download** — the archive is ~88 MB and the
+  index ~270 MB, and a "missing" index would otherwise send the user to fetch both again. It
+  moves only when the destination does not exist, so it can never overwrite a good install.
+- **UI shape is deliberate** (Settings → Name datasets). Adding a dataset happens *once*;
+  importing every name is a rare, heavy, one-way write. So the add flow lives in a **dialog
+  behind a small "Add dataset…" button** — a full-width drop zone shouted the least-used control
+  on the page — and it reports what it is doing (**"Indexing… N names read"**; a build that shows
+  nothing reads as a hang, and WCVP is 1.45 M rows) and ends on an explicit **"<name> installed"**
+  confirmation that says the names are now searchable and that **nothing needs importing up
+  front**. **"Import all" sits in a per-row ⋮ menu**, not beside the row as a button: there it
+  read as the *confirm* action for the install that had just finished, and it is the one action
+  that must never be clicked by accident. A registered dataset whose index is missing offers
+  Rebuild, never Import all.
 - **Last in the search chain, always:** local → TaxonWorks → WCVP → *datasets*. A user checklist
   is the fallback when no other source knows the name, never a competitor to them. (`sources`
   tuple in `taxon_search.py`; `"datasets"` is in the default.)

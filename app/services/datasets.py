@@ -100,7 +100,8 @@ def _register(ds: Dataset) -> None:
     config.save_config(cfg)
 
 
-def install(archive_bytes: bytes, filename: str, *, label: str | None = None) -> tuple[Dataset, ns.BuildReport]:
+def install(archive_bytes: bytes, filename: str, *, label: str | None = None,
+            progress=None) -> tuple[Dataset, ns.BuildReport]:
     """Copy an archive into data/name_sources/<slug>/ and build its index.
 
     The label defaults to the file's own name; the nomenclatural code is read from the
@@ -140,7 +141,7 @@ def install(archive_bytes: bytes, filename: str, *, label: str | None = None) ->
             )
 
         ds = Dataset(slug=slug, label=label, code=code, archive_name=archive_path.name)
-        report = ns.build_index(archive_path, ds.db_path, ds.spec)
+        report = ns.build_index(archive_path, ds.db_path, ds.spec, progress=progress)
     except BaseException:
         if not pre_existing:
             shutil.rmtree(target_dir, ignore_errors=True)
@@ -150,14 +151,14 @@ def install(archive_bytes: bytes, filename: str, *, label: str | None = None) ->
     return ds, report
 
 
-def rebuild(ds: Dataset) -> ns.BuildReport:
+def rebuild(ds: Dataset, *, progress=None) -> ns.BuildReport:
     """Re-index from the archive already copied into the dataset's folder."""
     if not ds.archive_path.exists():
         raise ns.NameSourceError(
             f"{ds.label}: the archive {ds.archive_name} is no longer in {ds.dir} — "
             "re-add the dataset from its file."
         )
-    return ns.build_index(ds.archive_path, ds.db_path, ds.spec)
+    return ns.build_index(ds.archive_path, ds.db_path, ds.spec, progress=progress)
 
 
 @dataclass

@@ -425,11 +425,15 @@ def _replace_with_retry(src: Path, dst: Path, *, attempts: int = 10, delay: floa
 
 
 def build_index(archive: Path, db_path: Path, spec: NameSourceSpec,
-                *, batch: int = 50_000) -> BuildReport:
+                *, batch: int = 50_000, progress=None) -> BuildReport:
     """Build the SQLite lookup index from a Darwin Core Archive.
 
     Deterministic and rebuildable: the target is replaced wholesale. Journalling is off
     because a half-built index is thrown away, not recovered.
+
+    `progress(rows_so_far)` is called as rows stream in. The total is not known until the
+    archive has been read, so this counts up rather than filling a bar — but a build that
+    shows nothing at all reads as a hang, and WCVP's is 1.45 M rows.
     """
     with zipfile.ZipFile(archive) as zf:
         layout = read_layout(zf)
@@ -449,14 +453,19 @@ def build_index(archive: Path, db_path: Path, spec: NameSourceSpec,
 
             n = 0
             pending: list[tuple] = []
+            tick = max(batch // 10, 1_000)     # report often enough to look alive
             for rec in _rows(zf, layout, spec):
                 n += 1
                 pending.append(rec)
+                if progress and n % tick == 0:
+                    progress(n)
                 if len(pending) >= batch:
                     db.executemany("INSERT INTO name VALUES (?,?,?,?,?,?,?,?,?,?)", pending)
                     pending.clear()
             if pending:
                 db.executemany("INSERT INTO name VALUES (?,?,?,?,?,?,?,?,?,?)", pending)
+            if progress:
+                progress(n)
 
             for stmt in INDEXES:
                 db.execute(stmt)
