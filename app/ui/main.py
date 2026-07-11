@@ -2723,7 +2723,12 @@ def index():
                             on_click=lambda: (_wcvp_menu.close(), _wcvp_remove()),
                         ).classes("text-negative")
 
+            # Progress / update-check line. It is empty most of the time, and an empty
+            # label still reserves its line — which was most of this card's dead space.
+            # Bind its visibility to its own text so it occupies nothing until it has
+            # something to say.
             _wcvp_remote = ui.label().classes("text-xs mt-1 break-all")
+            _wcvp_remote.bind_visibility_from(_wcvp_remote, "text", backward=bool)
             # A dialog must be created in a LIVE slot, never inside a menu-item handler: a menu
             # item's slot is the q-menu, which has already closed by then, so the dialog lands
             # in a dead container and the click silently does nothing at all.
