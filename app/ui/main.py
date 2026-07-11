@@ -2687,33 +2687,96 @@ def index():
             # runs before the UI serves), so nothing here may touch the network at startup.
             ui.label("Plant names (WCVP)").classes("text-sm font-medium mb-1")
             ui.label(
-                "Offline checklist used to import plant names for biological "
-                "associations. Not a dependency of your data: imported names are copied "
-                "into the database, so the index can be rebuilt or removed at any time."
+                "Offline checklist used to import plant names for biological associations. "
+                "Names are not part of your database, just as the names from TaxonWorks they "
+                "are imported on demand."
             ).classes("text-xs mb-2").style("color:var(--tp-base-soft)")
 
-            _wcvp_status = ui.label().classes("text-xs")
+            # The same row shape as a Name-datasets row: an installed icon, the facts
+            # (version · names · licence), and a ⋮ menu holding the actions. WCVP *is* a name
+            # source (it lives in data/name_sources/wcvp), so it should not look like a
+            # different kind of thing — and its actions, Remove above all, should not stand on
+            # the page as permanent buttons.
+            with ui.row().classes("w-full items-center gap-2"):
+                _wcvp_icon = ui.icon("check_circle").classes("text-positive")
+                ui.label("WCVP").classes("text-xs font-medium")
+                _wcvp_status = ui.label().classes("text-xs")
+                ui.space()
+                with ui.button(icon="more_vert").props("flat dense round size=sm"):
+                    with ui.menu() as _wcvp_menu:
+                        # The label changes with install state (download → re-download), and a
+                        # MenuItem is not a TextElement — its label is baked in at construction.
+                        # So carry a ui.label inside it and update that.
+                        _wcvp_install_item = ui.menu_item(
+                            on_click=lambda: (_wcvp_menu.close(), _wcvp_install()),
+                        )
+                        with _wcvp_install_item:
+                            _wcvp_install_lbl = ui.label("Download and install")
+                        _wcvp_check_item = ui.menu_item(
+                            "Check for a new release",
+                            on_click=lambda: (_wcvp_menu.close(), _wcvp_check_update()),
+                        )
+                        _wcvp_check_item.tooltip("Downloads ~32 KB, not the whole archive")
+                        ui.separator()
+                        _wcvp_remove_item = ui.menu_item(
+                            "Remove",
+                            on_click=lambda: (_wcvp_menu.close(), _wcvp_remove()),
+                        ).classes("text-negative")
+
             _wcvp_remote = ui.label().classes("text-xs mt-1 break-all")
+            # A dialog must be created in a LIVE slot, never inside a menu-item handler: a menu
+            # item's slot is the q-menu, which has already closed by then, so the dialog lands
+            # in a dead container and the click silently does nothing at all.
+            _wcvp_dialogs = ui.element("div")
+
+            def _wcvp_remove() -> None:
+                with _wcvp_dialogs:
+                    dlg = ui.dialog()
+                with dlg, ui.card():
+                    ui.label("Remove the WCVP index?").classes("font-medium mb-2")
+                    ui.label(
+                        "The downloaded archive and the index built from it are deleted "
+                        "(~360 MB). Plant names already imported stay in the database — they "
+                        "are local taxon rows now. It can be downloaded again at any time."
+                    ).classes("text-xs mb-3").style("color:var(--tp-base-soft)")
+                    with ui.row().classes("gap-2 justify-end w-full"):
+                        ui.button("Cancel", on_click=dlg.close).props("flat")
+
+                        def _go():
+                            wcvp_svc.uninstall()
+                            dlg.close()
+                            _wcvp_remote.set_text("")
+                            _wcvp_refresh_installed()
+                            ui.notify("WCVP index removed.", type="positive")
+
+                        ui.button("Remove", icon="delete", on_click=_go) \
+                            .props("color=negative")
+                dlg.on_value_change(lambda e: dlg.delete() if not e.value else None)
+                dlg.open()
 
             def _wcvp_refresh_installed() -> str | None:
                 """Installed release label, or None. Reads the index file, never the network."""
                 try:
                     db = wcvp_svc.open_index()
                 except wcvp_svc.IndexMissing:
-                    _wcvp_status.set_text(
-                        "Not installed — plant search is unavailable."
-                    )
+                    _wcvp_icon.props("name=error_outline")
+                    _wcvp_icon.classes(replace="text-warning")
+                    _wcvp_status.set_text("Not installed — plant search is unavailable.")
                     _wcvp_status.style("color:var(--tp-base-soft)")
-                    _wcvp_install_btn.set_text("Download and install")
+                    _wcvp_install_lbl.set_text("Download and install")
+                    _wcvp_remove_item.set_visibility(False)
                     return None
                 meta = wcvp_svc.index_meta(db)
                 db.close()
+                _wcvp_icon.props("name=check_circle")
+                _wcvp_icon.classes(replace="text-positive")
                 _wcvp_status.set_text(
                     f"{meta.get('label', 'WCVP')} · {int(meta.get('rows', 0)):,} names · "
                     f"{meta.get('license', '')}"
                 )
-                _wcvp_status.style("color:var(--tp-base)")
-                _wcvp_install_btn.set_text("Re-download and rebuild")
+                _wcvp_status.style("color:var(--tp-base-soft)")
+                _wcvp_install_lbl.set_text("Re-download and rebuild")
+                _wcvp_remove_item.set_visibility(True)
                 return meta.get("version")
 
             async def _wcvp_install() -> None:
@@ -2724,8 +2787,8 @@ def index():
                 build_index() writes to a temp file and atomically replaces the target, so a
                 failed download or a corrupt archive leaves an existing index untouched.
                 """
-                _wcvp_install_btn.disable()
-                _wcvp_check_btn.disable()
+                _wcvp_install_item.disable()
+                _wcvp_check_item.disable()
 
                 # Progress is written from a worker thread; the UI reads it on a timer. Never
                 # touch UI elements from the thread itself.
@@ -2762,8 +2825,8 @@ def index():
                 finally:
                     timer.deactivate()
                     timer.delete()          # per the dialog timer-leak rule
-                    _wcvp_install_btn.enable()
-                    _wcvp_check_btn.enable()
+                    _wcvp_install_item.enable()
+                    _wcvp_check_item.enable()
 
                 _wcvp_refresh_installed()
                 # No restart needed: the taxon widgets open the index per search rather than
@@ -2776,19 +2839,6 @@ def index():
                 ui.notify(
                     f"WCVP installed ({report.rows:,} names). Plant search is ready.",
                     type="positive", timeout=0, close_button="Got it",
-                )
-
-            with ui.row().classes("gap-2 mt-1"):
-                _wcvp_install_btn = (
-                    ui.button("Download and install", on_click=_wcvp_install)
-                    .props("flat dense no-caps size=sm")
-                    .tooltip("Downloads Kew's archive into this collection's data folder "
-                             "and builds the index. The size is reported as it downloads.")
-                )
-                _wcvp_check_btn = (
-                    ui.button("Check for a new release", on_click=lambda: _wcvp_check_update())
-                    .props("flat dense no-caps size=sm")
-                    .tooltip("Downloads ~32 KB, not the whole archive")
                 )
 
             _wcvp_refresh_installed()
@@ -2806,17 +2856,27 @@ def index():
             # — where it read as the confirm action for the install that had just finished.
             ui.separator().classes("my-3")
             with ui.row().classes("items-center gap-2 mb-1"):
-                ui.label("Name datasets").classes("text-sm font-medium")
+                ui.label("Add more taxonomy import checklists").classes("text-sm font-medium")
                 ui.label("EXPERIMENTAL").classes("text-xs px-1 rounded").style(
                     "background:#fef9c3; color:#854d0e; font-weight:700;")
             ui.label(
-                "Extra offline checklists (Darwin Core Archives) to import names from — e.g. a "
-                "beetle catalogue. Searched last, after the local database, TaxonWorks and "
-                "WCVP. Imported names are copied into the database, so a dataset can be removed "
-                "at any time without touching them."
+                "Add more offline checklists (Darwin Core Archives) to import names from — "
+                "e.g. a beetle catalogue. Just as with WCVP, names are not automatically "
+                "imported into your collection database, they are imported on demand. "
+                "Searched last, after the local database, TaxonWorks and WCVP. Experimental, "
+                "as the importer was built around one specific dataset and may choke on other "
+                "datasets. You may need to adjust the importer on your own if you need to add "
+                "another dataset. The expected structure is following the Darwin Core Archive "
+                "from WCVP."
             ).classes("text-xs mb-2").style("color:var(--tp-base-soft)")
 
             _ds_list = ui.column().classes("w-full gap-1")
+            # Dialogs opened from a row's ⋮ menu MUST be created in this host, not inside the
+            # click handler. NiceGUI attaches a new element to the slot its creator belongs to,
+            # and a menu item's slot is the q-menu — which has just closed by then. A dialog
+            # built there lands in a dead container and never renders: the click silently did
+            # nothing at all (no error, no dialog). Anchoring them here keeps the slot alive.
+            _ds_dialogs = ui.element("div")
 
             def _ds_refresh() -> None:
                 _ds_list.clear()
@@ -2867,7 +2927,8 @@ def index():
 
             # ── Add dataset (dialog) ──────────────────────────────────────
             def _ds_add_dialog() -> None:
-                dlg = ui.dialog()
+                with _ds_dialogs:
+                    dlg = ui.dialog()
                 with dlg, ui.card().classes("min-w-[460px] gap-2"):
                     ui.label("Add a name dataset").classes("section-label")
                     hint = ui.label(
@@ -2967,7 +3028,8 @@ def index():
                 _ds_refresh()
 
             def _ds_remove(ds) -> None:
-                dlg = ui.dialog()
+                with _ds_dialogs:
+                    dlg = ui.dialog()
                 with dlg, ui.card():
                     ui.label(f"Remove “{ds.label}”?").classes("font-medium mb-2")
                     ui.label(
@@ -3000,7 +3062,8 @@ def index():
                     ui.notify(f"Cannot read {ds.label}: {exc}", type="negative")
                     return
 
-                dlg = ui.dialog()
+                with _ds_dialogs:
+                    dlg = ui.dialog()
                 with dlg, ui.card().classes("min-w-[440px]"):
                     ui.label(f"Import all names from “{ds.label}”?").classes(
                         "font-medium mb-2")

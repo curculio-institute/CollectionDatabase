@@ -845,3 +845,17 @@ def install(folder: Path | None = None, *, url: str = WCVP_DWCA_URL,
 
     write_readme(folder, report, archive=target, source=source)
     return report
+
+
+def uninstall(folder: Path | None = None) -> None:
+    """Delete the installed archive + index + README.
+
+    Names already imported from WCVP are **not** touched: they are local taxon rows now and are
+    never rewritten (docs/plant_names.md §5). Removing the backbone removes the *lookup*, not
+    the data — the same rule as removing a user-added dataset.
+    """
+    import shutil
+
+    from app import config
+
+    shutil.rmtree(folder or config.wcvp_dir(), ignore_errors=True)

@@ -271,3 +271,90 @@ class TestWellFormedArchiveReconstructsNothing:
         assert all(e["source_id"] for e in chain), \
             "a well-formed archive must reconstruct nothing"
         assert [e["rank"] for e in chain][-2:] == ["species", "subspecies"]
+
+
+class TestDatasetRegistry:
+    """install / remove round-trip — the service half of the Settings card."""
+
+    def _isolate(self, tmp_path, monkeypatch):
+        import app.config as config
+        monkeypatch.setattr(config, "_DATA_DIR", tmp_path)
+        monkeypatch.setattr(config, "_CONFIG_PATH", tmp_path / "config.json")
+        monkeypatch.setattr(config, "_instance", None)
+        return config
+
+    def test_install_then_remove_leaves_nothing_behind(self, tmp_path, monkeypatch):
+        config = self._isolate(tmp_path, monkeypatch)
+        from app.services import datasets as ds_svc
+
+        archive = _archive(tmp_path, _ROWS, header=_HEADER_CORRECT)
+        ds, report = ds_svc.install(archive.read_bytes(), "Beetles.zip")
+
+        # The code is READ from the archive's meta.xml, never asked for.
+        assert ds.code == "ICZN"
+        assert report.rows == 6
+        assert ds.installed
+        assert ds.archive_path.exists()
+        assert [e["slug"] for e in config.get_config().name_sources] == [ds.slug]
+
+        ds_svc.remove(ds)
+        assert config.get_config().name_sources == []
+        assert not ds.dir.exists()
+
+    def test_a_registered_dataset_with_no_index_is_not_installed(self, tmp_path, monkeypatch):
+        """The Settings row keys "Import all" off this: importing from an index that does not
+        exist can only fail, so such a dataset offers Rebuild instead."""
+        self._isolate(tmp_path, monkeypatch)
+        from app.services import datasets as ds_svc
+
+        archive = _archive(tmp_path, _ROWS, header=_HEADER_CORRECT)
+        ds, _ = ds_svc.install(archive.read_bytes(), "Beetles.zip")
+        ds.db_path.unlink()
+        assert not ds.installed
+
+    def test_an_archive_that_declares_no_code_is_refused(self, tmp_path, monkeypatch):
+        """The code is a property of the source. A hand-typed answer could contradict the
+        data, so a silent archive is refused rather than guessed at (§2)."""
+        self._isolate(tmp_path, monkeypatch)
+        from app.services import datasets as ds_svc
+
+        p = tmp_path / "nocode.zip"
+        with zipfile.ZipFile(p, "w") as zf:
+            meta = _meta_xml("t.csv", _FIELDS).replace(
+                '<field default="ICZN" '
+                'term="http://rs.tdwg.org/dwc/terms/nomenclaturalCode"/>', "")
+            zf.writestr("meta.xml", meta)
+            zf.writestr("t.csv", _HEADER_CORRECT + "\n" + "\n".join(_ROWS) + "\n")
+
+        with pytest.raises(ns.NameSourceError, match="nomenclaturalCode"):
+            ds_svc.install(p.read_bytes(), "nocode.zip")
+        # Nothing half-installed is left behind, and nothing is registered.
+        import app.config as config
+        assert config.get_config().name_sources == []
+
+
+class TestLegacyWcvpMove:
+    """WCVP is a name source like any other → data/name_sources/wcvp."""
+
+    def test_it_moves_and_never_re_downloads(self, tmp_path, monkeypatch):
+        import app.config as config
+        monkeypatch.setattr(config, "_DATA_DIR", tmp_path)
+        monkeypatch.setattr(config, "_CONFIG_PATH", tmp_path / "config.json")
+        monkeypatch.setattr(config, "_instance", None)
+
+        legacy = tmp_path / "wcvp"
+        legacy.mkdir()
+        (legacy / "wcvp.sqlite").write_text("INDEX")
+
+        assert config.migrate_legacy_dirs()
+        # The 270 MB index is MOVED, not re-fetched.
+        assert config.wcvp_db_path().read_text() == "INDEX"
+        assert config.wcvp_db_path() == tmp_path / "name_sources" / "wcvp" / "wcvp.sqlite"
+        assert not legacy.exists()
+
+        # Idempotent, and a stale legacy dir can never clobber a good install.
+        assert config.migrate_legacy_dirs() is None
+        (tmp_path / "wcvp").mkdir()
+        (tmp_path / "wcvp" / "wcvp.sqlite").write_text("STALE")
+        assert config.migrate_legacy_dirs() is None
+        assert config.wcvp_db_path().read_text() == "INDEX"
