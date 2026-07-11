@@ -29,6 +29,8 @@ STRICT_TABLES = sorted({
     "external_identifier",  # 0037
     "life_stage_record",  # 0038
     "repository",  # 0045
+    "field_occurrence",  # 0059
+
     # The controlled vocabularies are STRICT too and were unguarded until 0056 rebuilt two
     # of them — exactly the blind spot the DB-1 rule exists to close.
     "preparation",  # 0039
@@ -38,8 +40,27 @@ STRICT_TABLES = sorted({
 })
 
 # Tables whose constraints were dropped + restored — checked in extra detail below.
+# field_occurrence's CHECKs are all named, so it fits the named-check guard too.
 _RESTORED = ["collecting_event", "collection_object", "taxon_determination",
-             "label_code", "print_queue"]
+             "label_code", "print_queue", "field_occurrence"]
+
+# The exclusive-arc CHECKs the field_occurrence rebuilds (0060–0063) added/widened.
+# media_attachment's other CHECK (is_primary) is historically unnamed, so guard the
+# arc by name directly rather than requiring every check on the table to be named.
+_FIELD_OCCURRENCE_ARC_CHECKS = {
+    "taxon_determination":    "ck_td_subject_exclusive_arc",
+    "biological_association": "ck_ba_object_exclusive_arc",
+    "external_identifier":    "ck_external_identifier_exclusive_arc",
+    "media_attachment":       "ck_media_attachment_exclusive_arc",
+}
+
+
+@pytest.mark.parametrize("table,check_name", sorted(_FIELD_OCCURRENCE_ARC_CHECKS.items()))
+def test_field_occurrence_arc_checks_named(engine, table, check_name):
+    """The widened exclusive arcs must survive by name (a future rebuild dropping
+    one is the DB-1 failure mode this whole suite exists to catch)."""
+    sql = _table_sql(engine, table)
+    assert check_name in sql, f"{table} lost its exclusive-arc CHECK {check_name!r}"
 
 
 def _table_sql(engine, table):

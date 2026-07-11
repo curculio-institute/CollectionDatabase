@@ -247,7 +247,8 @@ erDiagram
 
     taxon_determination {
         INTEGER id PK
-        INTEGER collection_object_id FK
+        INTEGER collection_object_id FK "subject arc: exactly one"
+        INTEGER field_occurrence_id FK "subject arc: exactly one"
         INTEGER taxon_id FK
         TEXT verbatimIdentification
         TEXT identifiedBy
@@ -255,6 +256,17 @@ erDiagram
         TEXT identificationQualifier
         TEXT identificationRemarks
         INTEGER is_current
+    }
+
+    field_occurrence {
+        INTEGER id PK
+        TEXT occurrenceID UK
+        INTEGER collecting_event_id FK
+        TEXT basisOfRecord
+        INTEGER individualCount
+        TEXT sex
+        TEXT lifeStage
+        INTEGER confidential
     }
 
     biological_relationship {
@@ -268,8 +280,9 @@ erDiagram
         INTEGER biological_relationship_id FK
         INTEGER subject_collection_object_id FK "arc: exactly one"
         INTEGER subject_taxon_id FK "arc: exactly one"
-        INTEGER object_collection_object_id FK "arc: exactly one"
-        INTEGER object_taxon_id FK "arc: exactly one"
+        INTEGER object_collection_object_id FK "object arc: exactly one"
+        INTEGER object_taxon_id FK "object arc: exactly one"
+        INTEGER object_field_occurrence_id FK "object arc: exactly one"
         TEXT notes
     }
 
@@ -288,6 +301,7 @@ erDiagram
         INTEGER collection_object_id FK "arc: exactly one"
         INTEGER collecting_event_id FK "arc: exactly one"
         INTEGER biological_association_id FK "arc: exactly one"
+        INTEGER field_occurrence_id FK "arc: exactly one"
         INTEGER is_primary
     }
 
@@ -295,6 +309,7 @@ erDiagram
         INTEGER id PK
         INTEGER collection_object_id FK "arc: exactly one"
         INTEGER biological_association_id FK "arc: exactly one"
+        INTEGER field_occurrence_id FK "arc: exactly one"
         TEXT value
         TEXT source
     }
@@ -310,19 +325,24 @@ erDiagram
     taxon ||--o{ taxon : "parent of"
     taxon |o--o{ taxon : "accepted name of"
     collecting_event ||--o{ collection_object : "collected at"
-    collection_object ||--o{ taxon_determination : "determined as"
+    collection_object |o--o{ taxon_determination : "determined as (subject arc)"
+    field_occurrence |o--o{ taxon_determination : "determined as (subject arc)"
     taxon ||--o{ taxon_determination : "applied in"
+    collecting_event ||--o{ field_occurrence : "observed at"
     biological_relationship ||--o{ biological_association : "typed by"
     collection_object |o--o{ biological_association : "subject (specimen)"
     taxon |o--o{ biological_association : "subject (taxon)"
     collection_object |o--o{ biological_association : "object (specimen)"
     taxon |o--o{ biological_association : "object (taxon)"
+    field_occurrence |o--o{ biological_association : "object (observation)"
     media ||--o{ media_attachment : "attached via"
     collection_object |o--o{ media_attachment : "attaches (arc)"
     collecting_event |o--o{ media_attachment : "attaches (arc)"
     biological_association |o--o{ media_attachment : "attaches (arc)"
+    field_occurrence |o--o{ media_attachment : "attaches (arc)"
     collection_object |o--o{ external_identifier : "identifies (arc)"
     biological_association |o--o{ external_identifier : "other party (arc)"
+    field_occurrence |o--o{ external_identifier : "identifies (arc)"
     collection_object ||--o{ life_stage_record : "earlier life stages"
     preparation |o--o{ collection_object : "prepared as"
     disposition |o--o{ collection_object : "held as"
@@ -477,14 +497,18 @@ erDiagram
 <!-- ── taxon_determination ────────────────────────────────────── -->
 <div class="table-card" id="taxon_determination">
   <h2>taxon_determination</h2>
-  <div class="desc">Links a specimen to a taxon. Multiple rows per specimen preserve history.
-    <code>is_current = 1</code> marks the accepted determination.
+  <div class="desc">Links a specimen <em>or a field_occurrence</em> to a taxon. The subject is an
+    exclusive arc (migration 0060): exactly one of <code>collection_object_id</code> /
+    <code>field_occurrence_id</code> — so an observation reuses the whole determination
+    machinery, including the open-nomenclature qualifier. Multiple rows per subject preserve
+    history. <code>is_current = 1</code> marks the accepted determination.
     <code>dwc:verbatimIdentification</code> is the name exactly as written on the label.</div>
   <table>
     <thead><tr><th>Type</th><th>Column</th><th>Notes</th></tr></thead>
     <tbody>
       <tr><td><span class="badge badge-INTEGER">INTEGER</span></td><td class="col-local">id</td><td><span class="tag tag-PK">PK</span></td></tr>
-      <tr><td><span class="badge badge-INTEGER">INTEGER</span></td><td class="col-local">collection_object_id</td><td><span class="tag tag-FK">FK</span> → collection_object (CASCADE)</td></tr>
+      <tr><td><span class="badge badge-INTEGER">INTEGER</span></td><td class="col-local">collection_object_id</td><td><span class="tag tag-FK">FK</span> → collection_object (CASCADE) <span class="tag tag-ARC">ARC</span></td></tr>
+      <tr><td><span class="badge badge-INTEGER">INTEGER</span></td><td class="col-local">field_occurrence_id</td><td><span class="tag tag-FK">FK</span> → field_occurrence (CASCADE) <span class="tag tag-ARC">ARC</span> (migration 0060)</td></tr>
       <tr><td><span class="badge badge-INTEGER">INTEGER</span></td><td class="col-local">taxon_id</td><td><span class="tag tag-FK">FK</span> → taxon (RESTRICT)</td></tr>
       <tr><td><span class="badge badge-TEXT">TEXT</span></td><td class="col-dwc"><a href="https://dwc.tdwg.org/list/#dwc_verbatimIdentification">dwc:verbatimIdentification</a></td><td>name as written on label</td></tr>
       <tr><td><span class="badge badge-TEXT">TEXT</span></td><td class="col-dwc"><a href="https://dwc.tdwg.org/list/#dwc_identifiedBy">dwc:identifiedBy</a></td><td></td></tr>
@@ -518,8 +542,11 @@ erDiagram
 <div class="table-card" id="biological_association">
   <h2>biological_association</h2>
   <div class="desc">Joins a subject to an object via a relationship type.
-    Subject and object are each <em>either</em> a collection_object <em>or</em> a taxon —
-    enforced by two exclusive-arc CHECK constraints (exactly one of each pair must be non-null).
+    The <strong>subject</strong> is a collection_object <em>or</em> a taxon; the
+    <strong>object</strong> is a collection_object, a taxon, <em>or</em> a field_occurrence
+    (a host/associated organism recorded as its own HumanObservation — migration 0061;
+    object_taxon stays for the lightweight "collected on &lt;taxon&gt;" case) — each enforced
+    by an exclusive-arc CHECK (exactly one non-null per role).
     Cannot be imported via DwC; local-master, no automated push.
     Verified: <code>occurrence.rb:948 @897f385</code>.</div>
   <table>
@@ -531,7 +558,36 @@ erDiagram
       <tr><td><span class="badge badge-INTEGER">INTEGER</span></td><td class="col-local">subject_taxon_id</td><td><span class="tag tag-FK">FK</span> <span class="tag tag-ARC">ARC</span></td></tr>
       <tr><td><span class="badge badge-INTEGER">INTEGER</span></td><td class="col-local">object_collection_object_id</td><td><span class="tag tag-FK">FK</span> <span class="tag tag-ARC">ARC</span></td></tr>
       <tr><td><span class="badge badge-INTEGER">INTEGER</span></td><td class="col-local">object_taxon_id</td><td><span class="tag tag-FK">FK</span> <span class="tag tag-ARC">ARC</span></td></tr>
+      <tr><td><span class="badge badge-INTEGER">INTEGER</span></td><td class="col-local">object_field_occurrence_id</td><td><span class="tag tag-FK">FK</span> → field_occurrence (RESTRICT) <span class="tag tag-ARC">ARC</span> (migration 0061)</td></tr>
       <tr><td><span class="badge badge-TEXT">TEXT</span></td><td class="col-local">notes</td><td></td></tr>
+      <tr><td><span class="badge badge-TEXT">TEXT</span></td><td class="col-local">created_at / updated_at</td><td></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<!-- ── field_occurrence ───────────────────────────────────────── -->
+<div class="table-card" id="field_occurrence">
+  <h2>field_occurrence</h2>
+  <div class="desc">A <strong>HumanObservation</strong> — something recorded but <em>not</em>
+    physically collected (a host plant a beetle was collected on; a beetle seen but not taken).
+    Mirrors TaxonWorks' FieldOccurrence (the sibling of CollectionObject). Deliberately unlike
+    collection_object: <strong>no catalog_number</strong> (no pinned label) and no
+    repository / preparation / disposition — nothing is held. Identity is its own
+    <code>dwc:occurrenceID</code> (a generated UUID), so the specimen catalog-number invariant
+    is untouched. Its determination is a <code>taxon_determination</code> row via that table's
+    subject arc. Migration 0059. See <code>docs/field_occurrence.md</code>.</div>
+  <table>
+    <thead><tr><th>Type</th><th>Column</th><th>Notes</th></tr></thead>
+    <tbody>
+      <tr><td><span class="badge badge-INTEGER">INTEGER</span></td><td class="col-local">id</td><td><span class="tag tag-PK">PK</span></td></tr>
+      <tr><td><span class="badge badge-TEXT">TEXT</span></td><td class="col-dwc"><a href="https://dwc.tdwg.org/list/#dwc_occurrenceID">dwc:occurrenceID</a></td><td><span class="tag tag-UQ">UQ</span> NOT NULL — generated UUID; the stable observation identity</td></tr>
+      <tr><td><span class="badge badge-INTEGER">INTEGER</span></td><td class="col-local">collecting_event_id</td><td><span class="tag tag-FK">FK</span> → collecting_event ON DELETE RESTRICT, NOT NULL</td></tr>
+      <tr><td><span class="badge badge-TEXT">TEXT</span></td><td class="col-dwc"><a href="https://dwc.tdwg.org/list/#dwc_basisOfRecord">dwc:basisOfRecord</a></td><td>NOT NULL DEFAULT 'HumanObservation'; CHECK ∈ {HumanObservation, MachineObservation}</td></tr>
+      <tr><td><span class="badge badge-INTEGER">INTEGER</span></td><td class="col-dwc"><a href="https://dwc.tdwg.org/list/#dwc_individualCount">dwc:individualCount</a></td><td>NOT NULL DEFAULT 1; CHECK ≥ 0</td></tr>
+      <tr><td><span class="badge badge-TEXT">TEXT</span></td><td class="col-dwc"><a href="https://dwc.tdwg.org/list/#dwc_sex">dwc:sex</a></td><td></td></tr>
+      <tr><td><span class="badge badge-TEXT">TEXT</span></td><td class="col-dwc"><a href="https://dwc.tdwg.org/list/#dwc_lifeStage">dwc:lifeStage</a></td><td></td></tr>
+      <tr><td><span class="badge badge-TEXT">TEXT</span></td><td class="col-dwc"><a href="https://dwc.tdwg.org/list/#dwc_occurrenceRemarks">dwc:occurrenceRemarks</a></td><td></td></tr>
+      <tr><td><span class="badge badge-INTEGER">INTEGER</span></td><td class="col-local">confidential</td><td>NOT NULL DEFAULT 0; CHECK 0/1 — dropped from DwC export, never pushed</td></tr>
       <tr><td><span class="badge badge-TEXT">TEXT</span></td><td class="col-local">created_at / updated_at</td><td></td></tr>
     </tbody>
   </table>
@@ -563,10 +619,10 @@ erDiagram
 <div class="table-card">
   <h2>media_attachment</h2>
   <div class="desc">Links a <code>media</code> row to exactly one record — a
-    collection_object, collecting_event, <em>or</em> biological_association (exclusive-arc
-    CHECK). Per-attachment caption / primary / order, so one asset can be attached to
-    several records (mirrors TaxonWorks' Image↔Depiction). All FKs ON DELETE CASCADE.
-    Migration 0035.</div>
+    collection_object, collecting_event, biological_association, <em>or</em> field_occurrence
+    (exclusive-arc CHECK; field_occurrence added migration 0063). Per-attachment caption /
+    primary / order, so one asset can be attached to several records (mirrors TaxonWorks'
+    Image↔Depiction). All FKs ON DELETE CASCADE. Migration 0035.</div>
   <table>
     <thead><tr><th>Type</th><th>Column</th><th>Notes</th></tr></thead>
     <tbody>
@@ -575,6 +631,7 @@ erDiagram
       <tr><td><span class="badge badge-INTEGER">INTEGER</span></td><td class="col-local">collection_object_id</td><td><span class="tag tag-FK">FK</span> <span class="tag tag-ARC">ARC</span></td></tr>
       <tr><td><span class="badge badge-INTEGER">INTEGER</span></td><td class="col-local">collecting_event_id</td><td><span class="tag tag-FK">FK</span> <span class="tag tag-ARC">ARC</span></td></tr>
       <tr><td><span class="badge badge-INTEGER">INTEGER</span></td><td class="col-local">biological_association_id</td><td><span class="tag tag-FK">FK</span> <span class="tag tag-ARC">ARC</span></td></tr>
+      <tr><td><span class="badge badge-INTEGER">INTEGER</span></td><td class="col-local">field_occurrence_id</td><td><span class="tag tag-FK">FK</span> <span class="tag tag-ARC">ARC</span> (migration 0063)</td></tr>
       <tr><td><span class="badge badge-TEXT">TEXT</span></td><td class="col-local">caption</td><td></td></tr>
       <tr><td><span class="badge badge-INTEGER">INTEGER</span></td><td class="col-local">is_primary / sort_order</td><td>is_primary ∈ {0,1}</td></tr>
       <tr><td><span class="badge badge-TEXT">TEXT</span></td><td class="col-local">created_at / updated_at</td><td></td></tr>
@@ -585,16 +642,18 @@ erDiagram
 <div class="table-card">
   <h2>external_identifier</h2>
   <div class="desc">An external resource link/identifier (e.g. an iNaturalist observation
-    URL) attached to exactly one of a collection_object or a biological_association
-    (exclusive-arc CHECK; both FKs ON DELETE CASCADE). For an association it denotes the
-    <em>other party</em> — an optional addition; the association's object arc is unchanged.
-    Migration 0037.</div>
+    URL) attached to exactly one of a collection_object, a biological_association, <em>or</em>
+    a field_occurrence (exclusive-arc CHECK; all FKs ON DELETE CASCADE; field_occurrence added
+    migration 0062 — a HumanObservation is often born from an iNaturalist observation). For an
+    association it denotes the <em>other party</em> — an optional addition; the association's
+    object arc is unchanged. Migration 0037.</div>
   <table>
     <thead><tr><th>Type</th><th>Column</th><th>Notes</th></tr></thead>
     <tbody>
       <tr><td><span class="badge badge-INTEGER">INTEGER</span></td><td class="col-local">id</td><td><span class="tag tag-PK">PK</span></td></tr>
       <tr><td><span class="badge badge-INTEGER">INTEGER</span></td><td class="col-local">collection_object_id</td><td><span class="tag tag-FK">FK</span> <span class="tag tag-ARC">ARC</span></td></tr>
       <tr><td><span class="badge badge-INTEGER">INTEGER</span></td><td class="col-local">biological_association_id</td><td><span class="tag tag-FK">FK</span> <span class="tag tag-ARC">ARC</span></td></tr>
+      <tr><td><span class="badge badge-INTEGER">INTEGER</span></td><td class="col-local">field_occurrence_id</td><td><span class="tag tag-FK">FK</span> <span class="tag tag-ARC">ARC</span> (migration 0062)</td></tr>
       <tr><td><span class="badge badge-TEXT">TEXT</span></td><td class="col-local">value</td><td>NOT NULL — the URI / identifier (the user pastes this)</td></tr>
       <tr><td><span class="badge badge-TEXT">TEXT</span></td><td class="col-local">source / label / remarks</td><td>optional; source currently unpopulated (kept for future flexibility)</td></tr>
       <tr><td><span class="badge badge-TEXT">TEXT</span></td><td class="col-local">created_at / updated_at</td><td></td></tr>
@@ -680,16 +739,21 @@ erDiagram
       <tr><td class="col-local">ck_person_consent_approved</td><td class="col-local">person</td><td><code>consent_approved</code> is 0 or 1 (consent flag, migration 0044)</td></tr>
       <tr><td class="col-local">ck_person_consent_xor_confidential</td><td class="col-local">person</td><td><code>consent_approved</code> and <code>confidential</code> are mutually exclusive — never both 1</td></tr>
       <tr><td class="col-local">ck_td_is_current_bool</td><td class="col-local">taxon_determination</td><td><code>is_current</code> is 0 or 1</td></tr>
+      <tr><td class="col-local">ck_td_identification_qualifier</td><td class="col-local">taxon_determination</td><td><code>identificationQualifier</code> is empty, or one of the closed open-nomenclature set (migration 0058)</td></tr>
+      <tr><td class="col-local">ck_td_subject_exclusive_arc</td><td class="col-local">taxon_determination</td><td>exactly one of <code>collection_object_id</code> / <code>field_occurrence_id</code> is set (migration 0060) <span class="tag tag-ARC">ARC</span></td></tr>
+      <tr><td class="col-local">ck_fo_basis_of_record</td><td class="col-local">field_occurrence</td><td><code>basisOfRecord</code> ∈ {HumanObservation, MachineObservation} (migration 0059)</td></tr>
+      <tr><td class="col-local">ck_fo_individual_count_non_negative</td><td class="col-local">field_occurrence</td><td><code>individualCount</code> ≥ 0</td></tr>
+      <tr><td class="col-local">ck_fo_confidential</td><td class="col-local">field_occurrence</td><td><code>confidential</code> is 0 or 1</td></tr>
       <tr><td class="col-local">ck_ba_subject_exclusive_arc</td><td class="col-local">biological_association</td><td>exactly one of <code>subject_collection_object_id</code> / <code>subject_taxon_id</code> is set <span class="tag tag-ARC">ARC</span></td></tr>
-      <tr><td class="col-local">ck_ba_object_exclusive_arc</td><td class="col-local">biological_association</td><td>exactly one of <code>object_collection_object_id</code> / <code>object_taxon_id</code> is set <span class="tag tag-ARC">ARC</span></td></tr>
+      <tr><td class="col-local">ck_ba_object_exclusive_arc</td><td class="col-local">biological_association</td><td>exactly one of <code>object_collection_object_id</code> / <code>object_taxon_id</code> / <code>object_field_occurrence_id</code> is set (widened migration 0061) <span class="tag tag-ARC">ARC</span></td></tr>
       <tr><td class="col-local">ck_label_code_status</td><td class="col-local">label_code</td><td><code>status</code> ∈ {reserved, assigned}</td></tr>
       <tr><td class="col-local">ck_print_queue_label_type</td><td class="col-local">print_queue</td><td><code>label_type</code> ∈ {data, determination, identifier}</td></tr>
       <tr><td class="col-local">ck_print_queue_exclusive_arc</td><td class="col-local">print_queue</td><td>data / determination rows reference a <code>collection_object</code>; identifier rows reference a <code>label_code</code> (never both) <span class="tag tag-ARC">ARC</span></td></tr>
       <tr><td class="col-local">ck_media_category</td><td class="col-local">media</td><td><code>category</code> ∈ {Image, Sound, Video, Document, Sequence, Other}</td></tr>
       <tr><td class="col-local">ck_media_byte_size_non_negative</td><td class="col-local">media</td><td><code>byte_size</code> is empty, or ≥ 0</td></tr>
-      <tr><td class="col-local">ck_media_attachment_exclusive_arc</td><td class="col-local">media_attachment</td><td>exactly one of <code>collection_object_id</code> / <code>collecting_event_id</code> / <code>biological_association_id</code> is set <span class="tag tag-ARC">ARC</span></td></tr>
+      <tr><td class="col-local">ck_media_attachment_exclusive_arc</td><td class="col-local">media_attachment</td><td>exactly one of <code>collection_object_id</code> / <code>collecting_event_id</code> / <code>biological_association_id</code> / <code>field_occurrence_id</code> is set (widened migration 0063) <span class="tag tag-ARC">ARC</span></td></tr>
       <tr><td class="col-local">ck_media_attachment_is_primary</td><td class="col-local">media_attachment</td><td><code>is_primary</code> is 0 or 1</td></tr>
-      <tr><td class="col-local">ck_external_identifier_exclusive_arc</td><td class="col-local">external_identifier</td><td>exactly one of <code>collection_object_id</code> / <code>biological_association_id</code> is set <span class="tag tag-ARC">ARC</span></td></tr>
+      <tr><td class="col-local">ck_external_identifier_exclusive_arc</td><td class="col-local">external_identifier</td><td>exactly one of <code>collection_object_id</code> / <code>biological_association_id</code> / <code>field_occurrence_id</code> is set (widened migration 0062) <span class="tag tag-ARC">ARC</span></td></tr>
       <tr><td class="col-local">ck_life_stage_basis_of_record</td><td class="col-local">life_stage_record</td><td><code>basisOfRecord</code> ∈ {PreservedSpecimen, FossilSpecimen, HumanObservation}</td></tr>
       <tr><td class="col-local">ck_repository_is_default</td><td class="col-local">repository</td><td><code>is_default</code> is 0 or 1 (default-collection flag, migration 0050, #83)</td></tr>
       <tr><td class="col-local">ck_preparation_is_default</td><td class="col-local">preparation</td><td><code>is_default</code> is 0 or 1 (flaggable Tier-1 autofill default, migration 0052)</td></tr>
@@ -707,6 +771,8 @@ erDiagram
       <tr><td><span class="tag tag-UQ">UQ</span></td><td class="col-local">repository</td><td>partial UNIQUE index <code>uq_repository_one_default</code> on <code>is_default</code> WHERE <code>is_default = 1</code> — at most one default/home collection (migration 0050, #83)</td></tr>
       <tr><td><span class="tag tag-UQ">UQ</span></td><td class="col-local">preparation</td><td>partial UNIQUE index <code>uq_preparation_one_default</code> on <code>is_default</code> WHERE <code>is_default = 1</code> — at most one flaggable autofill default (migration 0052)</td></tr>
       <tr><td><span class="tag tag-UQ">UQ</span></td><td class="col-local">biological_relationship</td><td>UNIQUE (<code>name</code>)</td></tr>
+      <tr><td><span class="tag tag-UQ">UQ</span></td><td class="col-local">field_occurrence</td><td>UNIQUE (<code>dwc:occurrenceID</code>) — <code>uq_fo_occurrence_id</code> (migration 0059)</td></tr>
+      <tr><td><span class="tag tag-UQ">UQ</span></td><td class="col-local">taxon_determination</td><td>partial UNIQUE <code>uq_td_one_current_per_fo</code> on <code>field_occurrence_id</code> WHERE <code>is_current = 1</code> — at most one current determination per field occurrence (migration 0060)</td></tr>
       <tr><td><span class="tag tag-FK">FK</span></td><td class="col-local">taxon_determination</td><td><code>collection_object_id</code> → collection_object ON DELETE CASCADE; <code>taxon_id</code> → taxon ON DELETE RESTRICT</td></tr>
       <tr><td><span class="tag tag-FK">FK</span></td><td class="col-local">collection_object</td><td><code>repository_id</code> → repository(id) ON DELETE RESTRICT — owning collection, NOT NULL (migration 0047, #75); blocks deleting a collection that still has specimens</td></tr>
       <tr><td><span class="tag tag-FK">FK</span></td><td class="col-local">person references</td><td>all <code>person</code> FKs (recordedBy, identifiedBy, defaults, media rightsHolder, repository contact/owner) are ON DELETE RESTRICT</td></tr>
