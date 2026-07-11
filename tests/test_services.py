@@ -541,8 +541,13 @@ def test_finalize_specimen_visiting_no_code_no_queue(session):
     assert session.query(PrintQueue).count() == 0
 
 
-def test_finalize_specimen_saves_biological_associations(session):
-    """Associations are persisted regardless of mode (here: visiting, code=None)."""
+def test_finalize_specimen_saves_associations_as_field_occurrences(session):
+    """An association's object taxon is recorded as its own HumanObservation
+    field_occurrence sharing the specimen's event, with identifiedBy defaulting to the
+    event's recordedBy and only a qualifier optionally surfaced (decided 2026-07-11)."""
+    from app.models import FieldOccurrence
+    import app.services.field_occurrence as fo_svc
+
     co, _ = _saved_co_with_code(session)
     host = _taxon(session, "Quercus", "robur", authorship="L.")
     rel = BiologicalRelationship(name="collected_on",
@@ -552,19 +557,33 @@ def test_finalize_specimen_saves_biological_associations(session):
 
     finalize_specimen(
         session, collection_object_id=co.id, code=None,
-        associations=[{"rel_id": rel.id, "taxon_id": host.id}],
+        associations=[{"rel_id": rel.id, "taxon_id": host.id, "qualifier": "cf."}],
     )
     session.flush()
 
     ba = session.query(BiologicalAssociation).filter_by(
         subject_collection_object_id=co.id).one()
-    assert ba.object_taxon_id == host.id
+    # The object is a field occurrence, NOT a bare taxon.
+    assert ba.object_taxon_id is None
+    assert ba.object_field_occurrence_id is not None
     assert ba.biological_relationship_id == rel.id
+
+    fo = session.get(FieldOccurrence, ba.object_field_occurrence_id)
+    assert fo.basis_of_record == "HumanObservation"
+    assert fo.collecting_event_id == co.collecting_event_id      # shares the event
+    det = fo_svc.current_determination(session, fo)
+    assert det.taxon_id == host.id
+    assert det.identification_qualifier == "cf."
+    # identifiedBy defaults to the event's recordedBy.
+    assert det.identified_by_id == co.collecting_event.recorded_by_id
 
 
 def test_finalize_specimen_returns_created_associations_in_order(session):
     """finalize_specimen returns the new BiologicalAssociation rows (with ids) in input
     order, so callers can attach per-association media to them (#48)."""
+    from app.models import FieldOccurrence
+    import app.services.field_occurrence as fo_svc
+
     co, _ = _saved_co_with_code(session)
     oak = _taxon(session, "Quercus", "robur", authorship="L.")
     pine = _taxon(session, "Pinus", "sylvestris", authorship="L.")
@@ -578,8 +597,13 @@ def test_finalize_specimen_returns_created_associations_in_order(session):
                       {"rel_id": rel.id, "taxon_id": pine.id}],
     )
     session.flush()
-    assert [c.object_taxon_id for c in created] == [oak.id, pine.id]
     assert all(c.id is not None for c in created)
+    # Order preserved — resolve each association's field-occurrence determination.
+    taxa = []
+    for c in created:
+        fo = session.get(FieldOccurrence, c.object_field_occurrence_id)
+        taxa.append(fo_svc.current_determination(session, fo).taxon_id)
+    assert taxa == [oak.id, pine.id]
 
 
 # ---------------------------------------------------------------------------

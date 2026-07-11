@@ -16,6 +16,7 @@ from app.services.taxa import (
     format_scientific_name,
     render_identification,
 )
+from app.vocab import IDENTIFICATION_QUALIFIER_OPTIONS
 from app.ui.taxon_search import build_taxon_search, _local_item_html
 from app.ui.identification_list import build_identification_list
 from app.ui.collecting_event_form import build_collecting_event_form
@@ -470,7 +471,9 @@ def build_records_tab(session_factory, *, on_saved: callable | None = None) -> N
             # _assoc_deleted). Nothing is written until "Save changes" calls _assoc_commit.
             _assoc_rows: list[dict] = _with_session(
                 lambda s: [{"id": a.id, "rel_id": a.rel_id, "rel_name": a.rel_name,
-                            "taxon_id": a.object_taxon_id, "object_label": a.object_label}
+                            "taxon_id": a.object_taxon_id, "object_label": a.object_label,
+                            "qualifier": a.identification_qualifier,
+                            "fo_id": a.object_field_occurrence_id}
                            for a in bio_svc.get_associations_for_specimen(s, co_id)]
             )
             _assoc_deleted: list[int] = []
@@ -491,7 +494,9 @@ def build_records_tab(session_factory, *, on_saved: callable | None = None) -> N
                         with ui.row().classes("items-center gap-2 w-full"):
                             ui.icon("link", size="xs") \
                                 .style("color:var(--tp-secondary); opacity:.7")
-                            ui.label(f"{a['rel_name']} — {a['object_label']}") \
+                            _q = a.get("qualifier")
+                            _obj = f"{_q} {a['object_label']}" if _q else a['object_label']
+                            ui.label(f"{a['rel_name']} — {_obj}") \
                                 .classes("text-sm flex-1")
                             if a["id"] is not None:
                                 _ext_btn(session_factory,
@@ -526,11 +531,15 @@ def build_records_tab(session_factory, *, on_saved: callable | None = None) -> N
                 _assoc_deleted.clear()
                 for row in _assoc_rows:
                     if row["id"] is None:
-                        created = bio_svc.save_biological_association(
+                        # The object taxon is recorded as its own HumanObservation
+                        # field_occurrence sharing the specimen's event (decided
+                        # 2026-07-11); only the qualifier is exposed here.
+                        created = bio_svc.save_association_as_field_occurrence(
                             s,
                             collection_object_id=co_id,
                             biological_relationship_id=row["rel_id"],
-                            object_taxon_id=row["taxon_id"],
+                            taxon_id=row["taxon_id"],
+                            identification_qualifier=row.get("qualifier"),
                         )
                         row["id"] = created.id
 
@@ -557,6 +566,15 @@ def build_records_tab(session_factory, *, on_saved: callable | None = None) -> N
                 sources=("local", "taxonworks", "wcvp"),
                 placeholder="Type plant or fungus name…",
             )
+            # The object is recorded as a HumanObservation field occurrence; the qualifier
+            # is the only identification field surfaced at data entry (the rest —
+            # basisOfRecord, identifiedBy=recordedBy, shared event — is automatic). The full
+            # observation stays editable afterwards via its editor.
+            assoc_qual_sel = ui.select(
+                options=IDENTIFICATION_QUALIFIER_OPTIONS,
+                value="",
+                label="Qualifier (cf./aff.…)",
+            ).classes("w-full mb-2")
 
             def _add_assoc():
                 rel_id   = assoc_rel_sel.value
@@ -577,10 +595,13 @@ def build_records_tab(session_factory, *, on_saved: callable | None = None) -> N
                         "rel_id":       rel_id,
                         "rel_name":     next((r.name for r in rel_opts if r.id == rel_id), "?"),
                         "taxon_id":     taxon_id,
+                        "qualifier":    assoc_qual_sel.value or None,
+                        "fo_id":        None,
                         "object_label": bio_state["label"] or f"taxon #{taxon_id}",
                     })
                     bio_state["clear"]()
                     assoc_rel_sel.value = None
+                    assoc_qual_sel.value = ""
                     _refresh_assoc_list()
                 except Exception as exc:
                     ui.notify(f"Failed: {exc}", type="negative")

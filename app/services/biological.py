@@ -90,6 +90,10 @@ class AssociationRow:
     # The relationship's FK, needed to re-create a staged association on save (Records
     # stages adds/removes until "Save changes"); rel_name alone is a display label.
     rel_id: int | None = None
+    # When the object is a field_occurrence (the normal case now), its id + the current
+    # determination's qualifier — so the UI can show the qualifier and open the full editor.
+    object_field_occurrence_id: int | None = None
+    identification_qualifier: str | None = None
 
 
 def get_associations_for_specimen(
@@ -98,6 +102,8 @@ def get_associations_for_specimen(
     """Return all biological associations where the specimen is the subject."""
     from app.models import Taxon
     from app.services.taxa import format_scientific_name
+
+    from app.services import field_occurrence as fo_svc
 
     rows = (
         session.query(BiologicalAssociation)
@@ -109,12 +115,26 @@ def get_associations_for_specimen(
     out = []
     for r in rows:
         rel_name = r.biological_relationship.name if r.biological_relationship else "?"
-        if r.object_taxon:
+        obj_taxon_id = None
+        fo_id = None
+        qualifier = None
+        if r.object_field_occurrence:
+            # The normal case: object is a HumanObservation. Resolve its current
+            # determination for the label + taxon + qualifier the UI needs.
+            det = fo_svc.current_determination(session, r.object_field_occurrence)
+            obj_label = fo_svc.object_label(session, r.object_field_occurrence)
+            fo_id = r.object_field_occurrence_id
+            if det:
+                obj_taxon_id = det.taxon_id
+                qualifier = det.identification_qualifier
+        elif r.object_taxon:
             obj_label = format_scientific_name(r.object_taxon)
+            obj_taxon_id = r.object_taxon_id
         else:
             obj_label = f"specimen #{r.object_collection_object_id}"
-        out.append(AssociationRow(r.id, rel_name, obj_label, r.object_taxon_id,
-                                  r.biological_relationship_id))
+        out.append(AssociationRow(
+            r.id, rel_name, obj_label, obj_taxon_id, r.biological_relationship_id,
+            object_field_occurrence_id=fo_id, identification_qualifier=qualifier))
     return out
 
 
@@ -127,20 +147,62 @@ def save_biological_association(
     *,
     collection_object_id: int,
     biological_relationship_id: int,
-    object_taxon_id: int,
+    object_taxon_id: int | None = None,
+    object_field_occurrence_id: int | None = None,
 ) -> BiologicalAssociation:
-    """Create one BiologicalAssociation with the specimen as subject and a taxon as object."""
+    """Create one BiologicalAssociation with the specimen as subject. The object is a
+    field_occurrence (the normal case) or, for a lightweight legacy write, a bare taxon —
+    the exclusive-arc CHECK enforces exactly one."""
     now = _utcnow()
     assoc = BiologicalAssociation(
         biological_relationship_id=biological_relationship_id,
         subject_collection_object_id=collection_object_id,
         object_taxon_id=object_taxon_id,
+        object_field_occurrence_id=object_field_occurrence_id,
         created_at=now,
         updated_at=now,
     )
     session.add(assoc)
     session.flush()
     return assoc
+
+
+def save_association_as_field_occurrence(
+    session: Session,
+    *,
+    collection_object_id: int,
+    biological_relationship_id: int,
+    taxon_id: int,
+    identification_qualifier: str | None = None,
+) -> BiologicalAssociation:
+    """The standard association write (decided 2026-07-11): the object taxon is recorded as
+    its own HumanObservation ``field_occurrence`` sharing the specimen's collecting event,
+    with identifiedBy defaulting to the event's recordedBy and only the qualifier surfaced at
+    data entry. Returns the created association (its object_field_occurrence_id is set)."""
+    from app.models import CollectionObject
+    from app.services import field_occurrence as fo_svc
+
+    co = session.get(CollectionObject, collection_object_id)
+    if co is None:
+        raise ValueError(f"collection_object {collection_object_id} not found")
+    event_id = co.collecting_event_id
+    if event_id is None:
+        raise ValueError(
+            "cannot record a host observation for a specimen with no collecting event")
+
+    fo = fo_svc.create_field_occurrence(
+        session,
+        collecting_event_id=event_id,
+        taxon_id=taxon_id,
+        identification_qualifier=identification_qualifier,
+        identified_by_id=fo_svc.event_recorded_by_id(session, event_id),
+    )
+    return save_biological_association(
+        session,
+        collection_object_id=collection_object_id,
+        biological_relationship_id=biological_relationship_id,
+        object_field_occurrence_id=fo.id,
+    )
 
 
 def remove_biological_association(session: Session, ba_id: int) -> None:
