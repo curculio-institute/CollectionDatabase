@@ -62,6 +62,7 @@ from app.services.biological import (
     get_relationship_options,
 )
 from app.services.validation import validate_event_fields
+from app.vocab import IDENTIFICATION_QUALIFIER_OPTIONS
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -1183,6 +1184,13 @@ def index():
                         sources=("local", "taxonworks", "wcvp"),
                         placeholder="Type plant or fungus name…",
                     )
+                    # The object is recorded as a HumanObservation field occurrence; the
+                    # qualifier is the only identification field surfaced here (the rest is
+                    # automatic and stays editable via the observation's editor).
+                    bio_qual_sel = ui.select(
+                        options=IDENTIFICATION_QUALIFIER_OPTIONS, value="",
+                        label="Qualifier (cf./aff.…)",
+                    ).classes("w-full mt-2")
 
                     with ui.row().classes("items-center gap-3 mt-3"):
                         show_animals_cb = ui.checkbox(
@@ -1219,6 +1227,7 @@ def index():
                                 "rel_id":      rel_id,
                                 "rel_name":    rel_name,
                                 "taxon_id":    taxon_id,
+                                "qualifier":   bio_qual_sel.value or None,
                                 "taxon_label": bio_obj_state["label"],
                                 # Per-association staged media + external links; persist
                                 # across list re-renders (passed as staged_store) and are
@@ -1228,6 +1237,7 @@ def index():
                             })
                             bio_obj_state["clear"]()
                             rel_sel.value = None
+                            bio_qual_sel.value = ""
                             _refresh_assoc_list()
 
                         (
@@ -1248,7 +1258,9 @@ def index():
                                 with ui.row().classes("items-center gap-2 w-full"):
                                     ui.icon("link", size="xs") \
                                         .style("color:var(--tp-secondary); opacity:.7")
-                                    ui.label(f"{a['rel_name']} — {a['taxon_label']}") \
+                                    _q = a.get("qualifier")
+                                    _lbl = f"{_q} {a['taxon_label']}" if _q else a['taxon_label']
+                                    ui.label(f"{a['rel_name']} — {_lbl}") \
                                         .classes("text-sm flex-1")
                                     # Per-association staged external link + media
                                     # (committed on Save).
