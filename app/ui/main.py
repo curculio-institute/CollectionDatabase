@@ -1461,7 +1461,8 @@ def index():
                         or ce["has_content"]()
                         or state.get("event_id") is not None
                         or bool(bio_state["associations"])
-                        or bool(rel_sel.value)
+                        or bool(rel_field["get_value"]())
+                        or bool(bio_qual["get_value"]())
                         or bool(bio_obj_state["taxon_id"])
                         or _active_media()["has_content"]()
                         or _active_extid()["has_content"]()

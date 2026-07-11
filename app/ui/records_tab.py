@@ -513,9 +513,10 @@ def build_records_tab(session_factory, *, on_saved: callable | None = None) -> N
                                     ui.button("", icon="edit_note") \
                                         .props("flat dense round size=sm color=secondary") \
                                         .tooltip("Edit the full observation (field occurrence)") \
-                                        .on_click(lambda _, fid=a["fo_id"]:
+                                        .on_click(lambda _, fid=a["fo_id"], aid=a["id"]:
                                                   open_field_occurrence_editor(
                                                       session_factory, fid,
+                                                      association_id=aid,
                                                       on_saved=_reload_assoc_from_db))
                                     # The iNaturalist URL / resource identifier belongs to
                                     # the observation (the field occurrence it came from);

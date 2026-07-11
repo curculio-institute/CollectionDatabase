@@ -17,13 +17,22 @@ from app.vocab import IDENTIFICATION_QUALIFIER_OPTIONS, SEX_OPTIONS
 from app.ui.taxon_search import build_taxon_search
 from app.ui.person_field import build_person_field
 from app.ui.choice_field import build_choice_field
+from app.ui.external_id_panel import build_external_id_button
+from app.ui.media_panel import build_media_button
 
 # basisOfRecord for an observation — the field_occurrence CHECK set (migration 0059).
 _FO_BASIS_OPTIONS = ["HumanObservation", "MachineObservation"]
 
 
-def open_field_occurrence_editor(session_factory, fo_id: int, on_saved=None) -> None:
-    """Open a modal to fully edit the field occurrence `fo_id` and its determination."""
+def open_field_occurrence_editor(session_factory, fo_id: int, *,
+                                 association_id: int | None = None,
+                                 on_saved=None) -> None:
+    """Open a modal to fully edit the field occurrence `fo_id` and its determination.
+
+    `association_id` (the biological_association this observation is the object of) lets the
+    modal offer the association's **media** button; the **iNaturalist URL** attaches to the
+    observation (this field occurrence) itself.
+    """
     with session_factory() as s:
         fo = s.get(FieldOccurrence, fo_id)
         if fo is None:
@@ -49,7 +58,19 @@ def open_field_occurrence_editor(session_factory, fo_id: int, on_saved=None) -> 
 
     dlg = ui.dialog()
     with dlg, ui.card().classes("w-[560px] max-w-full gap-2"):
-        ui.label("Edit observation (field occurrence)").classes("text-base font-semibold")
+        with ui.row().classes("w-full items-center gap-2"):
+            ui.label("Edit observation (field occurrence)").classes("text-base font-semibold")
+            ui.space()
+            # iNaturalist URL / resource identifier → the observation (this field
+            # occurrence); media → the biological association it is the object of.
+            build_external_id_button(
+                session_factory, target_kind="field_occurrence",
+                target_id_getter=lambda: fo_id,
+                tooltip="Observation resource identifier (iNaturalist URL)")
+            if association_id is not None:
+                build_media_button(
+                    session_factory, target_kind="biological_association",
+                    target_id_getter=lambda: association_id, tooltip="Association media")
         ui.label("The host / sighting recorded as its own HumanObservation. Data entry only "
                  "sets the qualifier; everything here is editable when needed.") \
             .classes("text-xs").style("color:var(--tp-base-soft)")
