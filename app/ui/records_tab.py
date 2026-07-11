@@ -575,12 +575,13 @@ def build_records_tab(session_factory, *, on_saved: callable | None = None) -> N
                 "when you press “Save changes”."
             ).classes("text-xs mb-2").style("color:var(--tp-base-soft)")
 
+            # Same UI as the Digitize association card: relationship rendered as the
+            # custom-dropdown (a peer of the taxon field, not overlooked); the compact
+            # qualifier sits on the Add row.
             rel_opts = _with_session(bio_svc.get_relationship_options)
-            assoc_rel_sel = ui.select(
-                options={r.id: r.name for r in rel_opts},
-                label="Relationship",
-                clearable=True,
-            ).classes("w-full mb-2")
+            _rel_name_to_id = {r.name: r.id for r in rel_opts}
+            assoc_rel = build_choice_field(
+                list(_rel_name_to_id.keys()), "Relationship", classes="w-full mb-2")
 
             bio_codes_local: list[str] = list(get_config().bio_assoc_default_codes)
             bio_state = build_taxon_search(
@@ -589,17 +590,10 @@ def build_records_tab(session_factory, *, on_saved: callable | None = None) -> N
                 sources=("local", "taxonworks", "wcvp"),
                 placeholder="Type plant or fungus name…",
             )
-            # The object is recorded as a HumanObservation field occurrence; the qualifier
-            # is the only identification field surfaced at data entry (the rest —
-            # basisOfRecord, identifiedBy=recordedBy, shared event — is automatic). The full
-            # observation stays editable afterwards via its editor. Snap-to-first dropdown
-            # (cf. first, one keystroke), like the other closed-list fields.
-            assoc_qual = build_choice_field(
-                IDENTIFICATION_QUALIFIER_OPTIONS, "Qualifier (cf./aff.…)",
-                classes="w-full mb-2")
 
             def _add_assoc():
-                rel_id   = assoc_rel_sel.value
+                rel_name = assoc_rel["get_value"]()
+                rel_id   = _rel_name_to_id.get(rel_name)
                 taxon_id = bio_state["taxon_id"]
                 if not rel_id:
                     ui.notify("Select a relationship first.", type="warning")
@@ -615,20 +609,24 @@ def build_records_tab(session_factory, *, on_saved: callable | None = None) -> N
                     _assoc_rows.append({
                         "id":           None,
                         "rel_id":       rel_id,
-                        "rel_name":     next((r.name for r in rel_opts if r.id == rel_id), "?"),
+                        "rel_name":     rel_name,
                         "taxon_id":     taxon_id,
                         "qualifier":    assoc_qual["get_value"](),
                         "fo_id":        None,
                         "object_label": bio_state["label"] or f"taxon #{taxon_id}",
                     })
                     bio_state["clear"]()
-                    assoc_rel_sel.value = None
+                    assoc_rel["set_value"](None)
                     assoc_qual["set_value"](None)
                     _refresh_assoc_list()
                 except Exception as exc:
                     ui.notify(f"Failed: {exc}", type="negative")
 
-            with ui.row().classes("w-full items-center mt-2"):
+            # The qualifier — only identification field exposed at data entry; compact,
+            # beside the Add button (mirrors Digitize's row beside "Show animals too").
+            with ui.row().classes("w-full items-center gap-3 mt-2"):
+                assoc_qual = build_choice_field(
+                    IDENTIFICATION_QUALIFIER_OPTIONS, "Qualifier", classes="w-40")
                 ui.space()
                 # "Add", not "Save": it stages the association; the card's Save writes it.
                 ui.button("Add association", icon="add", on_click=_add_assoc) \
