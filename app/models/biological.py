@@ -61,7 +61,10 @@ class BiologicalAssociation(Base, TimestampMixin):
         nullable=True,
     )
 
-    # Object exclusive arc
+    # Object exclusive arc — collection_object XOR taxon XOR field_occurrence.
+    # A field_occurrence object is a host/associated organism recorded as its own
+    # HumanObservation (migration 0061); object_taxon stays for the lightweight
+    # "collected on <taxon>, no observation record" case.
     object_collection_object_id: Mapped[Optional[int]] = mapped_column(
         Integer,
         ForeignKey("collection_object.id", ondelete="RESTRICT"),
@@ -70,6 +73,11 @@ class BiologicalAssociation(Base, TimestampMixin):
     object_taxon_id: Mapped[Optional[int]] = mapped_column(
         Integer,
         ForeignKey("taxon.id", ondelete="RESTRICT"),
+        nullable=True,
+    )
+    object_field_occurrence_id: Mapped[Optional[int]] = mapped_column(
+        Integer,
+        ForeignKey("field_occurrence.id", ondelete="RESTRICT"),
         nullable=True,
     )
 
@@ -82,8 +90,8 @@ class BiologicalAssociation(Base, TimestampMixin):
             name="ck_ba_subject_exclusive_arc",
         ),
         CheckConstraint(
-            "(object_collection_object_id IS NOT NULL AND object_taxon_id IS NULL) OR "
-            "(object_collection_object_id IS NULL AND object_taxon_id IS NOT NULL)",
+            "((object_collection_object_id IS NOT NULL) + (object_taxon_id IS NOT NULL) + "
+            "(object_field_occurrence_id IS NOT NULL)) = 1",
             name="ck_ba_object_exclusive_arc",
         ),
     )
@@ -109,5 +117,10 @@ class BiologicalAssociation(Base, TimestampMixin):
     object_taxon: Mapped[Optional["Taxon"]] = relationship(
         "Taxon",
         foreign_keys=[object_taxon_id],
+        back_populates="object_associations",
+    )
+    object_field_occurrence: Mapped[Optional["FieldOccurrence"]] = relationship(
+        "FieldOccurrence",
+        foreign_keys=[object_field_occurrence_id],
         back_populates="object_associations",
     )
