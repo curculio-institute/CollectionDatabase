@@ -60,6 +60,9 @@ def build_vocab_field(
         _entries: list[tuple[str, str | None]] = vocab.entries(s)
     # Names only — what the user types is matched against these, and the "✚ add" badge
     # appears when the typed text is not among them.
+    # Read-only state. Clearing a value IS an edit, so it must be refused while the field
+    # is read-only — see set_readonly().
+    _ro = [False]
     _known: set[str] = {n for n, _ in _entries}
     _value: list[str | None] = [None]
     # The ISO code of the *picked row*. Two rows can share a name (Limburg BE-VLI /
@@ -78,9 +81,8 @@ def build_vocab_field(
         sel_display = ui.element("div").classes("pf-selected-display").style("display:none")
         with sel_display:
             sel_content = ui.html("").classes("pf-selected-content")
-            ui.html('<span class="pf-clear-btn" title="Clear">✕</span>').on(
-                "click", lambda _: _clear()
-            )
+            clear_btn = ui.html('<span class="pf-clear-btn" title="Clear">✕</span>')
+            clear_btn.on("click", lambda _: _clear())
         dropdown = ui.element("div").classes("pf-dropdown").style("display:none")
 
         pin_btn = None
@@ -110,6 +112,8 @@ def build_vocab_field(
             on_change()
 
     def _clear(notify: bool = True) -> None:
+        if _ro[0]:
+            return                      # read-only: clearing is an edit (see set_readonly)
         _value[0] = None
         _code[0] = None
         sel_content.set_content("")
@@ -260,11 +264,20 @@ def build_vocab_field(
         _known.add(val)
         return obj.id
 
+    # Read-only must mean read-only. Quasar's `readonly` does NOT disable the `clearable` ✕,
+    # and our own ✕ button has its own click handler, so a reused (read-only) collecting event
+    # could still have its fields CLEARED — which silently detached it into a new event with
+    # fewer fields filled in. The state is guarded in three places: the clearable prop is
+    # removed, the ✕ is hidden, and _clear() refuses outright (a stale click cannot mutate).
     def set_readonly(ro: bool) -> None:
+        _ro[0] = ro
         if ro:
             inp.props("readonly")
+            inp.props(remove="clearable")
         else:
             inp.props(remove="readonly")
+            inp.props("clearable")
+        clear_btn.set_visibility(not ro)
         if pin_btn is not None:
             pin_btn.set_enabled(not ro)
 
