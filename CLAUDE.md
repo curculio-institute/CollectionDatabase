@@ -613,6 +613,45 @@ the one that answers *containment*:
   returns **zero features** (open sea, steppe), which must not blank the form: Overpass still
   answers, and Photon's hierarchy stays only as an explicit degraded fallback when Overpass fails.
 
+**What counts as a locality — allow by KEY, exclude by VALUE (decided 2026-07-12).** Two
+questions, deliberately answered by two different mechanisms in `collecting_event_form.py`:
+
+1. **May a named feature be *shown* at all?** → `_locality_eligible()` — an **allowlist of keys**
+   (`natural` `place` `water` `waterway` `leisure` `boundary` `landuse` `geological`) with a
+   **blocklist of values inside them**. Every value under an allowed key is eligible unless
+   explicitly excluded, so OSM's long tail (`natural=blowhole`, `arch`, `place=archipelago`) and
+   anything OSM adds later come along **for free** — an allowlist of *values* drops them silently.
+   Every other key (`shop` `amenity` `building` `highway` `railway` `tourism` `man_made` …) is not
+   a place at all, so a **new key can never surprise us with a supermarket**. The exclusions inside
+   the allowed keys are short and stable: individual **plants** (`natural=tree`/`tree_row`/
+   `tree_group`/`tree_stump`/`shrub` — `natural=tree` alone is ~34 M objects, the biggest single
+   noise source), `natural=coastline` (a line, not a place), the **administrative** `place=*`
+   values (they already have their own fields), and `landuse` outside `forest`/`wood`/`meadow`
+   (a named landuse polygon carries the toponym of the wood or meadow itself — *Bodener Wald*,
+   *Neuhüttenwiese* — but the rest of the key is settlement and sports).
+2. **May it be filled in *automatically*?** → `_LOCALITY_KV`, an allowlist of `(key, value)` with a
+   **priority**. Deciding which name silently lands in the record is exactly the *silent wrong
+   value* of §2, so an **eligible-but-unranked** tag is **offered in the menu and never
+   auto-filled** — the field stays empty until the user picks it. Nothing useful is dropped;
+   nothing unvetted is written.
+
+**Selection: highest priority wins; distance only breaks ties** — then the enclosing Overpass area
+as a fallback (`_apply_locality`). And **filter before capping**: the code cut to the nearest
+`_MAX_LOCALITY_POINTS` *before* applying the allowlist, so noise could evict the real locality from
+the candidate budget entirely. Measured at the **Flugplatzheide** (48.3255, 10.8995) — a protected
+heath tagged `natural=heath` **and** `boundary=protected_area` — Photon returns **29 named
+features**, of which **ten are `building=dormitory`** (C8, C9, B3 …) and four are
+`information=board` panels repeating the heath's own name. A named heath 200 m away with a dorm
+between it and the point would have vanished from *both* the menu and the auto-fill, in silence.
+After the fix: 29 features → **1 eligible** → auto-fills *Flugplatzheide*. (A dual-tagged object is
+why both of its tags must be eligible: Photon indexes it under only one of them.)
+
+**Language policy is per tier, and `name:en` is not the default (fixed 2026-07-12).** `_admin_name`
+preferred `name:en` for *every* tier, so an Augsburg lookup filed the Regierungsbezirk as **Swabia**
+instead of **Schwaben** — a tier with no English exonym any German label would use. Only **country
+and stateProvince** are English (`english=True`); admin. region / county / municipality / island are
+the **local** name, by policy and not merely because OSM often lacks a `name:en` for them.
+
 **One Overpass request per lookup — never two in parallel (measured 2026-07-10; dead end, do
 not retry).** The hierarchy and the enclosing-areas blocks look separable (`is_in` admin ≈ 2–24 s,
 areas ≈ 1.2 s), and splitting them into two concurrent requests to fill the island/locality fields
