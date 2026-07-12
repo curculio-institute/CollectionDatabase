@@ -9,7 +9,7 @@ from app.models import Taxon
 from app.models.base import _utcnow
 
 
-from app.vocab import NOMENCLATURAL_CODES
+from app.vocab import IDENTIFICATION_QUALIFIERS, NOMENCLATURAL_CODES
 
 TAXON_RANKS: list[str] = [
     "kingdom", "phylum", "subphylum", "class", "subclass",
@@ -161,6 +161,80 @@ def split_genus_group(name: str) -> tuple[str, str]:
     if len(parts) >= 2 and parts[1].startswith("("):
         return f"{parts[0]} {parts[1]}", " ".join(parts[2:])
     return parts[0], " ".join(parts[1:])
+
+
+# ---------------------------------------------------------------------------
+# Rendering a scientific name as HTML (the single owner of italics)
+# ---------------------------------------------------------------------------
+# Every surface that shows a name goes through here, so the convention is applied once:
+#
+#   * ONLY the genus group and below is italic. A family, tribe or order is NOT
+#     (Curculionidae, Otiorhynchini, Coleoptera are roman).
+#   * The AUTHORSHIP is never italic — "Otiorhynchus armadillo (Rossi, 1792)".
+#   * Connecting terms and open-nomenclature qualifiers are never italic:
+#     "Taraxacum sect. Ruderalia", "Achillea millefolium var. alpina",
+#     "Otiorhynchus cf. forticollis", "Otiorhynchus sp."
+#
+# Previously each UI site rolled its own: taxon_search wrapped the WHOLE label — authorship
+# included — in <i>, and did so regardless of rank, so every family and tribe in the dropdown
+# was italicised and every author with it.
+
+# Tokens that sit inside a name but are not part of it, so they stay roman.
+_ROMAN_TOKENS = frozenset(
+    {"subg.", "sect.", "subsect.", "ser.", "subser.",
+     "subsp.", "ssp.", "var.", "subvar.", "f.", "subf.", "forma", "nothosubsp.",
+     "x", "×"}                                   # hybrid marker
+    | set(IDENTIFICATION_QUALIFIERS)             # cf. aff. nr. agg. gr. ? sp. spp. indet.
+)
+
+
+def rank_is_italic(taxon_rank: str | None) -> bool:
+    """True for the genus group and below — the only ranks written in italics."""
+    r = (taxon_rank or "").strip().lower()
+    if r not in TAXON_RANKS:
+        return False                              # unknown rank: do not assert a convention
+    return TAXON_RANKS.index(r) >= TAXON_RANKS.index("genus")
+
+
+def scientific_name_html(
+    name: str,
+    taxon_rank: str | None = None,
+    authorship: str | None = None,
+) -> str:
+    """A composed name as display HTML: italic where the code says italic, and nowhere else.
+
+    `name` is the composed bare name (or a rendered determination, qualifier included).
+    Escaping is done here — callers pass raw text, never markup.
+    """
+    from html import escape as _esc
+
+    text = (name or "").strip()
+    if not text:
+        return ""
+
+    if not rank_is_italic(taxon_rank):
+        out = _esc(text)                          # family, tribe, order … all roman
+    else:
+        # Italicise runs of name tokens; leave connectors/qualifiers roman between them.
+        parts: list[str] = []
+        run: list[str] = []
+
+        def _flush() -> None:
+            if run:
+                parts.append(f"<i>{_esc(' '.join(run))}</i>")
+                run.clear()
+
+        for tok in text.split():
+            if tok.lower() in _ROMAN_TOKENS:
+                _flush()
+                parts.append(_esc(tok))
+            else:
+                run.append(tok)
+        _flush()
+        out = " ".join(parts)
+
+    auth = (authorship or "").strip()
+    return f"{out} {_esc(auth)}" if auth else out
 
 
 def render_identification(name: str, qualifier: str | None = None) -> str:
@@ -509,6 +583,12 @@ class TaxonSearchResult:
     authorship: str | None = None
     family: str | None = None
     nomenclatural_code: str | None = None
+    # Italics are a function of RANK (only the genus group and below), so the renderer needs it
+    # — for this name and for the accepted name it may be shown beside.
+    taxon_rank: str | None = None
+    accepted_name: str | None = None          # bare, without authorship (for the HTML renderer)
+    accepted_rank: str | None = None
+    accepted_authorship: str | None = None
 
 
 def _get_family(taxon: Taxon) -> str | None:
@@ -565,6 +645,12 @@ def search_taxa_for_display(
             authorship=t.scientific_name_authorship or None,
             family=_get_family(t),
             nomenclatural_code=t.nomenclatural_code,
+            taxon_rank=t.taxon_rank,
+            accepted_name=(acc.scientific_name
+                           if (is_syn and (acc := t.accepted_name_usage)) else None),
+            accepted_rank=acc.taxon_rank if (is_syn and (acc := t.accepted_name_usage)) else None,
+            accepted_authorship=(acc.scientific_name_authorship
+                                 if (is_syn and (acc := t.accepted_name_usage)) else None),
         ))
     return out
 

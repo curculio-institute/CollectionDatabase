@@ -59,13 +59,24 @@ def _local_item_html(
     is_synonym: bool,
     accepted: str | None,
     nomenclatural_code: str | None = None,
+    taxon_rank: str | None = None,
+    authorship: str | None = None,
+    accepted_rank: str | None = None,
+    accepted_authorship: str | None = None,
 ) -> str:
+    """One local result. Italics come from `taxa.scientific_name_html` — the single owner of the
+    convention — so only the genus group and below is italic, and never the authorship.
+
+    This used to wrap the whole label (name AND authorship) in <i> regardless of rank, so every
+    family and tribe in the dropdown was italicised, along with every author.
+    """
     prefix = "🌿 " if nomenclatural_code == "ICN" else ""
-    n = f"{prefix}<i>{_html_mod.escape(name)}</i>"
+    n = prefix + svc_taxa.scientific_name_html(name, taxon_rank, authorship)
     if not is_synonym:
         return n
     if accepted:
-        return f"{n} &#10060; = <i>{_html_mod.escape(accepted)}</i> &#10003;"
+        acc = svc_taxa.scientific_name_html(accepted, accepted_rank, accepted_authorship)
+        return f"{n} &#10060; = {acc} &#10003;"
     return f"{n} &#10060;"
 
 
@@ -506,10 +517,14 @@ def build_taxon_search(
         ui.label("In database").classes("tw-section-label")
         for res in local:
             item_html = _local_item_html(
-                res.label,
+                res.scientific_name or res.label,
                 is_synonym=res.is_synonym,
-                accepted=res.accepted_label,
+                accepted=res.accepted_name,
                 nomenclatural_code=res.nomenclatural_code,
+                taxon_rank=res.taxon_rank,
+                authorship=res.authorship,
+                accepted_rank=res.accepted_rank,
+                accepted_authorship=res.accepted_authorship,
             )
             item = ui.element("div").classes("tw-result tw-dropdown-item")
             with item:
