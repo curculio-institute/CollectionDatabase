@@ -209,18 +209,26 @@ def build_records_tab(session_factory, *, on_saved: callable | None = None) -> N
                 t_label = render_identification(verbatim, d.identification_qualifier)
                 if t:
                     is_syn = t.accepted_name_usage_id is not None
-                    acc_label = None
+                    acc_label = acc_name = acc_rank = acc_auth = None
                     if is_syn and t.accepted_name_usage_id:
                         acc = s.get(Taxon, t.accepted_name_usage_id)
-                        acc_label = format_scientific_name(acc) if acc else None
+                        if acc:
+                            acc_label = format_scientific_name(acc)
+                            acc_name, acc_rank = acc.scientific_name, acc.taxon_rank
+                            acc_auth = acc.scientific_name_authorship
                 else:
-                    is_syn, acc_label = False, None
+                    is_syn = False
+                    acc_label = acc_name = acc_rank = acc_auth = None
                 det_snaps.append({
                     "id":                       d.id,
                     "taxon_label":              t_label,
                     "verbatim_identification":  verbatim,
                     "is_synonym":               is_syn,
                     "accepted_label":           acc_label,
+                    "taxon_rank":               t.taxon_rank if t else None,
+                    "accepted_name":            acc_name,
+                    "accepted_rank":            acc_rank,
+                    "accepted_authorship":      acc_auth,
                     "sex":                      d.sex,
                     "type_status":              d.type_status,
                     "identified_by":            d.identified_by_person.full_name if d.identified_by_person else None,

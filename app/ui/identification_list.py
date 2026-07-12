@@ -96,12 +96,16 @@ def build_identification_list(
                 t_label = render_identification(verbatim, d.identification_qualifier)
                 if t:
                     is_syn = t.accepted_name_usage_id is not None
-                    acc_label = None
+                    acc_label = acc_name = acc_rank = acc_auth = None
                     if is_syn and t.accepted_name_usage_id:
                         acc = s.get(Taxon, t.accepted_name_usage_id)
-                        acc_label = format_scientific_name(acc) if acc else None
+                        if acc:
+                            acc_label = format_scientific_name(acc)
+                            acc_name, acc_rank = acc.scientific_name, acc.taxon_rank
+                            acc_auth = acc.scientific_name_authorship
                 else:
-                    is_syn, acc_label = False, None
+                    is_syn = False
+                    acc_label = acc_name = acc_rank = acc_auth = None
                 result.append({
                     "id":                       d.id,
                     "taxon_id":                 d.taxon_id,
@@ -109,6 +113,10 @@ def build_identification_list(
                     "verbatim_identification":  verbatim,
                     "is_synonym":               is_syn,
                     "accepted_label":           acc_label,
+                    "taxon_rank":               t.taxon_rank if t else None,
+                    "accepted_name":            acc_name,
+                    "accepted_rank":            acc_rank,
+                    "accepted_authorship":      acc_auth,
                     "sex":                      d.sex,
                     "type_status":              d.type_status,
                     "identified_by":            d.identified_by_person.full_name if d.identified_by_person else None,
@@ -140,13 +148,19 @@ def build_identification_list(
                 return {}
             verbatim = compose_scientific_name(s, t)
             is_syn = t.accepted_name_usage_id is not None
-            acc_label = None
+            acc_label = acc_name = acc_rank = acc_auth = None
             if is_syn and t.accepted_name_usage_id:
                 acc = s.get(Taxon, t.accepted_name_usage_id)
-                acc_label = format_scientific_name(acc) if acc else None
+                if acc:
+                    acc_label = format_scientific_name(acc)
+                    acc_name, acc_rank = acc.scientific_name, acc.taxon_rank
+                    acc_auth = acc.scientific_name_authorship
+            t_rank = t.taxon_rank
         return {"taxon_id": taxon_id, "verbatim_identification": verbatim,
                 "taxon_label": verbatim, "is_synonym": is_syn,
-                "accepted_label": acc_label}
+                "accepted_label": acc_label, "taxon_rank": t_rank,
+                "accepted_name": acc_name, "accepted_rank": acc_rank,
+                "accepted_authorship": acc_auth}
 
     _DIRTY_KEYS = ("id", "taxon_id", "sex", "type_status", "identified_by",
                    "date_identified", "identification_qualifier",
@@ -224,8 +238,16 @@ def build_identification_list(
                 _render_row(i, d)
 
     def _render_row(idx: int, d: dict) -> None:
+        # Italics by RANK, and never on the authorship — taxa.scientific_name_html owns the
+        # convention. `taxon_label` already carries the open-nomenclature qualifier, which the
+        # renderer leaves roman ("Otiorhynchus cf. forticollis").
         chip_html = _local_item_html(
-            d["taxon_label"], is_synonym=d["is_synonym"], accepted=d["accepted_label"],
+            d["taxon_label"],
+            is_synonym=d["is_synonym"],
+            accepted=d.get("accepted_name") or d.get("accepted_label"),
+            taxon_rank=d.get("taxon_rank"),
+            accepted_rank=d.get("accepted_rank"),
+            accepted_authorship=d.get("accepted_authorship"),
         )
         sex_sym = _SEX_SYMBOL.get((d.get("sex") or "").lower())
         # The qualifier is rendered inline in the determination name (after the
@@ -520,13 +542,18 @@ def build_identification_list(
                 t = s.get(Taxon, new_tid)
                 if t:
                     is_syn = t.accepted_name_usage_id is not None
-                    acc_label = None
+                    acc_label = acc_name = acc_rank = acc_auth = None
                     if is_syn and t.accepted_name_usage_id:
                         acc = s.get(Taxon, t.accepted_name_usage_id)
-                        acc_label = format_scientific_name(acc) if acc else None
+                        if acc:
+                            acc_label = format_scientific_name(acc)
+                            acc_name, acc_rank = acc.scientific_name, acc.taxon_rank
+                            acc_auth = acc.scientific_name_authorship
                     verbatim = compose_scientific_name(s, t)  # frozen at add time
+                    t_rank = t.taxon_rank
                 else:
-                    is_syn, acc_label, verbatim = False, None, f"taxon #{new_tid}"
+                    is_syn, verbatim = False, f"taxon #{new_tid}"
+                    acc_label = acc_name = acc_rank = acc_auth = t_rank = None
             t_label = render_identification(verbatim, add_qual["get_value"]())
 
             # No person is created here: a determiner typed for a specimen that is never
@@ -540,6 +567,10 @@ def build_identification_list(
                 "verbatim_identification":  verbatim,
                 "is_synonym":               is_syn,
                 "accepted_label":           acc_label,
+                "taxon_rank":               t_rank,
+                "accepted_name":            acc_name,
+                "accepted_rank":            acc_rank,
+                "accepted_authorship":      acc_auth,
                 "sex":                      add_sex.value or None,
                 "type_status":              add_type["get_value"]() or None,
                 "identified_by":            add_idby_state["get_value"](),
