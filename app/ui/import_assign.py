@@ -808,10 +808,38 @@ def build_import_assign_tab(session_factory, refreshers: dict, on_saved=None) ->
 
             upload_status = ui.label("No file loaded.").classes("text-sm italic") \
                 .style("color:var(--tp-base-soft)")
+            # Which columns the workflow read, and which it ignored. A misspelt or
+            # unsupported header is otherwise dropped in silence — "1413 rows loaded"
+            # tells the user nothing about whether their localities came with them.
+            # The counts are always visible; the lists sit one click away.
+            col_report = ui.column().classes("w-full gap-0 mt-1")
+
+            def _show_columns(understood: list[tuple[str, str]], ignored: list[str]) -> None:
+                col_report.clear()
+                with col_report:
+                    title = (f"{len(understood)} column"
+                             f"{'' if len(understood) == 1 else 's'} understood")
+                    if ignored:
+                        title += (f"  ·  {len(ignored)} ignored "
+                                  f"(not imported)")
+                    with ui.expansion(title).props("dense expand-icon-toggle") \
+                            .classes("text-sm w-full"):
+                        if ignored:
+                            ui.label("Ignored — no field reads these:") \
+                                .classes("text-xs font-medium mt-1")
+                            ui.label(", ".join(ignored)).classes("text-xs") \
+                                .style("color:var(--tp-warning,#b45309)")
+                        ui.label("Understood:").classes("text-xs font-medium mt-2")
+                        ui.label(", ".join(
+                            term if header == term else f"{header} → {term}"
+                            for header, term in understood
+                        )).classes("text-xs").style("color:var(--tp-base-soft)")
 
             def _on_upload(e):
+                raw = e.content.read()
                 try:
-                    rows = dwc_svc.parse_csv(e.content.read())
+                    rows = dwc_svc.parse_csv(raw)
+                    understood, ignored = dwc_svc.column_report(raw)
                 except Exception as exc:
                     ui.notify(f"Could not parse file: {exc}", type="negative")
                     return
@@ -824,6 +852,7 @@ def build_import_assign_tab(session_factory, refreshers: dict, on_saved=None) ->
                     f"from {e.name}"
                 )
                 upload_status.style("color:var(--tp-secondary)")
+                _show_columns(understood, ignored)
                 row_sel.set_options(_row_options())
                 row_sel.set_value(None)
                 assign_card.set_visibility(True)

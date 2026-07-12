@@ -76,19 +76,47 @@ def _normalise_row(raw: dict[str, str]) -> dict[str, str]:
 # Public API
 # ---------------------------------------------------------------------------
 
+def _decode(content: bytes | str) -> str:
+    if isinstance(content, bytes):
+        try:
+            return content.decode("utf-8-sig")
+        except UnicodeDecodeError:
+            return content.decode("latin-1")
+    return content
+
+
+def column_report(content: bytes | str) -> tuple[list[tuple[str, str]], list[str]]:
+    """Classify the file's headers: `(understood, ignored)`.
+
+    `understood` is `[(header as written, canonical DwC term)]` for every column the
+    workflow actually reads (`_DWC_TERMS`); `ignored` lists the headers left untouched —
+    a column carrying a term nothing reads, or a misspelt one, is silently dropped
+    otherwise, and "1413 rows loaded" says nothing about which of them arrived. Reported
+    to the user on upload, so a header typo is visible before 1413 rows are assigned.
+
+    Header order is the file's own. Blank headers are ignored (an empty trailing column).
+    """
+    reader = csv.DictReader(io.StringIO(_decode(content)))
+    understood: list[tuple[str, str]] = []
+    ignored: list[str] = []
+    for header in reader.fieldnames or []:
+        if not (header or "").strip():
+            continue
+        term = _ALIASES.get(_norm_key(header))
+        if term:
+            understood.append((header, term))
+        else:
+            ignored.append(header)
+    return understood, ignored
+
+
 def parse_csv(content: bytes | str) -> list[dict[str, str]]:
     """Parse a DwC CSV (UTF-8-sig or latin-1) and return normalised rows.
 
     Empty rows are dropped.  Column names are normalised to canonical DwC
     camelCase (or left as-is if unrecognised).
     """
-    if isinstance(content, bytes):
-        try:
-            text = content.decode("utf-8-sig")
-        except UnicodeDecodeError:
-            text = content.decode("latin-1")
-    else:
-        text = content
+    text = _decode(content)
 
     reader = csv.DictReader(io.StringIO(text))
     rows = []
