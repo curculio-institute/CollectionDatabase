@@ -168,17 +168,32 @@ class Vocabulary:
         row is **never mutated** to carry a code it did not have — a hand-typed
         ``Limburg`` must not be silently declared Dutch. Two rows that do turn
         out to mean the same place are folded with ``merge``.
+
+        **A name with no code reuses the one row that bears it, when there is
+        exactly one.** A CSV with a `country` column and no `countryCode` said
+        "Austria", and the strict (name, code) rule answered with a *second*,
+        uncoded Austria beside the geocoded `Austria (AT)` — a duplicate on
+        every import, for a name nothing was ambiguous about. Ambiguity is what
+        the strict rule exists for, so it applies only where ambiguity actually
+        exists: when two or more rows already share the name (`Limburg` BE-VLI /
+        NL-LI), an uncoded input still creates its own row rather than guess
+        which country was meant. Nothing is mutated in either case.
         """
         clean = (name or "").strip()
         q = session.query(self.model).filter(func.lower(self._name_col()) == clean.lower())
         if self.code_attr:
             clean_code = (code or "").strip().upper() or None
             col = getattr(self.model, self.code_attr)
-            q = q.filter(col.is_(None) if clean_code is None else col == clean_code)
-            existing = q.first()
-            if existing:
-                return existing
-            return self.create(session, name=clean, code=clean_code)
+            if clean_code is not None:
+                existing = q.filter(col == clean_code).first()
+                return existing or self.create(session, name=clean, code=clean_code)
+            same_name = q.all()
+            exact = [o for o in same_name if getattr(o, self.code_attr) is None]
+            if exact:
+                return exact[0]
+            if len(same_name) == 1:
+                return same_name[0]          # the only row of that name — no ambiguity
+            return self.create(session, name=clean, code=None)
         existing = q.first()
         if existing:
             return existing

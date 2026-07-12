@@ -137,3 +137,52 @@ def test_no_future_future_full():
 
 def test_no_future_ignored_without_flag():
     ok("2099", "2099")  # no_future defaults to False
+
+
+# ── Abbreviated ranges (the label convention: shared parts written once, on the right) ──
+# Every case below is a real value from the collection spreadsheet.
+
+def test_abbrev_day_range():
+    ok("28.-30.08.2023", "2023-08-28/2023-08-30", allow_interval=True)
+
+def test_abbrev_day_month_range():
+    ok("19.5.-5.6.2019", "2019-05-19/2019-06-05", allow_interval=True)
+
+def test_abbrev_padded_day_month_range():
+    ok("15.07.-28.08.2007", "2007-07-15/2007-08-28", allow_interval=True)
+
+def test_abbrev_roman_month_range():
+    ok("16.V-23.9.2006", "2006-05-16/2006-09-23", allow_interval=True)
+
+def test_abbrev_month_range():
+    ok("9.-10.2019", "2019-09/2019-10", allow_interval=True)
+
+def test_abbrev_month_range_padded():
+    ok("05-06.2022", "2022-05/2022-06", allow_interval=True)
+
+def test_abbrev_year_range():
+    ok("2015-2016", "2015/2016", allow_interval=True)
+
+def test_abbrev_range_needs_allow_interval():
+    bad("28.-30.08.2023")
+
+def test_abbrev_range_reversed_is_refused():
+    # 22.06. cannot precede 13.03. of the same year — a data error, not a reading to guess.
+    bad("22.06.-13.03.2006", allow_interval=True)
+
+def test_abbrev_range_impossible_day_is_refused():
+    bad("35.8.2015", allow_interval=True)
+
+def test_abbrev_range_out_of_range_month_is_refused():
+    bad("27-06.2016", allow_interval=True)
+
+def test_iso_full_is_not_read_as_a_range():
+    # The hyphens of an ISO date must never be taken for a range separator.
+    ok("2026-06-15", "2026-06-15", allow_interval=True)
+
+def test_iso_year_month_is_not_read_as_a_range():
+    ok("2026-06", "2026-06", allow_interval=True)
+
+def test_unparseable_stays_unparseable():
+    for raw in ("<2021", "ca. 2006?", "?", "1.-15-vi.2001"):
+        bad(raw, allow_interval=True)

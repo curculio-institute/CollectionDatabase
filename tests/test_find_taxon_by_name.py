@@ -71,3 +71,65 @@ def test_empty_and_ambiguous(session):
 ])
 def test_scientific_name_has_authorship(name, flagged):
     assert scientific_name_has_authorship(name) is flagged
+
+
+# ── Splitting an authorship-laden scientificName (Import & Assign) ─────────────
+# The collection spreadsheet writes the author inside scientificName on 406 of its
+# 1413 rows. The name half must do the searching; the author half is evidence.
+
+from app.services.taxa import (                       # noqa: E402
+    split_scientific_name_authorship, scientific_name_without_authorship,
+    authorship_matches,
+)
+
+
+def test_split_binomial_with_author():
+    assert split_scientific_name_authorship("Bembidion minimum (Fabricius, 1792)") \
+        == ("Bembidion minimum", "(Fabricius, 1792)")
+
+
+def test_split_keeps_subgenus_and_strips_author():
+    assert split_scientific_name_authorship("Otiorhynchus (Nihus) armadillo (Rossi, 1792)") \
+        == ("Otiorhynchus (Nihus) armadillo", "(Rossi, 1792)")
+
+
+def test_split_nobiliary_particle_belongs_to_the_author():
+    # "de" looks exactly like an epithet — without the particle rule the name would
+    # come out as "Carabus violaceus de".
+    assert split_scientific_name_authorship("Carabus violaceus de Geer") \
+        == ("Carabus violaceus", "de Geer")
+
+
+def test_split_clean_name_has_no_author():
+    assert split_scientific_name_authorship("Cicindela hybrida hybrida") \
+        == ("Cicindela hybrida hybrida", "")
+
+
+def test_split_clean_subgenus_name_is_untouched():
+    assert scientific_name_without_authorship("Otiorhynchus (Dorymerus) sulcatus") \
+        == "Otiorhynchus (Dorymerus) sulcatus"
+
+
+def test_split_empty():
+    assert split_scientific_name_authorship("") == ("", "")
+
+
+def test_authorship_matches_ignores_brackets():
+    # The brackets record a genus change, not who described it; sources disagree on them.
+    assert authorship_matches("(Fabricius, 1792)", "Fabricius, 1792")
+    assert authorship_matches("Linnaeus, 1758", "(Linnaeus, 1758)")
+
+
+def test_authorship_matches_rejects_a_different_author():
+    assert not authorship_matches("(Rossi, 1792)", "(Fabricius, 1775)")
+
+
+def test_authorship_matches_rejects_a_different_year():
+    assert not authorship_matches("Marsham, 1802", "Marsham, 1806")
+
+
+def test_authorship_unknown_is_never_a_match():
+    # "No authorship" must not be read as agreement — the caller decides, and it must
+    # not decide "yes".
+    assert not authorship_matches("", "Marsham, 1802")
+    assert not authorship_matches("Marsham, 1802", "")
