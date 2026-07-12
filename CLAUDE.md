@@ -696,29 +696,30 @@ returns the **centre's** full hierarchy, so it subsumes the separate hierarchy l
 504. So it **must not block the form.** Fill from the fast calls first and let this land later —
 `is_in` is *areas*, so `relation(pivot.…)` is required (`rel.pN[…]` silently matches nothing).
 
-**Built (#110, 2026-07-12): `_boundary_hierarchies()` in `collecting_event_form.py`.** Centre and
-perimeter are now both **containment**, resolved through the **same `_resolve_hierarchy`** — which
-is the whole point: the old check sampled the perimeter with **Photon**, whose `/reverse` reports
-the *nearest feature's* tiers, so it both invented and missed crossings. Measured on the two points
-that matter:
+**REVERTED (2026-07-12). There is currently NO boundary-crossing check at all**, and that is a
+deliberate state: no warning is better than a wrong one that rewrites a good value. Both shipped
+implementations were unacceptable, in opposite ways — a third design is needed, and it must clear
+*both* bars:
 
-| point | before (Photon perimeter) | after (containment perimeter) |
+| implementation | correct? | affordable? |
 |---|---|---|
-| Peloponnese `37.5089, 22.3745` | perimeter said `Peloponnese, Western Greece and the Ionian` (the **L4** Decentralized Administration) vs the centre's `Peloponnese Region` (**GR-J**, L5) → **false crossing on every Greek lookup** | all 4 samples = `Peloponnese Region` (GR-J) → **no warning** (2.1 s) |
-| Basel tripoint | France was silently dropped (503s) | DE `Baden-Württemberg` / CH `Basel-City` / FR `Haut-Rhin` all detected (17.2 s) |
+| **Photon perimeter samples** (original) | **No.** `/reverse` answers *proximity*, not containment, and reports a different admin tier: at a Peloponnese point it names the L4 Decentralized Administration where containment gives the ISO region (`GR-J`, L5). Centre and perimeter could never agree → a **false crossing on every Greek lookup**, and clicking the warning **overwrote a correct `stateProvince`** (#110). It also *missed* real crossings. | Yes — a steady **3.2 s**, on a separate service costing no Overpass slot. |
+| **Overpass containment samples** (#110, PR #117) | **Yes.** Same service and same `_resolve_hierarchy` tiers as the centre; verified at the Basel tripoint (DE/CH/FR all detected) and at the Peloponnese point (no false warning). | **No.** It moved the check onto the **same 2-slot Overpass budget** as the hierarchy query: measured **0.9–12 s and wildly variable** (Overpass load-balances; the same query costs 1 s or 24 s), so a single lookup could saturate the IP's whole allowance and every geocode became slow and unpredictable. |
 
-Two consequences worth stating:
+Constraints for the next attempt (all measured; **do not re-derive**): the dead ends in the
+paragraphs above (`relation(around:r)`, 8 parallel Photon calls, two parallel Overpass queries)
+still stand; four bearings remain a **heuristic, not a guarantee**; and whatever samples the
+perimeter must answer *containment* with the **same tier rules as the centre**, or the comparison
+is meaningless. The bar the Overpass version failed is **cost**, not correctness — an offline
+boundary source (a local admin-polygon layer, cf. the planned GeoPandas habitat join) would clear
+both, since it costs no API slot at all.
 
-- **A warning now offers a state WITH its ISO code** (`GR-J`, `DE-BW`) — containment identifies the
-  state *by* that tag. Photon carried none, so a state picked from a warning used to be stored as
-  an uncoded vocab row (and `(name, iso_code)` is the vocab's identity).
-- **Picking an alternative sets only that field.** `_apply_snap` used to write the whole snapshot,
-  so choosing a *municipality* alternative silently overwrote a correct `stateProvince`. A boundary
-  warning says "the circle also reaches X **at this tier**"; it is not a claim about the others.
-- **Locality is not an administrative tier**, so it is not part of the check. Its warning button
-  remains the "also nearby" candidate picker fed by the main geocode.
-- **A failed request warns about nothing and shows no ✓.** An empty result would read as "this
-  point lies in no administrative area" — the silent wrong value of §2.
+Two fixes from #110 are worth keeping whenever the check returns, and were lost with it:
+**a warning must set only the field it belongs to** (`_apply_snap` wrote the *whole* snapshot, so
+picking a *municipality* alternative silently overwrote `stateProvince`), and **an offered state
+should carry its ISO 3166-2 code** (containment identifies the state *by* that tag; Photon had
+none, so a state picked from a warning was stored uncoded — and `(name, iso_code)` is the vocab's
+identity).
 
 **Open (do not guess):** `county` / `municipality` have **no ISO tag** below the first-order
 subdivision. `L6`=county and lowest `L7+`=municipality held across DE/GR/KZ, but that is a
