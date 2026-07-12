@@ -31,6 +31,7 @@ class RecentRow:
     collection_code: str
     scientific_name: str       # composed name, WITHOUT authorship
     authorship: str | None     # kept separate so callers can style it (upright)
+    taxon_rank: str | None     # italics are a function of rank — see taxa.scientific_name_html
     sex: str | None
     individual_count: int | None
     country: str | None
@@ -368,6 +369,7 @@ def recent_specimens(session: Session, limit: int = 200) -> list[RecentRow]:
             collection_code=co.repository.collection_code,
             scientific_name=(t.scientific_name or "") if t else "",
             authorship=(t.scientific_name_authorship if t else None),
+            taxon_rank=(t.taxon_rank if t else None),
             sex=td.sex if td else None,
             individual_count=co.individual_count,
             country=(ce.country_obj.name if (ce and ce.country_obj) else None),

@@ -720,6 +720,18 @@ def index():
       .rc-main  { display:flex; align-items:baseline; flex-wrap:wrap; gap:7px; }
       .rc-cat   { font-family:monospace; font-size:.8rem; font-weight:700;
                   color:var(--tp-secondary); }
+      /* Records specimen picker — a two-line option row: catalog + name (+ count/sex),
+         then the collecting event beneath it. Several specimens share a name; only the
+         event tells them apart, so the picker must show it. */
+      .rc-opt      { padding:1px 0; }
+      .rc-opt-top  { display:flex; align-items:baseline; gap:7px; flex-wrap:wrap; }
+      .rc-opt-sub  { font-size:.74rem; color:var(--tp-base-soft); margin-top:1px; }
+      .rc-cat      { font-family:ui-monospace,monospace; font-size:.78rem; font-weight:600;
+                     color:var(--tp-secondary); }
+      .rc-badge    { font-size:.7rem; padding:0 5px; border-radius:8px;
+                     background:var(--tp-base-border); color:var(--tp-base-soft); }
+      .rc-none     { font-style:italic; color:var(--tp-base-soft); }
+      .rc-opt i    { font-style:italic; }
       .rc-sp    { font-style:italic; font-size:.92rem; }
       .rc-auth  { font-size:.76rem; color:var(--tp-base-soft); }
       .rc-indet { font-size:.92rem; color:var(--tp-base-soft); font-style:italic; }
