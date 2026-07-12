@@ -542,7 +542,14 @@ def build_records_tab(session_factory, *, on_saved: callable | None = None) -> N
                     footer_slot=_ev_footer)
                 ev_ce["load"](ev_snap)
                 if ev_n > 1:
-                    ev_ce["set_readonly"](True)   # view-only until "Edit all" unlocks
+                    # view-only until "Edit all" unlocks — and say WHY on every locked control,
+                    # not only in the banner above.
+                    ev_ce["set_readonly"](
+                        True,
+                        f"Shared event — {ev_n} specimens use it. Press “Edit all {ev_n}” above "
+                        f"to change it (that changes all of them), or “Detach & copy” to give "
+                        f"this specimen its own event.",
+                    )
 
         # ── Biological Associations card ───────────────────────────────────
         with ui.card().classes("w-full shadow-sm"):
@@ -871,7 +878,11 @@ def build_records_tab(session_factory, *, on_saved: callable | None = None) -> N
                 footer_slot=_ev_footer)
             ev_ce["load"](ev_snap)
             if shared:
-                ev_ce["set_readonly"](True)   # view-only until "Edit all" unlocks
+                ev_ce["set_readonly"](
+                    True,
+                    f"Shared event — {n} specimens use it. Press “Edit all {n}” above to change "
+                    f"it; saving changes all of them.",
+                )
 
         def _save_event():
             try:

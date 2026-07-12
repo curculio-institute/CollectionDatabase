@@ -282,6 +282,7 @@ def build_vocab_field(
             pin_btn.set_enabled(not ro)
 
     return {
+        "element":      inp,              # so a read-only form can say WHY it is locked
         "get_value":    get_value,
         "get_code":     get_code,
         "set_value":    set_value,
