@@ -38,6 +38,7 @@ def build_choice_field(
     ui.add_head_html(_NAV_SCRIPT)
 
     _opts = [o for o in options if o]          # a blank is expressed by clearing, not a row
+    _ro = [False]          # read-only: clearing is an edit, and is refused
     _value: list[str | None] = [None]
 
     wrap = ui.element("div").style("position:relative").classes(
@@ -47,8 +48,8 @@ def build_choice_field(
         sel_display = ui.element("div").classes("pf-selected-display").style("display:none")
         with sel_display:
             sel_content = ui.html("").classes("pf-selected-content")
-            ui.html('<span class="pf-clear-btn" title="Clear">✕</span>').on(
-                "click", lambda _: _clear())
+            clear_btn = ui.html('<span class="pf-clear-btn" title="Clear">✕</span>')
+            clear_btn.on("click", lambda _: _clear())
         dropdown = ui.element("div").classes("pf-dropdown").style("display:none")
 
     def _enter_selected(clean: str, *, notify: bool = True) -> None:
@@ -61,6 +62,8 @@ def build_choice_field(
             on_change()
 
     def _clear(notify: bool = True) -> None:
+        if _ro[0]:
+            return                      # read-only: clearing is an edit (see set_readonly)
         _value[0] = None
         sel_content.set_content("")
         sel_display.style("display:none")
@@ -101,8 +104,20 @@ def build_choice_field(
     if initial_value and initial_value.strip():
         _enter_selected(initial_value.strip(), notify=False)
 
+    # Read-only must mean read-only. Quasar's `readonly` does NOT disable the `clearable`
+    # ✕, and our own ✕ has its own click handler — so a reused (read-only) collecting
+    # event could still have its fields CLEARED, silently detaching it into a NEW event
+    # with fewer fields filled in. Guarded in three places: the clearable prop is removed,
+    # the ✕ is hidden, and _clear() refuses outright (a stale click cannot mutate).
     def set_readonly(ro: bool) -> None:
-        inp.props("readonly") if ro else inp.props(remove="readonly")
+        _ro[0] = ro
+        if ro:
+            inp.props("readonly")
+            inp.props(remove="clearable")
+        else:
+            inp.props(remove="readonly")
+            inp.props("clearable")
+        clear_btn.set_visibility(not ro)
 
     return {
         "get_value":    lambda: _value[0],

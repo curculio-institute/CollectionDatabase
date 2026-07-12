@@ -2720,19 +2720,25 @@ def index():
                         # MenuItem is not a TextElement — its label is baked in at construction.
                         # So carry a ui.label inside it and update that.
                         _wcvp_install_item = ui.menu_item(
-                            on_click=lambda: (_wcvp_menu.close(), _wcvp_install()),
+                            # The lambda must RETURN the coroutine so NiceGUI awaits it. The
+                            # old form — lambda: (menu.close(), _wcvp_install()) — returned a
+                            # TUPLE, so the coroutine was created and never awaited and the item
+                            # silently did nothing. (menu_item auto-closes; close() is not
+                            # needed. A bare reference would NameError: these handlers are
+                            # defined below.)
+                            on_click=lambda: _wcvp_install(),
                         )
                         with _wcvp_install_item:
                             _wcvp_install_lbl = ui.label("Download and install")
                         _wcvp_check_item = ui.menu_item(
                             "Check for a new release",
-                            on_click=lambda: (_wcvp_menu.close(), _wcvp_check_update()),
+                            on_click=lambda: _wcvp_check_update(),
                         )
                         _wcvp_check_item.tooltip("Downloads ~32 KB, not the whole archive")
                         ui.separator()
                         _wcvp_remove_item = ui.menu_item(
                             "Remove",
-                            on_click=lambda: (_wcvp_menu.close(), _wcvp_remove()),
+                            on_click=lambda: _wcvp_remove(),
                         ).classes("text-negative")
 
             # Progress / update-check line. It is empty most of the time, and an empty
@@ -2927,19 +2933,17 @@ def index():
                                     if ds.installed:
                                         ui.menu_item(
                                             "Import all names…",
-                                            on_click=lambda d=ds, m=menu: (
-                                                m.close(), _ds_import_all(d)),
+                                            on_click=lambda d=ds: _ds_import_all(d),
                                         )
                                     ui.menu_item(
                                         "Rebuild index",
-                                        on_click=lambda d=ds, m=menu: (
-                                            m.close(), _ds_rebuild(d)),
+                                        # async → must be awaited; return the coroutine.
+                                        on_click=lambda d=ds: _ds_rebuild(d),
                                     )
                                     ui.separator()
                                     ui.menu_item(
                                         "Remove dataset…",
-                                        on_click=lambda d=ds, m=menu: (
-                                            m.close(), _ds_remove(d)),
+                                        on_click=lambda d=ds: _ds_remove(d),
                                     ).classes("text-negative")
 
             # ── Add dataset (dialog) ──────────────────────────────────────

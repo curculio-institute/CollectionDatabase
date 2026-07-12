@@ -173,6 +173,7 @@ def build_person_field(
     with session_factory() as s:
         initial_opts = persons_svc.person_options(s)
     _known: set[str] = set(initial_opts.keys())
+    _ro = [False]          # read-only: clearing is an edit, and is refused
     _value: list[str | None] = [None]
 
     # ── layout ────────────────────────────────────────────────────────────────
@@ -192,9 +193,8 @@ def build_person_field(
         )
         with sel_display:
             sel_content = ui.html("").classes("pf-selected-content")
-            ui.html('<span class="pf-clear-btn" title="Clear">✕</span>').on(
-                "click", lambda _: _clear()
-            )
+            clear_btn = ui.html('<span class="pf-clear-btn" title="Clear">✕</span>')
+            clear_btn.on("click", lambda _: _clear())
 
         dropdown = (
             ui.element("div")
@@ -230,6 +230,8 @@ def build_person_field(
             on_change()
 
     def _clear(notify: bool = True) -> None:
+        if _ro[0]:
+            return                      # read-only: clearing is an edit (see set_readonly)
         _value[0] = None
         sel_content.set_content("")
         sel_display.style("display:none")
@@ -366,12 +368,21 @@ def build_person_field(
         _known.add(val)
         return p.id
 
+    # Read-only must mean read-only. Quasar's `readonly` does NOT disable the `clearable`
+    # ✕, and our own ✕ has its own click handler — so a reused (read-only) collecting
+    # event could still have its fields CLEARED, silently detaching it into a NEW event
+    # with fewer fields filled in. Guarded in three places: the clearable prop is removed,
+    # the ✕ is hidden, and _clear() refuses outright (a stale click cannot mutate).
     def set_readonly(ro: bool) -> None:
         """Make the field read-only (value visible, not editable) or editable."""
+        _ro[0] = ro
         if ro:
             inp.props("readonly")
+            inp.props(remove="clearable")
         else:
             inp.props(remove="readonly")
+            inp.props("clearable")
+        clear_btn.set_visibility(not ro)
         # The push_pin inserts the default via set_value(), which bypasses the
         # input's readonly — so disable the button too while read-only.
         if pin_btn is not None:
