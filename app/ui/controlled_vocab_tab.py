@@ -73,8 +73,17 @@ def build_controlled_vocab_tab(session_factory, *, on_person_changed=None) -> No
                             "full":    p.full_name,
                             "abbr":    p.abbreviated_name or "",
                             "orcid":   p.orcid or "",
-                            "conf":    "🔒" if p.confidential else "",
-                            "consent": "✅" if p.consent_approved else "",
+                            # ONE column: the two flags are mutually exclusive (DB CHECK
+                            # ck_person_consent_xor_confidential), so a single glyph says which.
+                            # Material icons, not emoji: an emoji renders as a colour glyph,
+                            # differently on every platform, and cannot be tinted (the same
+                            # reason 🪲 lost to `pest_control`).
+                            "privacy": ("consent" if p.consent_approved
+                                        else "conf" if p.confidential else ""),
+                            # The raw flags stay on the row: the edit dialog seeds from them;
+                            # `privacy` is for display only.
+                            "conf":    bool(p.confidential),
+                            "consent": bool(p.consent_approved),
                         }
                         for p in people
                     ]
@@ -84,13 +93,29 @@ def build_controlled_vocab_tab(session_factory, *, on_person_changed=None) -> No
                         {"name": "full",  "label": "Full name",        "field": "full",  "align": "left", "sortable": True},
                         {"name": "abbr",  "label": "Abbreviated name",  "field": "abbr",  "align": "left"},
                         {"name": "orcid", "label": "ORCID",             "field": "orcid", "align": "left"},
-                        {"name": "consent", "label": "Consented", "field": "consent", "align": "center"},
-                        {"name": "conf",  "label": "Confidential",      "field": "conf",  "align": "center"},
+                        {"name": "privacy", "label": "Export", "field": "privacy",
+                         "align": "center"},
                         {"name": "actions", "label": "", "field": "actions", "align": "right"},
                     ],
                     rows=_load_rows(),
                     row_key="id",
                 ).classes("w-full").props("flat dense")
+
+                # Export column: green OPEN padlock = consented (export with the name — the
+                # Open Access mark); amber CLOSED padlock = confidential (name obscured on
+                # export). Nothing = neither decided. Skimmable in one column.
+                people_table.add_slot("body-cell-privacy", """
+                    <q-td :props="props" class="text-center">
+                      <q-icon v-if="props.value === 'consent'" name="lock_open" size="18px"
+                              style="color:#15803d">
+                        <q-tooltip>Consented — exported under their name</q-tooltip>
+                      </q-icon>
+                      <q-icon v-else-if="props.value === 'conf'" name="lock" size="18px"
+                              style="color:#b45309">
+                        <q-tooltip>Confidential — the name is obscured on export</q-tooltip>
+                      </q-icon>
+                    </q-td>
+                """)
 
                 # edit → merge → delete
                 people_table.add_slot("body-cell-actions", """

@@ -13,6 +13,7 @@ import app.services.biological as bio_svc
 import app.services.repositories as repo_svc
 import html as _html
 import app.services.taxa as svc_taxa
+import app.ui.record_summary as rs
 from app.services.taxa import (
     compose_scientific_name,
     format_scientific_name,
@@ -111,40 +112,34 @@ def build_records_tab(session_factory, *, on_saved: callable | None = None) -> N
         #   html  — the RICH row shown in the dropdown, with the name italicised BY RANK and the
         #           authorship left roman (taxa.scientific_name_html owns that convention).
         def _specimen_rows() -> list[dict]:
+            """One row per specimen: a PLAIN label (Quasar filters + echoes it) and the RICH
+            html (record_summary — the single owner of how a record is summarised)."""
             rows = _with_session(lambda s: sp_svc.recent_specimens(s, limit=1000))
             out: list[dict] = []
             for r in rows:
-                cat = id_svc.format_catalog_display(r.collection_code, r.catalog_number)
-                name = r.scientific_name or ""
-                auth = r.authorship or ""
-                where = ", ".join(x for x in (r.locality, r.country) if x)
-                meta = [x for x in (where, r.event_date,
-                                    f"leg. {r.recorded_by}" if r.recorded_by else "",
-                                    f"det. {r.identified_by}" if r.identified_by else "") if x]
-                bits = [f"{r.individual_count}×"] if (r.individual_count or 1) > 1 else []
-                if r.sex:
-                    bits.append(r.sex)
-
-                label = "  ".join(x for x in (
-                    cat, f"{name} {auth}".strip() or "—", " ".join(bits), *meta) if x)
-
-                name_html = (svc_taxa.scientific_name_html(name, r.taxon_rank, auth)
-                             if name else "<span class='rc-none'>— no identification —</span>")
-                sub = "  ·  ".join(_html.escape(m) for m in meta) or "—"
-                badge = (f"<span class='rc-badge'>{_html.escape(' '.join(bits))}</span>"
-                         if bits else "")
+                common = dict(
+                    catalog=id_svc.format_catalog_display(r.collection_code, r.catalog_number),
+                    name=r.scientific_name or "",
+                    authorship=r.authorship,
+                    hosts=r.hosts,
+                    sex=r.sex,
+                    count=r.individual_count,
+                    locality=", ".join(x for x in (r.locality, r.country) if x),
+                    event_date=r.event_date,
+                    recorded_by=r.recorded_by,
+                    identified_by=r.identified_by,
+                )
                 out.append({
                     "value": r.collection_object_id,
-                    "label": label,
-                    "html": (f"<div class='rc-opt'>"
-                             f"<div class='rc-opt-top'>"
-                             f"<span class='rc-cat'>{_html.escape(cat)}</span>"
-                             f"{name_html}{badge}</div>"
-                             f"<div class='rc-opt-sub'>{sub}</div></div>"),
+                    "label": rs.specimen_plain(**common),
+                    "html":  rs.specimen_html(rank=r.taxon_rank,
+                                              confidential=r.confidential,
+                                              event_confidential=r.event_confidential,
+                                              **common),
                 })
             return out
 
-        _rows_cache: list[dict] = []
+        _rows_cache: list[dict] = []   # the rows behind the options; see the wrapper below
 
         def _apply_specimen_rows() -> None:
             """Rebuild the option list. The rich HTML is re-attached by the wrapper below.

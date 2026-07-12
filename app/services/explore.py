@@ -139,17 +139,31 @@ class SpecimenRow:
     catalog: str
     collection_code: str
     taxon_id: int | None
-    taxon_label: str
-    needs_attention: bool      # not determined to species (indet.)
-    sex: str | None
-    count: int
-    type_status: str | None
-    event_id: int | None
-    locality: str              # one-line locality label (incl. associated species)
-    event_date: str | None
-    recorded_by: str | None
-    lat: float | None
-    lon: float | None
+    taxon_label: str           # composed name WITH authorship (legacy plain-text callers)
+    # The parts a renderer needs to italicise correctly (only the genus group and below) and to
+    # keep the authorship roman — see taxa.scientific_name_html.
+    taxon_name: str = ""       # composed name WITHOUT authorship
+    taxon_rank: str | None = None
+    authorship: str | None = None
+    # Biological associations (the host plant, usually) as (relationship, name, rank) —
+    # "collected from Quercus robur". The RELATIONSHIP is what the association means; a plant
+    # name beside a beetle says nothing about how they met.
+    hosts: list[tuple[str, str, str | None]] = field(default_factory=list)
+    # Withheld from public export: the specimen's own flag, or INHERITED from a confidential
+    # event (which drops all of its specimens). Shown as one amber padlock; the reason is the
+    # tooltip. See CLAUDE.md "Confidential / privacy flag".
+    confidential: bool = False
+    event_confidential: bool = False
+    needs_attention: bool = False   # not determined to species (indet.)
+    sex: str | None = None
+    count: int = 1
+    type_status: str | None = None
+    event_id: int | None = None
+    locality: str = ""         # one-line locality label (incl. associated species)
+    event_date: str | None = None
+    recorded_by: str | None = None
+    lat: float | None = None
+    lon: float | None = None
     # The composed data-label content (locality + date + collector + associated
     # species). Specimens with the same content are the same "data" and collapse into
     # one checklist row by default — the print-queue "identical labels" notion (#37),
@@ -225,6 +239,15 @@ def query_specimens(session: Session, filters: list[dict] | None = None) -> list
             collection_code=co.repository.collection_code,
             taxon_id=(t.id if t else None),
             taxon_label=(format_scientific_name(t) if t else "— undetermined —"),
+            taxon_name=((t.scientific_name or "") if t else ""),
+            taxon_rank=rank,
+            authorship=((t.scientific_name_authorship or None) if t else None),
+            hosts=[(a.biological_relationship.name if a.biological_relationship else "",
+                    a.object_taxon.scientific_name or "",
+                    a.object_taxon.taxon_rank)
+                   for a in assocs if a.object_taxon],
+            confidential=bool(co.confidential),
+            event_confidential=bool(ev.confidential) if ev else False,
             needs_attention=(t is None or rank not in ("species", "subspecies", "variety", "form")),
             sex=(td.sex if td else None),
             count=co.individual_count,
@@ -372,6 +395,7 @@ class EventGroup:
     event_id: int
     summary: str
     n_specimens: int
+    confidential: bool = False   # withheld from export — withholds ALL of its specimens
     lots: list[SpecimenRow] = field(default_factory=list)
 
 
@@ -390,6 +414,7 @@ def events(session: Session, filters: list[dict] | None = None) -> list[EventGro
             event_id=event_id,
             summary=(format_locality_label(ev) if ev else f"Event #{event_id}") or f"Event #{event_id}",
             n_specimens=len(lots),
+            confidential=bool(ev.confidential) if ev else False,
             lots=sorted(lots, key=lambda l: l.taxon_label),
         ))
     out.sort(key=lambda g: g.summary)
