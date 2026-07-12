@@ -58,8 +58,10 @@ def lock_html(*, own: bool = False, from_event: bool = False) -> str:
     if not (own or from_event):
         return ""
     tip = _html.escape(confidential_reason(own=own, from_event=from_event))
-    return (f'<i class="material-icons rs-lock" style="color:{_LOCK_AMBER}" '
-            f'title="{tip}">lock</i>')
+    # A <span>, never an <i>: `i` means EMPHASIS, so every "italicise names in this row" rule
+    # reaches it and skews the padlock glyph. An icon is not text and is never italic.
+    return (f'<span class="material-icons rs-lock" style="color:{_LOCK_AMBER}" '
+            f'title="{tip}">lock</span>')
 
 
 def name_html(name: str, rank: str | None = None, authorship: str | None = None) -> str:
@@ -188,6 +190,11 @@ CSS = f"""
 .rs-spacer  {{ flex:1 1 auto; }}
 .rs-lock    {{ font-size:17px; flex-shrink:0; align-self:center; }}
 .rs-row i   {{ font-style:italic; }}
+/* An ICON IS NOT TEXT. The italics rules above target the name; a Material ligature caught by
+   them renders as a skewed glyph. Belt and braces, since an icon may land in any of them. */
+.rs-row .material-icons,
+.rs-host .material-icons,
+.material-icons {{ font-style:normal !important; }}
 /* People table: one column — open padlock (green) = consented, closed (amber) = confidential */
 .rs-consent {{ color:{_CONSENT_GREEN}; font-size:18px; }}
 .rs-conf    {{ color:{_LOCK_AMBER}; font-size:18px; }}
