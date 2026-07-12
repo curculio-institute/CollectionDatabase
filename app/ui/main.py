@@ -26,6 +26,7 @@ import app.services.labels as lbl_svc
 import app.services.repositories as repo_svc
 import app.services.persons as persons_svc
 import app.services.print_queue as pq_svc
+import app.services.taxonworks as tw_svc
 import app.services.wcvp as wcvp_svc
 import app.services.name_source as ns_svc
 import app.services.datasets as ds_svc
@@ -2687,6 +2688,29 @@ def index():
                 password=True,
                 password_toggle_button=True,
             ).classes("w-full mt-2")
+
+            # Connection test — the values as *typed*, not as last saved, so a bad URL or
+            # token is caught here instead of showing up later as an empty taxon search.
+            # Lives in the field's append slot: no extra row, no panel.
+            async def _test_tw_connection() -> None:
+                _btn.props("loading")
+                try:
+                    msg = await tw_svc.check_connection(
+                        base=tw_base_in.value.strip() or cfg_now.tw_base,
+                        token=tw_token_in.value.strip(),
+                    )
+                    ui.notify(msg, type="positive")
+                except tw_svc.TaxonWorksUnreachable as exc:
+                    ui.notify(str(exc), type="negative", multi_line=True, timeout=8000)
+                finally:
+                    _btn.props(remove="loading")
+
+            # On the URL field, not the token: the token input's append slot already holds
+            # its password-toggle eye.
+            with tw_base_in.add_slot("append"):
+                _btn = ui.button(icon="wifi_tethering", on_click=_test_tw_connection) \
+                    .props("flat dense round size=sm").tooltip("Test connection")
+
             tp_base_in = ui.input(
                 "TaxonPages base URL",
                 value=cfg_now.taxonpages_base,

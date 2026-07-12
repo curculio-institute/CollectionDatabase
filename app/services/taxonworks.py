@@ -9,12 +9,23 @@ every call so changes made in the settings dialog take effect without a restart.
 from __future__ import annotations
 
 import asyncio
+from urllib.parse import urlsplit
 
 import httpx
 
 from app.config import get_config
 
 _TIMEOUT = httpx.Timeout(6.0)
+
+
+class TaxonWorksUnreachable(RuntimeError):
+    """The API could not be queried; `str(exc)` says which failure it is.
+
+    A project token is issued per project *on one server*, so pointing the base URL at a
+    different TaxonWorks (the sandbox, say) while keeping the old token answers 401 — which
+    is indistinguishable from "TaxonWorks knows no such name" unless the caller reports it.
+    Show this message; never swallow it (CLAUDE.md §2).
+    """
 
 
 def _base() -> str:
@@ -25,21 +36,72 @@ def _token() -> str:
     return get_config().tw_token
 
 
+def _host() -> str:
+    return urlsplit(_base()).netloc or _base()
+
+
+def _explain(exc: Exception, host: str | None = None) -> TaxonWorksUnreachable:
+    """Name the actual cause: a rejected token, a wrong URL, or an unreachable server."""
+    host = host or _host()
+    if isinstance(exc, httpx.HTTPStatusError):
+        code = exc.response.status_code
+        if code in (401, 403):
+            return TaxonWorksUnreachable(
+                f"{host} rejected the project token ({code}). A token is valid for one "
+                f"project on one server — check Settings → TaxonWorks connection."
+            )
+        if code == 404:
+            return TaxonWorksUnreachable(
+                f"No API at {host} (404) — check the base URL in Settings."
+            )
+        return TaxonWorksUnreachable(f"{host} answered {code}.")
+    if isinstance(exc, httpx.TimeoutException):
+        return TaxonWorksUnreachable(f"{host} did not answer in time.")
+    return TaxonWorksUnreachable(f"Cannot reach {host} ({type(exc).__name__}).")
+
+
 def taxonpages_url(otu_id: int) -> str:
     return f"{get_config().taxonpages_base.rstrip('/')}/#/otus/{otu_id}"
+
+
+async def check_connection(base: str | None = None, token: str | None = None) -> str:
+    """One-name autocomplete against a URL + token. Returns a success line; raises
+    TaxonWorksUnreachable with the reason. Backs the Settings test button, so a bad
+    credential is caught when it is entered rather than at the next empty taxon search.
+
+    `base`/`token` default to the saved config, but the dialog passes the values currently
+    *typed* into its fields — testing only what was last saved would force the user to save
+    a connection in order to find out it is broken.
+    """
+    base = (base or _base()).rstrip("/")
+    token = token if token is not None else _token()
+    host = urlsplit(base).netloc or base
+    try:
+        async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
+            r = await client.get(
+                f"{base}/taxon_names/autocomplete",
+                params={"term": "Coleoptera", "project_token": token},
+            )
+            r.raise_for_status()
+    except httpx.HTTPError as exc:
+        raise _explain(exc, host=host) from exc
+    return f"Connected to {host}."
 
 
 async def search_taxon_names(term: str, limit: int = 20) -> list[dict]:
     """Autocomplete — returns list of {id, name, label, label_html, valid_taxon_name_id}."""
     if len(term.strip()) < 2:
         return []
-    async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
-        r = await client.get(
-            f"{_base()}/taxon_names/autocomplete",
-            params={"term": term.strip(), "project_token": _token()},
-        )
-        r.raise_for_status()
-        return r.json()[:limit]
+    try:
+        async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
+            r = await client.get(
+                f"{_base()}/taxon_names/autocomplete",
+                params={"term": term.strip(), "project_token": _token()},
+            )
+            r.raise_for_status()
+            return r.json()[:limit]
+    except httpx.HTTPError as exc:
+        raise _explain(exc) from exc
 
 
 async def fetch_taxon_name(tw_id: int) -> dict | None:
