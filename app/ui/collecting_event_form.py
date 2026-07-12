@@ -49,30 +49,99 @@ from app.ui.date_input import attach_date_validation
 # by the geocoding logic below).
 # ---------------------------------------------------------------------------
 
+# ── What counts as a collecting locality (decided 2026-07-12) ──────────────────────────
+# Two questions, deliberately answered by two different mechanisms:
+#
+#   1. MAY a named feature be shown at all?  → _locality_eligible()
+#      An ALLOWLIST OF KEYS with a blocklist of values inside them. Every value under an
+#      allowed key is eligible unless it is explicitly excluded, so OSM's long tail
+#      (natural=blowhole, natural=arch, place=archipelago) and anything OSM adds later come
+#      along for free — an allowlist of *values* would drop them silently. Every other key
+#      (shop, amenity, building, highway, railway, tourism, man_made, …) is not a place at
+#      all and never appears, so a new key can never surprise us with a supermarket.
+#
+#   2. MAY it be filled into the field automatically?  → _LOCALITY_KV
+#      An allowlist of (key, value) with a priority. Deciding which name silently lands in
+#      the record is exactly the "silent wrong value" of CLAUDE.md §2, so a tag nobody has
+#      ranked is OFFERED in the menu but never auto-filled: the field stays empty until the
+#      user picks it. Nothing useful is dropped; nothing unvetted is written.
+
+# Keys that can name a place. Anything else is not a locality, full stop.
+_LOCALITY_KEYS = {
+    "natural", "place", "water", "waterway", "leisure", "boundary", "landuse", "geological",
+}
+
+# Within an allowed key, the values that are NOT places.
+_LOCALITY_EXCLUDE: dict[str, set[str]] = {
+    # Individual plants, not places — and natural=tree alone is ~34 M objects, by far the
+    # biggest source of noise Photon can return. coastline is a line, not a place.
+    "natural": {"tree", "tree_row", "tree_group", "tree_stump", "shrub", "coastline",
+                "land", "landform"},
+    # The administrative tiers already have their own fields (country … municipality); a
+    # plot/city_block/square is not a collecting locality.
+    "place": {"municipality", "county", "district", "subdistrict", "state", "province",
+              "region", "country", "borough", "ward", "subward", "zone", "civil_parish",
+              "cadastral_community", "subdivision", "community", "township", "department",
+              "plot", "city_block", "block", "square", "allotments", "yes"},
+}
+
+# Within an allowed key, the ONLY values that are places (the key is mostly not about places).
+_LOCALITY_ONLY: dict[str, set[str]] = {
+    # A named landuse polygon carries the toponym of the wood/meadow itself ("Bodener Wald",
+    # "Neuhüttenwiese") — but only for natural cover. Everything else under landuse is
+    # residential/industrial/sports.
+    "landuse":  {"forest", "wood", "meadow"},
+    "leisure":  {"nature_reserve", "park", "garden", "common", "bird_hide", "fishing"},
+    # The administrative boundaries are the geography fields; only the protective ones name
+    # a place. (The Flugplatzheide is tagged natural=heath AND boundary=protected_area —
+    # Photon indexes it under one of them, so both must be eligible.)
+    "boundary": {"protected_area", "national_park", "forest_compartment"},
+}
+
+
+def _locality_eligible(key: str, value: str) -> bool:
+    """May a named feature with this (key, value) be shown as a locality candidate at all?"""
+    if key not in _LOCALITY_KEYS:
+        return False
+    only = _LOCALITY_ONLY.get(key)
+    if only is not None:
+        return value in only
+    return value not in _LOCALITY_EXCLUDE.get(key, frozenset())
+
+
+# Auto-fill priority. Eligible-but-unranked → offered in the menu, never auto-filled.
 _LOCALITY_KV: dict[tuple[str, str], int] = {
-    ("natural",  "peak"):           5,
-    ("natural",  "spring"):         4,
-    ("natural",  "water"):          4,
-    ("natural",  "wood"):           4,
-    ("natural",  "heath"):          4,
-    ("natural",  "wetland"):        4,
-    ("natural",  "moor"):           4,
-    ("natural",  "scrub"):          3,
-    ("natural",  "grassland"):      3,
-    ("natural",  "cliff"):          3,
-    ("natural",  "sand"):           3,
+    # 5 — the point is INSIDE a place that exists to be a place.
     ("leisure",  "nature_reserve"): 5,
-    ("leisure",  "park"):           3,
-    ("boundary", "protected_area"): 4,
-    ("landuse",  "forest"):         3,
-    ("landuse",  "wood"):           3,
-    ("landuse",  "meadow"):         2,
-    ("place",    "island"):         2,
-    ("place",    "islet"):          2,
-    ("place",    "region"):         1,
-    ("place",    "hamlet"):         1,
-    ("place",    "suburb"):         1,
-    ("place",    "village"):        1,
+    ("boundary", "protected_area"): 5,
+    ("boundary", "national_park"):  5,
+    ("natural",  "peak"):           5,
+    # 4 — a distinct natural feature or water body: the classic collecting anchor.
+    **{("natural", v): 4 for v in (
+        "wetland", "moor", "heath", "spring", "hot_spring", "water", "wood", "glacier",
+        "bay", "cape", "peninsula", "isthmus", "valley", "gorge", "saddle", "cliff",
+        "ridge", "hill", "dune", "beach", "cave_entrance", "arete", "volcano")},
+    **{("water", v): 4 for v in ("lake", "pond", "lagoon", "oxbow", "reservoir", "fishpond")},
+    # 3 — vegetation / surface cover.
+    **{("natural", v): 3 for v in (
+        "grassland", "scrub", "shrubbery", "fell", "tundra", "sand", "scree", "shingle",
+        "bare_rock", "rock", "stone", "mud", "sinkhole", "gully")},
+    ("landuse", "forest"): 3,
+    ("landuse", "wood"):   3,
+    ("leisure", "park"):   3,
+    ("leisure", "garden"): 3,
+    ("leisure", "common"): 3,
+    # 2 — a named area or watercourse; real, but broader than a point.
+    ("landuse",  "meadow"):   2,
+    ("waterway", "stream"):   2,
+    ("waterway", "river"):    2,
+    ("place",    "locality"): 2,   # OSM's "named place that is not a settlement" (~2 M uses)
+    ("place",    "island"):   2,
+    ("place",    "islet"):    2,
+    # 1 — a settlement: better than nothing, but the municipality field usually says it.
+    **{("place", v): 1 for v in (
+        "hamlet", "village", "isolated_dwelling", "farm", "suburb", "neighbourhood",
+        "quarter", "town", "city", "archipelago")},
 }
 
 
@@ -99,9 +168,18 @@ _MUNI_LEVELS = (7, 8)      # prefer L7 (GR Δήμος) over L8 (its municipal un
 _REGION_LEVEL = 5          # Regierungsbezirk / prefecture tier — only if not the state
 
 
-def _admin_name(row: dict) -> str:
-    """name:en where OSM has it (country/state everywhere tested), else the local name."""
-    return row.get("en") or row.get("nm") or ""
+def _admin_name(row: dict, *, english: bool = False) -> str:
+    """The tier's name. English (`name:en`) ONLY where the language policy says so.
+
+    CLAUDE.md: **country + stateProvince in English, everything below in the local name.**
+    This used to prefer `name:en` for every tier, so an Augsburg lookup filed the
+    Regierungsbezirk as "Swabia" instead of "Schwaben" — a tier that has no English exonym any
+    German label would use. The lower tiers are local by policy, not merely by accident of OSM
+    lacking a name:en for them.
+    """
+    if english:
+        return row.get("en") or row.get("nm") or ""
+    return row.get("nm") or row.get("en") or ""
 
 
 def _admin_level(row: dict) -> int | None:
@@ -127,9 +205,9 @@ def _resolve_hierarchy(adm_rows: list[dict]) -> dict:
     county = at(_COUNTY_LEVEL)
     muni = next((m for m in (at(lvl) for lvl in _MUNI_LEVELS) if m), None)
     return {
-        "country":      _admin_name(country) if country else "",
+        "country":      _admin_name(country, english=True) if country else "",
         "country_code": (country.get("iso1", "") if country else "").upper(),
-        "state":        _admin_name(state) if state else "",
+        "state":        _admin_name(state, english=True) if state else "",
         # The ISO 3166-2 code of the state — the very tag that identified it above. Carried
         # through (not discarded) and stored on the state_province vocab row: a label has no
         # room for "Baden-Württemberg" but "DE-BW" fits. Migration 0055.
@@ -691,16 +769,29 @@ def build_collecting_event_form(
             # Only features genuinely INSIDE the uncertainty circle. Photon happily returns a
             # road 2.8 km away when nothing is near (26.015/101.883) — not a collecting
             # locality, and an empty locality is the correct answer there.
-            near = sorted((p for p in props if p["_dist"] <= circle_m),
-                          key=lambda p: p["_dist"])[:_MAX_LOCALITY_POINTS]
+            inside = [p for p in props if p["_dist"] <= circle_m and p.get("name")]
+
+            # FILTER, THEN CAP — never the other way round. Cutting to the nearest N first let
+            # noise evict the real locality from the candidate set before it was ever ranked: at
+            # the Flugplatzheide (48.3255, 10.8995) Photon returns the heath plus TEN
+            # building=dormitory blocks (C8, C9, B3 …) and four information=board panels, which
+            # is the whole budget. A named heath 200 m away, with a dorm between, would have
+            # vanished from both the menu and the auto-fill, silently.
+            eligible = [p for p in inside
+                        if _locality_eligible(p.get("osm_key", ""), p.get("osm_value", ""))]
+            near = sorted(eligible, key=lambda p: p["_dist"])[:_MAX_LOCALITY_POINTS]
+
+            # Auto-fill: highest priority wins, distance only breaks ties. An ELIGIBLE tag with
+            # no ranked priority is offered below but never auto-filled (§2 — do not silently
+            # write a value nobody decided on).
             ranked = sorted(
                 ((_LOCALITY_KV.get((p.get("osm_key", ""), p.get("osm_value", "")), -1),
-                  -p["_dist"], p) for p in near if p.get("name")),
+                  -p["_dist"], p) for p in near),
                 key=lambda t: (t[0], t[1]), reverse=True)
-            _geo["best"] = next((p for pri, _, p in ranked if pri >= 0), None)
+            _geo["best"] = next((p for pri, _, p in ranked if pri > 0), None)
             _geo["points"] = [
                 {"name": p["name"], "kind": p.get("osm_value") or p.get("osm_key") or "place",
-                 "dist": p["_dist"]} for p in near if p.get("name")]
+                 "dist": p["_dist"]} for p in near]
             _geo["photon_done"] = True
             _apply_locality()
             _rebuild_picker()
