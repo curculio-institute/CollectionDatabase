@@ -112,3 +112,20 @@ class TestEscaping:
         html = rs.specimen_html(catalog="<script>", name="Curculio", rank="genus",
                                 locality="a & b")
         assert "&lt;script&gt;" in html and "a &amp; b" in html
+
+
+class TestAnIconIsNotText:
+    """The padlock was an <i> — and `.rs-row i { font-style: italic }` (the rule that italicises
+    the NAME) reached it, so the glyph rendered skewed. An icon is not text and is never italic.
+    """
+
+    def test_the_lock_is_not_an_i_element(self):
+        html = rs.lock_html(own=True)
+        assert "<i " not in html and "<i>" not in html
+        assert "material-icons" in html
+
+    def test_the_css_forbids_an_italic_icon_outright(self):
+        """Belt and braces: an icon may land inside any of the app's italics rules
+        (.rs-row i, .tw-result i, .rank-genus …), so the guard is global and !important."""
+        assert ".material-icons" in rs.CSS
+        assert "font-style:normal !important" in rs.CSS
