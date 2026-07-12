@@ -140,57 +140,6 @@ def _resolve_hierarchy(adm_rows: list[dict]) -> dict:
     }
 
 
-async def _boundary_hierarchies(
-    points: list[tuple[float, float]],
-) -> list[dict] | None:
-    """The containing admin hierarchy of each point, in ONE Overpass request (#110).
-
-    Every sample must be answered by the *same* service and the *same* tier rules as the centre,
-    or the comparison is meaningless. The old check sampled the perimeter with **Photon**, whose
-    `/reverse` is a proximity search reporting the nearest feature's tiers — at a Peloponnese
-    point it names the L4 Decentralized Administration where containment gives the ISO region
-    (`GR-J`, L5). Centre and perimeter could therefore never agree, so every Greek lookup raised
-    a false crossing, and picking the offered value wrote the wrong `stateProvince` into the
-    record. It also *missed* real crossings wherever Photon happened to name the same feature on
-    both sides.
-
-    Overpass takes several `is_in` in one request; `convert` stamps each result with its sample
-    index (`i`) so rows can be attributed back. One request, not five parallel ones: the public
-    instance grants an IP only a couple of concurrent slots (see `_overpass`, and #109).
-
-    Returns one hierarchy per point, in order, or None if the request failed — a failed check
-    must warn about nothing AND claim nothing (no ✓), never invent an answer.
-    """
-    parts = ["[out:json][timeout:25];"]
-    for i, (la, lo) in enumerate(points):
-        parts.append(
-            f"is_in({la},{lo})->.p{i};"
-            # `is_in` yields AREAS, so relation(pivot.…) is required; rel.p0[…] silently
-            # matches nothing.
-            f"relation(pivot.p{i})[boundary=administrative][name];"
-            f'convert adm ::id=id(), i="{i}", lvl=t["admin_level"], nm=t["name"],'
-            ' en=t["name:en"], iso1=t["ISO3166-1"], iso2=t["ISO3166-2"];'
-            "out;"
-        )
-    elements, _err = await _overpass_post("".join(parts))
-    if elements is None:
-        return None
-
-    rows: dict[int, list[dict]] = {i: [] for i in range(len(points))}
-    for el in elements:
-        if el.get("type") != "adm":
-            continue
-        tags = el.get("tags", {})
-        try:
-            idx = int(tags.get("i", ""))
-        except (TypeError, ValueError):
-            continue
-        if idx in rows:
-            rows[idx].append(tags)
-    # Same tier rules as the centre — _resolve_hierarchy is the single owner of them.
-    return [_resolve_hierarchy(rows[i]) for i in range(len(points))]
-
-
 # Cap on nearby point-feature locality candidates (enclosing areas are always shown);
 # keeps the picker a useful shortlist in feature-dense areas, not an exhaustive dump.
 _MAX_LOCALITY_POINTS = 10
@@ -828,137 +777,6 @@ def build_collecting_event_form(
         # there is nothing to compare against, so the caller skips it rather than guess.
         return {"photon": all_props[0] if all_props else None}
 
-    async def _check_boundary_crossing(
-        lat: float, lon: float, radius_m: float,
-        ok_icons: list | None = None,
-    ) -> bool:
-        """Warn when the uncertainty circle crosses admin boundaries (samples 4 cardinal points).
-
-        Centre AND perimeter are answered by Overpass containment through the same
-        `_resolve_hierarchy` tiers (#110). Sampling four bearings remains a **warning heuristic,
-        not a guarantee** — four points cannot prove a circle is boundary-free.
-        """
-        perimeter_pts = []
-        for a in (0, 90, 180, 270):
-            la = lat + (radius_m / 111_320) * math.cos(math.radians(a))
-            lo = lon + (radius_m / (111_320 * math.cos(math.radians(lat)))) * math.sin(math.radians(a))
-            perimeter_pts.append((la, lo))
-
-        hiers = await _boundary_hierarchies(perimeter_pts)
-        if hiers is None:
-            # The check could not run. Warn about nothing, and claim nothing: showing the ✓
-            # would assert "no crossing" on the strength of a request that never answered.
-            return False
-
-        # The centre snapshot is what the form actually shows — itself filled from containment,
-        # so it is the same kind of answer as the perimeter samples now are.
-        centre = {
-            "country":    country_in.value or "",
-            "code":       country_in.code or "",
-            "state":      state_in.value or "",
-            "state_code": state_in.code or "",
-            "county":     county_in.value or "",
-            "muni":       muni_in.value or "",
-        }
-        snapshots: list[dict] = [centre]
-
-        for h in hiers:
-            snap = {
-                "country":    h["country"],
-                "code":       h["country_code"],
-                "state":      h["state"],
-                # Containment identifies the state BY its ISO 3166-2 tag, so an offered
-                # alternative carries its code — Photon never did, and a state picked here used
-                # to be stored uncoded. (name, iso_code) is the vocab's identity; see CLAUDE.md.
-                "state_code": h["state_code"],
-                "county":     h["county"],
-                "muni":       h["municipality"],
-            }
-            if snap != centre and snap not in snapshots:
-                snapshots.append(snap)
-
-        _any_warn: list[bool] = []
-        _ok_shown: list = []
-
-        def _show_warn(btn, tip, items_col, field_key, on_pick, ok_icon=None, label_fn=None):
-            centre_val = centre[field_key]
-            # Empty is never an offerable value. A sample that names nothing at this tier
-            # (no municipality inside a kreisfreie Stadt; no named feature near the point)
-            # carries no information, and "set this field to nothing" is not a choice worth
-            # a menu row — it rendered as a bare " (centre)" or "(no named feature) (centre)".
-            seen: dict[str, dict] = {}
-            for snap in snapshots:
-                val = snap[field_key]
-                if val and val not in seen:
-                    seen[val] = snap
-            # Warn when some *named* alternative differs from what the field holds. This still
-            # fires when the field is empty and a perimeter sample names something (the circle
-            # reaches into a municipality the centre is not in) — the case that matters.
-            alts = [v for v in seen if v != centre_val]
-            if not alts:
-                if ok_icon is not None:
-                    ok_icon.classes(remove="hidden", add="lookup-ok-fade")
-                    _ok_shown.append(ok_icon)
-                return
-            items_col.clear()
-            with items_col:
-                for val, snap in seen.items():
-                    display = label_fn(val, snap) if label_fn else val
-                    marker  = " (centre)" if val == centre_val else ""
-
-                    async def _cb(s=snap):
-                        await on_pick(s)
-
-                    ui.menu_item(display + marker, on_click=_cb)
-            tip_alts = [label_fn(v, seen[v]) if label_fn else v for v in alts]
-            tip.text = "Circle also covers: " + ", ".join(tip_alts)
-            tip.update()
-            btn.classes(remove="hidden")
-            btn.update()
-            _any_warn.append(True)
-
-        def _apply_field(field_key: str, btn):
-            """Picking an alternative for ONE field sets only THAT field (#110).
-
-            The old handler wrote the whole snapshot, so choosing a *municipality* alternative
-            silently overwrote a correct `stateProvince` (and country, and county) with the
-            values of whichever sample happened to carry that municipality. A boundary warning
-            says "the circle also reaches X at this tier" — it is not a claim about the others.
-            """
-            async def _apply(snap: dict) -> None:
-                _st["populating"] = True
-                if field_key == "country":
-                    country_in.set_value(snap["country"] or None, snap["code"] or None)
-                elif field_key == "state":
-                    state_in.set_value(snap["state"] or None, snap["state_code"] or None)
-                elif field_key == "county":
-                    county_in.value = snap["county"]
-                elif field_key == "muni":
-                    muni_in.value = snap["muni"]
-                _st["populating"] = False
-                btn.classes(add="hidden")
-                _fire_edit()
-            return _apply
-
-        icons = ok_icons or [None] * 5
-        _show_warn(_cntry_warn,  _cntry_tip,  _cntry_items,  "country",
-                   _apply_field("country", _cntry_warn), ok_icon=icons[0])
-        _show_warn(_state_warn,  _state_tip,  _state_items,  "state",
-                   _apply_field("state", _state_warn), ok_icon=icons[1])
-        _show_warn(_county_warn, _county_tip, _county_items, "county",
-                   _apply_field("county", _county_warn), ok_icon=icons[2])
-        _show_warn(_muni_warn,   _muni_tip,   _muni_items,   "muni",
-                   _apply_field("muni", _muni_warn), ok_icon=icons[3])
-        # Locality is NOT an administrative tier, so containment cannot sample it and a
-        # "boundary crossing" for it is meaningless. Its warning button is already the
-        # "also nearby" candidate picker (fed by the main geocode's areas + points), which
-        # sets only the locality field — the correct behaviour, left untouched.
-
-        if _ok_shown:
-            _fading = list(_ok_shown)
-            ui.timer(1.4, lambda: [ok.classes(add="hidden", remove="lookup-ok-fade") for ok in _fading], once=True)
-        return bool(_any_warn)
-
     def _on_map_change(lat: float, lon: float, unc):
         lat_in.value    = str(round(lat, 7))
         lon_in.value    = str(round(lon, 7))
@@ -1034,32 +852,22 @@ def build_collecting_event_form(
             if res is None:
                 return
             ui.notify("Location fields filled from coordinates.", type="positive")
-            # The boundary check no longer depends on Photon (#110): it samples the perimeter
-            # with Overpass containment, which answers over open sea and steppe where Photon
-            # returns no feature at all. So it is gated on the uncertainty radius alone — the
-            # old `and p is not None` skipped the check exactly where Photon was useless.
-            if unc and unc > 0:
-                _lookup_status.set_text("Checking whether the uncertainty circle crosses "
-                                        "an administrative boundary…")
-                _lookup_status.classes(remove="hidden")
-                try:
-                    # Only the four administrative tiers: locality is not an admin tier and is
-                    # not part of this check (its own ✓ is settled just below).
-                    await _check_boundary_crossing(
-                        lat, lon, unc, ok_icons=_geocode_ok_icons[:4])
-                finally:
-                    _lookup_status.classes(add="hidden")
-                # Locality's ✓ means "no other nearby candidates", not "no boundary crossing".
-                if "hidden" in (_locality_warn.classes or []):
-                    _locality_ok.classes(remove="hidden", add="lookup-ok-fade")
-                    ui.timer(1.4, lambda: _locality_ok.classes(
-                        add="hidden", remove="lookup-ok-fade"), once=True)
-            else:
-                for _ok in _geocode_ok_icons:
-                    _ok.classes(remove="hidden", add="lookup-ok-fade")
-                ui.timer(1.4, lambda: [
-                    _ok.classes(add="hidden", remove="lookup-ok-fade") for _ok in _geocode_ok_icons
-                ], once=True)
+            # NO boundary-crossing check (#110 reverted, 2026-07-12). Both implementations were
+            # unacceptable and a third design is needed:
+            #   * Photon perimeter samples answered a DIFFERENT question (proximity, not
+            #     containment) and reported a different admin tier, so every Greek lookup raised
+            #     a false crossing — and clicking the warning OVERWROTE a correct stateProvince.
+            #   * Overpass containment answered correctly but moved the check onto the same
+            #     2-slot budget as the hierarchy query: measured 0.9–12 s and wildly variable,
+            #     against Photon's steady 3.2 s, making every lookup slow and unpredictable.
+            # Until there is a design that is both correct and affordable, the app raises NO
+            # crossing warning at all. That is the honest state: no warning is better than a
+            # wrong one that rewrites a good value.
+            for _ok in _geocode_ok_icons:
+                _ok.classes(remove="hidden", add="lookup-ok-fade")
+            ui.timer(1.4, lambda: [
+                _ok.classes(add="hidden", remove="lookup-ok-fade") for _ok in _geocode_ok_icons
+            ], once=True)
 
         _lookup_btn = (
             ui.button("Detect Locations from Coordinates", icon="auto_fix_high", on_click=_fill_from_coords)
