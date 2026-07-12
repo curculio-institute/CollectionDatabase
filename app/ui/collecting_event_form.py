@@ -222,6 +222,30 @@ def _resolve_hierarchy(adm_rows: list[dict]) -> dict:
 # keeps the picker a useful shortlist in feature-dense areas, not an exhaustive dump.
 _MAX_LOCALITY_POINTS = 10
 
+# Why a read-only event card is read-only. Callers override it with the specific reason
+# (Records: "shared by N specimens — press Edit all N"); this is the Digitize default.
+_DEFAULT_RO_REASON = ("Read-only — this event is reused. Detach a copy to edit it here, "
+                      "or edit the original in the Records tab.")
+def _set_tooltip(el, text: str) -> None:
+    """Replace an element's tooltip text.
+
+    `Element.tooltip()` APPENDS a Tooltip child — calling it again stacks a second one and the
+    first still wins, so a lock/unlock cycle would leave the original text showing (and grow the
+    DOM). Reuse the existing Tooltip if there is one.
+    """
+    from nicegui.elements.tooltip import Tooltip
+
+    for slot in el.slots.values():
+        for child in slot.children:
+            if isinstance(child, Tooltip):
+                child.set_text(text)
+                return
+    el.tooltip(text)
+
+
+_CONF_TOOLTIP = ("Withhold this event's specimens from public export — a confidential event "
+                 "drops all its specimens from the DwC export (TaxonWorks). Local-only flag.")
+
 
 def _haversine_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     """Great-circle distance in metres (for ranking nearby locality candidates)."""
@@ -381,6 +405,15 @@ class _VocabInput:
 
     def set_value(self, name: str | None, code: str | None = None) -> None:
         self._h["set_value"](name or None, code)
+
+    def tooltip(self, text: str):
+        """Forward to the underlying input. _set_readonly() puts the read-only REASON on every
+        locked control, and this adapter is not a NiceGUI element — without this it raised
+        AttributeError and aborted _set_readonly, leaving the whole form editable."""
+        el = self._h.get("element")
+        if el is not None:
+            _set_tooltip(el, text)
+        return self
 
     def props(self, add: str | None = None, *, remove: str | None = None):
         """Only 'readonly' is ever toggled on these fields by _set_readonly()."""
@@ -1058,8 +1091,14 @@ def build_collecting_event_form(
                      "export (TaxonWorks). Local-only flag.")
         )
         conf_chk.on_value_change(lambda e: _fire_edit())
+        # The footer holds the event's media button (and whatever else a caller adds). Keep the
+        # container: attaching media to a reused/shared event IS an edit of that event — it
+        # shows up on every specimen using it — so read-only must reach these buttons too. The
+        # form owns read-only; a caller must not have to remember to lock its own footer.
+        _footer_box = None
         if footer_slot is not None:
-            with ui.row().classes("items-center gap-1"):
+            _footer_box = ui.row().classes("items-center gap-1")
+            with _footer_box:
                 footer_slot()
 
     # ── field registry: single source for collect / load / reset / readonly ──
@@ -1146,19 +1185,61 @@ def build_collecting_event_form(
         protocol_field["set_value"](snapshot.get("sampling_protocol") or None)
         _st["populating"] = False
 
-    def _set_readonly(readonly: bool) -> None:
+    _footer_tips: dict[int, str] = {}   # footer button → its own tooltip, restored on unlock
+
+    def _first_tooltip(el) -> str:
+        from nicegui.elements.tooltip import Tooltip
+
+        for slot in el.slots.values():
+            for child in slot.children:
+                if isinstance(child, Tooltip):
+                    return child.text
+        return ""
+
+    def _buttons_in(el):
+        """Every ui.button under `el` (the footer slot's content is built by the caller)."""
+        from nicegui.elements.button import Button
+
+        if isinstance(el, Button):
+            yield el
+        for slot in el.slots.values():
+            for child in slot.children:
+                yield from _buttons_in(child)
+
+    def _set_readonly(readonly: bool, reason: str = "") -> None:
+        """Lock/unlock the whole event card. `reason` is shown on every locked control.
+
+        A disabled control with no explanation is a mystery — the share banner is above the
+        fold and the Digitize card's hint is elsewhere, so the reason is put where the user's
+        cursor already is.
+        """
         editable = not readonly
         _st["editable"] = editable
+        _st["ro_reason"] = reason or _DEFAULT_RO_REASON
         for w in _event_widgets.values():
             w.props(remove="readonly") if editable else w.props("readonly")
+            # Not every registry entry is a NiceGUI element (_VocabInput is an adapter), so the
+            # tooltip is optional — never let it abort the lock.
+            tip = getattr(w, "tooltip", None)
+            if tip is not None:
+                tip("" if editable else _st["ro_reason"])   # _VocabInput forwards; see below
         conf_chk.set_enabled(editable)
+        _set_tooltip(conf_chk, _CONF_TOOLTIP if editable else _st["ro_reason"])
         recby_state["set_readonly"](readonly)
         habitat_field["set_readonly"](readonly)
         protocol_field["set_readonly"](readonly)
+        # Media (and anything else in the footer): attaching to a reused/shared event edits
+        # that event for every specimen on it, so it is locked with the rest.
+        if _footer_box is not None:
+            for btn in _buttons_in(_footer_box):
+                btn.set_enabled(editable)
+                _set_tooltip(btn, _footer_tips.setdefault(id(btn), _first_tooltip(btn))
+                             if editable else _st["ro_reason"])
         _lookup_btn.set_enabled(editable)
-        _lookup_btn.tooltip(
+        _set_tooltip(
+            _lookup_btn,
             "Fill country / state / county from coordinates via Photon"
-            if editable else "Read-only — detach a copy to edit first"
+            if editable else _st["ro_reason"],
         )
         _clear_coords_btn.set_enabled(editable)
         _map["set_readonly"](readonly)
