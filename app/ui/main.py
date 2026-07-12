@@ -54,6 +54,7 @@ from app.ui.mounting_session import build_mounting_session_section
 from app.ui.specimen_form import build_specimen_form
 from app.ui.collecting_event_form import build_collecting_event_form
 from app.ui.event_reuse import build_event_share_banner
+import app.ui.record_summary as _record_summary
 from app.ui.media_panel import build_media_button
 from app.ui.external_id_panel import build_external_id_button
 from app.ui.life_stage_panel import build_life_stage_button
@@ -142,6 +143,7 @@ def index():
     # ── Tab-to-complete on select dropdowns ─────────────────────────────
     # When a q-select is focused and the filtered dropdown has exactly one
     # visible item, Tab selects it instead of moving focus away.
+    ui.add_head_html(_record_summary.CSS)   # the shared record-summary styles
     ui.add_head_html("""
     <script>
     document.addEventListener('keydown', function(e) {

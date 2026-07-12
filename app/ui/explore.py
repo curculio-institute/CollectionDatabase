@@ -14,6 +14,8 @@ import html as _html
 
 from nicegui import ui
 
+import app.ui.record_summary as rs
+
 import app.services.explore as ex_svc
 
 _CSS = """<style>
@@ -90,6 +92,7 @@ def _name_auth(name: str, auth: str) -> str:
 
 def build_explore_panel(session_factory, *, on_open_specimen, on_open_event) -> dict:
     ui.add_head_html(_CSS)
+    ui.add_head_html(rs.CSS)
 
     def _with(fn):
         with session_factory() as s:
@@ -240,13 +243,24 @@ def build_explore_panel(session_factory, *, on_open_specimen, on_open_event) -> 
                 with ui.row().classes("items-center gap-2 w-full"):
                     ui.button(icon="edit", on_click=lambda _, e=g.event_id: on_open_event(e)) \
                         .props("flat dense round size=xs").tooltip("Open event")
-                    ui.html(f'<span>{_html.escape(g.summary or "event")}</span>'
-                            f'<span class="ex-count">· {g.n_specimens} spec.</span>')
+                    ui.html(rs.event_html(summary=g.summary, n_specimens=g.n_specimens,
+                                          confidential=g.confidential))
             with exp:
                 for lot in g.lots:
-                    row = ui.html('<div class="ex-lot">'
-                                  f'<span>{_html.escape(lot.taxon_label)}</span>  '
-                                  f'<span class="ex-cat">{_html.escape(lot.catalog)}</span></div>')
+                    # Routed through the shared renderer: the names under an event used to be
+                    # escaped plain text, so no species was italicised here at all.
+                    row = ui.html(rs.specimen_html(
+                        catalog=lot.catalog,
+                        name=lot.taxon_name or lot.taxon_label,
+                        rank=lot.taxon_rank,
+                        authorship=lot.authorship,
+                        hosts=lot.hosts,
+                        sex=lot.sex,
+                        count=lot.count,
+                        locality="",                    # the event IS the locality here
+                        confidential=lot.confidential,
+                        event_confidential=lot.event_confidential,
+                    ))
                     row.on("click", lambda _, c=lot.co_id: on_open_specimen(c))
 
     def _refresh():

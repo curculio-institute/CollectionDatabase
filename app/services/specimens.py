@@ -32,6 +32,10 @@ class RecentRow:
     scientific_name: str       # composed name, WITHOUT authorship
     authorship: str | None     # kept separate so callers can style it (upright)
     taxon_rank: str | None     # italics are a function of rank — see taxa.scientific_name_html
+    # (relationship, name, rank) per biological association — "collected from Quercus robur".
+    hosts: list                # list[tuple[str, str, str | None]]
+    confidential: bool         # this specimen is withheld from export
+    event_confidential: bool   # …or inherits it from a confidential event (withholds them all)
     sex: str | None
     individual_count: int | None
     country: str | None
@@ -370,6 +374,12 @@ def recent_specimens(session: Session, limit: int = 200) -> list[RecentRow]:
             scientific_name=(t.scientific_name or "") if t else "",
             authorship=(t.scientific_name_authorship if t else None),
             taxon_rank=(t.taxon_rank if t else None),
+            hosts=[(a.biological_relationship.name if a.biological_relationship else "",
+                    a.object_taxon.scientific_name or "",
+                    a.object_taxon.taxon_rank)
+                   for a in co.subject_associations if a.object_taxon],
+            confidential=bool(co.confidential),
+            event_confidential=bool(ce.confidential) if ce else False,
             sex=td.sex if td else None,
             individual_count=co.individual_count,
             country=(ce.country_obj.name if (ce and ce.country_obj) else None),
