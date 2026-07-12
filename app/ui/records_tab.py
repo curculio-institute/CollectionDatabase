@@ -11,6 +11,8 @@ import app.services.events as ev_svc
 import app.services.identifiers as id_svc
 import app.services.biological as bio_svc
 import app.services.repositories as repo_svc
+import html as _html
+import app.services.taxa as svc_taxa
 from app.services.taxa import (
     compose_scientific_name,
     format_scientific_name,
@@ -98,16 +100,72 @@ def build_records_tab(session_factory, *, on_saved: callable | None = None) -> N
             mode_ev_btn = ui.button("Events", icon="place") \
                 .props("no-caps flat dense")
 
-        def _specimen_opts() -> dict:
+        # The picker row carries what actually identifies a specimen in the hand — the name, but
+        # also where and when it was collected and by whom, because several specimens share a
+        # name and only the event tells them apart. Two strings per row, deliberately:
+        #
+        #   label — PLAIN text. Quasar filters `with_input` against it and shows it in the input
+        #           once selected, so it must not contain markup. It carries every searchable
+        #           datum (catalog, name, authorship, locality, country, date, collector), which
+        #           is what makes the box a search over all of them and not just the name.
+        #   html  — the RICH row shown in the dropdown, with the name italicised BY RANK and the
+        #           authorship left roman (taxa.scientific_name_html owns that convention).
+        def _specimen_rows() -> list[dict]:
             rows = _with_session(lambda s: sp_svc.recent_specimens(s, limit=1000))
-            return {
-                r.collection_object_id: (
-                    f"#{r.collection_object_id}  "
-                    f"{id_svc.format_catalog_display(r.collection_code, r.catalog_number)}  "
-                    f"{(r.scientific_name + ' ' + r.authorship) if (r.scientific_name and r.authorship) else (r.scientific_name or '—')}"
-                )
-                for r in rows
-            }
+            out: list[dict] = []
+            for r in rows:
+                cat = id_svc.format_catalog_display(r.collection_code, r.catalog_number)
+                name = r.scientific_name or ""
+                auth = r.authorship or ""
+                where = ", ".join(x for x in (r.locality, r.country) if x)
+                meta = [x for x in (where, r.event_date,
+                                    f"leg. {r.recorded_by}" if r.recorded_by else "",
+                                    f"det. {r.identified_by}" if r.identified_by else "") if x]
+                bits = [f"{r.individual_count}×"] if (r.individual_count or 1) > 1 else []
+                if r.sex:
+                    bits.append(r.sex)
+
+                label = "  ".join(x for x in (
+                    cat, f"{name} {auth}".strip() or "—", " ".join(bits), *meta) if x)
+
+                name_html = (svc_taxa.scientific_name_html(name, r.taxon_rank, auth)
+                             if name else "<span class='rc-none'>— no identification —</span>")
+                sub = "  ·  ".join(_html.escape(m) for m in meta) or "—"
+                badge = (f"<span class='rc-badge'>{_html.escape(' '.join(bits))}</span>"
+                         if bits else "")
+                out.append({
+                    "value": r.collection_object_id,
+                    "label": label,
+                    "html": (f"<div class='rc-opt'>"
+                             f"<div class='rc-opt-top'>"
+                             f"<span class='rc-cat'>{_html.escape(cat)}</span>"
+                             f"{name_html}{badge}</div>"
+                             f"<div class='rc-opt-sub'>{sub}</div></div>"),
+                })
+            return out
+
+        _rows_cache: list[dict] = []
+
+        def _apply_specimen_rows() -> None:
+            """Rebuild the option list. The rich HTML is re-attached by the wrapper below.
+
+            Two NiceGUI facts make this awkward, and both bite silently:
+              * Select maps option values to their INDEX in the props
+                (`{"value": 0, "label": …}`) and keeps the real keys in `.options` — so writing
+                `_props["options"]` by hand breaks the model-value mapping and the select shows
+                NOTHING.
+              * `Select.update()` calls `_update_options()`, which REBUILDS `_props["options"]`
+                from the plain labels on every update — so an extra key written once is wiped on
+                the next interaction (a keystroke, the 2 s refresh timer).
+            There is no supported hook, so `_update_options` is wrapped on this instance to
+            re-attach the html each time it rebuilds.
+            """
+            _rows_cache[:] = _specimen_rows()
+            spec_select.set_options({r["value"]: r["label"] for r in _rows_cache})
+
+        def _attach_option_html() -> None:
+            for opt, row in zip(spec_select._props.get("options", []), _rows_cache):
+                opt["html"] = row["html"]
 
         def _event_opts() -> dict:
             rows = _with_session(lambda s: ev_svc.search_collecting_events(s, "", limit=500))
@@ -115,14 +173,31 @@ def build_records_tab(session_factory, *, on_saved: callable | None = None) -> N
 
         spec_select = (
             ui.select(
-                options=_specimen_opts(),
+                options={},
                 with_input=True,
                 clearable=True,
-                label="Search specimens…",
+                label="Search specimens…  (catalog, taxon, locality, date, collector)",
             )
             .classes("w-full")
         )
-        ui.timer(2.0, lambda: spec_select.set_options(_specimen_opts()))
+        # The dropdown row is HTML (italics by rank); the input keeps the plain label.
+        spec_select.add_slot("option", r"""
+            <q-item v-bind="props.itemProps">
+              <q-item-section>
+                <div v-html="props.opt.html"></div>
+              </q-item-section>
+            </q-item>
+        """)
+        _orig_update_options = spec_select._update_options
+
+        def _update_options_keeping_html() -> None:
+            _orig_update_options()          # NiceGUI rebuilds options from the labels …
+            _attach_option_html()           # … and we put the rich row back on each of them.
+
+        spec_select._update_options = _update_options_keeping_html   # NiceGUI internal (2.24)
+
+        _apply_specimen_rows()
+        ui.timer(2.0, _apply_specimen_rows)
         ev_select = (
             ui.select(
                 options=_event_opts(),
