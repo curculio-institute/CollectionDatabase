@@ -547,6 +547,16 @@ def build_taxon_search(
 
         try:
             results = await tw_svc.search_taxon_names(term)
+        except tw_svc.TaxonWorksUnreachable as exc:
+            # A rejected token / wrong base URL used to render exactly like "TaxonWorks
+            # knows no such name" — the section simply vanished, so a mis-set connection
+            # was invisible until someone diffed config.json. Say which failure it is.
+            tw_sec.clear()
+            with tw_sec:
+                ui.label("TaxonWorks").classes("tw-section-label")
+                ui.label(str(exc)).classes("tw-dropdown-empty")
+            _show_dropdown()
+            return
         except Exception:
             tw_sec.clear()
             return

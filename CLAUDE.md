@@ -536,6 +536,23 @@ A hand-typed `Limburg` must not be silently declared Dutch by a later geocode; i
 row, and the user folds it with the **merge tool** if the two really are the same place. Duplicates
 are the *expected*, cheap outcome — merge exists precisely for this.
 
+**Two asymmetric inputs refine "anything else → create" — the strict rule applies only where the
+name is actually ambiguous:**
+
+- **Name, no code.** A CSV `country` column with no `countryCode` said "Austria"; the strict
+  `(name, code)` rule answered with a *second*, uncoded Austria beside the geocoded `Austria (AT)`
+  — a duplicate on every import, for a name nothing was ambiguous about. So an uncoded input
+  **reuses the single row bearing that name when there is exactly one** (whether that row is coded
+  or not); it creates its own row only when two or more rows already share the name (`Limburg`
+  BE-VLI / NL-LI), where "which one?" is a real question and guessing would be the silent wrong
+  value. Nothing is mutated either way. (`Vocabulary.get_or_create`.)
+- **Code, no name.** A `countryCode` on a row whose `country` column is blank must not be dropped.
+  ISO 3166-1 alpha-2 is unambiguous, so the country name is **derived from the code** (pycountry —
+  `events._country_name_from_iso`) and then resolved by `(name, code)`, materialising a properly
+  named, coded row rather than a nameless one (`country.name` is NOT NULL — a code-only row is not
+  representable). **Country only:** ISO 3166-2 subdivision names are never derived, because the 40
+  shared names are the reason the strict identity exists in the first place.
+
 `UNIQUE(name)` is replaced by a unique index on **`(name, IFNULL(iso_code, ''))`**. The `IFNULL` is
 load-bearing: SQLite treats `NULL != NULL`, so a plain `UNIQUE(name, iso_code)` would let every
 hand-typed save create yet another uncoded duplicate. Result: exactly one uncoded row per name,

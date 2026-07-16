@@ -146,7 +146,11 @@ def build_mounting_session_section(
                     # Normalise the date here (not only on the input's async blur),
                     # so a value typed-then-Apply'd before blur completes still lands
                     # as ISO in the DwC date column.
-                    date_norm, date_err = parse_dwc_date(date_in.value or "", no_future=True)
+                    # allow_interval must match the field's own validator (line ~110):
+                    # without it a range passed the input's check and was then refused at
+                    # Apply with "ranges are not allowed here". dateIdentified takes them.
+                    date_norm, date_err = parse_dwc_date(
+                        date_in.value or "", allow_interval=True, no_future=True)
                     if date_err:
                         ui.notify(f"dateIdentified: {date_err}", type="warning")
                         return

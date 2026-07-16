@@ -506,6 +506,71 @@ def scientific_name_has_authorship(scientific_name: str) -> bool:
     return any(not _EPITHET_RE.match(tok) for tok in parts[i:])
 
 
+# Lowercase nobiliary particles that open a surname ("de Geer", "van der Poll"). They look
+# exactly like an epithet, so a name split on "first non-epithet token" cuts *after* them and
+# leaves `Carabus violaceus de`. Trailing particles are therefore handed back to the author.
+_AUTHOR_PARTICLES = {
+    "de", "den", "der", "des", "di", "da", "del", "della", "dos", "du",
+    "van", "von", "le", "la", "el", "ter", "ten", "af", "av",
+}
+
+
+def split_scientific_name_authorship(scientific_name: str) -> tuple[str, str]:
+    """Split a ``scientificName`` that carries its authorship inline into ``(name, author)``.
+
+    ``Bembidion minimum (Fabricius, 1792)`` → ``("Bembidion minimum", "(Fabricius, 1792)")``;
+    a clean name returns ``(name, "")``. Same rule as ``scientific_name_has_authorship``, read
+    forwards: genus, an optional ``(Subgenus)``, then lowercase epithets — the name **stops at
+    the first token that is none of those**. A subgenus and an author's parenthesis look alike,
+    so position decides: only the token straight after the genus can be a subgenus;
+    ``(Fabricius, 1792)`` in third place is an author.
+
+    The author is handed back rather than discarded because it is *evidence*: matched against
+    the authorship of the taxon we resolve to, it confirms the identification — or, when it
+    disagrees, says the row means a different beetle than the name alone suggests. Neither the
+    name nor the author is ever *stored* from this string; the taxon the user picks supplies
+    both.
+    """
+    parts = scientific_name.split()
+    if not parts:
+        return ("", "")
+    kept = [parts[0]]
+    i = 1
+    if i < len(parts) and parts[i].startswith("(") and parts[i].endswith(")") \
+            and _EPITHET_RE.match(parts[i][1:-1].lower() or "x"):
+        kept.append(parts[i])                # a (Subgenus) directly after the genus
+        i += 1
+    for tok in parts[i:]:
+        if not _EPITHET_RE.match(tok):
+            break                            # first author token — the name ends here
+        kept.append(tok)
+    while len(kept) > 2 and kept[-1].lower() in _AUTHOR_PARTICLES:
+        kept.pop()                           # "… violaceus de" → the "de" opens "de Geer"
+    author = " ".join(parts[len(kept):])
+    return (" ".join(kept), author)
+
+
+def scientific_name_without_authorship(scientific_name: str) -> str:
+    """The name half of :func:`split_scientific_name_authorship`."""
+    return split_scientific_name_authorship(scientific_name)[0]
+
+
+def authorship_matches(a: str, b: str) -> bool:
+    """Do two authorship strings name the same author and year?
+
+    Compared on their *words*, so the punctuation that varies between sources does not
+    decide: ``(Fabricius, 1792)`` == ``Fabricius, 1792``. The brackets are dropped
+    deliberately — they record that the species has since moved genus, which is a statement
+    about the *combination*, not about who described it, and the two sources routinely
+    disagree on them. An empty string on either side is not a match (nothing to compare):
+    the caller decides what to do with "unknown", and it must not be "assume yes".
+    """
+    def _words(s: str) -> list[str]:
+        return re.findall(r"[\w']+", (s or "").lower())
+    wa, wb = _words(a), _words(b)
+    return bool(wa) and wa == wb
+
+
 def build_manual_taxon_prefill(session: Session, row: dict) -> dict:
     """Starting values for the manual 'add taxon' form, parsed from a DwC row.
 

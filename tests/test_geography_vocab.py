@@ -128,6 +128,62 @@ def test_uncoded_name_does_not_duplicate_endlessly(session):
     assert session.query(StateProvince).filter_by(name="Hesse").count() == 1
 
 
+# ── the two asymmetric inputs: name-no-code reuse, and code-no-name derivation ──────
+
+def test_uncoded_name_reuses_the_single_coded_row(session):
+    """A CSV `country` with no `countryCode` must NOT spawn a second, uncoded Austria
+    beside the geocoded `Austria (AT)` — an unambiguous name reuses the one row it has."""
+    ev_svc.create_collecting_event(session, country="Austria", country_iso="AT")  # coded
+    session.flush()
+    ev = ev_svc.create_collecting_event(session, country="Austria")               # no code
+    session.flush()
+    assert ev.country_obj.iso_code == "AT"                       # reused, not duplicated
+    assert session.query(Country).filter_by(name="Austria").count() == 1
+
+
+def test_uncoded_name_still_creates_its_own_row_when_the_name_is_ambiguous(session):
+    """Two rows already share 'Limburg' → an uncoded input cannot pick one, so it stays
+    a third (mergeable) row rather than silently attaching to Belgium or the Netherlands."""
+    ev_svc.create_collecting_event(session, state_province="Limburg", state_province_iso="BE-VLI")
+    ev_svc.create_collecting_event(session, state_province="Limburg", state_province_iso="NL-LI")
+    session.flush()
+    ev_svc.create_collecting_event(session, state_province="Limburg")             # no code
+    session.flush()
+    rows = session.query(StateProvince).filter_by(name="Limburg").all()
+    assert sorted((r.iso_code or "") for r in rows) == ["", "BE-VLI", "NL-LI"]
+
+
+def test_country_code_with_no_name_derives_the_country(session):
+    """A countryCode on a row whose `country` column is blank must not be dropped:
+    the name is derived from the ISO code (pycountry) so a coded row is materialised."""
+    ev = ev_svc.create_collecting_event(session, country="", country_iso="DE",
+                                        locality="somewhere")
+    session.flush()
+    assert ev.country_obj is not None
+    assert (ev.country_obj.name, ev.country_obj.iso_code) == ("Germany", "DE")
+
+
+def test_country_code_with_no_name_folds_onto_an_existing_country(session):
+    """Deriving `DE` → 'Germany' resolves onto the already-present Germany (DE) row,
+    not a parallel one — the derived name matches the geocoder's name:en."""
+    ev_svc.create_collecting_event(session, country="Germany", country_iso="DE")
+    session.flush()
+    ev = ev_svc.create_collecting_event(session, country="", country_iso="DE")
+    session.flush()
+    assert ev.country_obj.name == "Germany"
+    assert session.query(Country).filter_by(name="Germany").count() == 1
+
+
+def test_state_code_with_no_name_is_not_derived(session):
+    """Only country names are derived from a code. An ISO 3166-2 subdivision code with no
+    name is left unresolved — the 40 shared names are why derivation is unsafe there."""
+    ev = ev_svc.create_collecting_event(session, country="Germany", country_iso="DE",
+                                        state_province="", state_province_iso="DE-BY")
+    session.flush()
+    assert ev.state_province_id is None
+    assert session.query(StateProvince).count() == 0
+
+
 def test_country_carries_its_iso_code_the_same_way(session):
     from app.models import Country
     ev_svc.create_collecting_event(session, country="Germany", country_iso="DE")

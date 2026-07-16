@@ -86,6 +86,59 @@ def _check_future(normalised: str) -> str | None:
     return None
 
 
+_RANGE_SEP = re.compile(r'\s*[-–—]\s*')
+
+
+def _expand_abbreviated_range(raw: str) -> str | None:
+    """Rewrite an abbreviated range into a full ISO interval, or None if it is not one.
+
+    On a label the parts both ends share are written once, at the right-hand end — so the
+    left end is missing them and cannot be parsed alone:
+
+        28.-30.08.2023      → 28.08.2023/30.08.2023     (day range; month+year shared)
+        19.5.-5.6.2019      → 19.5.2019/5.6.2019        (day+month range; year shared)
+        16.V-23.9.2006      → 16.V.2006/23.9.2006       (roman month, ditto)
+        9.-10.2019          → 9.2019/10.2019            (month range; year shared)
+        2015-2016           → 2015/2016                 (year range)
+
+    The **right end anchors the left**: it is parsed first with the ordinary rules, and its
+    granularity says what the left end's tokens mean (a lone `28` beside a full date is a
+    day; beside a `YYYY-MM` it is a month). Anything that does not fit — an unanchorable
+    right end, a token count the right end cannot explain — returns None, so the caller
+    reports the ordinary "not a recognised date format" rather than inventing a reading.
+    Nothing here guesses a *value*; it only restores parts the writer omitted as given.
+    """
+    parts = _RANGE_SEP.split(raw)
+    if len(parts) != 2:
+        return None
+    left, right = parts[0].strip().rstrip("."), parts[1].strip()
+    if not left or not right:
+        return None
+
+    iso_right, err = parse_dwc_date(right)
+    if err:
+        return None
+
+    tokens = [t for t in left.split(".") if t]
+    y, m = iso_right[:4], iso_right[5:7]
+
+    if len(iso_right) == 10:                      # right is a full date: YYYY-MM-DD
+        if len(tokens) == 1:                      # day only        → share month + year
+            return f"{tokens[0]}.{m}.{y}/{right}"
+        if len(tokens) == 2:                      # day.month       → share year
+            return f"{tokens[0]}.{tokens[1]}.{y}/{right}"
+        return None
+    if len(iso_right) == 7:                       # right is YYYY-MM
+        if len(tokens) == 1:                      # month only      → share year
+            return f"{tokens[0]}.{y}/{right}"
+        return None
+    if len(iso_right) == 4:                       # right is a bare year
+        if len(tokens) == 1 and _ISO_YEAR.match(tokens[0]):
+            return f"{tokens[0]}/{right}"
+        return None
+    return None
+
+
 def parse_dwc_date(
     raw: str,
     *,
@@ -185,5 +238,13 @@ def parse_dwc_date(
         if no_future and (err := _check_future(normalised)):
             return ("", err)
         return (normalised, None)
+
+    # Abbreviated range, the label convention: the parts the two ends share are written
+    # once, on the right ("28.-30.08.2023"). Tried last, so every unabbreviated format
+    # above keeps its own error message.
+    if (expanded := _expand_abbreviated_range(raw)) is not None:
+        if not allow_interval:
+            return ("", "Date ranges are not allowed here — use a single date.")
+        return parse_dwc_date(expanded, allow_interval=True, no_future=no_future)
 
     return ("", f"{raw!r} is not a recognised date format. Use YYYY-MM-DD.")

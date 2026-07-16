@@ -25,6 +25,7 @@ import asyncio
 from nicegui import ui
 
 import app.services.dwc_import as dwc_svc
+from app.services.dates import parse_dwc_date
 import app.services.taxonworks as tw_svc
 import app.services.taxa as taxa_svc
 import app.services.identifiers as id_svc
@@ -36,6 +37,7 @@ import app.services.name_source as ns_svc
 import app.services.datasets as ds_svc
 from app.services.biological import get_relationship_options
 from app.config import get_config
+from app.ui.date_input import attach_date_validation
 from app.ui.taxon_search import build_taxon_search, _render_tw_label
 from app.ui.taxon_editor import open_new_taxon_dialog
 from app.ui.choice_field import build_choice_field
@@ -52,18 +54,21 @@ from app.vocab import SEX_OPTIONS, NEW_SPECIMEN_DEFAULTS, IDENTIFICATION_QUALIFI
 # ---------------------------------------------------------------------------
 
 _EXAMPLE_CSV = (
-    "scientificName,genus,specificEpithet,scientificNameAuthorship,family,"
-    "eventDate,recordedBy,country,countryCode,stateProvince,county,locality,"
+    "scientificName,genus,specificEpithet,scientificNameAuthorship,"
+    "eventDate,verbatimEventDate,recordedBy,country,countryCode,stateProvince,county,locality,"
     "decimalLatitude,decimalLongitude,coordinateUncertaintyInMeters,"
     "minimumElevationInMeters,maximumElevationInMeters,habitat,samplingProtocol,"
     "sex,individualCount,preparations,identifiedBy,dateIdentified,materialEntityRemarks\n"
-    "Otiorhynchus sulcatus,Otiorhynchus,sulcatus,\"(Fabricius, 1775)\",Curculionidae,"
-    "2024-06-15,J. Doe,Germany,DE,Bavaria,Berchtesgadener Land,"
+    # A clean ISO eventDate: nothing to parse.
+    "Otiorhynchus sulcatus,Otiorhynchus,sulcatus,\"(Fabricius, 1775)\","
+    "2024-06-15,,J. Doe,Germany,DE,Bavaria,Berchtesgadener Land,"
     "\"Berchtesgaden, Königssee trail\","
     "47.5976,13.0055,50,620,,broadleaf forest edge,hand collecting,"
     "female,3,pinned,J. Doe,2024-07-01,\n"
-    "Curculio nucum,Curculio,nucum,\"Linnaeus, 1758\",Curculionidae,"
-    "2024-05-20,J. Doe,Austria,AT,Styria,,\"Grazer Bergland, Schöckel\","
+    # eventDate empty, the original label date in verbatimEventDate — an abbreviated
+    # range as written on the label. The ⚡ button parses it into eventDate on assign.
+    "Curculio nucum,Curculio,nucum,\"Linnaeus, 1758\","
+    ",28.-30.08.2023,J. Doe,Austria,AT,Styria,,\"Grazer Bergland, Schöckel\","
     "47.1833,15.4667,100,1250,,Fagus-Quercus forest,beating,"
     ",1,pinned,J. Doe,2024-06-10,reared from hazel nuts\n"
 )
@@ -93,6 +98,12 @@ def build_import_assign_tab(session_factory, refreshers: dict, on_saved=None) ->
         "filename":   "",
         "selected":   None,     # currently selected row dict
         "taxon_id":   None,     # resolved local taxon id
+        # The eventDate / dateIdentified inputs of the selected row (rebuilt per row).
+        "edate_in":   None,
+        "dtid_in":    None,
+        # The identification year, kept between rows: a batch of determinations shares
+        # one, and the spreadsheet carries none. Shown in the field, never applied blind.
+        "det_year":   "",
     }
 
     def _option_label(row: dict) -> str:
@@ -254,6 +265,76 @@ def build_import_assign_tab(session_factory, refreshers: dict, on_saved=None) ->
                   .style("color:var(--tp-base-soft)")
                 ui.label(value).classes("text-sm")
 
+        def _build_date_row(ev: dict) -> None:
+            """Date line: the verbatim as written, and the ISO date that will be stored.
+
+            A label date ("28.-30.08.2023") is not a DwC eventDate, and the spreadsheet keeps
+            it in verbatimEventDate with eventDate empty — so the specimen would save with no
+            date at all. The ⚡ button parses the verbatim into the ISO field; the verbatim is
+            never touched (it stays the auditable original). Parsing is on the click, not
+            automatic: the reading of a European DD.MM is an interpretation, and the user sees
+            it in the field before saving. The field is editable, so the dozen values nothing
+            can parse ("ca. 2006?") are typed by hand.
+            """
+            verbatim = ev["verbatim_event_date"]
+            raw_iso, _err = parse_dwc_date(ev["event_date"] or "", allow_interval=True)
+            with ui.row().classes("gap-2 items-center"):
+                ui.label("Date").classes("text-xs font-medium w-24 shrink-0") \
+                  .style("color:var(--tp-base-soft)")
+                if verbatim:
+                    ui.label(verbatim).classes("text-sm")
+                edate_in = ui.input(placeholder="YYYY-MM-DD") \
+                    .props("dense outlined").classes("w-52")
+                edate_in.value = raw_iso or (ev["event_date"] or "")
+                attach_date_validation(edate_in, allow_interval=True)
+                state["edate_in"] = edate_in
+
+                def _parse_verbatim() -> None:
+                    iso, err = parse_dwc_date(verbatim, allow_interval=True)
+                    if err:
+                        # Never guess a date the parser cannot read — say why and let the
+                        # user type it (CLAUDE.md §2, and the reason 35.8.2015 must fail).
+                        ui.notify(f"{verbatim!r}: {err}", type="warning", timeout=6000)
+                        return
+                    edate_in.value = iso
+
+                if verbatim:
+                    ui.button(icon="bolt", on_click=_parse_verbatim) \
+                        .props("flat dense round size=sm") \
+                        .tooltip("Parse the verbatim date into the ISO field")
+
+        def _build_identified_row(det: dict) -> None:
+            """Identified line: det. <name>, plus the year when the row carries none.
+
+            dateIdentified is empty in the whole spreadsheet while identifiedBy is not — the
+            determination was made, the year just was not recorded in the file. So it is a
+            small field beside the name rather than a form of its own, and it **keeps its
+            value between rows**: a batch of determinations shares a year, and re-typing it
+            1400 times is how a wrong year gets typed. It stays visible next to the name, so
+            a carried-over value is never invisible.
+            """
+            csv_year = det["date_identified"]
+            with ui.row().classes("gap-2 items-center"):
+                ui.label("Identified").classes("text-xs font-medium w-24 shrink-0") \
+                  .style("color:var(--tp-base-soft)")
+                ident = " · ".join(p for p in (
+                    f"det. {det['identified_by']}" if det["identified_by"] else "",
+                    csv_year,
+                    f"type: {det['type_status']}" if det["type_status"] else "",
+                ) if p)
+                if ident:
+                    ui.label(ident).classes("text-sm")
+                if csv_year:
+                    state["dtid_in"] = None       # the row states the year; nothing to add
+                    return
+                dtid_in = ui.input(placeholder="year") \
+                    .props("dense outlined").classes("w-28")
+                dtid_in.value = state["det_year"]
+                attach_date_validation(dtid_in, allow_interval=True, no_future=True)
+                dtid_in.on_value_change(
+                    lambda e: state.update(det_year=(e.value or "").strip()))
+                state["dtid_in"] = dtid_in
+
         def _select_row(row: dict):
             state["selected"] = row
             state["taxon_id"] = None
@@ -271,16 +352,12 @@ def build_import_assign_tab(session_factory, refreshers: dict, on_saved=None) ->
                     f"({ev['county']})" if ev["county"] else "",
                 ) if p) or ev["state_province"] or ev["country"]
                 _summary_line("Locality", loc)
-                _summary_line("Date", ev["event_date"] or ev["verbatim_event_date"])
+                _build_date_row(ev)
                 _summary_line("Collector", ev["recorded_by"])
                 # Identification meta (saved from the CSV; shown read-only so the
-                # determination can be confirmed at a glance).
-                ident = " · ".join(p for p in (
-                    f"det. {det['identified_by']}" if det["identified_by"] else "",
-                    det["date_identified"],
-                    f"type: {det['type_status']}" if det["type_status"] else "",
-                ) if p)
-                _summary_line("Identified", ident)
+                # determination can be confirmed at a glance) — except the year,
+                # which the row may not carry at all.
+                _build_identified_row(det)
                 lat, lon = ev["decimal_latitude"], ev["decimal_longitude"]
                 extra = " · ".join(p for p in (
                     det["sex"],
@@ -342,20 +419,55 @@ def build_import_assign_tab(session_factory, refreshers: dict, on_saved=None) ->
         # ================================================================
 
         async def _resolve_taxon(row: dict):
-            name = dwc_svc.row_scientific_name(row)
+            raw = dwc_svc.row_scientific_name(row)
             taxon_status.clear()
 
-            if not name:
+            if not raw:
                 with taxon_status:
-                    ui.label("No scientificName in this row — select manually below.") \
+                    ui.label("No scientificName in this row — search for the name:") \
                       .classes("text-sm italic").style("color:var(--tp-base-soft)")
-                    _build_tw_search(taxon_status, row)
+                _build_fallback_search(taxon_status, row, "")
                 return
 
+            # The spreadsheet writes the authorship inside scientificName on 406 of its 1413
+            # rows ("Bembidion minimum (Fabricius, 1792)"). Searching *that* string matches
+            # nothing anywhere — a stored name never carries its author — so every one of those
+            # rows used to dead-end at "Add manually" for names the database already holds.
+            # Split it: the NAME does the searching, and the AUTHOR is kept as evidence to
+            # check the match against (below). The row's own scientificNameAuthorship column
+            # wins when it has one; the inline author is the fallback.
+            name, inline_author = taxa_svc.split_scientific_name_authorship(raw)
+            author = (row.get("scientificNameAuthorship") or "").strip() or inline_author
+
             # 1. Check local DB
-            local = _with_session(lambda s: taxa_svc.find_taxon_by_name(s, name))
+            local = _with_session(
+                lambda s: (lambda t: (t.id, t.scientific_name_authorship or "") if t else None)(
+                    taxa_svc.find_taxon_by_name(s, name)))
             if local:
-                _set_taxon(local.id, "resolved locally")
+                local_id, local_author = local
+                if not author or not local_author:
+                    # No authorship on one side — nothing to check against, so the name stands
+                    # on its own as before. Not a mismatch; just no evidence either way.
+                    _set_taxon(local_id, "resolved locally")
+                    return
+                if taxa_svc.authorship_matches(author, local_author):
+                    _set_taxon(local_id, f"resolved locally · author matches ({local_author})")
+                    return
+                # Same name, different author: these are two different beetles (a homonym, or
+                # the row means another combination). Stamping the local one would be exactly
+                # the silent wrong value §2 forbids — so stop, show both, and let the user say.
+                with taxon_status:
+                    with ui.row().classes("items-start gap-2 mb-1"):
+                        ui.icon("warning", size="sm").style("color:#d97706; margin-top:2px")
+                        ui.label(
+                            f'"{name}" is in the database with authorship {local_author!r}, '
+                            f'but this row says {author!r}. Same name, different author — '
+                            "confirm which taxon this specimen is."
+                        ).classes("text-sm").style("color:#d97706")
+                    ui.button(f"Use the local {name} ({local_author})", icon="check") \
+                      .props("flat dense size=sm") \
+                      .on_click(lambda: _set_taxon(local_id, "confirmed by hand"))
+                _build_fallback_search(taxon_status, row, name)
                 return
 
             # 2. Search TaxonWorks
@@ -382,19 +494,6 @@ def build_import_assign_tab(session_factory, refreshers: dict, on_saved=None) ->
 
             taxon_status.clear()
 
-            # A local miss on an authorship-laden name is expected — dwc:scientificName is the
-            # name only (authorship goes in scientificNameAuthorship), so it can never match a
-            # stored composed name. Say so, instead of leaving the user to wonder (#2).
-            if taxa_svc.scientific_name_has_authorship(name):
-                with taxon_status:
-                    with ui.row().classes("items-start gap-2 mb-2"):
-                        ui.icon("info", size="sm").style("color:#d97706; margin-top:2px")
-                        ui.label(
-                            f'"{name}" looks like it includes authorship. scientificName should '
-                            "be the name only — move the author into the scientificNameAuthorship "
-                            "column so it matches the local database.").classes("text-xs") \
-                          .style("color:#d97706")
-
             # 3. Installed name datasets — LAST in the chain, after local and TaxonWorks (the
             # same order the taxon-search widget uses). A beetle catalogue is exactly the source
             # that knows the names TaxonWorks does not, so this loop must consult it or the user
@@ -406,13 +505,10 @@ def build_import_assign_tab(session_factory, refreshers: dict, on_saved=None) ->
                     ui.label("Not found locally. Select a name:") \
                       .classes("text-xs mb-1").style("color:var(--tp-base-soft)")
                     if results:
-                        _build_tw_results(taxon_status, results, detail)
+                        _build_tw_results(taxon_status, results, detail, author)
                     for ds, rows in ds_hits:
-                        _build_dataset_results(taxon_status, ds, rows)
-                    with ui.row().classes("items-center gap-2 mt-2"):
-                        ui.label("or").classes("text-xs").style("color:var(--tp-base-soft)")
-                        ui.button("Add manually", icon="add").props("flat dense size=sm") \
-                          .on_click(lambda: _open_manual_dialog(row))
+                        _build_dataset_results(taxon_status, ds, rows, author)
+                    _build_fallback_search(taxon_status, row, name)
             else:
                 with taxon_status:
                     with ui.row().classes("items-center gap-2 mb-2"):
@@ -420,8 +516,34 @@ def build_import_assign_tab(session_factory, refreshers: dict, on_saved=None) ->
                         ui.label(
                             f'"{name}" not found in TaxonWorks or any installed dataset.'
                         ).classes("text-sm")
-                    ui.button("Add taxon manually", icon="add") \
-                      .props("color=secondary dense") \
+                    _build_fallback_search(taxon_status, row, name)
+
+        def _build_fallback_search(container, row: dict, name: str) -> None:
+            """Search bar + "add manually", offered whenever auto-resolution did not settle it.
+
+            The automatic lookup is an *exact* match on the CSV's scientificName, so it misses
+            everything a human would find in a heartbeat: a misspelling, a name carrying its
+            authorship, a synonym written differently, a genus the row abbreviated. Sending the
+            user to "Add manually" for those invents a taxon the database (or TaxonWorks, or an
+            installed checklist) already holds — a duplicate, hand-typed, unlinked to any
+            backbone. So the ordinary search widget is offered too, seeded with the row's name
+            and searching the whole chain (local → TaxonWorks → datasets). Adding by hand stays
+            available beside it, for the names no source knows.
+            """
+            with container:
+                ui.label("or search for it:").classes("text-xs mt-2") \
+                  .style("color:var(--tp-base-soft)")
+                ts = build_taxon_search(
+                    session_factory,
+                    on_select=lambda tid: _set_taxon(tid, "selected from search"),
+                    sources=("local", "taxonworks", "datasets"),
+                    placeholder="Search local database, TaxonWorks, datasets…",
+                )
+                if name:
+                    ts["set_query"](name)
+                with ui.row().classes("items-center gap-2 mt-2"):
+                    ui.label("or").classes("text-xs").style("color:var(--tp-base-soft)")
+                    ui.button("Add manually", icon="add").props("flat dense size=sm") \
                       .on_click(lambda: _open_manual_dialog(row))
 
         def _dataset_hits(name: str) -> list[tuple]:
@@ -448,8 +570,24 @@ def build_import_assign_tab(session_factory, refreshers: dict, on_saved=None) ->
                     hits.append((ds, rows))
             return hits
 
-        def _build_dataset_results(container, ds, rows: list):
+        def _author_chip(candidate_author: str, row_author: str) -> None:
+            """A ✓ on the candidate whose authorship agrees with the row's.
+
+            The row's author is the one piece of evidence that distinguishes two identical
+            names, so where a source states it, say whether it agrees. A *disagreement* is not
+            marked as an error here — a checklist and TaxonWorks legitimately differ on the
+            brackets, and the user is picking with their eyes open — but agreement is worth
+            pointing at, because that is the candidate they almost certainly want.
+            """
+            if taxa_svc.authorship_matches(row_author, candidate_author):
+                ui.html('<span style="background:rgba(16,185,129,.14); color:#047857; '
+                        'border-radius:4px; padding:1px 6px; font-size:.72rem; '
+                        'font-weight:600; margin-left:6px;">author ✓</span>')
+
+        def _build_dataset_results(container, ds, rows: list, row_author: str = ""):
             """Clickable rows from one installed dataset, rendered like the TaxonWorks ones."""
+            rows = sorted(rows, key=lambda r: not taxa_svc.authorship_matches(
+                row_author, r.authorship or ""))          # the confirmed author first
             with container:
                 ui.label(f"{ds.label} · experimental").classes("text-xs mt-2") \
                   .style("color:var(--tp-base-soft)")
@@ -458,8 +596,10 @@ def build_import_assign_tab(session_factory, refreshers: dict, on_saved=None) ->
                         .style("padding:6px 10px; cursor:pointer; border-radius:4px; "
                                "border:1px solid var(--tp-base-border); margin-bottom:3px;")
                     with item:
-                        ui.html(f"📖 <i>{r.name}</i>"
-                                + (f" {r.authorship}" if r.authorship else ""))
+                        with ui.row().classes("items-center gap-0 no-wrap"):
+                            ui.html(f"📖 <i>{r.name}</i>"
+                                    + (f" {r.authorship}" if r.authorship else ""))
+                            _author_chip(r.authorship or "", row_author)
                     item.on("click", lambda _, r=r, d=ds: _import_from_dataset(r, d))
 
         def _import_from_dataset(row, ds) -> None:
@@ -491,15 +631,8 @@ def build_import_assign_tab(session_factory, refreshers: dict, on_saved=None) ->
             for msg in mismatches:
                 ui.notify(f"Taxonomy mismatch: {msg}", type="warning", timeout=8000)
 
-        def _build_tw_search(container, row: dict):
-            """Embed the standard TW search widget (for rows with no scientificName)."""
-            with container:
-                tw_state = build_taxon_search(
-                    session_factory,
-                    on_select=lambda tid: _set_taxon(tid),
-                )
-
-        def _build_tw_results(container, results: list[dict], detail: dict | None = None):
+        def _build_tw_results(container, results: list[dict], detail: dict | None = None,
+                              row_author: str = ""):
             """Show clickable TaxonWorks autocomplete results.
 
             Uses the SHARED renderer (_render_tw_label) so synonyms display cleanly with
@@ -507,6 +640,12 @@ def build_import_assign_tab(session_factory, refreshers: dict, on_saved=None) ->
             instead of dumping the raw label_html (which showed rank/original-combination
             badges as garbled inline text and never resolved the valid name)."""
             detail = detail or {}
+
+            def _tw_author(r: dict) -> str:
+                return (detail.get(r.get("id"), {}) or {}).get("cached_author_year", "") or ""
+
+            results = sorted(results, key=lambda r: not taxa_svc.authorship_matches(
+                row_author, _tw_author(r)))               # the confirmed author first
             with container:
                 for r in results:
                     vid = r.get("valid_taxon_name_id")
@@ -516,7 +655,9 @@ def build_import_assign_tab(session_factory, refreshers: dict, on_saved=None) ->
                         .style("padding:6px 10px; cursor:pointer; border-radius:4px; "
                                "border:1px solid var(--tp-base-border); margin-bottom:3px;")
                     with item:
-                        ui.html(_render_tw_label(r, valid_name))
+                        with ui.row().classes("items-center gap-0 no-wrap"):
+                            ui.html(_render_tw_label(r, valid_name))
+                            _author_chip(_tw_author(r), row_author)
                     item.on("click", lambda _, r=r: asyncio.ensure_future(_import_tw(r)))
 
         async def _import_tw(r: dict):
@@ -599,6 +740,33 @@ def build_import_assign_tab(session_factory, refreshers: dict, on_saved=None) ->
         # Logic: validate + save
         # ================================================================
 
+        def _ui_dates() -> tuple[str, str, str | None]:
+            """(event_date, date_identified, error) — the dates as the *fields* hold them.
+
+            The fields are the authority, not the CSV: they were seeded from it, the ⚡ button
+            may have parsed the verbatim into eventDate, and the year field supplies a
+            dateIdentified the spreadsheet never carried. Everything is re-parsed here, so a
+            hand-typed value gets the same normalisation and the same loud refusal as an
+            imported one (#1 — a `15.07.2005` must never land verbatim in dwc:eventDate).
+            """
+            edate_in, dtid_in = state["edate_in"], state["dtid_in"]
+            iso_ed, err = parse_dwc_date(
+                (edate_in.value or "").strip() if edate_in else "", allow_interval=True)
+            if err:
+                return ("", "", f"eventDate: {err}")
+            if dtid_in is not None:
+                iso_di, err = parse_dwc_date(
+                    (dtid_in.value or "").strip(), allow_interval=True, no_future=True)
+                if err:
+                    return ("", "", f"dateIdentified: {err}")
+            else:
+                # The row states its own dateIdentified; parse it as before.
+                _ovr, err = dwc_svc.normalise_row_dates(state["selected"])
+                if err:
+                    return ("", "", err)
+                iso_di = _ovr["date_identified"]
+            return (iso_ed, iso_di, None)
+
         def _validate() -> str | None:
             if state["taxon_id"] is None:
                 return "Resolve the taxon before saving."
@@ -611,7 +779,7 @@ def build_import_assign_tab(session_factory, refreshers: dict, on_saved=None) ->
             if cc and len(cc) != 2:
                 return "countryCode must be exactly 2 characters."
             # Refuse a bad date rather than store it verbatim (#1).
-            _, date_err = dwc_svc.normalise_row_dates(state["selected"])
+            _, _, date_err = _ui_dates()
             if date_err:
                 return date_err
             # identificationQualifier is a closed set (DB CHECK) — refuse an off-list value
@@ -691,13 +859,16 @@ def build_import_assign_tab(session_factory, refreshers: dict, on_saved=None) ->
                         event_fields["recorded_by_id"] = (
                             persons_svc.get_or_create_person(session, full_name=_rec).id
                             if _rec else None)
-                        # Normalise dates to ISO, preserving the raw eventDate in
-                        # verbatimEventDate (#1). _validate already refused a bad date.
-                        _date_ovr, _ = dwc_svc.normalise_row_dates(row)
-                        event_fields["event_date"] = _date_ovr["event_date"]
-                        if "verbatim_event_date" in _date_ovr:
-                            event_fields["verbatim_event_date"] = _date_ovr["verbatim_event_date"]
-                        det["date_identified"] = _date_ovr["date_identified"]
+                        # Dates as the fields hold them — the ⚡-parsed eventDate and the
+                        # identification year (_ui_dates; _validate already refused a bad
+                        # one). The verbatim is never overwritten: it is the auditable
+                        # original a DD.MM misread would have to be checked against (#1).
+                        _iso_ed, _iso_di, _ = _ui_dates()
+                        event_fields["event_date"] = _iso_ed
+                        _raw_ed = (row.get("eventDate") or "").strip()
+                        if _raw_ed and _raw_ed != _iso_ed and not event_fields["verbatim_event_date"]:
+                            event_fields["verbatim_event_date"] = _raw_ed
+                        det["date_identified"] = _iso_di
                         co = svc.save_specimen_entry(
                             session,
                             taxon_id=state["taxon_id"],
@@ -808,10 +979,38 @@ def build_import_assign_tab(session_factory, refreshers: dict, on_saved=None) ->
 
             upload_status = ui.label("No file loaded.").classes("text-sm italic") \
                 .style("color:var(--tp-base-soft)")
+            # Which columns the workflow read, and which it ignored. A misspelt or
+            # unsupported header is otherwise dropped in silence — "1413 rows loaded"
+            # tells the user nothing about whether their localities came with them.
+            # The counts are always visible; the lists sit one click away.
+            col_report = ui.column().classes("w-full gap-0 mt-1")
+
+            def _show_columns(understood: list[tuple[str, str]], ignored: list[str]) -> None:
+                col_report.clear()
+                with col_report:
+                    title = (f"{len(understood)} column"
+                             f"{'' if len(understood) == 1 else 's'} understood")
+                    if ignored:
+                        title += (f"  ·  {len(ignored)} ignored "
+                                  f"(not imported)")
+                    with ui.expansion(title).props("dense expand-icon-toggle") \
+                            .classes("text-sm w-full"):
+                        if ignored:
+                            ui.label("Ignored — no field reads these:") \
+                                .classes("text-xs font-medium mt-1")
+                            ui.label(", ".join(ignored)).classes("text-xs") \
+                                .style("color:var(--tp-warning,#b45309)")
+                        ui.label("Understood:").classes("text-xs font-medium mt-2")
+                        ui.label(", ".join(
+                            term if header == term else f"{header} → {term}"
+                            for header, term in understood
+                        )).classes("text-xs").style("color:var(--tp-base-soft)")
 
             def _on_upload(e):
+                raw = e.content.read()
                 try:
-                    rows = dwc_svc.parse_csv(e.content.read())
+                    rows = dwc_svc.parse_csv(raw)
+                    understood, ignored = dwc_svc.column_report(raw)
                 except Exception as exc:
                     ui.notify(f"Could not parse file: {exc}", type="negative")
                     return
@@ -824,6 +1023,7 @@ def build_import_assign_tab(session_factory, refreshers: dict, on_saved=None) ->
                     f"from {e.name}"
                 )
                 upload_status.style("color:var(--tp-secondary)")
+                _show_columns(understood, ignored)
                 row_sel.set_options(_row_options())
                 row_sel.set_value(None)
                 assign_card.set_visibility(True)
