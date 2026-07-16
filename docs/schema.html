@@ -354,6 +354,8 @@ erDiagram
     administrative_region |o--o{ collecting_event : "in region"
     county |o--o{ collecting_event : "in county"
     island |o--o{ collecting_event : "on island"
+    import_dataset ||--o{ import_dataset_record : "stages"
+    taxon |o--o{ import_dataset_record : "imported as (SET NULL)"
 </div>
   </div>
 </div>
@@ -701,6 +703,50 @@ erDiagram
       <tr><td><span class="badge badge-INTEGER">INTEGER</span></td><td class="col-local">taxonworks_collection_id</td><td>TW Namespace id (nullable)</td></tr>
       <tr><td><span class="badge badge-INTEGER">INTEGER</span></td><td class="col-local">is_default</td><td>NOT NULL DEFAULT 0, CHECK IN (0,1) — the user's own/home collection; partial-UNIQUE so at most one row is 1 (migration 0050, #83). Digitize/Mounting/Import read it for repository_id + catalog-number prefix and refuse to save if none is set</td></tr>
       <tr><td><span class="badge badge-INTEGER">INTEGER</span></td><td class="col-local">person_id</td><td><span class="tag tag-FK">FK</span> → person(id) ON DELETE RESTRICT, nullable — optional contact/owner person for the collection (migration 0051, #79). merge_persons/delete re-point/block it dynamically</td></tr>
+      <tr><td><span class="badge badge-TEXT">TEXT</span></td><td class="col-local">created_at / updated_at</td><td></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<div class="table-card">
+  <h2>import_dataset</h2>
+  <div class="desc">Staged wholesale import (#39), modelled on TaxonWorks' ImportDataset. An
+    uploaded name checklist persisted as a durable, resumable entity: staging writes no taxa,
+    import creates them in resumable chunks through taxa.get_or_create_from_chain (the dedup).
+    kind/status are CHECK-constrained; nomenclatural_code is a dataset-level default (a checklist
+    is one code, never guessed); import_cursor is the resume position. STRICT. Migration 0064.</div>
+  <table>
+    <thead><tr><th>Type</th><th>Column</th><th>Notes</th></tr></thead>
+    <tbody>
+      <tr><td><span class="badge badge-INTEGER">INTEGER</span></td><td class="col-local">id</td><td><span class="tag tag-PK">PK</span></td></tr>
+      <tr><td><span class="badge badge-TEXT">TEXT</span></td><td class="col-local">kind</td><td>NOT NULL, CHECK IN ('taxon') — Occurrence core is a future kind</td></tr>
+      <tr><td><span class="badge badge-TEXT">TEXT</span></td><td class="col-local">name</td><td>NOT NULL, <span class="tag tag-UQ">UQ</span></td></tr>
+      <tr><td><span class="badge badge-TEXT">TEXT</span></td><td class="col-local">source_filename</td><td>nullable</td></tr>
+      <tr><td><span class="badge badge-TEXT">TEXT</span></td><td class="col-local">nomenclatural_code</td><td>nullable dataset-level default; a row may override via its own column</td></tr>
+      <tr><td><span class="badge badge-TEXT">TEXT</span></td><td class="col-local">status</td><td>NOT NULL DEFAULT 'staged', CHECK IN ('staged','importing','completed')</td></tr>
+      <tr><td><span class="badge badge-INTEGER">INTEGER</span></td><td class="col-local">import_cursor</td><td>NOT NULL DEFAULT 0 — the next row_index to import (resume)</td></tr>
+      <tr><td><span class="badge badge-TEXT">TEXT</span></td><td class="col-local">created_at / updated_at</td><td></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<div class="table-card">
+  <h2>import_dataset_record</h2>
+  <div class="desc">One staged source row. data is the raw row as JSON TEXT (nothing dropped);
+    status + error_message are the staging verdict; taxon_id is the row created/matched on import
+    (FK ON DELETE SET NULL — deleting a taxon forgets the link, never deletes the audit row).
+    STRICT. Migration 0064.</div>
+  <table>
+    <thead><tr><th>Type</th><th>Column</th><th>Notes</th></tr></thead>
+    <tbody>
+      <tr><td><span class="badge badge-INTEGER">INTEGER</span></td><td class="col-local">id</td><td><span class="tag tag-PK">PK</span></td></tr>
+      <tr><td><span class="badge badge-INTEGER">INTEGER</span></td><td class="col-local">import_dataset_id</td><td><span class="tag tag-FK">FK</span> → import_dataset ON DELETE CASCADE, NOT NULL</td></tr>
+      <tr><td><span class="badge badge-INTEGER">INTEGER</span></td><td class="col-local">row_index</td><td>NOT NULL, <span class="tag tag-UQ">UQ</span>(import_dataset_id, row_index)</td></tr>
+      <tr><td><span class="badge badge-TEXT">TEXT</span></td><td class="col-local">status</td><td>NOT NULL, CHECK IN ('ready','blocked','imported','errored')</td></tr>
+      <tr><td><span class="badge badge-TEXT">TEXT</span></td><td class="col-local">data</td><td>NOT NULL — the raw source row, JSON</td></tr>
+      <tr><td><span class="badge badge-TEXT">TEXT</span></td><td class="col-local">resolved_name</td><td>nullable — the composed name it resolved to</td></tr>
+      <tr><td><span class="badge badge-TEXT">TEXT</span></td><td class="col-local">error_message</td><td>nullable — the block/error reason</td></tr>
+      <tr><td><span class="badge badge-INTEGER">INTEGER</span></td><td class="col-local">taxon_id</td><td><span class="tag tag-FK">FK</span> → taxon ON DELETE SET NULL, nullable</td></tr>
       <tr><td><span class="badge badge-TEXT">TEXT</span></td><td class="col-local">created_at / updated_at</td><td></td></tr>
     </tbody>
   </table>

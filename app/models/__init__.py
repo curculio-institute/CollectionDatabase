@@ -18,6 +18,7 @@ from .external_identifier import ExternalIdentifier
 from .life_stage import LifeStageRecord
 from .repository import Repository
 from .field_occurrence import FieldOccurrence
+from .import_dataset import ImportDataset, ImportDatasetRecord
 
 __all__ = [
     "Base",
@@ -47,4 +48,6 @@ __all__ = [
     "LifeStageRecord",
     "Repository",
     "FieldOccurrence",
+    "ImportDataset",
+    "ImportDatasetRecord",
 ]

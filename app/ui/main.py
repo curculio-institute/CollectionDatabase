@@ -46,6 +46,7 @@ from app.ui.identification_list import build_identification_list
 from app.ui.import_assign import build_import_assign_tab
 from app.ui.controlled_vocab_tab import build_controlled_vocab_tab
 from app.ui.batch_tab import build_batch_tab
+from app.ui.bulk_import_tab import build_bulk_import_tab
 from app.ui.map_picker import add_map_assets
 from app.ui.taxon_editor import build_taxon_editor
 from app.ui.person_field import build_person_field
@@ -837,6 +838,7 @@ def index():
                     ui.tab("records",  label="Records",               icon="edit_note")
                     ui.tab("explore",  label="Explore",               icon="travel_explore")
                     ui.tab("import",   label="Import & Assign",       icon="upload_file")
+                    ui.tab("bulk",     label="Bulk import",           icon="library_add")
                     ui.tab("batch",    label="Batch tools",           icon="checklist")
                     ui.tab("taxonomy", label="Taxonomy",              icon="account_tree")
                     ui.tab("labels",   label="Labels",                icon="label")
@@ -1880,6 +1882,10 @@ def index():
         # ================================================================
         # TAB: BATCH TOOLS
         # ================================================================
+        with ui.tab_panel("bulk"):
+            with ui.column().classes("w-full max-w-5xl mx-auto px-4 pt-6 pb-16 gap-4"):
+                build_bulk_import_tab(_sf, _refreshers)
+
         with ui.tab_panel("batch"):
             with ui.column().classes("w-full px-4 pt-6 pb-16"):
                 build_batch_tab(_sf, _refreshers)
