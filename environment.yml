@@ -13,3 +13,4 @@ dependencies:
       - nicegui==2.*
       - weasyprint==69.*
       - qrcode[pil]==8.*
+      - pycountry==26.*

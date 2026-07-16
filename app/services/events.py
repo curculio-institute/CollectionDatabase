@@ -61,6 +61,20 @@ def _resolve_geo_fields(session: Session, fields: dict) -> dict:
     _check_state_inside_country(country_iso, state_iso)
 
     codes = {"state_province": state_iso, "country": country_iso}
+
+    # A countryCode with no country name must not be dropped: a DwC file may carry
+    # countryCode on a row whose `country` column is blank. `... if val else None`
+    # below would skip such a row and silently discard the code, so materialise the
+    # country by deriving its name from the code first. ISO 3166-1 alpha-2 is an
+    # unambiguous standard, so this is a lookup, not a guess (CLAUDE.md "no hardcoded
+    # country codes"). **Country only** — ISO 3166-2 subdivision names are never
+    # derived (the 40 shared names are the whole reason the strict identity exists),
+    # and `country.name` is NOT NULL so a code-only row is not representable anyway.
+    if country_iso and not (fields.get("country") or "").strip():
+        derived = _country_name_from_iso(country_iso)
+        if derived:
+            fields["country"] = derived
+
     for name_key, id_key in _GEO_TEXT_TO_FK.items():
         if name_key in fields:
             val = (fields.pop(name_key) or "").strip()
@@ -68,6 +82,18 @@ def _resolve_geo_fields(session: Session, fields: dict) -> dict:
             row = vocabs[name_key].get_or_create(session, val, code=code) if val else None
             fields[id_key] = row.id if row else None
     return fields
+
+
+def _country_name_from_iso(iso_code: str) -> str | None:
+    """The ISO 3166-1 English short name for an alpha-2 code, or None if unknown.
+
+    Uses pycountry (the sanctioned source; never a hand-rolled dict). The name matches
+    the geocoder's `name:en` for the common cases (`DE` → "Germany", `GB` → "United
+    Kingdom"), so a derived row folds cleanly with a geocoded one of the same country.
+    """
+    import pycountry
+    rec = pycountry.countries.get(alpha_2=iso_code.strip().upper())
+    return rec.name if rec else None
 
 
 def _check_state_inside_country(country_iso: str, state_iso: str) -> None:

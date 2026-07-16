@@ -54,18 +54,21 @@ from app.vocab import SEX_OPTIONS, NEW_SPECIMEN_DEFAULTS, IDENTIFICATION_QUALIFI
 # ---------------------------------------------------------------------------
 
 _EXAMPLE_CSV = (
-    "scientificName,genus,specificEpithet,scientificNameAuthorship,family,"
-    "eventDate,recordedBy,country,countryCode,stateProvince,county,locality,"
+    "scientificName,genus,specificEpithet,scientificNameAuthorship,"
+    "eventDate,verbatimEventDate,recordedBy,country,countryCode,stateProvince,county,locality,"
     "decimalLatitude,decimalLongitude,coordinateUncertaintyInMeters,"
     "minimumElevationInMeters,maximumElevationInMeters,habitat,samplingProtocol,"
     "sex,individualCount,preparations,identifiedBy,dateIdentified,materialEntityRemarks\n"
-    "Otiorhynchus sulcatus,Otiorhynchus,sulcatus,\"(Fabricius, 1775)\",Curculionidae,"
-    "2024-06-15,J. Doe,Germany,DE,Bavaria,Berchtesgadener Land,"
+    # A clean ISO eventDate: nothing to parse.
+    "Otiorhynchus sulcatus,Otiorhynchus,sulcatus,\"(Fabricius, 1775)\","
+    "2024-06-15,,J. Doe,Germany,DE,Bavaria,Berchtesgadener Land,"
     "\"Berchtesgaden, Königssee trail\","
     "47.5976,13.0055,50,620,,broadleaf forest edge,hand collecting,"
     "female,3,pinned,J. Doe,2024-07-01,\n"
-    "Curculio nucum,Curculio,nucum,\"Linnaeus, 1758\",Curculionidae,"
-    "2024-05-20,J. Doe,Austria,AT,Styria,,\"Grazer Bergland, Schöckel\","
+    # eventDate empty, the original label date in verbatimEventDate — an abbreviated
+    # range as written on the label. The ⚡ button parses it into eventDate on assign.
+    "Curculio nucum,Curculio,nucum,\"Linnaeus, 1758\","
+    ",28.-30.08.2023,J. Doe,Austria,AT,Styria,,\"Grazer Bergland, Schöckel\","
     "47.1833,15.4667,100,1250,,Fagus-Quercus forest,beating,"
     ",1,pinned,J. Doe,2024-06-10,reared from hazel nuts\n"
 )
