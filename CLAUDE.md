@@ -105,7 +105,7 @@ that share the same collecting event, sets the specimen count, queues them for p
 and the print sheet is generated in one go. Identifications are added later via the Records
 tab.
 
-### Bulk import — staged wholesale checklist import (#39, decided)
+### Bulk import — staged wholesale record import (#39, decided)
 
 The **wholesale** ingest path, distinct from the row-by-row **Import & Assign** and modelled
 on TaxonWorks' **Import Dataset** (`ImportDataset` / `DatasetRecord`, TW @ `aadf21a`:
@@ -114,29 +114,37 @@ becomes a **durable, resumable entity** — migration 0064's `import_dataset` +
 `import_dataset_record` STRICT tables — not an in-memory parse, so an import can be inspected
 before it writes, resumed after a restart, and de-duplicated against what is already imported.
 
-- **Two phases.** *Stage* (`bulk_import.create_taxon_dataset` / `restage`) validates every row
-  and assigns a per-row status — `ready`, `blocked` (a reason it cannot import yet: no
-  nomenclatural code, an unresolvable parent), `errored`, `imported` — **writing no taxa**.
-  *Import* (`import_ready`) then creates a taxon per `ready` row through the existing idempotent
-  seam `taxa.get_or_create_from_chain`, which **is** the dedup (a name matches its composed
-  `(scientificName, rank)`, never duplicates), in a time/count-boxed loop with a **resume
-  cursor** on the dataset (TW persists `import_start_id` the same way). `retry_errored` re-runs
-  only the failures.
-- **The code is a dataset-level default, never guessed** (CLAUDE.md §2): a checklist is one
-  nomenclatural code (an ICZN beetle list, an ICN plant list); a row may override with its own
-  `nomenclaturalCode` column. `set_dataset_code` re-stages — the **resolve-once seam** (TW's
-  namespace mapping): one setting flips every code-less row `ready`. `blocker_summary` groups
-  the blocked rows by distinct reason — the issue's *"surface the ones that can't be resolved"*.
-- **Taxon core only** (a name checklist). This respects the invariant that every specimen must
-  carry an identifier — importing *names* creates no identifier-less `collection_object`s. An
-  **Occurrence core** (collecting events as a reference layer) can follow as a second `kind`,
-  exactly as TW splits `checklist.rb` from `occurrences.rb`.
-- **One shared transform:** staging reuses the same name services as the row-by-row flow
-  (`split_scientific_name_authorship`, `parse_scientific_name`, `get_or_create_from_chain`) —
-  no parallel importer. Removing a dataset keeps the imported taxa (they are local rows now,
-  same rule as a name-source dataset); the `taxon_id` FK is `ON DELETE SET NULL` so deleting a
-  taxon forgets the link without deleting the audit record. Service: `app/services/bulk_import.py`;
-  UI: `app/ui/bulk_import_tab.py`.
+- **Two phases.** *Stage* validates every row and assigns a per-row status — `ready`,
+  `blocked` (a reason it cannot import yet), `errored` (a hard failure), `imported` — **writing
+  nothing**. *Import* (`import_ready`) creates the records for each `ready` row in a
+  time/count-boxed loop with a **resume cursor** on the dataset (TW persists `import_start_id`
+  the same way). `retry_errored` re-runs only the failures; `blocker_summary` groups blocked
+  rows by distinct reason — the issue's *"surface the ones that can't be resolved"*.
+- **Two `kind`s, exactly as TW splits `occurrences.rb` from `checklist.rb`:**
+  - **`occurrence` — the primary path (records).** Specimen records that **already carry an
+    identifier** (`catalogNumber`, **required** — the "every specimen has an identifier"
+    invariant is satisfied *from the data*, not auto-assigned; a row without one is `errored`).
+    A **collection column** names the target collection, so **one file can span collections**
+    (matched on the repository's full name or code; blank → the home/default via
+    `repositories.get_default`). A *named* collection that isn't set up is **`blocked`**, never
+    fabricated — its catalog-number format belongs to it (§2). **Dedup is the DB's own
+    `UNIQUE(repository_id, catalogNumber)`:** an existing pair is recognised and skipped, never
+    duplicated. Each row resolves its `scientificName` via the taxon resolver below, its event
+    (`events`) and determination through the **same services the row-by-row Import & Assign save
+    uses** — one tested path. Foreign identifiers bind **no** reserved label code
+    (`finalize_specimen(code=None)`, the Visiting-mode policy). **Dates:** an eventDate-only file
+    parses that column; a **verbatim-only** file (every row of the Käfersammlung export) has its
+    `verbatimEventDate` parsed into `eventDate` automatically (`_date_overrides`) — the bulk
+    equivalent of Import & Assign's ⚡ button, deterministic, with the verbatim always preserved
+    and an unparseable date refused loudly (§2/#1).
+  - **`taxon` — a name checklist** (`create_taxon_dataset`), and the internal name-resolution
+    engine the occurrence import reuses (`_chain_for_name` → `taxa.get_or_create_from_chain`,
+    idempotent → the name dedup). Its nomenclatural code is a dataset-level default (a checklist
+    is one code), never guessed; `set_dataset_code` re-stages (the resolve-once seam).
+- Removing a dataset keeps everything it imported (local rows now, same rule as a name-source
+  dataset); the `taxon_id` / `collection_object_id` FKs on the record are `ON DELETE SET NULL`,
+  so deleting the entity forgets the link without deleting the audit record. Service:
+  `app/services/bulk_import.py`; UI: `app/ui/bulk_import_tab.py`.
 
 ### Print-queue policy by create mode (decided)
 
@@ -1175,8 +1183,7 @@ manually in the TW UI. This constrains the sync direction to insert-only forever
 | **Taxonomy** | Checklist tree (family → synonyms). Filter by rank. Links to TaxonPages. Rebuilds on every tab switch and on every save (via `_refreshers["taxonomy_tree"]`). |
 | **Labels** | Generate identifier label batches (4-char codes). Preview + download PDF. Reprint a whole batch if unused. Staged-codes dashboard. |
 | **Print queue** | Preview and print all staged labels in one grouped PDF (per queue addition; data/identifier/determination column-aligned per specimen). Saves the PDF to `printed_pdf_dir` on print, then clears the queue. |
-| **Import & Assign** | Upload a DwC CSV; live-filter rows; assign taxon + per-specimen fields; save to DB. The row-by-row retroactive-digitisation flow. |
-| **Bulk import** | Wholesale, staged import of a name checklist (#39), modelled on TaxonWorks' Import Dataset — *not* the row-by-row Import & Assign. Upload → stage every row (writes no taxa) → status grid + per-reason blocker list → import the `ready` rows through the idempotent `taxa.get_or_create_from_chain` (which is the dedup), resumable via a cursor. Service: `app/services/bulk_import.py`. See "Bulk import" below. |
+| **Import** | Two sub-tabs under one tab. **Import & Assign** — the row-by-row retroactive-digitisation flow (upload a DwC CSV; live-filter rows; assign taxon + per-specimen fields; save). **Bulk import** — wholesale, staged import of specimen **records** (#39), modelled on TaxonWorks' Import Dataset: upload → stage every row (writes nothing) → status grid + per-reason blocker list → import the `ready` rows, resumable via a cursor. Service: `app/services/bulk_import.py`. See "Bulk import" below. |
 | **Batch tools** | Build a **collection-scoped** specimen set — by taxon (all specimens of a taxon + descendants in the working collection) or by a pasted catalog-number list — then bulk-apply one op: set disposition, or reassign to another collection (#78). Working collection defaults to the home collection; an extra click switches to another. Cross-collection specimens can **never** be listed or modified (see below). Service: `app/services/batch_ops.py`. |
 
 #### Digitize layout modes (decided)
@@ -1224,7 +1231,7 @@ arrow-key event, chip styling) is design.md's concern → "Digitize layout modes
 | `explore.py` | Explore-tab querying (#40): `search_facets`, `query_specimens(filters)`, `checklist(filters)` (drawer-order taxa+lots), `events(filters)`, `to_csv`, `counts` |
 | `name_source.py` | The generic offline-name-source engine (DwC Archive → SQLite index → search → import chain). WCVP is one instance; user datasets are others. See "Offline name sources" below |
 | `datasets.py` | User-added name datasets (**experimental**): install from a chosen file → `data/name_sources/<slug>/`, rebuild, remove, `import_all` |
-| `bulk_import.py` | Bulk import (#39): staged wholesale checklist import — `create_taxon_dataset` (stage, writes no taxa) / `restage` / `set_dataset_code` (resolve-once) / `import_ready` (resumable, idempotent via `taxa.get_or_create_from_chain`) / `retry_errored` / `progress` / `blocker_summary`. Taxon core only; Occurrence core is a future `kind`. |
+| `bulk_import.py` | Bulk import (#39): staged wholesale import, two `kind`s — `create_occurrence_dataset` (records, the primary path: catalogNumber required, collection column, dedup on `UNIQUE(repository_id, catalogNumber)`, reuses the event/determination save + the taxon resolver) and `create_taxon_dataset` (name checklist / internal resolver). Shared: `restage` / `set_dataset_code` (resolve-once) / `import_ready` (resumable) / `retry_errored` / `progress` / `blocker_summary`. |
 | `batch_ops.py` | Batch tools (#78): `fetch_by_taxon` / `match_catalog_numbers` (both **scoped to a working `repository_id`**) + `apply_disposition` / `apply_repository`. **Cross-collection safety is structural** — `_load_in_scope` re-asserts every specimen belongs to the working collection before any write, so a bulk op can never touch a specimen held in another collection. `catalog_number` is never changed. |
 
 ### Taxon search widget (`app/ui/taxon_search.py`)

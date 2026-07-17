@@ -41,7 +41,7 @@ def upgrade() -> None:
             created_at         TEXT    NOT NULL,
             updated_at         TEXT    NOT NULL,
             CONSTRAINT uq_import_dataset_name   UNIQUE (name),
-            CONSTRAINT ck_import_dataset_kind   CHECK (kind IN ('taxon')),
+            CONSTRAINT ck_import_dataset_kind   CHECK (kind IN ('taxon', 'occurrence')),
             CONSTRAINT ck_import_dataset_status CHECK (status IN ('staged', 'importing', 'completed'))
         ) STRICT
     """)
@@ -55,6 +55,7 @@ def upgrade() -> None:
             resolved_name     TEXT,
             error_message     TEXT,
             taxon_id          INTEGER REFERENCES taxon(id) ON DELETE SET NULL,
+            collection_object_id INTEGER REFERENCES collection_object(id) ON DELETE SET NULL,
             created_at        TEXT    NOT NULL,
             updated_at        TEXT    NOT NULL,
             CONSTRAINT uq_import_dataset_record_row UNIQUE (import_dataset_id, row_index),

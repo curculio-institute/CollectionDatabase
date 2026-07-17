@@ -356,6 +356,7 @@ erDiagram
     island |o--o{ collecting_event : "on island"
     import_dataset ||--o{ import_dataset_record : "stages"
     taxon |o--o{ import_dataset_record : "imported as (SET NULL)"
+    collection_object |o--o{ import_dataset_record : "imported as (SET NULL)"
 </div>
   </div>
 </div>
@@ -711,15 +712,17 @@ erDiagram
 <div class="table-card">
   <h2>import_dataset</h2>
   <div class="desc">Staged wholesale import (#39), modelled on TaxonWorks' ImportDataset. An
-    uploaded name checklist persisted as a durable, resumable entity: staging writes no taxa,
-    import creates them in resumable chunks through taxa.get_or_create_from_chain (the dedup).
-    kind/status are CHECK-constrained; nomenclatural_code is a dataset-level default (a checklist
-    is one code, never guessed); import_cursor is the resume position. STRICT. Migration 0064.</div>
+    uploaded file persisted as a durable, resumable entity: staging writes nothing, import
+    creates in resumable chunks. Two kinds — 'occurrence' (specimen records that already carry
+    an identifier + a target collection; the primary path, dedup on repository_id+catalogNumber)
+    and 'taxon' (a name checklist / the internal name resolver). kind/status are
+    CHECK-constrained; nomenclatural_code is a dataset-level default (never guessed);
+    import_cursor is the resume position. STRICT. Migration 0064.</div>
   <table>
     <thead><tr><th>Type</th><th>Column</th><th>Notes</th></tr></thead>
     <tbody>
       <tr><td><span class="badge badge-INTEGER">INTEGER</span></td><td class="col-local">id</td><td><span class="tag tag-PK">PK</span></td></tr>
-      <tr><td><span class="badge badge-TEXT">TEXT</span></td><td class="col-local">kind</td><td>NOT NULL, CHECK IN ('taxon') — Occurrence core is a future kind</td></tr>
+      <tr><td><span class="badge badge-TEXT">TEXT</span></td><td class="col-local">kind</td><td>NOT NULL, CHECK IN ('taxon', 'occurrence')</td></tr>
       <tr><td><span class="badge badge-TEXT">TEXT</span></td><td class="col-local">name</td><td>NOT NULL, <span class="tag tag-UQ">UQ</span></td></tr>
       <tr><td><span class="badge badge-TEXT">TEXT</span></td><td class="col-local">source_filename</td><td>nullable</td></tr>
       <tr><td><span class="badge badge-TEXT">TEXT</span></td><td class="col-local">nomenclatural_code</td><td>nullable dataset-level default; a row may override via its own column</td></tr>
@@ -733,8 +736,9 @@ erDiagram
 <div class="table-card">
   <h2>import_dataset_record</h2>
   <div class="desc">One staged source row. data is the raw row as JSON TEXT (nothing dropped);
-    status + error_message are the staging verdict; taxon_id is the row created/matched on import
-    (FK ON DELETE SET NULL — deleting a taxon forgets the link, never deletes the audit row).
+    status + error_message are the staging verdict. The entity created/matched on import links
+    back: taxon_id for a taxon-kind row, collection_object_id for an occurrence-kind row (both
+    FK ON DELETE SET NULL — deleting the entity forgets the link, never deletes the audit row).
     STRICT. Migration 0064.</div>
   <table>
     <thead><tr><th>Type</th><th>Column</th><th>Notes</th></tr></thead>
@@ -746,7 +750,8 @@ erDiagram
       <tr><td><span class="badge badge-TEXT">TEXT</span></td><td class="col-local">data</td><td>NOT NULL — the raw source row, JSON</td></tr>
       <tr><td><span class="badge badge-TEXT">TEXT</span></td><td class="col-local">resolved_name</td><td>nullable — the composed name it resolved to</td></tr>
       <tr><td><span class="badge badge-TEXT">TEXT</span></td><td class="col-local">error_message</td><td>nullable — the block/error reason</td></tr>
-      <tr><td><span class="badge badge-INTEGER">INTEGER</span></td><td class="col-local">taxon_id</td><td><span class="tag tag-FK">FK</span> → taxon ON DELETE SET NULL, nullable</td></tr>
+      <tr><td><span class="badge badge-INTEGER">INTEGER</span></td><td class="col-local">taxon_id</td><td><span class="tag tag-FK">FK</span> → taxon ON DELETE SET NULL, nullable (taxon-kind)</td></tr>
+      <tr><td><span class="badge badge-INTEGER">INTEGER</span></td><td class="col-local">collection_object_id</td><td><span class="tag tag-FK">FK</span> → collection_object ON DELETE SET NULL, nullable (occurrence-kind)</td></tr>
       <tr><td><span class="badge badge-TEXT">TEXT</span></td><td class="col-local">created_at / updated_at</td><td></td></tr>
     </tbody>
   </table>

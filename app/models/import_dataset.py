@@ -6,10 +6,13 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from .base import Base, TimestampMixin
 
 
-# The kinds of source a staged import can be. Only 'taxon' (a name checklist) is
-# implemented; 'occurrence' is reserved for the second core (TaxonWorks splits the
-# two the same way — checklist.rb vs occurrences.rb).
-IMPORT_KINDS = ("taxon",)
+# The kinds of source a staged import can be (TaxonWorks splits the two the same way —
+# checklist.rb vs occurrences.rb):
+#   occurrence — specimen records that already carry an identifier (catalogNumber) and a
+#                target collection; the primary bulk-import path (#39).
+#   taxon      — a name checklist; retained as the internal name-resolution engine the
+#                occurrence import reuses (each record resolves its scientificName to a taxon).
+IMPORT_KINDS = ("taxon", "occurrence")
 
 # Dataset lifecycle. Staging writes nothing to the real tables; import does, in a
 # resumable loop; completed = the cursor has passed the last ready record.
@@ -77,11 +80,17 @@ class ImportDatasetRecord(Base, TimestampMixin):
     status:            Mapped[str] = mapped_column(String, nullable=False)
     # The raw source row, JSON-encoded TEXT (STRICT has no JSON type). Nothing dropped.
     data:              Mapped[str] = mapped_column(Text, nullable=False)
-    # The composed name this row resolved to (for the preview grid); NULL if unresolved.
+    # The composed name / catalog number this row resolved to (for the preview grid);
+    # NULL if unresolved.
     resolved_name:     Mapped[str | None] = mapped_column(String)
     error_message:     Mapped[str | None] = mapped_column(Text)
+    # The entity created/matched on import. A taxon-kind row links a taxon; an
+    # occurrence-kind row links the collection_object. Both ON DELETE SET NULL —
+    # deleting the entity forgets the link, never deletes the audit record.
     taxon_id:          Mapped[int | None] = mapped_column(
         ForeignKey("taxon.id", ondelete="SET NULL"))
+    collection_object_id: Mapped[int | None] = mapped_column(
+        ForeignKey("collection_object.id", ondelete="SET NULL"))
 
     dataset: Mapped["ImportDataset"] = relationship(back_populates="records")
 

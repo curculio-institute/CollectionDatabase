@@ -1,10 +1,10 @@
 """Bulk import tab (#39) — the wholesale, staged importer, modelled on TaxonWorks'
 Import Dataset (distinct from the row-by-row Import & Assign).
 
-Thin UI over ``app/services/bulk_import.py``: upload a name checklist → it stages every
-row (writing no taxa) → a status grid and a per-reason blocker list show what will and
-won't import → "Import ready" runs the idempotent, resumable import in chunks. Setting
-the dataset's nomenclatural code re-stages (the resolve-once seam).
+Thin UI over ``app/services/bulk_import.py``: upload a CSV of specimen records → it stages
+every row (writing no specimens) → a status grid and a per-reason blocker list show what
+will and won't import → "Import ready" runs the idempotent, resumable import in chunks.
+Setting the dataset's nomenclatural code re-stages (the resolve-once seam).
 """
 from __future__ import annotations
 
@@ -29,20 +29,22 @@ def build_bulk_import_tab(session_factory, refreshers: dict | None = None) -> No
 
     # ── upload / stage card (top) ───────────────────────────────────────────
     with ui.card().classes("w-full"):
-        ui.label("Bulk import a name checklist").classes("text-lg font-medium")
+        ui.label("Bulk import specimen records").classes("text-lg font-medium")
         ui.label(
-            "Stage a whole DwC/CSV checklist, review what will and won't import, then "
-            "import in one go. Names are matched, never duplicated. This is the "
-            "wholesale path — to stamp one specimen at a time use Import & Assign."
+            "Stage a whole DwC/CSV of specimen records, review what will and won't "
+            "import, then import in one go. Each row must already carry its identifier "
+            "(catalogNumber); a collection column can target other collections (blank = "
+            "your default). Records are matched on (collection, catalog number), never "
+            "duplicated. To stamp one specimen at a time use Import & Assign."
         ).classes("text-sm").style("color:var(--tp-base-soft)")
 
         with ui.row().classes("items-center gap-3 mt-2"):
-            name_in = ui.input("Dataset name", placeholder="e.g. Curculionidae checklist") \
+            name_in = ui.input("Dataset name", placeholder="e.g. 2024 accessions") \
                 .props("outlined dense").style("min-width:260px")
             code_in = ui.select(_CODE_OPTS, label="Nomenclatural code", value="ICZN") \
                 .props("outlined dense").style("min-width:160px")
-        ui.label("The code applies to every row without its own nomenclaturalCode column. "
-                 "It is never guessed — a checklist is one code.") \
+        ui.label("The code governs the names in this file — it resolves each "
+                 "scientificName to a taxon. It is never guessed.") \
             .classes("text-xs").style("color:var(--tp-base-soft)")
 
         stage_status = ui.label("").classes("text-sm mt-1")
@@ -52,7 +54,7 @@ def build_bulk_import_tab(session_factory, refreshers: dict | None = None) -> No
             name = (name_in.value or "").strip() or e.name
             try:
                 with _sf() as s:
-                    ds = bi.create_taxon_dataset(
+                    ds = bi.create_occurrence_dataset(
                         s, name=name, filename=e.name, content=raw,
                         nomenclatural_code=code_in.value)
                     s.commit()
@@ -69,7 +71,7 @@ def build_bulk_import_tab(session_factory, refreshers: dict | None = None) -> No
             _refresh_lists()
             _select(did)
 
-        ui.upload(label="Choose checklist CSV…", on_upload=_on_upload, auto_upload=True) \
+        ui.upload(label="Choose records CSV…", on_upload=_on_upload, auto_upload=True) \
             .props("accept=.csv,text/csv flat").classes("mt-2")
 
     # ── dataset list ────────────────────────────────────────────────────────
