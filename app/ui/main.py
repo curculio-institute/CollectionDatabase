@@ -46,6 +46,7 @@ from app.ui.identification_list import build_identification_list
 from app.ui.import_assign import build_import_assign_tab
 from app.ui.controlled_vocab_tab import build_controlled_vocab_tab
 from app.ui.batch_tab import build_batch_tab
+from app.ui.bulk_import_tab import build_bulk_import_tab
 from app.ui.map_picker import add_map_assets
 from app.ui.taxon_editor import build_taxon_editor
 from app.ui.person_field import build_person_field
@@ -836,7 +837,7 @@ def index():
                     ui.tab("digitize", label="Specimen Digitization", icon="biotech")
                     ui.tab("records",  label="Records",               icon="edit_note")
                     ui.tab("explore",  label="Explore",               icon="travel_explore")
-                    ui.tab("import",   label="Import & Assign",       icon="upload_file")
+                    ui.tab("import",   label="Import",                icon="upload_file")
                     ui.tab("batch",    label="Batch tools",           icon="checklist")
                     ui.tab("taxonomy", label="Taxonomy",              icon="account_tree")
                     ui.tab("labels",   label="Labels",                icon="label")
@@ -1854,28 +1855,45 @@ def index():
                 _refreshers["explore"] = _explore_handle["refresh"]
 
         # ================================================================
-        # TAB: IMPORT & ASSIGN
+        # TAB: IMPORT — row-by-row (Import & Assign) + wholesale (Bulk import)
         # ================================================================
         with ui.tab_panel("import"):
-            _import_handle = build_import_assign_tab(
-                _sf, _refreshers,
-                on_saved=lambda: _mark_form_clean("Import & Assign"),
+            # Two ways to import share one tab: Import & Assign stamps one specimen at
+            # a time (retroactive digitisation); Bulk import stages a whole name
+            # checklist (#39). A nested sub-tab picks between them.
+            _import_sub = (
+                ui.tabs(value="assign")
+                .props("dense indicator-color=secondary align=left no-caps")
             )
+            with _import_sub:
+                ui.tab("assign", label="Import & Assign", icon="upload_file")
+                ui.tab("bulk",   label="Bulk import",     icon="library_add")
 
-            # State-based unsaved-changes detection (#47): dirty while an assign
-            # card is open (a row staged for assignment, not yet saved).
-            _imp_dirty = [False]
-
-            def _sync_imp_dirty():
-                cur = _import_handle["has_content"]()
-                if cur != _imp_dirty[0]:
-                    _imp_dirty[0] = cur
-                    ui.run_javascript(
-                        "window.tpSetScope && window.tpSetScope("
-                        f"'Import & Assign', {'true' if cur else 'false'})"
+            with ui.tab_panels(_import_sub, value="assign").classes("w-full"):
+                with ui.tab_panel("assign"):
+                    _import_handle = build_import_assign_tab(
+                        _sf, _refreshers,
+                        on_saved=lambda: _mark_form_clean("Import & Assign"),
                     )
 
-            ui.timer(1.0, _sync_imp_dirty)
+                    # State-based unsaved-changes detection (#47): dirty while an assign
+                    # card is open (a row staged for assignment, not yet saved).
+                    _imp_dirty = [False]
+
+                    def _sync_imp_dirty():
+                        cur = _import_handle["has_content"]()
+                        if cur != _imp_dirty[0]:
+                            _imp_dirty[0] = cur
+                            ui.run_javascript(
+                                "window.tpSetScope && window.tpSetScope("
+                                f"'Import & Assign', {'true' if cur else 'false'})"
+                            )
+
+                    ui.timer(1.0, _sync_imp_dirty)
+
+                with ui.tab_panel("bulk"):
+                    with ui.column().classes("w-full max-w-5xl mx-auto pt-2 pb-16 gap-4"):
+                        build_bulk_import_tab(_sf, _refreshers)
 
         # ================================================================
         # TAB: BATCH TOOLS
