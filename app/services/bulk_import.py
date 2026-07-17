@@ -50,6 +50,34 @@ from app.services.vocabularies import (
 from app.vocab import NEW_SPECIMEN_DEFAULTS, NOMENCLATURAL_CODES
 
 
+# Downloadable template for the occurrence (records) bulk import — the columns the importer
+# reads, in DwC casing, with two worked rows. Row 1: the home collection (blank `collection`),
+# a clean ISO eventDate. Row 2: another collection (by name), a verbatim-only abbreviated-range
+# date (parsed automatically), and an open-nomenclature qualifier. Both rows stage `ready`;
+# `tests/test_bulk_import_occurrence.py::test_shipped_template_stages_and_imports` guards it.
+OCCURRENCE_TEMPLATE_CSV = (
+    "catalogNumber,collection,scientificName,scientificNameAuthorship,taxonRank,family,"
+    "eventDate,verbatimEventDate,recordedBy,country,countryCode,stateProvince,county,locality,"
+    "decimalLatitude,decimalLongitude,coordinateUncertaintyInMeters,"
+    "minimumElevationInMeters,maximumElevationInMeters,habitat,samplingProtocol,"
+    "sex,individualCount,preparations,lifeStage,typeStatus,"
+    "identifiedBy,dateIdentified,identificationQualifier,materialEntityRemarks\n"
+    # Home collection (blank collection → the default), clean ISO date.
+    "JJPC-00001,,Otiorhynchus sulcatus,\"(Fabricius, 1775)\",species,Curculionidae,"
+    "2024-06-15,,J. Doe,Germany,DE,Bavaria,Berchtesgadener Land,"
+    "\"Berchtesgaden, Königssee trail\","
+    "47.5976,13.0055,50,620,,broadleaf forest edge,hand collecting,"
+    "female,3,pinned,adult,,J. Doe,2024-07-01,,\n"
+    # Another collection (by its name), eventDate empty with the label date in
+    # verbatimEventDate (an abbreviated range, parsed on import), and a cf. qualifier.
+    "NHMW-00042,Naturhistorisches Museum Wien,Curculio nucum,\"Linnaeus, 1758\",species,"
+    "Curculionidae,,28.-30.08.2023,A. Mayer,Austria,AT,Styria,,"
+    "\"Grazer Bergland, Schöckel\","
+    "47.1833,15.4667,100,1250,,Fagus-Quercus forest,beating,"
+    ",1,pinned,adult,,A. Mayer,2023-09-10,cf.,reared from hazel nuts\n"
+)
+
+
 # ── header handling ─────────────────────────────────────────────────────────
 # A checklist is not a DwC occurrence, so it does not share dwc_import's term set;
 # match headers by a normalised key (lowercased, alphanumerics only) against known

@@ -166,6 +166,24 @@ def test_import_is_resumable(session):
     assert bi.progress(session, ds.id)["ready"] == 0
 
 
+def test_shipped_template_stages_and_imports(session):
+    """The downloadable CSV template must be correct: both worked rows stage ready and
+    import cleanly (row 1 → home collection, row 2 → the named other collection with its
+    verbatim range date parsed to an interval)."""
+    _repo(session, "JJPC", "Jilg Private Collection", default=True)
+    _repo(session, "NHMW", "Naturhistorisches Museum Wien")
+    ds = _mk(session, content=bi.OCCURRENCE_TEMPLATE_CSV)
+    counts = bi.progress(session, ds.id)
+    assert counts["ready"] == 2 and counts["blocked"] == 0 and counts["errored"] == 0
+    bi.import_ready(session, ds.id)
+    assert bi.progress(session, ds.id)["imported"] == 2
+    home = session.query(CollectionObject).filter_by(catalog_number="JJPC-00001").one()
+    assert home.repository.collection_code == "JJPC"
+    other = session.query(CollectionObject).filter_by(catalog_number="NHMW-00042").one()
+    assert other.repository.collection_code == "NHMW"
+    assert other.collecting_event.event_date == "2023-08-28/2023-08-30"
+
+
 def test_delete_dataset_keeps_imported_specimens(session):
     _repo(session, "JJPC", "Home", default=True)
     ds = _mk(session)

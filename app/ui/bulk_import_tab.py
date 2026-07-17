@@ -29,7 +29,17 @@ def build_bulk_import_tab(session_factory, refreshers: dict | None = None) -> No
 
     # ── upload / stage card (top) ───────────────────────────────────────────
     with ui.card().classes("w-full"):
-        ui.label("Bulk import specimen records").classes("text-lg font-medium")
+        with ui.row().classes("items-center w-full"):
+            ui.label("Bulk import specimen records").classes("text-lg font-medium")
+            ui.space()
+            ui.button("Download CSV template", icon="download") \
+                .props("flat dense size=sm") \
+                .on_click(lambda: ui.download(
+                    bi.OCCURRENCE_TEMPLATE_CSV.encode("utf-8"),
+                    filename="bulk_import_template.csv",
+                    media_type="text/csv",
+                )) \
+                .tooltip("A two-row example showing the columns bulk import reads")
         ui.label(
             "Stage a whole DwC/CSV of specimen records, review what will and won't "
             "import, then import in one go. Each row must already carry its identifier "
