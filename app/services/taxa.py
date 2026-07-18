@@ -139,12 +139,13 @@ def format_scientific_name(taxon: Taxon) -> str:
 # ---------------------------------------------------------------------------
 # Determination rendering (Epic #30, Phase 5)
 # ---------------------------------------------------------------------------
-# A determination freezes dwc:verbatimIdentification = the composed name at save
-# time (qualifier-free); the open-nomenclature qualifier (cf./aff./sp./…) lives
-# separately in dwc:identificationQualifier. Rendering follows ONE rule — the
-# qualifier always sits right after the genus-group — so there is no per-qualifier
-# logic and no `sp.` special case (an "sp." determination simply points at a genus
-# row, whose composed name is the bare genus, leaving an empty rest).
+# A determination freezes dwc:verbatimIdentification = the composed full name at save
+# time — bare name PLUS authorship (compose_full_name), qualifier-free; the open-
+# nomenclature qualifier (cf./aff./sp./…) lives separately in dwc:identificationQualifier.
+# Display goes through render_full_name (the single renderer): the qualifier always sits
+# right after the genus-group — so there is no per-qualifier logic and no `sp.` special
+# case (an "sp." determination simply points at a genus row, whose composed name is the
+# bare genus, leaving an empty rest).
 
 def split_genus_group(name: str) -> tuple[str, str]:
     """Split a composed bare name into ``(genus_group, rest)`` where genus_group
@@ -237,15 +238,66 @@ def scientific_name_html(
     return f"{out} {_esc(auth)}" if auth else out
 
 
-def render_identification(name: str, qualifier: str | None = None) -> str:
-    """Render a frozen determination name with its qualifier inserted right after
-    the genus-group: ``Otiorhynchus cf. forticollis``, ``Otiorhynchus (Nihus) aff.
+def _place_qualifier(name: str, qualifier: str | None = None) -> str:
+    """Insert an open-nomenclature qualifier right after the genus-group of a bare
+    composed name: ``Otiorhynchus cf. forticollis``, ``Otiorhynchus (Nihus) aff.
     forticollis``, ``Otiorhynchus sp.`` (genus row → empty rest), ``Otiorhynchus
     cf.`` (rare, no rest). Empty parts are dropped; no per-qualifier special-casing.
+
+    Private building block of :func:`render_full_name` — render names through that,
+    not this. (A qualifier expresses the *identification*'s uncertainty; placing it is
+    a rendering step, so it is deliberately not called "render_identification" — an
+    identification also carries the identifiedBy/date, which a name never does.)
     """
     genus_group, rest = split_genus_group(name or "")
     parts = [p for p in (genus_group, (qualifier or "").strip(), rest) if p]
     return " ".join(parts)
+
+
+def render_full_name(
+    name: str,
+    *,
+    qualifier: str | None = None,
+    authorship: str | None = None,
+    taxon_rank: str | None = None,
+) -> str:
+    """THE renderer for a taxon's full name as display HTML — the single owner of the
+    convention, reused everywhere a name is shown:
+
+      * only the genus group and below is italic (a family/tribe/order stays roman);
+      * the authorship is roman — ``<i>Otiorhynchus armadillo</i> (Rossi, 1792)``;
+      * an open-nomenclature qualifier (cf./aff./sp./…), when a determination supplies
+        one, sits right after the genus group and stays roman.
+
+    It renders the NAME only. The determiner and date belong to the *identification*,
+    not the name, and are never part of this string. ``name`` is the bare composed
+    name (no authorship, no qualifier); pass those two separately.
+    """
+    return scientific_name_html(_place_qualifier(name, qualifier), taxon_rank, authorship)
+
+
+def render_full_name_of(taxon: Taxon, *, qualifier: str | None = None) -> str:
+    """:func:`render_full_name` for a Taxon row (reads its name / authorship / rank)."""
+    return render_full_name(
+        taxon.scientific_name or "",
+        qualifier=qualifier,
+        authorship=taxon.scientific_name_authorship,
+        taxon_rank=taxon.taxon_rank,
+    )
+
+
+def render_full_name_frozen(
+    verbatim: str,
+    *,
+    qualifier: str | None = None,
+    taxon_rank: str | None = None,
+) -> str:
+    """:func:`render_full_name` for a FROZEN ``dwc:verbatimIdentification``, which
+    carries its authorship inside the stored string. The author is split back out (so
+    it renders roman) and the name italicised — what the record froze is exactly what
+    shows, even after the taxon is later reclassified (the freeze, Epic #30 / §2)."""
+    name, author = split_scientific_name_authorship(verbatim or "")
+    return render_full_name(name, qualifier=qualifier, authorship=author, taxon_rank=taxon_rank)
 
 
 # ---------------------------------------------------------------------------
@@ -353,6 +405,19 @@ def compose_scientific_name(session: Session, taxon: Taxon) -> str:
 
     # Uninomial ranks (kingdom … family … genus): the element is the name.
     return element
+
+
+def compose_full_name(session: Session, taxon: Taxon) -> str:
+    """The frozen determination name = the composed bare name PLUS its authorship.
+
+    Authorship is part of a name, so a frozen ``dwc:verbatimIdentification`` carries it
+    (the open-nomenclature qualifier stays separate, in ``dwc:identificationQualifier``).
+    This is what every interactive create path freezes; :func:`render_full_name_frozen`
+    splits the author back out for display.
+    """
+    name = compose_scientific_name(session, taxon)
+    auth = (taxon.scientific_name_authorship or "").strip()
+    return f"{name} {auth}" if (name and auth) else name
 
 
 def recompose_subtree(session: Session, taxon: Taxon) -> None:
@@ -480,6 +545,53 @@ def find_taxon_by_name(session: Session, scientific_name: str) -> "Taxon | None"
                .filter(Taxon.scientific_name == name)
                .all())
     return results[0] if len(results) == 1 else None
+
+
+_SUBGENUS_PAREN = re.compile(r"\s*\([^)]*\)")
+
+
+def binomial_key(name: str) -> str:
+    """A composed name with any parenthetical subgenus removed and spacing collapsed:
+    ``Carabus (Eucarabus) arvensis`` → ``Carabus arvensis``.
+
+    Parentheses in a stored ``dwc:scientificName`` only ever hold an ICZN subgenus —
+    authorship lives in its own column, and ICN writes the genus group with a
+    ``subg.``/``sect.`` connector, not brackets — so this is exactly "the name without
+    its *optional* subgenus". The subgenus is optional in how a zoological binomial is
+    written (``Carabus arvensis`` ≡ ``Carabus (Eucarabus) arvensis``), but it is baked
+    into the composed name, which is why an exact match treats the two as different.
+
+    Subgenus placement is also **unreliable for matching**: it is unstable across catalogues
+    and revisions and often simply omitted, so it must never be a discriminator when deciding
+    whether two names are the same species. The binomial (genus + epithet) is the stable key.
+    """
+    return _SUBGENUS_PAREN.sub("", name or "").strip()
+
+
+def find_species_ignoring_subgenus(session: Session, name: str) -> "list[Taxon]":
+    """Accepted rows whose binomial equals ``name``'s once the optional ``(Subgenus)`` is
+    stripped from BOTH sides — so ``Carabus arvensis`` finds ``Carabus (Eucarabus)
+    arvensis`` and vice versa.
+
+    Returns ``[]`` / ``[one]`` / ``[many]``. The caller MUST NOT auto-pick from ``[many]``:
+    several rows sharing the binomial mean genuinely different subgenera (or an existing
+    duplicate), and guessing would be the silent wrong value §2 forbids — present them
+    instead. Empty for a uninomial (no epithet to match on).
+
+    This is the resolver seam that stops the ``Carabus (Eucarabus) arvensis`` / ``Carabus
+    arvensis`` duplicate: while only the subgenus-bearing row exists, a bare-binomial CSV
+    resolves to it instead of dead-ending at "Add manually" and spawning a second row.
+    """
+    key = binomial_key(name)
+    parts = key.split()
+    if len(parts) < 2:
+        return []                                    # a uninomial is not a binomial
+    epithet = parts[-1]
+    rows = (session.query(Taxon)
+            .filter(Taxon.accepted_name_usage_id.is_(None))
+            .filter(Taxon.scientific_name.like(f"% {epithet}"))   # ends with " <epithet>"
+            .all())
+    return [t for t in rows if binomial_key(t.scientific_name or "") == key]
 
 
 _EPITHET_RE = re.compile(r"^[a-z][a-z-]*$")
@@ -1026,6 +1138,131 @@ def delete_taxon(session: Session, taxon_id: int) -> None:
         raise ValueError(
             f"Cannot delete: taxon is used in {assoc_count} biological association(s)")
     session.delete(t)
+    session.flush()
+
+
+# ---------------------------------------------------------------------------
+# Merge two taxa (de-duplication — NOT synonymisation)
+# ---------------------------------------------------------------------------
+# For evening out typos and exact/subgenus duplicates of the SAME name (e.g. the
+# `Carabus arvensis` / `Carabus (Eucarabus) arvensis` pair a subgenus-blind import
+# created). It re-points every reference onto the surviving row and deletes the other.
+# It is deliberately NOT a way to record that one name is a synonym of another — that is
+# synonymize(). The guardrails below refuse the synonymisation-shaped cases loudly.
+
+@dataclass(frozen=True)
+class TaxonMergePreview:
+    keep_id: int
+    keep_label: str
+    absorb_id: int
+    absorb_label: str
+    determinations: int     # specimens whose current/again live taxon moves to keep
+    associations: int       # biological associations that move
+    children: int           # child taxa re-homed under keep
+    synonyms: int           # absorb's synonyms that become keep's
+    blocker: str | None     # a hard reason the merge is refused, or None
+
+
+def _merge_blocker(keep: "Taxon", absorb: "Taxon") -> str | None:
+    """The reason a merge is refused, or None. Same checks as merge_taxa, surfaced for the
+    preview so the UI can disable the button and say why."""
+    if keep.id == absorb.id:
+        return "Pick two different names."
+    if keep.taxon_rank != absorb.taxon_rank:
+        return (f"Different ranks ({keep.taxon_rank} vs {absorb.taxon_rank}) — merge is for "
+                "duplicates of the same rank, not re-ranking.")
+    if keep.accepted_name_usage_id is not None or absorb.accepted_name_usage_id is not None:
+        return ("One of these is a synonym. Merge is de-duplication, not synonymisation — "
+                "use Synonymise if one name really is a synonym of the other.")
+    return None
+
+
+def merge_taxa_preview(session: Session, keep_id: int, absorb_id: int) -> TaxonMergePreview:
+    """What merge_taxa would move, without writing anything (incl. any `blocker`)."""
+    from sqlalchemy import or_
+    from app.models import BiologicalAssociation, TaxonDetermination
+    keep = session.get(Taxon, keep_id)
+    absorb = session.get(Taxon, absorb_id)
+    if keep is None or absorb is None:
+        raise ValueError("One or both taxa not found.")
+    dets = session.query(TaxonDetermination).filter(
+        TaxonDetermination.taxon_id == absorb_id).count()
+    assoc = session.query(BiologicalAssociation).filter(
+        or_(BiologicalAssociation.subject_taxon_id == absorb_id,
+            BiologicalAssociation.object_taxon_id == absorb_id)).count()
+    children = session.query(Taxon).filter(Taxon.parent_name_usage_id == absorb_id).count()
+    synonyms = session.query(Taxon).filter(Taxon.accepted_name_usage_id == absorb_id).count()
+    return TaxonMergePreview(
+        keep_id=keep_id, keep_label=format_scientific_name(keep),
+        absorb_id=absorb_id, absorb_label=format_scientific_name(absorb),
+        determinations=dets, associations=assoc, children=children, synonyms=synonyms,
+        blocker=_merge_blocker(keep, absorb),
+    )
+
+
+def _fk_references_to_taxon(session: Session) -> "list[tuple[str, str]]":
+    """[(table, column), …] for every FK column that references taxon(id) — discovered
+    dynamically (PRAGMA), so a future FK at the taxon table is handled with no code change."""
+    from sqlalchemy import text
+    tables = [r[0] for r in session.execute(text(
+        "SELECT name FROM sqlite_master WHERE type='table' "
+        "AND name NOT LIKE 'sqlite_%' AND name != 'alembic_version'")).fetchall()]
+    refs = []
+    for table in tables:
+        for fk in session.execute(text(f'PRAGMA foreign_key_list("{table}")')).fetchall():
+            if fk[2] == "taxon" and fk[4] == "id":     # ref_table, to_col
+                refs.append((table, fk[3]))            # from_col
+    return refs
+
+
+def merge_taxa(session: Session, keep_id: int, absorb_id: int) -> None:
+    """Merge `absorb_id` into `keep_id`: re-point every reference onto `keep`, then delete
+    `absorb`. `keep` keeps its own name and lineage, so choosing which to keep chooses the
+    surviving spelling.
+
+    What moves: determinations, biological associations, dataset-record links (all FKs to
+    taxon, discovered dynamically), absorb's synonyms (they become keep's), and absorb's
+    children (re-homed under keep and recomposed). A determination's frozen
+    ``verbatimIdentification`` is **not** rewritten — the name as recorded stands; only the
+    live ``taxon_id`` moves.
+
+    De-duplication only, **not synonymisation**: refused (loudly) when the two are different
+    ranks or when either is itself a synonym — see `_merge_blocker`. Atomic; caller owns the
+    transaction.
+    """
+    from sqlalchemy import text
+    keep = session.get(Taxon, keep_id)
+    absorb = session.get(Taxon, absorb_id)
+    if keep is None or absorb is None:
+        raise ValueError("One or both taxa not found.")
+    blocker = _merge_blocker(keep, absorb)
+    if blocker:
+        raise ValueError(blocker)
+
+    # 1. Re-point every non-self FK (determinations, associations, dataset records, …).
+    for table, col in _fk_references_to_taxon(session):
+        if table == "taxon":
+            continue                       # parent/accepted self-refs handled below (recompose)
+        session.execute(
+            text(f'UPDATE "{table}" SET "{col}" = :keep WHERE "{col}" = :absorb'),
+            {"keep": keep_id, "absorb": absorb_id})
+
+    # 2. absorb's synonyms become keep's. keep is accepted (terminal, per the guard), so no
+    #    chained synonym forms — the trg_taxon_accepted_is_terminal trigger stays satisfied.
+    for syn in session.query(Taxon).filter(Taxon.accepted_name_usage_id == absorb_id).all():
+        syn.accepted_name_usage_id = keep_id
+        syn.updated_at = _utcnow()
+
+    # 3. absorb's children re-home under keep (reparent recomposes their subtree).
+    for child in session.query(Taxon).filter(Taxon.parent_name_usage_id == absorb_id).all():
+        reparent(session, taxon_id=child.id, new_parent_id=keep_id)
+
+    session.flush()
+    # The re-points above went through raw SQL / other rows, so absorb's ORM collections are
+    # stale. Deleting it now would make SQLAlchemy null the FK on the determinations it still
+    # thinks it owns (taxon_id is NOT NULL → IntegrityError). Expire so they reload empty first.
+    session.expire_all()
+    session.delete(session.get(Taxon, absorb_id))
     session.flush()
 
 

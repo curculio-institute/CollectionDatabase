@@ -2008,8 +2008,105 @@ def index():
                             dlg.on_value_change(lambda e: dlg.delete() if not e.value else None)
                             dlg.open()
 
+                        def _open_merge_dialog():
+                            """Merge two duplicate names into one (de-duplication, NOT
+                            synonymisation). Pick the row to keep + the row to delete; every
+                            reference moves to the kept row. Guarded by merge_taxa_preview so a
+                            synonym-shaped merge is refused with the reason shown."""
+                            from app.services.taxa import merge_taxa, merge_taxa_preview
+                            picks = {"keep": None, "absorb": None}
+                            dlg = ui.dialog()
+                            with dlg, ui.card().classes("min-w-[560px] max-w-[720px] gap-2"):
+                                ui.label("Merge duplicate names").classes("section-label")
+                                with ui.element("div").classes("w-full").style(
+                                        "background:rgba(217,119,6,.10); "
+                                        "border:1px solid rgba(217,119,6,.35); "
+                                        "border-radius:6px; padding:8px 10px;"):
+                                    with ui.row().classes("items-start gap-2 no-wrap"):
+                                        ui.icon("warning").style(
+                                            "color:#d97706; margin-top:2px")
+                                        ui.label(
+                                            "Merge is for the SAME name written two ways — a "
+                                            "typo, or an exact / subgenus duplicate. It is NOT "
+                                            "synonymisation. It permanently DELETES one row and "
+                                            "moves its specimens, associations and children onto "
+                                            "the other. If one name is a synonym of the other, "
+                                            "cancel and record that in the taxon editor instead."
+                                        ).classes("text-xs").style("color:#b45309")
+
+                                ui.label("Keep this name").classes(
+                                    "text-xs font-medium mt-1")
+                                build_taxon_search(
+                                    _sf, on_select=lambda tid: _pick("keep", tid),
+                                    sources=("local",),
+                                    placeholder="Search the checklist…")
+                                ui.label("Merge & DELETE this one").classes(
+                                    "text-xs font-medium mt-1")
+                                build_taxon_search(
+                                    _sf, on_select=lambda tid: _pick("absorb", tid),
+                                    sources=("local",),
+                                    placeholder="Search the checklist…")
+
+                                preview_box = ui.column().classes("w-full gap-0 mt-1")
+                                with ui.row().classes("justify-end w-full mt-2 gap-2"):
+                                    ui.button("Cancel", on_click=dlg.close).props("flat")
+                                    merge_btn = ui.button("Merge", icon="merge_type") \
+                                        .props("color=negative")
+                                    merge_btn.set_enabled(False)
+
+                            def _pick(which, tid):
+                                picks[which] = tid
+                                _refresh_preview()
+
+                            def _refresh_preview():
+                                preview_box.clear()
+                                merge_btn.set_enabled(False)
+                                if not (picks["keep"] and picks["absorb"]):
+                                    return
+                                with _sf() as s:
+                                    prev = merge_taxa_preview(
+                                        s, picks["keep"], picks["absorb"])
+                                with preview_box:
+                                    if prev.blocker:
+                                        ui.label(f"⚠ {prev.blocker}").classes("text-sm") \
+                                          .style("color:#d97706")
+                                        return
+                                    ui.label(
+                                        f"Move to “{prev.keep_label}”: "
+                                        f"{prev.determinations} determination(s), "
+                                        f"{prev.associations} association(s), "
+                                        f"{prev.children} child taxon(s), "
+                                        f"{prev.synonyms} synonym(s)."
+                                    ).classes("text-sm")
+                                    ui.label(f"Then delete “{prev.absorb_label}”.") \
+                                      .classes("text-xs").style("color:var(--tp-base-soft)")
+                                merge_btn.set_enabled(True)
+
+                            def _do_merge():
+                                try:
+                                    with _sf() as s:
+                                        with s.begin():
+                                            merge_taxa(s, picks["keep"], picks["absorb"])
+                                except Exception as exc:      # noqa: BLE001
+                                    ui.notify(f"Merge failed: {exc}", type="negative")
+                                    return
+                                ui.notify("Names merged.", type="positive")
+                                dlg.close()
+                                _refresh_taxonomy_stats()
+                                _refresh_tree()
+
+                            merge_btn.on_click(_do_merge)
+                            dlg.on_value_change(
+                                lambda e: dlg.delete() if not e.value else None)
+                            dlg.open()
+
                         ui.button("Check consistency", icon="fact_check") \
                           .props("flat dense").on_click(_check_consistency)
+                        ui.button("Merge names", icon="merge_type") \
+                          .props("flat dense") \
+                          .tooltip("Merge two duplicate names (typos / exact duplicates) "
+                                   "into one — not for synonymising") \
+                          .on_click(_open_merge_dialog)
 
                 # ── checklist card ───────────────────────────────────────
                 with ui.card().classes("w-full shadow-sm"):
@@ -2290,13 +2387,30 @@ def index():
                     # client-side and emits 'pq_edit' with the row id + html.
                     ui.on("pq_edit", lambda e: _edit_label(int(e.args["qid"]), e.args["html"]))
 
+                    # Rebuilding the whole preview on every single-column delete floods the
+                    # socket on a large queue — a rapid burst of deletes used to crash the
+                    # connection / restart the server (#132). Coalesce a burst into ONE rebuild
+                    # with a short trailing timer; the DB deletes still happen per click.
+                    _pending_refresh: dict = {"timer": None}
+
+                    def _run_pending_refresh():
+                        _pending_refresh["timer"] = None
+                        _refresh_queue()
+
+                    def _schedule_refresh():
+                        if _pending_refresh["timer"] is not None:
+                            return
+                        _pending_refresh["timer"] = ui.timer(0.06, _run_pending_refresh, once=True)
+
                     def _delete_column(sp):
+                        qids = [q for q in (sp.get("data_qid"), sp.get("det_qid"), sp.get("id_qid")) if q]
+                        if not qids:
+                            return
                         with _sf() as session:
                             with session.begin():
-                                for qid in (sp.get("data_qid"), sp.get("det_qid"), sp.get("id_qid")):
-                                    if qid:
-                                        pq_svc.remove_item(session, qid)
-                        _refresh_queue()
+                                for qid in qids:
+                                    pq_svc.remove_item(session, qid)
+                        _schedule_refresh()
 
                     # Stable DOM ids for the dialog editor (only one open at a time).
                     _DLG_ED, _DLG_SRC = "pq-dlg-editor", "pq-dlg-source"
@@ -2552,8 +2666,8 @@ def index():
 
                     with ui.row().classes("items-center gap-4"):
                         count_input = (
-                            ui.number("Number of labels", value=20, min=1, max=500, step=1)
-                            .classes("w-40")
+                            ui.number("Number of labels; 400 are one page", value=20, min=1, max=500, step=1)
+                            .classes("w-60")
                         )
                         id_status = ui.label("").classes("text-sm").style("color:var(--tp-base-soft)")
 

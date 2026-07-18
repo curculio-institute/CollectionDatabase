@@ -681,8 +681,16 @@ def _grouped_css(borders: dict[str, str] | None = None) -> str:
     return _BASE_CSS + _ID_TEXT_CSS + f"""
 .printed-at {{ font-size: 5pt; color: #666; margin-bottom: 3mm; }}
 .group {{ display: inline-block; vertical-align: top; line-height: {_LINE_H}; margin: 0 {_GROUP_GAP} {_GROUP_GAP} 0; }}
+/* A big identifier-only grid must span pages: an inline-block box is atomic (never splits),
+   so a 450-label grid overflows a single page instead of flowing (#132). Make it block-level
+   and let the grid break BETWEEN rows (each row kept whole below). */
+.group-block {{ display: block; }}
 .group-header {{ font-size: 5pt; color: #666; margin-bottom: 0.4mm; letter-spacing: 0.2pt; }}
 .chunk {{ table-layout: fixed; border-collapse: separate; border-spacing: {_LABEL_GAP_BORDERED}; page-break-inside: avoid; }}
+/* The identifier grid may be taller than a page — break between rows, never mid-row, so no
+   label is split and no page is left mostly empty (#132). Overrides .chunk's avoid. */
+.id-grid {{ page-break-inside: auto; }}
+.id-grid tr {{ page-break-inside: avoid; break-inside: avoid; }}
 .chunk + .chunk {{ margin-top: {_CHUNK_GAP}; }}
 .cell {{ width: 18mm; padding: 0; vertical-align: top; }}
 .lbl-data {{
@@ -730,9 +738,10 @@ def _group_html(group: LabelGroup, names: dict[str, str] | None = None) -> str:
     has_data = any(s.data is not None for s in specs)
     has_id   = any(s.id_code for s in specs)
     has_det  = any(s.determination is not None for s in specs)
+    id_only  = has_id and not has_data and not has_det
 
     chunks: list[str] = []
-    if has_id and not has_data and not has_det:
+    if id_only:
         # Identifier-only group (e.g. "New identifiers"): tile every code into ONE
         # multi-row table so the vertical gap between rows is a single border-spacing
         # (~0.4 mm cut lane), matching the horizontal gap — a uniform grid like the
@@ -744,7 +753,7 @@ def _group_html(group: LabelGroup, names: dict[str, str] | None = None) -> str:
                              for s in specs[start:start + _LABELS_PER_ROW]) + "</tr>"
             for start in range(0, len(specs), _LABELS_PER_ROW)
         ]
-        chunks.append(f'<table class="chunk">{"".join(id_rows)}</table>')
+        chunks.append(f'<table class="chunk id-grid">{"".join(id_rows)}</table>')
     else:
         for start in range(0, len(specs), _LABELS_PER_ROW):
             chunk = specs[start:start + _LABELS_PER_ROW]
@@ -761,7 +770,10 @@ def _group_html(group: LabelGroup, names: dict[str, str] | None = None) -> str:
             chunks.append(f'<table class="chunk">{"".join(rows)}</table>')
 
     header = f'<div class="group-header">{_e(group.source)}</div>' if group.source else ""
-    return f'<div class="group">{header}{"".join(chunks)}</div>'
+    # A large identifier grid is block-level so it can flow across pages; small mixed
+    # groups stay inline-block so several sit side by side (#132).
+    group_cls = "group group-block" if id_only else "group"
+    return f'<div class="{group_cls}">{header}{"".join(chunks)}</div>'
 
 
 def _grouped_html(groups: list[LabelGroup], printed_at: str,

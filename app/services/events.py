@@ -270,23 +270,90 @@ def _reject_unknown_event_keys(fields: dict) -> None:
             "before saving.")
 
 
-def create_collecting_event(session: Session, **fields) -> CollectingEvent:
-    """Insert a new collecting_event. Coerces '' -> None and str -> float for
-    numeric columns. ISO-8601 date strings are stored as-is."""
-    ce = CollectingEvent(created_at=_utcnow(), updated_at=_utcnow())
+# Columns that are not part of an event's identity for create/matching purposes.
+_EVENT_IDENTITY_SKIP = frozenset({"id", "created_at", "updated_at"})
+# Columns whose "unset" stored value is not NULL but a default, so an exact-match
+# comparison must treat a missing field as the default, not as NULL.
+_EVENT_COLUMN_DEFAULTS = {"geodetic_datum": "WGS84", "confidential": 0}
+
+
+def _event_data_columns() -> list[str]:
+    return [c.key for c in sa_inspect(CollectingEvent).mapper.column_attrs
+            if c.key not in _EVENT_IDENTITY_SKIP]
+
+
+def _normalize_event_fields(session: Session, fields: dict) -> dict:
+    """Resolve geo names → FK ids, coerce '' → None and numeric strings → float,
+    and return a full ``{column: stored_value}`` map covering *every* data column
+    (an unset column takes its default: None, or WGS84 / 0).
+
+    This is exactly what a row created from `fields` stores, so the one map drives
+    both the insert and the 100%-identical match — there is no second place the
+    normalisation could drift."""
     _resolve_geo_fields(session, fields)
     _reject_unknown_event_keys(fields)
-    for attr, val in fields.items():
-        if val is None or val == "":
-            continue
-        if attr in _FLOAT_ATTRS:
+    target: dict = {}
+    for col in _event_data_columns():
+        raw = fields.get(col)
+        if raw is None or raw == "":
+            target[col] = _EVENT_COLUMN_DEFAULTS.get(col)
+        elif col in _FLOAT_ATTRS:
             try:
-                val = float(val)
+                target[col] = float(raw)
             except (TypeError, ValueError):
                 # Never skip a bad number silently — refuse the save (#62).
                 raise ValueError(
-                    f"{attr.replace('_', ' ')} must be a number (got {val!r}).")
-        setattr(ce, attr, val)
+                    f"{col.replace('_', ' ')} must be a number (got {raw!r}).")
+        else:
+            target[col] = raw
+    return target
+
+
+def _insert_event(session: Session, target: dict) -> CollectingEvent:
+    ce = CollectingEvent(created_at=_utcnow(), updated_at=_utcnow())
+    for col, val in target.items():
+        if val is not None:
+            setattr(ce, col, val)
     session.add(ce)
     session.flush()
     return ce
+
+
+def create_collecting_event(session: Session, **fields) -> CollectingEvent:
+    """Insert a new collecting_event. Coerces '' -> None and str -> float for
+    numeric columns. ISO-8601 date strings are stored as-is."""
+    return _insert_event(session, _normalize_event_fields(session, fields))
+
+
+def get_or_create_exact_event(
+    session: Session, **fields
+) -> tuple[CollectingEvent, bool]:
+    """Reuse an existing collecting_event that is **100% identical** to `fields`;
+    otherwise create one. Returns ``(event, created)``.
+
+    "Identical" means every data column equals what a new row built from these
+    fields would store (`_normalize_event_fields` — same geo resolution, float
+    coercion and defaults as the insert), so a match is exact: an event that also
+    carries a coordinate, a habitat, or any other filled column the new fields lack
+    is *not* reused. Erring toward create is safe (at worst a duplicate, the
+    current behaviour); a false match would silently attach a specimen to the wrong
+    locality, which this must never do (CLAUDE.md §2).
+
+    Used by Import & Assign so a batch sharing one collecting event does not spawn
+    1400 identical event rows. Other create paths keep making fresh events.
+
+    If the DB already holds *several* identical rows (e.g. duplicates created before
+    this dedup existed, or by a create path that does not dedup), the **oldest** one
+    is reused — deterministically, via ``order_by(id)`` — and no new row is added.
+    Pre-existing duplicates are left as they are; this prevents new ones, it does not
+    merge old ones.
+    """
+    target = _normalize_event_fields(session, fields)
+    q = session.query(CollectingEvent)
+    for col, val in target.items():
+        attr = getattr(CollectingEvent, col)
+        q = q.filter(attr.is_(None) if val is None else attr == val)
+    existing = q.order_by(CollectingEvent.id).first()
+    if existing is not None:
+        return existing, False
+    return _insert_event(session, target), True

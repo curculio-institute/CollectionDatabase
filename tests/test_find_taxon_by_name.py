@@ -11,6 +11,7 @@ from app.models import Taxon
 from app.models.base import _utcnow
 from app.services.taxa import (
     compose_scientific_name, find_taxon_by_name, scientific_name_has_authorship,
+    binomial_key, find_species_ignoring_subgenus,
 )
 
 
@@ -133,3 +134,65 @@ def test_authorship_unknown_is_never_a_match():
     # not decide "yes".
     assert not authorship_matches("", "Marsham, 1802")
     assert not authorship_matches("Marsham, 1802", "")
+
+
+# ---------------------------------------------------------------------------
+# Subgenus-insensitive resolution — prevents the Carabus (Eucarabus) arvensis dup
+# ---------------------------------------------------------------------------
+
+def test_binomial_key_strips_subgenus():
+    assert binomial_key("Carabus (Eucarabus) arvensis") == "Carabus arvensis"
+    assert binomial_key("Carabus arvensis") == "Carabus arvensis"
+    assert binomial_key("Carabus") == "Carabus"                       # uninomial untouched
+    assert binomial_key("Carabus (Eucarabus) baudii fenestrellanus") \
+        == "Carabus baudii fenestrellanus"                            # trinomial
+
+
+def test_bare_binomial_finds_the_subgenus_row(session):
+    g = _sp(session, element="Carabus", rank="genus")
+    subg = _sp(session, element="Eucarabus", rank="subgenus", parent=g)
+    sp = _sp(session, element="arvensis", rank="species", parent=subg)
+    assert sp.scientific_name == "Carabus (Eucarabus) arvensis"
+    assert find_taxon_by_name(session, "Carabus arvensis") is None    # exact miss
+    hits = find_species_ignoring_subgenus(session, "Carabus arvensis")
+    assert [h.id for h in hits] == [sp.id]                            # …but found here
+
+
+def test_subgenus_binomial_finds_the_bare_row(session):
+    g = _sp(session, element="Carabus", rank="genus")
+    sp = _sp(session, element="arvensis", rank="species", parent=g)   # bare row
+    hits = find_species_ignoring_subgenus(session, "Carabus (Eucarabus) arvensis")
+    assert [h.id for h in hits] == [sp.id]                            # symmetric
+
+
+def test_ambiguous_binomial_returns_all_never_picks(session):
+    """Both a bare and a subgenus row exist (the very duplicate) → both returned; the
+    caller must present them, not guess (§2)."""
+    g = _sp(session, element="Carabus", rank="genus")
+    subg = _sp(session, element="Eucarabus", rank="subgenus", parent=g)
+    bare = _sp(session, element="arvensis", rank="species", parent=g)
+    withsub = _sp(session, element="arvensis", rank="species", parent=subg)
+    hits = find_species_ignoring_subgenus(session, "Carabus arvensis")
+    assert sorted(h.id for h in hits) == sorted([bare.id, withsub.id])
+
+
+def test_uninomial_matches_no_species(session):
+    _sp(session, element="Carabus", rank="genus")
+    assert find_species_ignoring_subgenus(session, "Carabus") == []
+
+
+def test_subgenus_match_skips_synonyms(session):
+    """Only accepted rows are candidates; a synonym resolves via its own path."""
+    g = _sp(session, element="Carabus", rank="genus")
+    acc = _sp(session, element="arvensis", rank="species", parent=g)
+    syn = _sp(session, element="arvensis", rank="species", parent=g)
+    syn.accepted_name_usage_id = acc.id
+    session.flush()
+    hits = find_species_ignoring_subgenus(session, "Carabus arvensis")
+    assert [h.id for h in hits] == [acc.id]
+
+
+def test_different_epithet_does_not_match(session):
+    g = _sp(session, element="Carabus", rank="genus")
+    _sp(session, element="arvensis", rank="species", parent=g)
+    assert find_species_ignoring_subgenus(session, "Carabus violaceus") == []

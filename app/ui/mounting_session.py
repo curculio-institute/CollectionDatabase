@@ -30,7 +30,7 @@ from app.ui.vocab_field import build_vocab_field
 from app.services.vocabularies import preparation_vocab
 from app.ui.taxon_search import build_taxon_search
 from app.ui.type_status_field import build_type_status_field
-from app.services.taxa import compose_scientific_name
+from app.services.taxa import compose_full_name
 from app.models import Taxon
 # Controlled vocabularies — single source of truth (app/vocab.py).
 from app.vocab import (
@@ -379,9 +379,9 @@ def build_mounting_session_section(
                     event_id: int | None = event_id_getter()
                     for row, code in zip(rows, codes):
                         det = row["det"]
-                        # Freeze the determination name at save time.
+                        # Freeze the determination name at save time — WITH authorship.
                         _det_taxon = s.get(Taxon, det["taxon_id"])
-                        verbatim = compose_scientific_name(s, _det_taxon) if _det_taxon else None
+                        verbatim = compose_full_name(s, _det_taxon) if _det_taxon else None
                         co = svc.save_specimen_entry(
                             s,
                             taxon_id=det["taxon_id"],

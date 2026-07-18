@@ -61,21 +61,23 @@ def _local_item_html(
     nomenclatural_code: str | None = None,
     taxon_rank: str | None = None,
     authorship: str | None = None,
+    qualifier: str | None = None,
     accepted_rank: str | None = None,
     accepted_authorship: str | None = None,
 ) -> str:
-    """One local result. Italics come from `taxa.scientific_name_html` — the single owner of the
-    convention — so only the genus group and below is italic, and never the authorship.
-
-    This used to wrap the whole label (name AND authorship) in <i> regardless of rank, so every
-    family and tribe in the dropdown was italicised, along with every author.
+    """One local result / determination chip. The name is rendered by the single owner of the
+    convention, `taxa.render_full_name` — only the genus group and below is italic, the
+    authorship is roman, and an open-nomenclature `qualifier` (for a determination) sits after
+    the genus group. `name` is the bare composed name; authorship/qualifier are passed apart.
     """
     prefix = "🌿 " if nomenclatural_code == "ICN" else ""
-    n = prefix + svc_taxa.scientific_name_html(name, taxon_rank, authorship)
+    n = prefix + svc_taxa.render_full_name(
+        name, qualifier=qualifier, authorship=authorship, taxon_rank=taxon_rank)
     if not is_synonym:
         return n
     if accepted:
-        acc = svc_taxa.scientific_name_html(accepted, accepted_rank, accepted_authorship)
+        acc = svc_taxa.render_full_name(
+            accepted, authorship=accepted_authorship, taxon_rank=accepted_rank)
         return f"{n} &#10060; = {acc} &#10003;"
     return f"{n} &#10060;"
 

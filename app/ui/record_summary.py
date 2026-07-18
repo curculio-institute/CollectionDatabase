@@ -12,7 +12,7 @@ The shape, taken from the Records specimen picker:
 
   * IDENTITY FIRST — the catalog number and the name, because that is what a specimen *is*.
   * The name is italicised BY RANK and the authorship stays roman
-    (taxa.scientific_name_html is the single owner of that convention).
+    (taxa.render_full_name is the single owner of that convention).
   * The host plant rides on the identity line WITH ITS RELATIONSHIP ("collected from Quercus
     robur") — the relationship is what the association means.
   * The collecting event sits beneath, in the soft colour: it is what tells two specimens of
@@ -65,8 +65,10 @@ def lock_html(*, own: bool = False, from_event: bool = False) -> str:
 
 
 def name_html(name: str, rank: str | None = None, authorship: str | None = None) -> str:
-    """A scientific name: italic only for the genus group and below, authorship roman."""
-    return taxa_svc.scientific_name_html(name, rank, authorship)
+    """A scientific name: italic only for the genus group and below, authorship roman.
+
+    Thin pass-through to the single renderer, :func:`taxa.render_full_name`."""
+    return taxa_svc.render_full_name(name, authorship=authorship, taxon_rank=rank)
 
 
 def hosts_html(hosts) -> str:

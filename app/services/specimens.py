@@ -14,7 +14,7 @@ from app.models import (
 from app.models.base import _utcnow
 from app.services.biological import (
     save_biological_association, save_association_as_field_occurrence)
-from app.services.events import create_collecting_event
+from app.services.events import create_collecting_event, get_or_create_exact_event
 from app.services.identifiers import assign_code
 from app.services.print_queue import (
     enqueue_data,
@@ -115,11 +115,21 @@ def save_specimen_entry(
     event_fields: dict,
     specimen_fields: dict,
     determination_fields: dict,
+    reuse_event: bool = False,
 ) -> CollectionObject:
     """Orchestrator: create/reuse event, then specimen, then determination in
-    one transaction. Caller owns session.begin()."""
+    one transaction. Caller owns session.begin().
+
+    ``reuse_event`` (Import & Assign): when no ``event_id`` is given, reuse an
+    existing collecting_event that is 100% identical to ``event_fields`` instead of
+    always inserting a new one (`get_or_create_exact_event`), so a batch sharing a
+    collecting event does not spawn one identical event row per specimen. Off by
+    default — other paths keep creating fresh events."""
     if event_id is None:
-        ce = create_collecting_event(session, **event_fields)
+        if reuse_event:
+            ce, _ = get_or_create_exact_event(session, **event_fields)
+        else:
+            ce = create_collecting_event(session, **event_fields)
         eid = ce.id
     else:
         eid = event_id
@@ -234,6 +244,11 @@ def delete_determination(session: Session, det_id: int) -> None:
         session.flush()
 
 
+# Sentinel: "caller did not pass this argument" — distinct from an explicit None,
+# which for verbatim_identification means "recompose from the taxon".
+_UNSET = object()
+
+
 def update_determination_metadata(
     session: Session,
     det_id: int,
@@ -244,8 +259,16 @@ def update_determination_metadata(
     date_identified: str | None,
     identification_qualifier: str | None,
     identification_remarks: str | None,
+    verbatim_identification=_UNSET,
 ) -> TaxonDetermination:
-    """Update non-taxon metadata on an existing determination."""
+    """Update non-taxon metadata on an existing determination.
+
+    ``verbatim_identification`` defaults to *unchanged* (the frozen name stands). When passed,
+    it sets the name-as-used explicitly — this is how an **original combination** is recorded
+    (the determination's `taxon_id` still points at the current concept for search/grouping/
+    export, while the verbatim carries the name as it was used, e.g. `Carabus preslii
+    pecoudellus Deuve, 1998`). A blank string clears it back to None; callers that want the
+    auto-composed name recompose it themselves and pass the result."""
     d = session.get(TaxonDetermination, det_id)
     if d is None:
         raise ValueError(f"TaxonDetermination {det_id} not found")
@@ -255,6 +278,8 @@ def update_determination_metadata(
     d.date_identified          = date_identified
     d.identification_qualifier = identification_qualifier
     d.identification_remarks   = identification_remarks
+    if verbatim_identification is not _UNSET:
+        d.verbatim_identification = verbatim_identification or None
     d.updated_at               = _utcnow()
     session.flush()
     return d
@@ -265,6 +290,7 @@ def update_determination_taxon(
     det_id: int,
     *,
     taxon_id: int,
+    verbatim_identification=_UNSET,
 ) -> TaxonDetermination:
     """Re-point a determination at another taxon, **re-freezing the name** (#54).
 
@@ -281,8 +307,12 @@ def update_determination_taxon(
 
     `identifiedBy` / `dateIdentified` are untouched: who determined it, and when, has not
     changed just because the name was recorded wrongly.
+
+    By default the verbatim is recomposed from the new taxon. A caller preserving an explicit
+    **original combination** passes ``verbatim_identification=`` (the name as used), which is
+    kept instead of recomposing — so a corrected `taxon_id` does not overwrite it.
     """
-    from app.services.taxa import compose_scientific_name
+    from app.services.taxa import compose_full_name
 
     d = session.get(TaxonDetermination, det_id)
     if d is None:
@@ -291,7 +321,9 @@ def update_determination_taxon(
     if t is None:
         raise ValueError(f"Taxon {taxon_id} not found")
     d.taxon_id                = taxon_id
-    d.verbatim_identification = compose_scientific_name(session, t)
+    d.verbatim_identification = (
+        compose_full_name(session, t) if verbatim_identification is _UNSET
+        else (verbatim_identification or None))
     d.updated_at              = _utcnow()
     session.flush()
     return d

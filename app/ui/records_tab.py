@@ -15,9 +15,9 @@ import html as _html
 import app.services.taxa as svc_taxa
 import app.ui.record_summary as rs
 from app.services.taxa import (
-    compose_scientific_name,
+    compose_full_name,
     format_scientific_name,
-    render_identification,
+    split_scientific_name_authorship,
 )
 from app.vocab import IDENTIFICATION_QUALIFIER_OPTIONS
 from app.ui.choice_field import build_choice_field
@@ -274,9 +274,9 @@ def build_records_tab(session_factory, *, on_saved: callable | None = None) -> N
             for d in sp_svc.get_determination_history(s, co_id):
                 t = d.taxon
                 verbatim = d.verbatim_identification or (
-                    compose_scientific_name(s, t) if t else ""
+                    compose_full_name(s, t) if t else ""
                 )
-                t_label = render_identification(verbatim, d.identification_qualifier)
+                name_bare, authorship = split_scientific_name_authorship(verbatim)
                 if t:
                     is_syn = t.accepted_name_usage_id is not None
                     acc_label = acc_name = acc_rank = acc_auth = None
@@ -291,7 +291,9 @@ def build_records_tab(session_factory, *, on_saved: callable | None = None) -> N
                     acc_label = acc_name = acc_rank = acc_auth = None
                 det_snaps.append({
                     "id":                       d.id,
-                    "taxon_label":              t_label,
+                    "taxon_label":              verbatim,   # plain text for the search-box seed
+                    "taxon_name":               name_bare,  # bare name for the renderer
+                    "authorship":               authorship,
                     "verbatim_identification":  verbatim,
                     "is_synonym":               is_syn,
                     "accepted_label":           acc_label,

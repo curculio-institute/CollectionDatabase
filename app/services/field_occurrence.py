@@ -16,7 +16,7 @@ from sqlalchemy.orm import Session
 
 from app.models.base import _utcnow
 from app.models import FieldOccurrence, TaxonDetermination, CollectingEvent
-from app.services.taxa import compose_scientific_name, format_scientific_name
+from app.services.taxa import compose_full_name, format_scientific_name
 
 
 def create_field_occurrence(
@@ -55,7 +55,7 @@ def create_field_occurrence(
     if verbatim_identification is None:
         from app.models import Taxon
         tx = session.get(Taxon, taxon_id)
-        verbatim_identification = compose_scientific_name(session, tx) if tx else None
+        verbatim_identification = compose_full_name(session, tx) if tx else None
 
     det = TaxonDetermination(
         field_occurrence_id=fo.id,
@@ -103,7 +103,7 @@ def update_field_occurrence(
                 and "verbatim_identification" not in det_fields:
             from app.models import Taxon
             tx = session.get(Taxon, new_taxon_id)
-            det.verbatim_identification = compose_scientific_name(session, tx) if tx else None
+            det.verbatim_identification = compose_full_name(session, tx) if tx else None
         for k, v in det_fields.items():
             setattr(det, k, v)
         det.updated_at = now
