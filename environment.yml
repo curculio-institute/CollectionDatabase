@@ -14,3 +14,7 @@ dependencies:
       - weasyprint==69.*
       - qrcode[pil]==8.*
       - pycountry==26.*
+      # Geo mirror → GeoPackage for QGIS (app/services/geo_mirror.py). pyogrio ships GDAL
+      # wheels, so no system GDAL is needed.
+      - geopandas==1.*
+      - pyogrio==0.*

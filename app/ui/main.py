@@ -941,6 +941,28 @@ def index():
     # Cross-tab refresh registry — populated as tabs build, called by earlier tabs.
     _refreshers: dict[str, callable] = {}
 
+    # Geo mirror (QGIS): rebuild data/geo/collection.gpkg after saves. Registered as a
+    # refresher (every save path iterates _refreshers) and coalesced — a burst of saves
+    # triggers one rebuild — and kicked once on load so the mirror + starter .qgz exist
+    # immediately. The rebuild is guarded (geo_mirror.refresh never raises into a save).
+    _geo_pending: dict = {"timer": None}
+
+    def _run_geo_refresh():
+        _geo_pending["timer"] = None
+        import logging
+        try:
+            import app.services.geo_mirror as _geo
+            _geo.refresh(_sf)
+        except Exception:                                    # noqa: BLE001
+            logging.getLogger(__name__).exception("geo mirror refresh failed")
+
+    def _schedule_geo_refresh():
+        if _geo_pending["timer"] is None:
+            _geo_pending["timer"] = ui.timer(0.8, _run_geo_refresh, once=True)
+
+    _refreshers["geo_mirror"] = _schedule_geo_refresh
+    _schedule_geo_refresh()   # initial build on page load (existing data + starter .qgz)
+
     import json as _json
 
     def _mark_form_clean(scope: str | None = None):

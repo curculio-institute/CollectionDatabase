@@ -108,6 +108,14 @@ def media_dir() -> Path:
     return path
 
 
+def geo_dir() -> Path:
+    """Resolved folder for the QGIS geo mirror (created if missing): the GeoPackage the
+    map is written to (collection.gpkg) + a starter QGIS project (collection.qgz)."""
+    path = _DATA_DIR / "geo"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
 def wcvp_dir() -> Path:
     """Resolved folder holding the WCVP archive, the index built from it, and its README.
 
