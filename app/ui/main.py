@@ -1042,15 +1042,28 @@ def index():
                 spec_extid_v = {}
                 spec_ls = {}
                 spec_ls_v = {}
+                # Persistent backing lists for the staged footer controllers. The footer is
+                # rebuilt whenever the form re-renders (layout toggle, field edits); without a
+                # persistent store each rebuild would bind a FRESH empty list and silently drop
+                # already-staged files — bytes on disk, no DB row (the media-loss bug). Passing
+                # these as staged_store makes staged items survive re-renders; a deliberate wipe
+                # still clears them via each handle's clear() (see the mode-switch wipe).
+                _sm_items, _sm_items_v = [], []          # specimen media (standard / visiting)
+                _se_items, _se_items_v = [], []          # specimen ext-ids
+                _sl_items, _sl_items_v = [], []          # specimen life-stage
 
-                def _mk_spec_footer(media_holder, extid_holder, ls_holder):
+                def _mk_spec_footer(media_holder, extid_holder, ls_holder,
+                                    media_store, extid_store, ls_store):
                     # Staged controllers, rendered bottom-right of the specimen card.
-                    ls_holder.update(build_life_stage_button(_sf, staged=True))
+                    ls_holder.update(build_life_stage_button(
+                        _sf, staged=True, staged_store=ls_store))
                     extid_holder.update(build_external_id_button(
                         _sf, target_kind="collection_object", staged=True,
+                        staged_store=extid_store,
                         tooltip="Specimen resource identifiers (attached on Save)"))
                     media_holder.update(build_media_button(
                         _sf, target_kind="collection_object", staged=True,
+                        staged_store=media_store,
                         tooltip="Specimen media (attached on Save)"))
 
                 with ui.row().classes("w-full flex-wrap gap-4 items-start"):
@@ -1059,7 +1072,9 @@ def index():
                     # paths below reference them unchanged.
                     spec = build_specimen_form(
                         _sf, identifier_policy="standard",
-                        footer_slot=lambda: _mk_spec_footer(spec_media, spec_extid, spec_ls))
+                        footer_slot=lambda: _mk_spec_footer(
+                            spec_media, spec_extid, spec_ls,
+                            _sm_items, _se_items, _sl_items))
                     specimen_card = spec["card"]
                     specimen_card.classes(remove="w-full", add="flex-1 min-w-[360px]")
                     # Visiting-collection variant: free-text identity, pure data
@@ -1068,7 +1083,9 @@ def index():
                     # card (only one of the two is ever visible).
                     spec_visiting = build_specimen_form(
                         _sf, identifier_policy="visiting",
-                        footer_slot=lambda: _mk_spec_footer(spec_media_v, spec_extid_v, spec_ls_v))
+                        footer_slot=lambda: _mk_spec_footer(
+                            spec_media_v, spec_extid_v, spec_ls_v,
+                            _sm_items_v, _se_items_v, _sl_items_v))
                     spec_visiting["card"].set_visibility(False)
                     spec_visiting["card"].classes(remove="w-full",
                                                   add="flex-1 min-w-[360px]")
@@ -1134,10 +1151,12 @@ def index():
                     # Event media (staged; committed to the event on Save). Built
                     # into the form's footer so it shares the Confidential line.
                     event_media: dict = {}
+                    _em_items: list = []   # persistent staged store (survives form re-renders)
 
                     def _event_footer():
                         event_media.update(build_media_button(
                             _sf, target_kind="collecting_event", staged=True,
+                            staged_store=_em_items,
                             tooltip="Event media (attached on Save)"))
 
                     ce = build_collecting_event_form(
