@@ -143,15 +143,13 @@ def refresh(session_factory) -> Path:
 # and cannot fall off the map; QGIS reprojects the 3857 basemap tiles onto the canvas instead.
 # Kept small on purpose — it is a *starter* the user restyles and re-saves (never overwritten).
 
-# QGIS internal srs.db ids (stable across installs) for the two CRSs we use. Belt-and-braces
-# next to the authoritative <wkt>/<authid> below — QGIS resolves the CRS from those.
-_QGIS_SRSID = {4326: 3452, 3857: 3857}
-
-
 def _srs_block(epsg: int) -> str:
-    """An authoritative QGIS <spatialrefsys> for an EPSG code, built from pyproj so the WKT
-    (which modern QGIS relies on) is correct — the hand-written blocks lacked it, which is what
-    broke the project CRS."""
+    """An authoritative QGIS <spatialrefsys> for an EPSG code, built from pyproj.
+
+    Carries WKT (which modern QGIS relies on) + proj4 + authid, and deliberately **omits the
+    internal <srsid>**: that id is per-install (QGIS's own srs.db) and a hardcoded guess can
+    override the authid and load the wrong CRS — which broke the project CRS. QGIS resolves the
+    srsid itself from the authid/WKT."""
     import warnings
     from pyproj import CRS
     crs = CRS.from_epsg(epsg)
@@ -162,7 +160,6 @@ def _srs_block(epsg: int) -> str:
         '<spatialrefsys nativeFormat="Wkt">'
         f"<wkt>{_esc(crs.to_wkt())}</wkt>"
         f"<proj4>{_esc(proj4)}</proj4>"
-        f"<srsid>{_QGIS_SRSID.get(epsg, 0)}</srsid>"
         f"<srid>{epsg}</srid>"
         f"<authid>EPSG:{epsg}</authid>"
         f"<description>{_esc(crs.name)}</description>"
