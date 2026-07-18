@@ -103,6 +103,14 @@ def _build_taxon_form(
         # Live preview of the full composed name (element + parent chain).
         preview_lbl = ui.label("").classes("text-sm text-secondary italic -mt-1")
 
+        # Authorship sits with the name — it is part of the name — directly after the element
+        # and before the placement (parent/rank).
+        auth_in = ui.input(
+            "Authorship, e.g. Linnaeus, 1758 or (Linnaeus, 1758)",
+            value=(taxon.scientific_name_authorship or "") if taxon
+            else (pf.get("scientific_name_authorship") or ""),
+        ).classes("w-full")
+
         _init_rank = taxon.taxon_rank if taxon else pf.get("taxon_rank")
 
         # Parent BEFORE rank: a rank belongs to a nomenclatural code (TaxonWorks models the
@@ -144,12 +152,6 @@ def _build_taxon_form(
         # Synonymy is controlled solely by the accepted-name link below: a taxon
         # is a synonym iff an accepted name is set. There is no separate status
         # field (taxonomicStatus is derived from the link at DwC export time).
-
-        auth_in = ui.input(
-            "Authorship, e.g. Linnaeus, 1758 or (Linnaeus, 1758)",
-            value=(taxon.scientific_name_authorship or "") if taxon
-            else (pf.get("scientific_name_authorship") or ""),
-        ).classes("w-full")
 
         # Accepted-name link — all taxa, no rank filter. Setting this is what
         # makes the taxon a synonym (there is no separate status field).

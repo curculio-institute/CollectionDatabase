@@ -39,8 +39,10 @@ _TYPE_STATUS_OPTIONS = [
 ]
 from app.services.taxa import (
     compose_scientific_name,
+    compose_full_name,
     format_scientific_name,
-    render_identification,
+    render_full_name_of,
+    split_scientific_name_authorship,
 )
 from app.ui.taxon_search import build_taxon_search, _local_item_html
 from app.ui.date_input import AUTO_CHANGED_CSS, attach_date_validation, append_year_pin
@@ -88,12 +90,15 @@ def build_identification_list(
         with session_factory() as s:
             for d in sp_svc.get_determination_history(s, co_id):
                 t = d.taxon
-                # The determination name is FROZEN at save time (verbatim); fall
-                # back to the live composed name only for legacy rows with none.
+                # The determination name is FROZEN at save time (verbatim, now WITH
+                # authorship); fall back to the live composed full name only for legacy
+                # rows with none. Split into the parts the renderer needs: the bare name
+                # (italic) and the authorship (roman). A legacy verbatim that carried no
+                # author simply splits to an empty author — it renders as it was frozen.
                 verbatim = d.verbatim_identification or (
-                    compose_scientific_name(s, t) if t else ""
+                    compose_full_name(s, t) if t else ""
                 )
-                t_label = render_identification(verbatim, d.identification_qualifier)
+                name_bare, authorship = split_scientific_name_authorship(verbatim)
                 if t:
                     is_syn = t.accepted_name_usage_id is not None
                     acc_label = acc_name = acc_rank = acc_auth = None
@@ -109,7 +114,9 @@ def build_identification_list(
                 result.append({
                     "id":                       d.id,
                     "taxon_id":                 d.taxon_id,
-                    "taxon_label":              t_label,
+                    "taxon_label":              verbatim,   # plain text for the search-box seed
+                    "taxon_name":               name_bare,  # bare name for the renderer
+                    "authorship":               authorship,
                     "verbatim_identification":  verbatim,
                     "is_synonym":               is_syn,
                     "accepted_label":           acc_label,
@@ -139,14 +146,16 @@ def build_identification_list(
         """Read-only lookup for a staged taxon pick: name, synonym marker, frozen preview.
 
         Opens a session but writes nothing. The verbatim name shown here is what commit()
-        will freeze — computed the same way (compose_scientific_name), so the row never
-        previews a name different from the one it will store.
+        will freeze — computed the same way (compose_full_name), so the row never previews a
+        name different from the one it will store. `taxon_name` / `authorship` are the parts the
+        renderer needs (bare name italic, author roman); `verbatim` is the frozen full string.
         """
         with session_factory() as s:
             t = s.get(Taxon, taxon_id)
             if t is None:
                 return {}
-            verbatim = compose_scientific_name(s, t)
+            name_bare = compose_scientific_name(s, t)
+            verbatim = compose_full_name(s, t)
             is_syn = t.accepted_name_usage_id is not None
             acc_label = acc_name = acc_rank = acc_auth = None
             if is_syn and t.accepted_name_usage_id:
@@ -156,8 +165,10 @@ def build_identification_list(
                     acc_name, acc_rank = acc.scientific_name, acc.taxon_rank
                     acc_auth = acc.scientific_name_authorship
             t_rank = t.taxon_rank
+            t_auth = t.scientific_name_authorship
         return {"taxon_id": taxon_id, "verbatim_identification": verbatim,
-                "taxon_label": verbatim, "is_synonym": is_syn,
+                "taxon_label": verbatim, "taxon_name": name_bare, "authorship": t_auth,
+                "is_synonym": is_syn,
                 "accepted_label": acc_label, "taxon_rank": t_rank,
                 "accepted_name": acc_name, "accepted_rank": acc_rank,
                 "accepted_authorship": acc_auth}
@@ -238,14 +249,17 @@ def build_identification_list(
                 _render_row(i, d)
 
     def _render_row(idx: int, d: dict) -> None:
-        # Italics by RANK, and never on the authorship — taxa.scientific_name_html owns the
-        # convention. `taxon_label` already carries the open-nomenclature qualifier, which the
-        # renderer leaves roman ("Otiorhynchus cf. forticollis").
+        # One renderer owns italics/authorship/qualifier — taxa.render_full_name (via
+        # _local_item_html). Pass the bare name, its authorship, and the qualifier apart;
+        # the name is italic by rank, the author roman, the qualifier roman after the
+        # genus group ("Otiorhynchus cf. forticollis (Stierlin, 1861)").
         chip_html = _local_item_html(
-            d["taxon_label"],
+            d.get("taxon_name") or d["taxon_label"],
             is_synonym=d["is_synonym"],
             accepted=d.get("accepted_name") or d.get("accepted_label"),
             taxon_rank=d.get("taxon_rank"),
+            authorship=d.get("authorship"),
+            qualifier=d.get("identification_qualifier"),
             accepted_rank=d.get("accepted_rank"),
             accepted_authorship=d.get("accepted_authorship"),
         )
@@ -393,10 +407,38 @@ def build_identification_list(
                         value=d["identification_remarks"] or "",
                     ).classes("col-span-1")
 
+                # "Identified as" — the frozen verbatim identification (name as used). Seeded
+                # with the current value; edit it to record the name exactly as used. Blank
+                # recomposes from the taxon; a value that still equals the composed name of the
+                # loaded taxon is treated as "auto" so a taxon correction re-freezes it.
+                e_verbatim = ui.input(
+                    "Identified as — verbatim identification",
+                    value=d.get("verbatim_identification") or "",
+                ).classes("w-full mb-2").tooltip(
+                    "The name exactly as used (e.g. 'Carabus preslii pecoudellus Deuve, 1998'). "
+                    "Links to the taxon above for search & export; blank recomposes from that "
+                    "taxon.")
+
+                def _resolve_edit_verbatim(s, new_tid, loaded_tid, field_val):
+                    """The verbatim to store on save: an override the user typed wins; an
+                    unchanged/blank field re-freezes from the (possibly new) taxon.
+
+                    "Unchanged" = the field still equals the composed name of the taxon that
+                    was loaded — so a taxon *correction* re-freezes the name, while a name the
+                    user actually customised (a verbatim identification, or a frozen name kept
+                    against a later reclassification) is preserved."""
+                    field_ver = (field_val or "").strip()
+                    loaded_t = s.get(Taxon, loaded_tid) if loaded_tid else None
+                    auto_old = compose_full_name(s, loaded_t) if loaded_t else ""
+                    if field_ver and field_ver != auto_old:
+                        return field_ver
+                    new_t = s.get(Taxon, new_tid)
+                    return compose_full_name(s, new_t) if new_t else None
+
                 def _do_save_edit(
                     _=None, det=d, ix=idx,
                     idby=e_idby_state, sx=e_sex, ts=e_type, dt=e_dtid, ql=e_qual, rm=e_rem,
-                    tx=e_taxon,
+                    tx=e_taxon, vb=e_verbatim,
                 ):
                     new_tid = tx["taxon_id"] or det["taxon_id"]
                     if new_tid == -1:
@@ -407,6 +449,8 @@ def build_identification_list(
                             with session_factory() as s:
                                 with s.begin():
                                     idby_id = idby["commit"](s)
+                                    verbatim = _resolve_edit_verbatim(
+                                        s, new_tid, det["taxon_id"], vb.value)
                                     sp_svc.update_determination_metadata(
                                         s, det["id"],
                                         sex=sx.value or None,
@@ -415,10 +459,12 @@ def build_identification_list(
                                         date_identified=dt.value or None,
                                         identification_qualifier=ql["get_value"]() or None,
                                         identification_remarks=rm.value or None,
+                                        verbatim_identification=verbatim,
                                     )
                                     if new_tid != det["taxon_id"]:
                                         sp_svc.update_determination_taxon(
-                                            s, det["id"], taxon_id=new_tid)
+                                            s, det["id"], taxon_id=new_tid,
+                                            verbatim_identification=verbatim)
                             if on_changed:
                                 on_changed()
                         except Exception as exc:
@@ -440,11 +486,17 @@ def build_identification_list(
                         })
                         if new_tid != _dets[ix]["taxon_id"]:
                             _dets[ix].update(_taxon_display(new_tid))
-                        # Re-render the name: the qualifier is shown inline. (Live
-                        # mode re-renders automatically via _reload_from_db.)
-                        _dets[ix]["taxon_label"] = render_identification(
-                            _dets[ix].get("verbatim_identification") or "", ql["get_value"]()
-                        )
+                        # Verbatim / original-combination override (same rule as live mode).
+                        with session_factory() as s:
+                            verbatim = _resolve_edit_verbatim(
+                                s, _dets[ix]["taxon_id"], det["taxon_id"], vb.value)
+                        _dets[ix]["verbatim_identification"] = verbatim
+                        _dets[ix]["taxon_label"] = verbatim or ""
+                        nb, au = split_scientific_name_authorship(verbatim or "")
+                        _dets[ix]["taxon_name"] = nb
+                        _dets[ix]["authorship"] = au
+                        # The chip re-renders from taxon_name + authorship + the current
+                        # qualifier (see _render_row); _refresh() below repaints the row.
                     _refresh()
 
                 def _do_delete(_=None, det=d, ix=idx):
@@ -498,6 +550,16 @@ def build_identification_list(
 
         add_rem  = ui.input("remarks").classes("flex-1 min-w-40")
 
+    with ui.row().classes("w-full items-end gap-2 mt-1"):
+        add_verbatim = ui.input(
+            "Identified as — verbatim identification (optional)",
+            placeholder="blank = the name above, composed automatically",
+        ).classes("flex-1").tooltip(
+            "Record the name exactly as it was used — e.g. "
+            "'Carabus preslii pecoudellus Deuve, 1998'. The identification still links to "
+            "the taxon chosen above (for search, grouping & export); this only sets the "
+            "frozen verbatim identification. Leave blank to use the composed name.")
+
     def _do_add(_=None):
         new_tid = add_taxon_state["taxon_id"]
         if not new_tid:
@@ -513,9 +575,12 @@ def build_identification_list(
                 with session_factory() as s:
                     with s.begin():
                         idby_id = add_idby_state["commit"](s)
-                        # Freeze the determination name at save time.
+                        # Freeze the determination name at save time — WITH authorship.
+                        # An explicit "identified as" (verbatim identification) wins; blank
+                        # composes from the taxon.
                         new_t = s.get(Taxon, new_tid)
-                        verbatim = compose_scientific_name(s, new_t) if new_t else None
+                        _cv = (add_verbatim.value or "").strip()
+                        verbatim = _cv or (compose_full_name(s, new_t) if new_t else None)
                         sp_svc.create_determination(
                             s,
                             collection_object_id=co_id,
@@ -549,12 +614,19 @@ def build_identification_list(
                             acc_label = format_scientific_name(acc)
                             acc_name, acc_rank = acc.scientific_name, acc.taxon_rank
                             acc_auth = acc.scientific_name_authorship
-                    verbatim = compose_scientific_name(s, t)  # frozen at add time
+                    # An explicit "identified as" (verbatim identification) wins; blank composes.
+                    _cv = (add_verbatim.value or "").strip()
+                    verbatim = _cv or compose_full_name(s, t)     # frozen at add time, WITH author
+                    # Render from the verbatim itself (split author out), so a custom
+                    # combination italicises/keeps-roman exactly as stored.
+                    name_bare, authorship = split_scientific_name_authorship(verbatim)
                     t_rank = t.taxon_rank
                 else:
-                    is_syn, verbatim = False, f"taxon #{new_tid}"
+                    _cv = (add_verbatim.value or "").strip()
+                    verbatim = _cv or f"taxon #{new_tid}"
+                    is_syn = False
+                    name_bare, authorship = split_scientific_name_authorship(verbatim)
                     acc_label = acc_name = acc_rank = acc_auth = t_rank = None
-            t_label = render_identification(verbatim, add_qual["get_value"]())
 
             # No person is created here: a determiner typed for a specimen that is never
             # saved would linger in the People list (#60). The name is carried; the save
@@ -563,7 +635,9 @@ def build_identification_list(
                 "id":                       None,
                 "_orig_taxon_id":           None,
                 "taxon_id":                 new_tid,
-                "taxon_label":              t_label,
+                "taxon_label":              verbatim,   # plain text for the search-box seed
+                "taxon_name":               name_bare,  # bare name for the renderer
+                "authorship":               authorship,
                 "verbatim_identification":  verbatim,
                 "is_synonym":               is_syn,
                 "accepted_label":           acc_label,
@@ -591,6 +665,7 @@ def build_identification_list(
         add_type["set_value"](None)
         add_qual["set_value"](None)
         add_rem.value  = ""
+        add_verbatim.value = ""
         _refresh()
 
     with ui.row().classes("w-full items-center mt-2"):
@@ -617,6 +692,7 @@ def build_identification_list(
         add_type["set_value"](None)
         add_qual["set_value"](None)
         add_rem.value  = ""
+        add_verbatim.value = ""
         _refresh()
 
     def _state_refresh_person_opts() -> None:
@@ -672,8 +748,8 @@ def build_identification_list(
                     date_identified=d.get("date_identified"),
                     identification_qualifier=d.get("identification_qualifier"),
                     identification_remarks=d.get("identification_remarks"),
-                    # Frozen at save time, from the taxon actually stored.
-                    verbatim_identification=compose_scientific_name(session, t) if t else None,
+                    # Frozen at save time, from the taxon actually stored — WITH authorship.
+                    verbatim_identification=compose_full_name(session, t) if t else None,
                     is_current=0,
                 )
                 d["id"] = created.id

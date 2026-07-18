@@ -572,8 +572,8 @@ def test_update_field_occurrence_edits_observation_and_determination(session):
     det = fo_svc.current_determination(session, fo)
     assert det.taxon_id == willow.id
     assert det.identification_qualifier == "aff."
-    # Changing the taxon re-freezes the composed name (qualifier-free).
-    assert det.verbatim_identification == "Salix caprea"
+    # Changing the taxon re-freezes the composed FULL name (with authorship, qualifier-free).
+    assert det.verbatim_identification == "Salix caprea L."
 
 
 def test_association_field_occurrence_round_trips_through_reader(session):

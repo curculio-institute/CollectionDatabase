@@ -308,10 +308,11 @@ def build_import_assign_tab(session_factory, refreshers: dict, on_saved=None) ->
 
             dateIdentified is empty in the whole spreadsheet while identifiedBy is not — the
             determination was made, the year just was not recorded in the file. So it is a
-            small field beside the name rather than a form of its own, and it **keeps its
-            value between rows**: a batch of determinations shares a year, and re-typing it
-            1400 times is how a wrong year gets typed. It stays visible next to the name, so
-            a carried-over value is never invisible.
+            small field beside the name rather than a form of its own. It carries its value
+            *while stepping between rows* (a batch of determinations shares a year), but it
+            is **cleared on every save** (#130): a value silently inherited across a saved
+            specimen is a wrong date waiting to be stamped, so the user re-enters it per
+            batch as an explicit act rather than having it persist unseen.
             """
             csv_year = det["date_identified"]
             with ui.row().classes("gap-2 items-center"):
@@ -439,35 +440,64 @@ def build_import_assign_tab(session_factory, refreshers: dict, on_saved=None) ->
             name, inline_author = taxa_svc.split_scientific_name_authorship(raw)
             author = (row.get("scientificNameAuthorship") or "").strip() or inline_author
 
-            # 1. Check local DB
-            local = _with_session(
-                lambda s: (lambda t: (t.id, t.scientific_name_authorship or "") if t else None)(
-                    taxa_svc.find_taxon_by_name(s, name)))
-            if local:
-                local_id, local_author = local
+            def _accept_local(local_id: int, cand_name: str, local_author: str, *, note: str):
+                """Resolve to a local candidate, honouring the author-evidence check (§2).
+
+                No authorship on either side → the name stands on its own. Authors agree →
+                resolve with a note. Authors DISAGREE → do not auto-pick (a homonym, or the
+                row means another combination): show both and let the user say."""
                 if not author or not local_author:
-                    # No authorship on one side — nothing to check against, so the name stands
-                    # on its own as before. Not a mismatch; just no evidence either way.
-                    _set_taxon(local_id, "resolved locally")
+                    _set_taxon(local_id, note)
                     return
                 if taxa_svc.authorship_matches(author, local_author):
-                    _set_taxon(local_id, f"resolved locally · author matches ({local_author})")
+                    _set_taxon(local_id, f"{note} · author matches ({local_author})")
                     return
-                # Same name, different author: these are two different beetles (a homonym, or
-                # the row means another combination). Stamping the local one would be exactly
-                # the silent wrong value §2 forbids — so stop, show both, and let the user say.
                 with taxon_status:
                     with ui.row().classes("items-start gap-2 mb-1"):
                         ui.icon("warning", size="sm").style("color:#d97706; margin-top:2px")
                         ui.label(
-                            f'"{name}" is in the database with authorship {local_author!r}, '
+                            f'"{cand_name}" is in the database with authorship {local_author!r}, '
                             f'but this row says {author!r}. Same name, different author — '
                             "confirm which taxon this specimen is."
                         ).classes("text-sm").style("color:#d97706")
-                    ui.button(f"Use the local {name} ({local_author})", icon="check") \
+                    ui.button(f"Use the local {cand_name} ({local_author})", icon="check") \
                       .props("flat dense size=sm") \
                       .on_click(lambda: _set_taxon(local_id, "confirmed by hand"))
                 _build_fallback_search(taxon_status, row, name)
+
+            # 1. Check local DB — exact composed-name match first.
+            local = _with_session(
+                lambda s: (lambda t: (t.id, t.scientific_name or "", t.scientific_name_authorship or "")
+                           if t else None)(taxa_svc.find_taxon_by_name(s, name)))
+            if local:
+                _accept_local(local[0], local[1], local[2], note="resolved locally")
+                return
+
+            # 1b. Subgenus-insensitive local match — the PREVENTION seam. A bare binomial
+            # "Carabus arvensis" must resolve to an existing "Carabus (Eucarabus) arvensis"
+            # (and vice versa) instead of dead-ending at "Add manually" and spawning a second
+            # row for the same species. Act only on a SINGLE candidate; several rows sharing
+            # the binomial (different subgenera, or an existing duplicate) is a real ambiguity
+            # — present them, never guess (§2).
+            subg = _with_session(
+                lambda s: [(t.id, t.scientific_name or "", t.scientific_name_authorship or "",
+                            t.taxon_rank)
+                           for t in taxa_svc.find_species_ignoring_subgenus(s, name)])
+            if len(subg) == 1:
+                sid, sname, sauth, _ = subg[0]
+                _accept_local(sid, sname, sauth,
+                              note=f"resolved locally · subgenus normalised → {sname}")
+                return
+            if len(subg) > 1:
+                with taxon_status:
+                    with ui.row().classes("items-start gap-2 mb-1"):
+                        ui.icon("info", size="sm").style("color:#2563eb; margin-top:2px")
+                        ui.label(
+                            f'"{name}" matches several names that differ only by subgenus — '
+                            "pick the intended one (they may be duplicates to merge later):"
+                        ).classes("text-sm")
+                    _build_local_candidates(taxon_status, subg)
+                    _build_fallback_search(taxon_status, row, name)
                 return
 
             # 2. Search TaxonWorks
@@ -545,6 +575,26 @@ def build_import_assign_tab(session_factory, refreshers: dict, on_saved=None) ->
                     ui.label("or").classes("text-xs").style("color:var(--tp-base-soft)")
                     ui.button("Add manually", icon="add").props("flat dense size=sm") \
                       .on_click(lambda: _open_manual_dialog(row))
+
+        def _build_local_candidates(container, cands: list[tuple]) -> None:
+            """Clickable local taxa that share a binomial (differing only by subgenus).
+
+            Shown when a bare-binomial CSV name matches more than one local row — genuinely
+            different subgenera, or an existing duplicate. The full composed name (subgenus
+            included) is rendered so the two are distinguishable; clicking stamps that taxon.
+            The subgenus is shown but is not treated as a matching discriminator (it is
+            unstable across catalogues), which is exactly why they collided here.
+            """
+            with container:
+                for cid, cname, cauth, crank in cands:
+                    item = ui.element("div").classes("tw-result tw-dropdown-item") \
+                        .style("padding:6px 10px; cursor:pointer; border-radius:4px; "
+                               "border:1px solid var(--tp-base-border); margin-bottom:3px;")
+                    with item:
+                        ui.html(taxa_svc.render_full_name(
+                            cname, authorship=cauth, taxon_rank=crank))
+                    item.on("click", lambda _, cid=cid, cname=cname:
+                            _set_taxon(cid, f"selected local → {cname}"))
 
         def _dataset_hits(name: str) -> list[tuple]:
             """(dataset, importable rows) for every installed dataset that knows *name*.
@@ -873,6 +923,11 @@ def build_import_assign_tab(session_factory, refreshers: dict, on_saved=None) ->
                             session,
                             taxon_id=state["taxon_id"],
                             event_id=None,
+                            # Retroactive digitisation of a large batch: many
+                            # specimens share one collecting event, so reuse an
+                            # existing 100%-identical event rather than inserting a
+                            # duplicate per specimen (#event-dedup).
+                            reuse_event=True,
                             event_fields=event_fields,
                             specimen_fields={
                                 "catalog_number":    code,
@@ -943,6 +998,11 @@ def build_import_assign_tab(session_factory, refreshers: dict, on_saved=None) ->
             cat_num.options = {c: c for c in _reserved_opts()}
             cat_num.update()
             cat_num.value = None
+            # Empty the carried-over identification year after every save (#130): a
+            # dateIdentified left filled from the previous specimen is a silent wrong
+            # value waiting to be stamped on the next one. The user re-enters it per
+            # batch — an explicit act — rather than inheriting it unseen.
+            state["det_year"] = ""
             row_sel.set_value(None)          # fires _clear_form via on_value_change
             _clear_form()
             row_sel.run_method("focus")
@@ -1028,8 +1088,12 @@ def build_import_assign_tab(session_factory, refreshers: dict, on_saved=None) ->
                 row_sel.set_value(None)
                 assign_card.set_visibility(True)
                 form_area.set_visibility(False)
+                # Only ever one file is read (the latest), so only one should be
+                # listed (#131): clear the upload's file list after each upload,
+                # or a re-upload leaves the superseded file shown as still loaded.
+                upload_widget.reset()
 
-            ui.upload(
+            upload_widget = ui.upload(
                 label="Choose CSV…",
                 on_upload=_on_upload,
                 auto_upload=True,

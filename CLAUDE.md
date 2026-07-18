@@ -71,6 +71,19 @@ Process:
 Only specimens physically found in the collection ever get a database record. Records in
 the reference table that have no matching physical specimen are simply never selected.
 
+**Collecting-event reuse (decided).** A retroactive-digitisation batch is a long run of
+specimens that often share one collecting event, so Import & Assign **reuses an existing
+`collecting_event` that is 100% identical** to the row being saved rather than inserting a
+duplicate per specimen (`events.get_or_create_exact_event`, passed via
+`save_specimen_entry(reuse_event=True)`). "Identical" is exact: every data column must equal
+what a new row from these fields *would store* — same geo name→FK resolution, float coercion
+and defaults as the insert (one shared normaliser, `_normalize_event_fields`, so create and
+match can't drift). An event that additionally carries a coordinate, habitat, or any column
+the new fields lack is **not** reused. Erring toward create is safe (at worst a duplicate, the
+old behaviour); a false match would silently file a specimen under the wrong locality (§2), so
+the comparison is over *all* columns, never just the ones provided. Only Import & Assign opts
+in; the other create paths still make a fresh event each save.
+
 ### Workflow 2 — New incoming specimen (Digitize tab)
 
 Use case: a fresh specimen arrives and needs to be recorded immediately.
@@ -306,14 +319,23 @@ local-master with no automated push.
   to any `taxon` row, accepted or synonym. The DwC export resolves to the accepted name
   for upload; the verbatim determination name is preserved in `verbatim_identification`.
 - **Determinations freeze the name as used (Epic #30, Phase 5).** Every ID point saves
-  `dwc:verbatimIdentification` = the *composed* name of the chosen taxon **at save time**
-  (qualifier-free); the open-nomenclature qualifier lives separately in
+  `dwc:verbatimIdentification` = the *composed full name* of the chosen taxon **at save time**
+  — bare name **plus authorship** (`taxa.compose_full_name`; authorship is part of a name),
+  qualifier-free; the open-nomenclature qualifier lives separately in
   `dwc:identificationQualifier`. Re-classifying the taxon later never rewrites a saved
-  determination's name, yet `taxon_id` still drives search / grouping / export. Display
-  goes through **`render_identification(verbatim, qualifier)`** in `taxa.py`, which inserts
-  the qualifier **right after the genus-group** by one rule — `Otiorhynchus cf. forticollis`,
-  `Otiorhynchus (Nihus) aff. forticollis`, `Otiorhynchus sp.` (a genus-row determination →
-  empty rest). No per-qualifier logic, no `sp.` special case.
+  determination's name, yet `taxon_id` still drives search / grouping / export.
+- **One name renderer — `taxa.render_full_name` (decided).** *Every* surface that shows a
+  scientific name goes through the single owner of the convention: only the genus group and
+  below is italic (a family/tribe/order is roman), the **authorship is roman**, and — for a
+  determination — the qualifier is placed **right after the genus-group**, roman, by one rule
+  (`Otiorhynchus cf. forticollis`, `Otiorhynchus (Nihus) aff. forticollis`, `Otiorhynchus sp.`
+  — a genus-row determination → empty rest; no per-qualifier logic, no `sp.` special case).
+  It renders the *name* only — the determiner/date belong to the *identification*, not the
+  name. Adapters: **`render_full_name_of(taxon, …)`** (from a `Taxon` row) and
+  **`render_full_name_frozen(verbatim, …)`** (splits the authorship back out of a frozen
+  `verbatimIdentification` so it renders roman). `scientific_name_html` and the qualifier
+  placer `_place_qualifier` (was `render_identification`) are **private building blocks** —
+  call `render_full_name`, never them.
 
 ---
 
@@ -926,10 +948,36 @@ discipline; `test_schema_integrity.py::test_synonym_integrity_triggers_present` 
 goes through `app/services/taxa.py`: `synonymize()` (resolve target to terminal, flatten the
 name's own synonyms onto it — parent and name untouched), `make_accepted()` (clear the link
 only), `reparent()` (re-home an accepted name; synonyms are *not* touched, they carry their
-own lineage). A static test
+own lineage), and `merge_taxa()` (below). A static test
 (`test_synonym_integrity.py::test_parent_and_accepted_writes_are_centralised`) fails if any
 code outside `taxa.py` assigns these columns directly. **No fallback defaults** — required
 links are inherited or the op fails loudly, never guessed.
+
+**Merging duplicate names (de-duplication, NOT synonymisation — decided 2026-07-18).**
+`taxa.merge_taxa(session, keep_id, absorb_id)` (Taxonomy tab → "Merge names") folds two rows
+that are the **same name written two ways** — a typo, or an exact/subgenus duplicate — into
+one: every reference (determinations, biological associations, dataset-record links — all FKs
+to `taxon` discovered dynamically via `PRAGMA`, plus absorb's synonyms and children, the
+latter re-homed through `reparent` and recomposed) moves onto `keep`, then `absorb` is deleted.
+`keep` keeps *its* name/lineage, so choosing which to keep chooses the surviving spelling. A
+determination's frozen `verbatimIdentification` is **not** rewritten — the name as recorded
+stands; only the live `taxon_id` moves. It is **not** a way to record synonymy: `_merge_blocker`
+refuses (loudly, and surfaced in `merge_taxa_preview.blocker`) when the two are **different
+ranks** or **either is itself a synonym** — that is `synonymize()`'s job. The UI dialog carries
+the same warning. (Because the re-points use raw SQL, `merge_taxa` `expire_all()`s before
+deleting `absorb`, or SQLAlchemy would null the NOT-NULL `taxon_id` on determinations it still
+thinks `absorb` owns — the same ORM hazard `delete_taxon` guards against.)
+
+**Preventing the duplicate at the source (Import & Assign — decided 2026-07-18).** The duplicate
+above (`Carabus arvensis` vs `Carabus (Eucarabus) arvensis`) arose because Import & Assign's
+auto-resolver matched on the *exact composed name*, and the subgenus is baked into that name yet
+optional in how a binomial is written — so a bare-binomial CSV cell dead-ended at "Add manually"
+and spawned a second row. Fix: after an exact `find_taxon_by_name` miss, the resolver falls back
+to `find_species_ignoring_subgenus` (matches on `binomial_key` — the name with any `(Subgenus)`
+stripped). A **single** subgenus-insensitive candidate resolves to it (no duplicate); **several**
+(genuinely different subgenera, or an existing duplicate) are **presented, never auto-picked**
+(the silent wrong value of §2). Subgenus placement is unstable across catalogues and often
+omitted, so it is deliberately not a matching discriminator — the binomial is the stable key.
 
 **Manual audit, not automatic.** `verify_taxon_consistency(session)` is a read-only check
 (Taxonomy-tab "Check consistency" button) that reports drift the trigger structurally cannot
