@@ -143,28 +143,33 @@ def refresh(session_factory) -> Path:
 # tiles render natively; the points are stored in 4326 and QGIS reprojects them on the fly.
 # Kept small on purpose — it is a *starter* the user restyles and re-saves (never overwritten).
 
-_WGS84_SRS = (
-    "<spatialrefsys>"
-    "<proj4>+proj=longlat +datum=WGS84 +no_defs</proj4>"
-    "<srsid>3452</srsid><srid>4326</srid><authid>EPSG:4326</authid>"
-    "<description>WGS 84</description>"
-    "<projectionacronym>longlat</projectionacronym>"
-    "<ellipsoidacronym>EPSG:7030</ellipsoidacronym>"
-    "<geographicflag>true</geographicflag>"
-    "</spatialrefsys>"
-)
+# QGIS internal srs.db ids (stable across installs) for the two CRSs we use. Belt-and-braces
+# next to the authoritative <wkt>/<authid> below — QGIS resolves the CRS from those.
+_QGIS_SRSID = {4326: 3452, 3857: 3857}
 
-_MERC_SRS = (
-    "<spatialrefsys>"
-    "<proj4>+proj=merc +a=6378137 +b=6378137 +lat_ts=0 +lon_0=0 +x_0=0 +y_0=0 +k=1 "
-    "+units=m +nadgrids=@null +wktext +no_defs</proj4>"
-    "<srsid>3857</srsid><srid>3857</srid><authid>EPSG:3857</authid>"
-    "<description>WGS 84 / Pseudo-Mercator</description>"
-    "<projectionacronym>merc</projectionacronym>"
-    "<ellipsoidacronym>WGS84</ellipsoidacronym>"
-    "<geographicflag>false</geographicflag>"
-    "</spatialrefsys>"
-)
+
+def _srs_block(epsg: int) -> str:
+    """An authoritative QGIS <spatialrefsys> for an EPSG code, built from pyproj so the WKT
+    (which modern QGIS relies on) is correct — the hand-written blocks lacked it, which is what
+    broke the project CRS."""
+    import warnings
+    from pyproj import CRS
+    crs = CRS.from_epsg(epsg)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")             # pyproj warns on WKT→proj4; proj4 is a hint here
+        proj4 = (crs.to_proj4() or "").strip()
+    return (
+        '<spatialrefsys nativeFormat="Wkt">'
+        f"<wkt>{_esc(crs.to_wkt())}</wkt>"
+        f"<proj4>{_esc(proj4)}</proj4>"
+        f"<srsid>{_QGIS_SRSID.get(epsg, 0)}</srsid>"
+        f"<srid>{epsg}</srid>"
+        f"<authid>EPSG:{epsg}</authid>"
+        f"<description>{_esc(crs.name)}</description>"
+        f"<geographicflag>{'true' if crs.is_geographic else 'false'}</geographicflag>"
+        "</spatialrefsys>"
+    )
+
 
 # (layer id, display name, XYZ tile URL, visible-by-default). No API keys required.
 # Chosen for a naturalist's context — terrain, relief and land cover over street reference —
@@ -208,7 +213,7 @@ def _xyz_maplayer(lid: str, name: str, url: str) -> str:
         f"<id>{lid}</id>"
         f"<datasource>{_esc(_xyz_datasource(url))}</datasource>"
         f"<layername>{_esc(name)}</layername>"
-        f"<srs>{_MERC_SRS}</srs>"
+        f"<srs>{_srs_block(3857)}</srs>"
         "<provider>wms</provider>"
         "<pipe>"
         '<rasterrenderer type="singlebandcolordata" band="1" opacity="1" '
@@ -234,10 +239,10 @@ def _starter_qgs_xml() -> str:
         f"{_STARTER_MARKER}"
         "<homePath path=\"\"/>"
         "<title>Collection map</title>"
-        f"<projectCrs>{_MERC_SRS}</projectCrs>"
+        f"<projectCrs>{_srs_block(3857)}</projectCrs>"
         f"<layer-tree-group>{tree}</layer-tree-group>"
         '<mapcanvas name="theMapCanvas">'
-        f"<destinationsrs>{_MERC_SRS}</destinationsrs>"
+        f"<destinationsrs>{_srs_block(3857)}</destinationsrs>"
         "</mapcanvas>"
         "<projectlayers>"
         '<maplayer type="vector" geometry="Point" wkbType="Point" '
@@ -246,7 +251,7 @@ def _starter_qgs_xml() -> str:
         f"<id>{_SPECIMENS_ID}</id>"
         f"<datasource>{src}</datasource>"
         "<layername>specimens</layername>"
-        f"<srs>{_WGS84_SRS}</srs>"
+        f"<srs>{_srs_block(4326)}</srs>"
         "<provider>ogr</provider>"
         '<renderer-v2 type="singleSymbol">'
         '<symbols><symbol type="marker" name="0">'
