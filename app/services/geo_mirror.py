@@ -138,9 +138,9 @@ def refresh(session_factory) -> Path:
 
 # ── the starter QGIS project XML ─────────────────────────────────────────────────────
 # A minimal QGIS 3.x project: the OGR vector layer on the relative gpkg (green markers,
-# auto-refresh ReloadData every 10 s) over XYZ basemaps — OpenStreetMap visible, OpenTopoMap
-# and Esri World Imagery available but off. The canvas is Web Mercator (EPSG:3857) so the
-# tiles render natively; the points are stored in 4326 and QGIS reprojects them on the fly.
+# auto-refresh ReloadData every 10 s) over XYZ basemaps — OpenTopoMap visible, others off.
+# Canvas CRS = EPSG:4326 (the points' native CRS) so the specimen points are never reprojected
+# and cannot fall off the map; QGIS reprojects the 3857 basemap tiles onto the canvas instead.
 # Kept small on purpose — it is a *starter* the user restyles and re-saves (never overwritten).
 
 # QGIS internal srs.db ids (stable across installs) for the two CRSs we use. Belt-and-braces
@@ -239,10 +239,14 @@ def _starter_qgs_xml() -> str:
         f"{_STARTER_MARKER}"
         "<homePath path=\"\"/>"
         "<title>Collection map</title>"
-        f"<projectCrs>{_srs_block(3857)}</projectCrs>"
+        # Project/canvas CRS = the points' NATIVE CRS (EPSG:4326), so the specimen points are
+        # never reprojected and always land at their true lon/lat; QGIS reprojects the 3857
+        # basemap tiles onto this canvas instead (reliable). A 3857 canvas made the points
+        # reproject-dependent and they fell off the map when QGIS misjudged the layer CRS (#geo).
+        f"<projectCrs>{_srs_block(4326)}</projectCrs>"
         f"<layer-tree-group>{tree}</layer-tree-group>"
         '<mapcanvas name="theMapCanvas">'
-        f"<destinationsrs>{_srs_block(3857)}</destinationsrs>"
+        f"<destinationsrs>{_srs_block(4326)}</destinationsrs>"
         "</mapcanvas>"
         "<projectlayers>"
         '<maplayer type="vector" geometry="Point" wkbType="Point" '
