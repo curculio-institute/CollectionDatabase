@@ -97,7 +97,24 @@ def test_starter_qgz_written_once_never_overwritten(session):
     import xml.etree.ElementTree as ET
     body = xml.split("\n", 1)[1] if xml.startswith("<!DOCTYPE") else xml
     ET.fromstring(body)                          # raises if malformed
-    # a user edit must survive a later ensure_starter_qgz()
+    # a non-project blob is left alone (not our starter)
     p.write_bytes(b"USER EDIT")
     geo_mirror.ensure_starter_qgz()
     assert p.read_bytes() == b"USER EDIT"
+
+
+def test_starter_regenerates_while_ours_but_not_after_user_saves(session):
+    p = geo_mirror.ensure_starter_qgz()
+    assert geo_mirror._is_unmodified_starter(p)          # fresh generate carries the marker
+    # our own (marker-bearing) starter is regenerated to the current template …
+    with zipfile.ZipFile(p, "w") as z:
+        z.writestr("collection.qgs", geo_mirror._STARTER_MARKER + "<qgis/>")
+    geo_mirror.ensure_starter_qgz()
+    with zipfile.ZipFile(p) as z:
+        assert "OpenTopoMap" in z.read("collection.qgs").decode()
+    # … but once the user saves in QGIS (marker gone) it is never touched again
+    with zipfile.ZipFile(p, "w") as z:
+        z.writestr("collection.qgs", "<qgis>USER SAVED</qgis>")
+    geo_mirror.ensure_starter_qgz()
+    with zipfile.ZipFile(p) as z:
+        assert z.read("collection.qgs").decode() == "<qgis>USER SAVED</qgis>"

@@ -87,16 +87,34 @@ def build_gpkg(session: Session) -> Path:
     return path
 
 
-def ensure_starter_qgz() -> Path:
-    """Write a starter QGIS project (``collection.qgz``) **only if it does not exist**.
+# A marker in the generated project's XML. While it is present the file is still *our*
+# untouched starter and we may regenerate it (e.g. to add basemaps). The moment the user
+# opens it in QGIS and **saves**, QGIS rewrites the whole document and the marker is gone —
+# from then on it is the user's project and we never touch it again.
+_STARTER_MARKER = "<!--collection-geo-starter-->"
 
-    Never overwrites an existing one — the user may have restyled it in QGIS. The project
-    points at ``./collection.gpkg`` (relative) with the specimens layer set to auto-refresh,
-    so opening it shows the collection and repaints as you digitize. Delete the file to
-    regenerate a fresh starter."""
+
+def _is_unmodified_starter(path: Path) -> bool:
+    """True if `path` is a QGIS project we generated and the user has not saved over."""
+    try:
+        with zipfile.ZipFile(path) as z:
+            qgs = next((n for n in z.namelist() if n.endswith(".qgs")), None)
+            if qgs is None:
+                return False
+            return _STARTER_MARKER in z.read(qgs).decode("utf-8", "replace")
+    except Exception:                                        # noqa: BLE001 — not a readable zip
+        return False
+
+
+def ensure_starter_qgz() -> Path:
+    """Write / update the starter QGIS project (``collection.qgz``).
+
+    Written if absent; **regenerated** while it is still our unmodified starter (so template
+    improvements like basemaps reach it); and **never overwritten** once the user has saved it
+    in QGIS (the marker is then gone). Delete the file to force a fresh starter."""
     path = qgz_path()
-    if path.exists():
-        return path
+    if path.exists() and not _is_unmodified_starter(path):
+        return path                                          # user's project — leave it
     qgs = _starter_qgs_xml()
     # A .qgz is a zip containing "<projectname>.qgs".
     with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as z:
@@ -213,6 +231,7 @@ def _starter_qgs_xml() -> str:
     return (
         "<!DOCTYPE qgis PUBLIC 'http://mrcc.com/qgis.dtd' 'SYSTEM'>\n"
         '<qgis projectname="Collection map" version="3.34.0">'
+        f"{_STARTER_MARKER}"
         "<homePath path=\"\"/>"
         "<title>Collection map</title>"
         f"<projectCrs>{_MERC_SRS}</projectCrs>"
