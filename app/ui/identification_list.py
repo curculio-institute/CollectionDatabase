@@ -407,17 +407,17 @@ def build_identification_list(
                         value=d["identification_remarks"] or "",
                     ).classes("col-span-1")
 
-                # "Identified as" — the frozen verbatim (name as used). Seeded with the current
-                # value; edit it to record an original combination. Blank recomposes from the
-                # taxon; a value that still equals the composed name of the loaded taxon is
-                # treated as "auto" so a taxon correction re-freezes it (see _do_save_edit).
+                # "Identified as" — the frozen verbatim identification (name as used). Seeded
+                # with the current value; edit it to record the name exactly as used. Blank
+                # recomposes from the taxon; a value that still equals the composed name of the
+                # loaded taxon is treated as "auto" so a taxon correction re-freezes it.
                 e_verbatim = ui.input(
-                    "Identified as — verbatim / original combination",
+                    "Identified as — verbatim identification",
                     value=d.get("verbatim_identification") or "",
                 ).classes("w-full mb-2").tooltip(
-                    "The name exactly as used (e.g. an original combination "
-                    "'Carabus preslii pecoudellus Deuve, 1998'). Links to the taxon above for "
-                    "search & export; blank recomposes from that taxon.")
+                    "The name exactly as used (e.g. 'Carabus preslii pecoudellus Deuve, 1998'). "
+                    "Links to the taxon above for search & export; blank recomposes from that "
+                    "taxon.")
 
                 def _resolve_edit_verbatim(s, new_tid, loaded_tid, field_val):
                     """The verbatim to store on save: an override the user typed wins; an
@@ -425,7 +425,7 @@ def build_identification_list(
 
                     "Unchanged" = the field still equals the composed name of the taxon that
                     was loaded — so a taxon *correction* re-freezes the name, while a name the
-                    user actually customised (an original combination, or a frozen name kept
+                    user actually customised (a verbatim identification, or a frozen name kept
                     against a later reclassification) is preserved."""
                     field_ver = (field_val or "").strip()
                     loaded_t = s.get(Taxon, loaded_tid) if loaded_tid else None
@@ -552,13 +552,13 @@ def build_identification_list(
 
     with ui.row().classes("w-full items-end gap-2 mt-1"):
         add_verbatim = ui.input(
-            "Identified as — original combination (optional)",
+            "Identified as — verbatim identification (optional)",
             placeholder="blank = the name above, composed automatically",
         ).classes("flex-1").tooltip(
-            "Record the name exactly as it was used — e.g. an original combination like "
+            "Record the name exactly as it was used — e.g. "
             "'Carabus preslii pecoudellus Deuve, 1998'. The identification still links to "
             "the taxon chosen above (for search, grouping & export); this only sets the "
-            "frozen verbatim name. Leave blank to use the composed name.")
+            "frozen verbatim identification. Leave blank to use the composed name.")
 
     def _do_add(_=None):
         new_tid = add_taxon_state["taxon_id"]
@@ -576,7 +576,7 @@ def build_identification_list(
                     with s.begin():
                         idby_id = add_idby_state["commit"](s)
                         # Freeze the determination name at save time — WITH authorship.
-                        # An explicit "identified as" (original combination) wins; blank
+                        # An explicit "identified as" (verbatim identification) wins; blank
                         # composes from the taxon.
                         new_t = s.get(Taxon, new_tid)
                         _cv = (add_verbatim.value or "").strip()
@@ -614,7 +614,7 @@ def build_identification_list(
                             acc_label = format_scientific_name(acc)
                             acc_name, acc_rank = acc.scientific_name, acc.taxon_rank
                             acc_auth = acc.scientific_name_authorship
-                    # An explicit "identified as" (original combination) wins; blank composes.
+                    # An explicit "identified as" (verbatim identification) wins; blank composes.
                     _cv = (add_verbatim.value or "").strip()
                     verbatim = _cv or compose_full_name(s, t)     # frozen at add time, WITH author
                     # Render from the verbatim itself (split author out), so a custom

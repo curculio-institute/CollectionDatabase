@@ -264,9 +264,9 @@ def update_determination_metadata(
     """Update non-taxon metadata on an existing determination.
 
     ``verbatim_identification`` defaults to *unchanged* (the frozen name stands). When passed,
-    it sets the name-as-used explicitly — this is how an **original combination** is recorded
-    (the determination's `taxon_id` still points at the current concept for search/grouping/
-    export, while the verbatim carries the name as it was used, e.g. `Carabus preslii
+    it sets the name-as-used explicitly — this is how a distinct **verbatim identification** is
+    recorded (the determination's `taxon_id` still points at the current concept for search/
+    grouping/export, while the verbatim carries the name as it was used, e.g. `Carabus preslii
     pecoudellus Deuve, 1998`). A blank string clears it back to None; callers that want the
     auto-composed name recompose it themselves and pass the result."""
     d = session.get(TaxonDetermination, det_id)
@@ -309,7 +309,7 @@ def update_determination_taxon(
     changed just because the name was recorded wrongly.
 
     By default the verbatim is recomposed from the new taxon. A caller preserving an explicit
-    **original combination** passes ``verbatim_identification=`` (the name as used), which is
+    **verbatim identification** passes ``verbatim_identification=`` (the name as used), which is
     kept instead of recomposing — so a corrected `taxon_id` does not overwrite it.
     """
     from app.services.taxa import compose_full_name
