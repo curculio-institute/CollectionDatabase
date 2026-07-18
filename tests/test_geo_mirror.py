@@ -90,6 +90,13 @@ def test_starter_qgz_written_once_never_overwritten(session):
         assert "collection.qgs" in z.namelist()
         xml = z.read("collection.qgs").decode()
     assert "collection.gpkg" in xml and "EPSG:4326" in xml and 'autoRefreshMode="ReloadData"' in xml
+    # basemaps embedded (OSM visible; OpenTopoMap + Esri available), Web-Mercator canvas
+    assert "OpenStreetMap" in xml and "tile.openstreetmap.org" in xml
+    assert "OpenTopoMap" in xml and "Esri World Imagery" in xml and "EPSG:3857" in xml
+    # the project XML must be well-formed (strip the external-DTD DOCTYPE line first)
+    import xml.etree.ElementTree as ET
+    body = xml.split("\n", 1)[1] if xml.startswith("<!DOCTYPE") else xml
+    ET.fromstring(body)                          # raises if malformed
     # a user edit must survive a later ensure_starter_qgz()
     p.write_bytes(b"USER EDIT")
     geo_mirror.ensure_starter_qgz()

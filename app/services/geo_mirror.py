@@ -119,9 +119,11 @@ def refresh(session_factory) -> Path:
 
 
 # ── the starter QGIS project XML ─────────────────────────────────────────────────────
-# A deliberately minimal QGIS 3.x project: one OGR vector layer on the relative gpkg, a
-# simple green marker, WGS84, and per-layer auto-refresh (ReloadData every 10 s). Kept small
-# on purpose — it is a *starter* the user restyles and re-saves (and we never overwrite it).
+# A minimal QGIS 3.x project: the OGR vector layer on the relative gpkg (green markers,
+# auto-refresh ReloadData every 10 s) over XYZ basemaps — OpenStreetMap visible, OpenTopoMap
+# and Esri World Imagery available but off. The canvas is Web Mercator (EPSG:3857) so the
+# tiles render natively; the points are stored in 4326 and QGIS reprojects them on the fly.
+# Kept small on purpose — it is a *starter* the user restyles and re-saves (never overwritten).
 
 _WGS84_SRS = (
     "<spatialrefsys>"
@@ -134,28 +136,95 @@ _WGS84_SRS = (
     "</spatialrefsys>"
 )
 
+_MERC_SRS = (
+    "<spatialrefsys>"
+    "<proj4>+proj=merc +a=6378137 +b=6378137 +lat_ts=0 +lon_0=0 +x_0=0 +y_0=0 +k=1 "
+    "+units=m +nadgrids=@null +wktext +no_defs</proj4>"
+    "<srsid>3857</srsid><srid>3857</srid><authid>EPSG:3857</authid>"
+    "<description>WGS 84 / Pseudo-Mercator</description>"
+    "<projectionacronym>merc</projectionacronym>"
+    "<ellipsoidacronym>WGS84</ellipsoidacronym>"
+    "<geographicflag>false</geographicflag>"
+    "</spatialrefsys>"
+)
 
-def _starter_qgs_xml(layer_id: str = "specimens_layer") -> str:
+# (layer id, display name, XYZ tile URL, visible-by-default). No API keys required.
+# Chosen for a naturalist's context — terrain, relief and land cover over street reference —
+# since substrate/elevation drive beetle distribution. OpenTopoMap (contours + relief) is the
+# default backdrop; true bedrock geology needs a WMS (see the module note / follow-up).
+_BASEMAPS = [
+    ("opentopo_basemap", "OpenTopoMap",
+     "https://a.tile.opentopomap.org/{z}/{x}/{y}.png", True),
+    ("osm_basemap", "OpenStreetMap",
+     "https://tile.openstreetmap.org/{z}/{x}/{y}.png", False),
+    ("esri_hillshade_basemap", "Esri World Hillshade (relief)",
+     "https://server.arcgisonline.com/ArcGIS/rest/services/Elevation/World_Hillshade/"
+     "MapServer/tile/{z}/{y}/{x}", False),
+    ("esri_imagery_basemap", "Esri World Imagery",
+     "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/"
+     "tile/{z}/{y}/{x}", False),
+]
+
+_SPECIMENS_ID = "specimens_layer"
+
+
+def _esc(s: str) -> str:
+    return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace('"', "&quot;")
+
+
+def _xyz_datasource(url: str) -> str:
+    enc = url.replace("{", "%7B").replace("}", "%7D")
+    return f"type=xyz&url={enc}&zmax=19&zmin=0"
+
+
+def _tree_layer(lid: str, name: str, source: str, provider: str, checked: bool) -> str:
+    chk = "Qt::Checked" if checked else "Qt::Unchecked"
+    return (f'<layer-tree-layer id="{lid}" name="{_esc(name)}" source="{_esc(source)}" '
+            f'providerKey="{provider}" checked="{chk}" expanded="0"><customproperties/>'
+            "</layer-tree-layer>")
+
+
+def _xyz_maplayer(lid: str, name: str, url: str) -> str:
+    return (
+        '<maplayer type="raster" hasScaleBasedVisibilityFlag="0">'
+        f"<id>{lid}</id>"
+        f"<datasource>{_esc(_xyz_datasource(url))}</datasource>"
+        f"<layername>{_esc(name)}</layername>"
+        f"<srs>{_MERC_SRS}</srs>"
+        "<provider>wms</provider>"
+        "<pipe>"
+        '<rasterrenderer type="singlebandcolordata" band="1" opacity="1" '
+        'alphaBand="-1" nodataColor=""/>'
+        "</pipe>"
+        "<blendMode>0</blendMode>"
+        "</maplayer>"
+    )
+
+
+def _starter_qgs_xml() -> str:
     src = "./collection.gpkg|layername=specimens"
+    # Layer tree: specimens on top, basemaps beneath (drawn under the points).
+    tree = _tree_layer(_SPECIMENS_ID, "specimens", src, "ogr", True)
+    tree += "".join(
+        _tree_layer(lid, name, _xyz_datasource(url), "wms", vis)
+        for lid, name, url, vis in _BASEMAPS)
+    basemap_layers = "".join(
+        _xyz_maplayer(lid, name, url) for lid, name, url, _ in _BASEMAPS)
     return (
         "<!DOCTYPE qgis PUBLIC 'http://mrcc.com/qgis.dtd' 'SYSTEM'>\n"
         '<qgis projectname="Collection map" version="3.34.0">'
         "<homePath path=\"\"/>"
         "<title>Collection map</title>"
-        f"<projectCrs>{_WGS84_SRS}</projectCrs>"
-        "<layer-tree-group>"
-        f'<layer-tree-layer id="{layer_id}" name="specimens" source="{src}" '
-        'providerKey="ogr" checked="Qt::Checked" expanded="1"><customproperties/>'
-        "</layer-tree-layer>"
-        "</layer-tree-group>"
+        f"<projectCrs>{_MERC_SRS}</projectCrs>"
+        f"<layer-tree-group>{tree}</layer-tree-group>"
         '<mapcanvas name="theMapCanvas">'
-        f"<destinationsrs>{_WGS84_SRS}</destinationsrs>"
+        f"<destinationsrs>{_MERC_SRS}</destinationsrs>"
         "</mapcanvas>"
         "<projectlayers>"
         '<maplayer type="vector" geometry="Point" wkbType="Point" '
         'autoRefreshTime="10000" autoRefreshMode="ReloadData" '
         'hasScaleBasedVisibilityFlag="0">'
-        f"<id>{layer_id}</id>"
+        f"<id>{_SPECIMENS_ID}</id>"
         f"<datasource>{src}</datasource>"
         "<layername>specimens</layername>"
         f"<srs>{_WGS84_SRS}</srs>"
@@ -173,6 +242,7 @@ def _starter_qgs_xml(layer_id: str = "specimens_layer") -> str:
         "</symbol></symbols>"
         "</renderer-v2>"
         "</maplayer>"
+        f"{basemap_layers}"
         "</projectlayers>"
         "</qgis>"
     )
