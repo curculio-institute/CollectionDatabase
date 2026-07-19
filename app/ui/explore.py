@@ -103,7 +103,7 @@ def build_explore_panel(session_factory, *, on_open_specimen, on_open_event) -> 
     # ── search bar + chips ────────────────────────────────────────────────
     with ui.card().classes("w-full shadow-sm"):
         with ui.element("div").classes("ex-bar w-full"):
-            search_in = (ui.input(placeholder="Search taxa, localities, collectors…")
+            search_in = (ui.input(placeholder="Search taxa, localities, collectors, collections…")
                          .props("outlined dense clearable").classes("w-full"))
             dropdown = ui.element("div").classes("ex-drop").style("display:none")
         chips_row = ui.row().classes("items-center gap-2 mt-2")

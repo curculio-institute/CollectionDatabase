@@ -22,7 +22,7 @@ from sqlalchemy.orm import Session, joinedload
 
 from app.models import (
     CollectionObject, CollectingEvent, TaxonDetermination, Taxon, Person,
-    Country, StateProvince, County, Island, AdministrativeRegion,
+    Country, StateProvince, County, Island, AdministrativeRegion, Repository,
 )
 from app.services.taxa import format_scientific_name, parse_scientific_name
 from app.services.label_text import format_locality_label
@@ -111,6 +111,20 @@ def search_facets(session: Session, term: str, limit: int = 25) -> list[Facet]:
     for p in pq.order_by(Person.full_name).limit(limit).all():
         out.append(Facet("collector", p.full_name, p.full_name, "Collector"))
 
+    # Collections (repositories) — match on the code or either full name, so typing
+    # "JJPC" brings up the collection (#135). Label shows the code + full name.
+    rq = session.query(Repository)
+    for tok in toks:
+        rq = rq.filter(
+            Repository.collection_code.ilike(f"%{tok}%")
+            | Repository.collection_full_name.ilike(f"%{tok}%")
+            | Repository.institution_code.ilike(f"%{tok}%")
+            | Repository.institution_full_name.ilike(f"%{tok}%"))
+    for r in rq.order_by(Repository.collection_code).limit(limit).all():
+        label = (f"{r.collection_code} — {r.collection_full_name}"
+                 if r.collection_full_name else r.collection_code)
+        out.append(Facet("collection", label, r.id, "Collection"))
+
     return out
 
 
@@ -197,6 +211,8 @@ def _apply_filters(session: Session, q, filters: list[dict], idx: dict[int, Taxo
             q = q.filter(getattr(CollectingEvent, attr).in_([int(k) for k in keys]))
         elif kind == "collector":
             q = q.filter(Person.full_name.in_(keys))
+        elif kind == "collection":
+            q = q.filter(CollectionObject.repository_id.in_([int(k) for k in keys]))
     return q
 
 

@@ -84,6 +84,28 @@ def test_species_group_count_excludes_genus_level(session):
     assert c["species_group"] == 2                     # but only the two species
 
 
+def test_collection_facet_filters_by_repository(session):
+    """#135: typing a collection code surfaces it as a facet and filters to its
+    specimens only."""
+    f = _fixture(session)
+    other = ensure_repo(session, "ZMB")                 # a second collection
+    co = CollectionObject(catalog_number="Z1", repository_id=other, individual_count=1,
+                          collecting_event_id=f["de"].id, created_at=_utcnow(), updated_at=_utcnow())
+    session.add(co); session.flush()
+    session.add(TaxonDetermination(collection_object_id=co.id, taxon_id=f["sp1"].id,
+                                   is_current=1, created_at=_utcnow(), updated_at=_utcnow()))
+    session.flush()
+
+    facets = ex.search_facets(session, "ZMB")
+    coll = next(f for f in facets if f.kind == "collection")
+    assert coll.tag == "Collection"
+    flt = [{"kind": "collection", "key": coll.key}]
+    c = ex.counts(session, flt)
+    assert c["specimens"] == 1                          # only the ZMB specimen
+    cats = {r.catalog for r in ex.query_specimens(session, flt)}
+    assert cats == {"Z1"}
+
+
 def test_events_axis_groups_specimens(session):
     _fixture(session)
     evs = ex.events(session)
