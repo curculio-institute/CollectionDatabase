@@ -17,7 +17,7 @@ import io
 from collections import defaultdict
 from dataclasses import dataclass, field
 
-from sqlalchemy import func
+from sqlalchemy import func, and_, or_
 from sqlalchemy.orm import Session, joinedload
 
 from app.models import (
@@ -104,12 +104,16 @@ def search_facets(session: Session, term: str, limit: int = 25) -> list[Facet]:
         for v in gq.order_by(model.name).limit(limit).all():
             out.append(Facet(kind, v.name, v.id, _GEO_LABEL[kind]))
 
-    # Collectors (recordedBy).
+    # People, in BOTH roles (#135): a person can be filtered as the Collector
+    # (recordedBy on the event) or as who "identified by" (identifiedBy on the
+    # determination). The identifier role is deliberately labelled "identified by",
+    # not "Identifier" — the latter collides with the specimen's catalog identifier.
     pq = session.query(Person)
     for tok in toks:
         pq = pq.filter(Person.full_name.ilike(f"%{tok}%"))
     for p in pq.order_by(Person.full_name).limit(limit).all():
         out.append(Facet("collector", p.full_name, p.full_name, "Collector"))
+        out.append(Facet("identified_by", p.full_name, p.full_name, "identified by"))
 
     # Collections (repositories) — match on the code or either full name, so typing
     # "JJPC" brings up the collection (#135). Label shows the code + full name.
@@ -186,13 +190,20 @@ class SpecimenRow:
     data_key: str = ""
 
 
-def _apply_filters(session: Session, q, filters: list[dict], idx: dict[int, Taxon]):
+def _apply_filters(session: Session, q, filters: list[dict], idx: dict[int, Taxon],
+                   *, combine: str = "and"):
     """Apply facet filters to a query over (CollectionObject join det/event).
 
-    Facets of the **same kind** are OR-combined (pick two countries → specimens
-    from *either*), facets of **different kinds** are AND-combined (country +
-    collector → specimens matching both). A specimen has only one
-    country/collector, so AND-combining same-kind facets could never match (#66).
+    Each **kind** contributes one clause that is the OR over its own keys (pick two
+    countries → specimens from *either* — a specimen has only one country, so its keys
+    can only ever combine as OR; #66). The per-kind clauses are then combined by
+    ``combine`` (#135):
+
+    * ``"and"`` (default) — a specimen must match every kind's clause (country +
+      collector → both). This is the historic behaviour.
+    * ``"or"``  — a specimen matching *any* clause is included (union across kinds):
+      Collector X + identified-by Y → everything X collected *plus* everything Y
+      identified.
     """
     children: dict[int, list[int]] = defaultdict(list)
     for t in idx.values():
@@ -201,24 +212,36 @@ def _apply_filters(session: Session, q, filters: list[dict], idx: dict[int, Taxo
     by_kind: dict[str, list] = defaultdict(list)
     for f in filters:
         by_kind[f["kind"]].append(f["key"])
+    clauses = []
     for kind, keys in by_kind.items():
         if kind == "taxon":
             ids: list[int] = []
             for k in keys:
                 ids.extend(_descendant_ids(int(k), children))
-            q = q.filter(TaxonDetermination.taxon_id.in_(ids))
+            clauses.append(TaxonDetermination.taxon_id.in_(ids))
         elif kind in _GEO_FACETS:
             _model, attr = _GEO_FACETS[kind]
-            q = q.filter(getattr(CollectingEvent, attr).in_([int(k) for k in keys]))
+            clauses.append(getattr(CollectingEvent, attr).in_([int(k) for k in keys]))
         elif kind == "collector":
-            q = q.filter(Person.full_name.in_(keys))
+            clauses.append(Person.full_name.in_(keys))
+        elif kind == "identified_by":
+            # keys are person full_names; resolve to ids and match the determination's
+            # identifiedBy. (recordedBy already has a Person join; the identifier is a
+            # different person, matched by id to avoid a second Person alias.)
+            pids = [pid for (pid,) in
+                    session.query(Person.id).filter(Person.full_name.in_(keys)).all()]
+            clauses.append(TaxonDetermination.identified_by_id.in_(pids))
         elif kind == "collection":
-            q = q.filter(CollectionObject.repository_id.in_([int(k) for k in keys]))
-    return q
+            clauses.append(CollectionObject.repository_id.in_([int(k) for k in keys]))
+    if not clauses:
+        return q
+    return q.filter(or_(*clauses) if combine == "or" else and_(*clauses))
 
 
-def query_specimens(session: Session, filters: list[dict] | None = None) -> list[SpecimenRow]:
-    """Specimens matching the facet filters, with display fields for list/map/CSV."""
+def query_specimens(session: Session, filters: list[dict] | None = None,
+                    *, combine: str = "and") -> list[SpecimenRow]:
+    """Specimens matching the facet filters, with display fields for list/map/CSV.
+    ``combine`` ("and"/"or") is how facets of different kinds combine (#135)."""
     filters = filters or []
     idx = _taxon_index(session)
     q = (
@@ -230,7 +253,7 @@ def query_specimens(session: Session, filters: list[dict] | None = None) -> list
         .outerjoin(CollectingEvent, CollectingEvent.id == CollectionObject.collecting_event_id)
         .outerjoin(Person, Person.id == CollectingEvent.recorded_by_id)
     )
-    q = _apply_filters(session, q, filters, idx)
+    q = _apply_filters(session, q, filters, idx, combine=combine)
     q = q.order_by(CollectionObject.id.desc())
 
     rows: list[SpecimenRow] = []
@@ -335,11 +358,12 @@ def _group_lots(lots: list[SpecimenRow]) -> list[LotGroup]:
     return groups
 
 
-def checklist(session: Session, filters: list[dict] | None = None) -> list[ChecklistGroup]:
+def checklist(session: Session, filters: list[dict] | None = None,
+              *, combine: str = "and") -> list[ChecklistGroup]:
     """Matching specimens grouped under their taxonomy in drawer order: a list of
     genus groups (each carrying the family→genus header path) with species rows +
     their lots. Mirrors the Käfersammlung layout."""
-    rows = query_specimens(session, filters)
+    rows = query_specimens(session, filters, combine=combine)
     idx = _taxon_index(session)
 
     # Group lots by the taxon they were determined as.
@@ -417,9 +441,10 @@ class EventGroup:
     lots: list[SpecimenRow] = field(default_factory=list)
 
 
-def events(session: Session, filters: list[dict] | None = None) -> list[EventGroup]:
+def events(session: Session, filters: list[dict] | None = None,
+           *, combine: str = "and") -> list[EventGroup]:
     """Collecting events whose specimens match the filters, each with its lots."""
-    rows = query_specimens(session, filters)
+    rows = query_specimens(session, filters, combine=combine)
     by_event: dict[int | None, list[SpecimenRow]] = defaultdict(list)
     for r in rows:
         by_event[r.event_id].append(r)
@@ -461,12 +486,13 @@ def to_csv(rows: list[SpecimenRow]) -> bytes:
 _SPECIES_GROUP_RANKS = frozenset({"species", "subspecies"})
 
 
-def counts(session: Session, filters: list[dict] | None = None) -> dict:
+def counts(session: Session, filters: list[dict] | None = None,
+           *, combine: str = "and") -> dict:
     """Headline counts for the current filter set.
 
     ``species_group`` = distinct species/subspecies determinations (genus/subgenus-level
     determinations are excluded); ``georeferenced`` = specimens carrying coordinates."""
-    rows = query_specimens(session, filters)
+    rows = query_specimens(session, filters, combine=combine)
     return {
         "specimens": len(rows),
         "species_group": len({
@@ -536,9 +562,10 @@ def _accumulate(first_seen: dict[int, int]) -> list[tuple[int, int]]:
     return out
 
 
-def dashboard(session: Session, filters: list[dict] | None = None, *, host_limit: int = 15) -> Dashboard:
+def dashboard(session: Session, filters: list[dict] | None = None,
+              *, combine: str = "and", host_limit: int = 15) -> Dashboard:
     """Build the dashboard series for the specimens matching ``filters``."""
-    rows = query_specimens(session, filters)
+    rows = query_specimens(session, filters, combine=combine)
     coll_year: dict[int, int] = defaultdict(int)
     ident_year: dict[int, int] = defaultdict(int)
     phenology = [0] * 12

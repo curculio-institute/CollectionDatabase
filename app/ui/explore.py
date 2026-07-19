@@ -135,7 +135,8 @@ def build_explore_panel(session_factory, *, on_open_specimen, on_open_event) -> 
         with session_factory() as s:
             return fn(s)
 
-    state = {"filters": [], "view": "taxa"}   # filters: list of {kind,label,key,tag}
+    # filters: list of {kind,label,key,tag}; combine: how they AND/OR-combine (#135)
+    state = {"filters": [], "view": "taxa", "combine": "and"}
 
     # ── search bar + chips ────────────────────────────────────────────────
     with ui.card().classes("w-full shadow-sm"):
@@ -146,6 +147,10 @@ def build_explore_panel(session_factory, *, on_open_specimen, on_open_event) -> 
         chips_row = ui.row().classes("items-center gap-2 mt-2")
         with ui.row().classes("items-center gap-3 mt-2 w-full"):
             count_lbl = ui.label("").classes("text-sm").style("color:var(--tp-base-soft)")
+            combine_tog = ui.toggle({"and": "AND", "or": "OR"}, value="and") \
+                .props("dense no-caps unelevated size=sm") \
+                .tooltip("How multiple filters combine — AND: match every filter · "
+                         "OR: match any filter")
             ui.space()
             taxa_btn = ui.button("Taxa", icon="account_tree").props("dense no-caps")
             events_btn = ui.button("Events", icon="place").props("dense no-caps flat")
@@ -203,6 +208,14 @@ def build_explore_panel(session_factory, *, on_open_specimen, on_open_event) -> 
                         "click", lambda _, idx=i: _remove_chip(idx))
             if state["filters"]:
                 ui.button("Clear all", on_click=_clear_all).props("flat dense no-caps size=sm")
+        # AND/OR only matters with two or more chips to combine.
+        combine_tog.set_visibility(len(state["filters"]) >= 2)
+
+    def _set_combine(v):
+        state["combine"] = v or "and"
+        _refresh()
+
+    combine_tog.on_value_change(lambda e: _set_combine(e.value))
 
     def _clear_all():
         state["filters"] = []
@@ -302,11 +315,11 @@ def build_explore_panel(session_factory, *, on_open_specimen, on_open_event) -> 
                     ))
                     row.on("click", lambda _, c=lot.co_id: on_open_specimen(c))
 
-    def _undated_note(d):
+    def _undated_note(d, *, collecting, identification):
         bits = []
-        if d.undated_collected:
+        if collecting and d.undated_collected:
             bits.append(f"{d.undated_collected} without a collecting date")
-        if d.undated_identified:
+        if identification and d.undated_identified:
             bits.append(f"{d.undated_identified} without an identification date")
         if bits:
             ui.html('<span class="text-xs" style="color:var(--tp-base-soft)">'
@@ -318,43 +331,61 @@ def build_explore_panel(session_factory, *, on_open_specimen, on_open_event) -> 
                 .style("color:var(--tp-base-soft)")
             return
 
-        # ── timelines: specimens collected vs identified, per year ──
-        t_years = sorted({y for y, _ in d.collected_by_year}
-                         | {y for y, _ in d.identified_by_year})
-        coll = dict(d.collected_by_year)
-        iden = dict(d.identified_by_year)
+        # A person filter reveals *its own* date axis (#135): filtering by Collector
+        # shows the collecting-date views (and hides identification, which isn't what
+        # you filtered for); filtering by "identified by" shows the identification-date
+        # views. With both, or neither (the overview), everything is shown.
+        kinds = {f["kind"] for f in state["filters"]}
+        has_coll, has_ident = "collector" in kinds, "identified_by" in kinds
+        show_collecting = has_coll or not has_ident
+        show_identification = has_ident or not has_coll
+
+        # ── timelines: specimens collected / identified, per year ──
+        t_series = []
+        if show_collecting:
+            t_series.append(("Collected", d.collected_by_year, "bar"))
+        if show_identification:
+            t_series.append(("Identified", d.identified_by_year, "bar"))
+        t_years = sorted({y for _n, data, _t in t_series for y, _c in data})
         with ui.card().classes("w-full shadow-sm mt-2"):
             ui.label("Specimens over time").classes("text-sm font-medium")
             ui.echart(_line_chart(
                 [str(y) for y in t_years],
-                [("Collected", [coll.get(y, 0) for y in t_years], "bar"),
-                 ("Identified", [iden.get(y, 0) for y in t_years], "bar")],
+                [(name, [dict(data).get(y, 0) for y in t_years], typ)
+                 for name, data, typ in t_series],
+                show_legend=len(t_series) > 1,
             )).classes("w-full").style("height:300px")
-            _undated_note(d)
+            _undated_note(d, collecting=show_collecting, identification=show_identification)
 
         # ── species-accumulation (saturation) curves ──
-        a_years = sorted({y for y, _ in d.accum_collected}
-                         | {y for y, _ in d.accum_identified})
-        with ui.card().classes("w-full shadow-sm mt-2"):
-            ui.label("Species accumulation").classes("text-sm font-medium")
-            ui.html('<span class="text-xs" style="color:var(--tp-base-soft)">'
-                    'cumulative distinct species-group names</span>')
-            ui.echart(_line_chart(
-                [str(y) for y in a_years],
-                [("by collecting date", _carry(d.accum_collected, a_years), "line"),
-                 ("by identification date", _carry(d.accum_identified, a_years), "line")],
-            )).classes("w-full").style("height:300px")
+        a_series = []
+        if show_collecting:
+            a_series.append(("by collecting date", d.accum_collected))
+        if show_identification:
+            a_series.append(("by identification date", d.accum_identified))
+        a_years = sorted({y for _n, data in a_series for y, _c in data})
+        if a_years:
+            with ui.card().classes("w-full shadow-sm mt-2"):
+                ui.label("Species accumulation").classes("text-sm font-medium")
+                ui.html('<span class="text-xs" style="color:var(--tp-base-soft)">'
+                        'cumulative distinct species-group names</span>')
+                ui.echart(_line_chart(
+                    [str(y) for y in a_years],
+                    [(name, _carry(data, a_years), "line") for name, data in a_series],
+                    show_legend=len(a_series) > 1,
+                )).classes("w-full").style("height:300px")
 
-        # ── phenology (collecting month) ──
-        with ui.card().classes("w-full shadow-sm mt-2"):
-            ui.label("Phenology").classes("text-sm font-medium")
-            ui.html('<span class="text-xs" style="color:var(--tp-base-soft)">'
-                    'specimens by month of collection</span>')
-            ui.echart(_line_chart(
-                list(ex_svc._MONTHS),
-                [("Specimens", list(d.phenology), "bar")],
-                show_legend=False,
-            )).classes("w-full").style("height:280px")
+        # ── phenology (collecting month) — a collecting-date view ──
+        if show_collecting:
+            with ui.card().classes("w-full shadow-sm mt-2"):
+                ui.label("Phenology").classes("text-sm font-medium")
+                ui.html('<span class="text-xs" style="color:var(--tp-base-soft)">'
+                        'specimens by month of collection</span>')
+                ui.echart(_line_chart(
+                    list(ex_svc._MONTHS),
+                    [("Specimens", list(d.phenology), "bar")],
+                    show_legend=False,
+                )).classes("w-full").style("height:280px")
 
         # ── host associations ──
         if d.hosts:
@@ -374,18 +405,19 @@ def build_explore_panel(session_factory, *, on_open_specimen, on_open_event) -> 
 
     def _refresh():
         flt = state["filters"]
-        c = _with(lambda s: ex_svc.counts(s, flt))
+        cmb = state["combine"]
+        c = _with(lambda s: ex_svc.counts(s, flt, combine=cmb))
         count_lbl.set_text(
             f"{c['specimens']} specimens · {c['species_group']} species-group names"
             f" · {c['events']} events · {c['georeferenced']} specimens georeferenced")
         results.clear()
         with results:
             if state["view"] == "taxa":
-                _render_taxa(_with(lambda s: ex_svc.checklist(s, flt)))
+                _render_taxa(_with(lambda s: ex_svc.checklist(s, flt, combine=cmb)))
             elif state["view"] == "events":
-                _render_events(_with(lambda s: ex_svc.events(s, flt)))
+                _render_events(_with(lambda s: ex_svc.events(s, flt, combine=cmb)))
             else:
-                _render_dashboard(_with(lambda s: ex_svc.dashboard(s, flt)))
+                _render_dashboard(_with(lambda s: ex_svc.dashboard(s, flt, combine=cmb)))
 
     _view_btns = {"taxa": taxa_btn, "events": events_btn, "dashboard": dashboard_btn}
 
@@ -400,9 +432,11 @@ def build_explore_panel(session_factory, *, on_open_specimen, on_open_event) -> 
     dashboard_btn.on_click(lambda: _set_view("dashboard"))
 
     def _export():
-        rows = _with(lambda s: ex_svc.query_specimens(s, state["filters"]))
+        rows = _with(lambda s: ex_svc.query_specimens(
+            s, state["filters"], combine=state["combine"]))
         ui.download(ex_svc.to_csv(rows), filename="collection_export.csv", media_type="text/csv")
     csv_btn.on_click(_export)
 
+    _render_chips()   # establishes the (empty) chip row + hides the AND/OR toggle
     _refresh()
     return {"refresh": _refresh}

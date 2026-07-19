@@ -1,9 +1,15 @@
 """Explore service — faceted search, drawer-order checklist, filtering, CSV (#40)."""
-from app.models import Taxon, CollectingEvent, CollectionObject, TaxonDetermination
+from app.models import Taxon, CollectingEvent, CollectionObject, TaxonDetermination, Person
 from app.models.base import _utcnow
 import app.services.events as ev_svc
 import app.services.explore as ex
 from tests.helpers import ensure_repo
+
+
+def _person(session, name):
+    p = Person(full_name=name, created_at=_utcnow(), updated_at=_utcnow())
+    session.add(p); session.flush()
+    return p
 
 
 def _taxon(session, name, rank, parent=None, auth=""):
@@ -155,6 +161,54 @@ def test_dashboard_counts_undated_and_top_hosts(session):
     assert d.total == 1
     assert d.undated_collected == 1 and d.undated_identified == 1
     assert d.accum_collected == [] and d.accum_identified == []   # genus excluded
+
+
+def test_person_appears_in_both_roles_and_each_filters(session):
+    """#135: a person searched shows up as both 'Collector' and 'identified by';
+    each role filters its own column."""
+    fam = _taxon(session, "Curculionidae", "family")
+    gen = _taxon(session, "Otiorhynchus", "genus", parent=fam)
+    sp = _taxon(session, "Otiorhynchus sulcatus", "species", parent=gen)
+    jakob = _person(session, "Jakob Jilg")
+    ludger = _person(session, "Ludger Schmidt")
+    # collected by Jakob, identified by Ludger
+    ev = ev_svc.create_collecting_event(session, country="Germany", locality="X",
+                                        recorded_by_id=jakob.id)
+    session.flush()
+    co = _specimen(session, sp, ev, "A1")
+    det = session.query(TaxonDetermination).filter_by(collection_object_id=co.id).one()
+    det.identified_by_id = ludger.id
+    session.flush()
+
+    facets = ex.search_facets(session, "Jakob")
+    tags = {f.tag for f in facets if f.kind in ("collector", "identified_by")}
+    assert tags == {"Collector", "identified by"}
+
+    # Jakob as Collector → matches; Jakob as identified-by → does not (Ludger did)
+    assert ex.counts(session, [{"kind": "collector", "key": "Jakob Jilg"}])["specimens"] == 1
+    assert ex.counts(session, [{"kind": "identified_by", "key": "Jakob Jilg"}])["specimens"] == 0
+    assert ex.counts(session, [{"kind": "identified_by", "key": "Ludger Schmidt"}])["specimens"] == 1
+
+
+def test_and_vs_or_combine(session):
+    """#135: different-kind facets combine by AND (default) or OR (union)."""
+    fam = _taxon(session, "Curculionidae", "family")
+    gen = _taxon(session, "Otiorhynchus", "genus", parent=fam)
+    sp = _taxon(session, "Otiorhynchus sulcatus", "species", parent=gen)
+    jakob = _person(session, "Jakob Jilg")
+    de = ev_svc.create_collecting_event(session, country="Germany", locality="X",
+                                        recorded_by_id=jakob.id)
+    at = ev_svc.create_collecting_event(session, country="Austria", locality="Y")   # no collector
+    session.flush()
+    _specimen(session, sp, de, "A1")   # Germany + Jakob
+    _specimen(session, sp, at, "A2")   # Austria, no collector
+
+    at_id = ex.search_facets(session, "Austria")[0].key
+    flt = [{"kind": "collector", "key": "Jakob Jilg"}, {"kind": "country", "key": at_id}]
+    # AND: collected by Jakob AND in Austria → none
+    assert ex.counts(session, flt, combine="and")["specimens"] == 0
+    # OR: collected by Jakob OR in Austria → both specimens
+    assert ex.counts(session, flt, combine="or")["specimens"] == 2
 
 
 def test_events_axis_groups_specimens(session):
