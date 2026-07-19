@@ -382,11 +382,18 @@ def build_explore_panel(session_factory, *, on_open_specimen, on_open_event) -> 
             dtype = ui.toggle({"collected": "Collecting date", "identified": "Identified date"},
                               value="collected").props("dense no-caps unelevated")
 
-            def _date_field(label):
+            def _do():
+                _add_date_chip(g, dtype.value, from_in.value, to_in.value)
+                dlg.close()
+
+            def _date_field(label, autofocus=False):
                 # A typed field (write the year directly — no scrolling) with a calendar popup.
                 # `no-parent-event` keeps each field's popup independent; `minimal` drops the
-                # q-date title banner (which showed a stray "—" with no value).
-                inp = ui.input(label, placeholder="YYYY-MM-DD").props("dense outlined").classes("w-full")
+                # q-date title banner (which showed a stray "—" with no value). Enter in any
+                # field submits (= Add filter), so the whole dialog is keyboard-only.
+                inp = ui.input(label, placeholder="YYYY-MM-DD").props(
+                    "dense outlined" + (" autofocus" if autofocus else "")).classes("w-full")
+                inp.on("keydown.enter", lambda: _do())
                 with ui.menu().props("no-parent-event") as menu:
                     ui.date().bind_value(inp).props("minimal today-btn")
                     with ui.row().classes("justify-end w-full"):
@@ -395,14 +402,10 @@ def build_explore_panel(session_factory, *, on_open_specimen, on_open_event) -> 
                     ui.icon("edit_calendar").classes("cursor-pointer").on("click", menu.open)
                 return inp
 
-            from_in = _date_field("From")
-            to_in = _date_field("To (optional — leave blank for a single date / open range)")
+            from_in = _date_field("Date", autofocus=True)
+            to_in = _date_field("To (optional)")
             with ui.row().classes("justify-end w-full gap-2"):
                 ui.button("Cancel", on_click=dlg.close).props("flat dense no-caps")
-
-                def _do():
-                    _add_date_chip(g, dtype.value, from_in.value, to_in.value)
-                    dlg.close()
                 ui.button("Add filter", on_click=_do).props("dense no-caps unelevated")
         dlg.on_value_change(lambda e: dlg.delete() if not e.value else None)
         dlg.open()

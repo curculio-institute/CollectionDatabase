@@ -243,16 +243,19 @@ def build_records_tab(session_factory, *, on_saved: callable | None = None) -> N
 
     # ── Mode toggle ──────────────────────────────────────────────────────────
     def _set_mode_specimen():
-        mode_spec_btn.props("color=secondary")
-        mode_ev_btn.props("flat")
+        # The active mode is filled (color=secondary); the other is flat. `.props()` only
+        # ADDS — flat must be explicitly removed or both buttons end up filled+flat and the
+        # highlight stops toggling.
+        mode_spec_btn.props(add="color=secondary", remove="flat")
+        mode_ev_btn.props(add="flat", remove="color=secondary")
         spec_select.style(remove="display:none")
         ev_select.style(add="display:none")
         _clear_detail()
         spec_select.value = None
 
     def _set_mode_event():
-        mode_spec_btn.props("flat")
-        mode_ev_btn.props("color=secondary")
+        mode_spec_btn.props(add="flat", remove="color=secondary")
+        mode_ev_btn.props(add="color=secondary", remove="flat")
         spec_select.style(add="display:none")
         ev_select.style(remove="display:none")
         _clear_detail()

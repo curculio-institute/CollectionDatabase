@@ -336,8 +336,13 @@ def _render_specimen(ident, curatorial, det_hist, assocs, life_stages, ext_ids, 
 
         with ui.column().classes("w-full lg:w-96 shrink-0 gap-4"):
             with ui.card().classes("w-full shadow-sm"):
-                ui.html('<div class="rsheet-hd">Collecting event</div>')
-                _where_block(place, ev, on_open_event)
+                with ui.row().classes("items-center gap-2"):
+                    ui.html('<div class="rsheet-hd" style="margin-bottom:0">Collecting event</div>')
+                    if ev["event_id"] and on_open_event:
+                        ui.button("open", icon="open_in_new",
+                                  on_click=lambda: on_open_event(ev["event_id"])) \
+                            .props("flat dense no-caps size=sm")
+                _where_block(place, ev)
             if any(curatorial.values()):
                 with ui.card().classes("w-full shadow-sm"):
                     ui.html('<div class="rsheet-hd">In the collection</div>')
@@ -415,9 +420,9 @@ def _coord_map(lat, lon, unc) -> None:
         .props("flat dense no-caps size=sm").classes("mt-1")
 
 
-def _where_block(place, ev, on_open_event) -> None:
+def _where_block(place, ev) -> None:
     # place is geography only (no date/collector) — those follow on the meta line, so the
-    # block never repeats itself.
+    # block never repeats itself. The "open event" link lives beside the card header.
     if place:
         ui.html(f'<div style="font-size:.9rem">{_html.escape(place)}</div>')
     meta = "  ·  ".join(x for x in (
@@ -426,11 +431,6 @@ def _where_block(place, ev, on_open_event) -> None:
     if meta:
         ui.html(f'<div class="rsheet-muted mt-1">{_html.escape(meta)}</div>')
     _coord_map(ev["lat"], ev["lon"], ev["unc"])
-    if ev["event_id"] and on_open_event:
-        label = ("Open collecting event"
-                 + (f' ({ev["n_here"]} specimens)' if ev["n_here"] > 1 else ""))
-        ui.button(label, icon="open_in_new", on_click=lambda: on_open_event(ev["event_id"])) \
-            .props("flat dense no-caps size=sm").classes("mt-1")
 
 
 def _media_item_meta(m) -> str:
