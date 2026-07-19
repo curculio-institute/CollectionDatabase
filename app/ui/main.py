@@ -1853,7 +1853,9 @@ def index():
         # TAB: RECORDS
         # ================================================================
         with ui.tab_panel("records"):
-            with ui.column().classes("w-full max-w-5xl mx-auto px-4 pt-6 pb-16 gap-4"):
+            # Wide like Explore (#137): the condensed record sheet lays out map + media +
+            # details across the reclaimed wide-screen space.
+            with ui.column().classes("w-full max-w-[88rem] mx-auto px-4 pt-6 pb-16 gap-4"):
                 def _records_saved():
                     _mark_form_clean("Records")
                     for fn in _refreshers.values():

@@ -179,21 +179,26 @@ _ECHART_THEME_JS = """
     document.querySelectorAll('.nicegui-echart').forEach(function (el) { themeEl(el, 0); });
   }
   window._tpThemeECharts = themeAll;
-  // Re-theme on dark-mode toggle (class flips on <html>).
+  // Re-theme on dark-mode toggle (class flips on <html>). documentElement exists during
+  // head parse; document.body does NOT — so the body observer waits for DOMContentLoaded
+  // (observing a null body throws).
   new MutationObserver(themeAll)
     .observe(document.documentElement, { attributes: true, attributeFilter: ['class'] });
-  // Theme every chart the moment it is added to the DOM, independent of any server
-  // call — so a freshly (re)built dashboard is never left with default dark text.
-  new MutationObserver(function (muts) {
-    muts.forEach(function (m) {
-      m.addedNodes.forEach(function (n) {
-        if (n.nodeType !== 1) return;
-        if (n.classList && n.classList.contains('nicegui-echart')) themeEl(n, 0);
-        else if (n.querySelectorAll)
-          n.querySelectorAll('.nicegui-echart').forEach(function (el) { themeEl(el, 0); });
+  function _observeBody() {
+    // Theme every chart the moment it is added to the DOM, independent of any server call.
+    new MutationObserver(function (muts) {
+      muts.forEach(function (m) {
+        m.addedNodes.forEach(function (n) {
+          if (n.nodeType !== 1) return;
+          if (n.classList && n.classList.contains('nicegui-echart')) themeEl(n, 0);
+          else if (n.querySelectorAll)
+            n.querySelectorAll('.nicegui-echart').forEach(function (el) { themeEl(el, 0); });
+        });
       });
-    });
-  }).observe(document.body, { childList: true, subtree: true });
+    }).observe(document.body, { childList: true, subtree: true });
+  }
+  if (document.body) _observeBody();
+  else document.addEventListener('DOMContentLoaded', _observeBody);
 })();
 </script>
 """

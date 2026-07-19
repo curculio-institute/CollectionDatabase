@@ -14,6 +14,7 @@ import app.services.repositories as repo_svc
 import html as _html
 import app.services.taxa as svc_taxa
 import app.ui.record_summary as rs
+import app.ui.record_sheet as record_sheet
 from app.services.taxa import (
     compose_full_name,
     format_scientific_name,
@@ -261,8 +262,18 @@ def build_records_tab(session_factory, *, on_saved: callable | None = None) -> N
     mode_ev_btn.on_click(_set_mode_event)
 
     # ── Specimen loader ──────────────────────────────────────────────────────
-    def _load_specimen(co_id: int) -> None:
+    def _load_specimen(co_id: int, edit: bool = False) -> None:
         detail.clear()
+
+        # Read-only condensed sheet by default (#137); "Edit" reveals the editable form.
+        # A successful save (below) reloads without edit → returns to the sheet.
+        if not edit:
+            with detail:
+                record_sheet.build_specimen_sheet(
+                    session_factory, co_id,
+                    on_edit=lambda cid=co_id: _load_specimen(cid, edit=True),
+                    on_open_event=_open_event)
+            return
 
         with session_factory() as s:
             co = s.get(CollectionObject, co_id)
@@ -527,7 +538,7 @@ def build_records_tab(session_factory, *, on_saved: callable | None = None) -> N
                         f"Detached — new Event #{new_id} created for this specimen.",
                         type="positive",
                     )
-                    _load_specimen(co_id)
+                    _load_specimen(co_id, edit=True)   # stay in the editor mid-edit
 
                 def _unlock_shared(e):
                     if ev_ce:

@@ -99,6 +99,7 @@ def add_map_assets() -> None:
 def build_map_picker(
     on_change: Callable[[float, float, float | None], None],
     default_layer: str = "street",
+    read_only: bool = False,
 ) -> dict:
     """
     Build the map-picker and return an API dict::
@@ -125,6 +126,7 @@ def build_map_picker(
     # uid is the HTML id prefix for this instance's raw-HTML elements.
     # Derived from sink_id which is unique per NiceGUI client session.
     uid = f"mp{sink_id}"
+    _RO_INIT = "true" if read_only else "false"   # initial value of the JS `ro` flag
 
     # ── overlay injected directly into <body> (before <div id="app">) ─────────
     # This ensures position:fixed is relative to the viewport with no
@@ -145,7 +147,7 @@ def build_map_picker(
         display:flex; align-items:center; flex-shrink:0; flex-wrap:wrap;
         padding:6px 16px; gap:8px;
         border-bottom:1px solid var(--tp-base-border,#e2e8f0);">
-      <span style="
+      <span id="{uid}title" style="
           font-size:.8rem; font-weight:600; letter-spacing:.06em;
           text-transform:uppercase; color:var(--tp-base-content,#000);">
         Pick location
@@ -160,6 +162,8 @@ def build_map_picker(
           display:none; align-items:center; gap:6px; flex:1; min-width:0;
           font-size:.82rem; color:var(--tp-base-soft,#9ca3af);">
         <span>&#xB1;</span>
+        <!-- read-only: the radius as plain text (no input/slider) -->
+        <span id="{uid}unctext" style="display:none; color:var(--tp-base-content,#111);">&#x2014;</span>
         <input id="{uid}uncinput" type="number" min="1" step="1"
           style="
             width:70px; font-size:.82rem; flex-shrink:0;
@@ -173,6 +177,11 @@ def build_map_picker(
           style="flex:1; min-width:0; accent-color:var(--tp-secondary,#0369a1); cursor:pointer;"
           title="Uncertainty radius (0–2000 m)">
       </span>
+      <button id="{uid}recenter" class="_mp-btn" style="display:none;"
+        onclick="var a=window['_mpapi_{uid}'];if(a)a.recenter();"
+        title="Re-center the map on the point">
+        <i class="material-icons" style="font-size:1.1rem;">my_location</i>Re-center
+      </button>
       <button id="{uid}copy" class="_mp-btn" style="display:none;"
         title="Copy latitude, longitude and radius (tab-separated)">
         <i class="material-icons" style="font-size:1.1rem;">content_copy</i>Copy
@@ -296,20 +305,37 @@ def build_map_picker(
         }}
 
         /* ── State ───────────────────────────────────────────────────────── */
-        var marker = null, circle = null, handle = null, unc = 0, ro = false;
+        /* ro (read-only) is baked in at build time so a map that opens later (e.g. the
+           read-only record sheet) is locked from init — toggling it around an async
+           open() otherwise races init(), which resets ro here. */
+        var marker = null, circle = null, handle = null, unc = 0, ro = {_RO_INIT};
         var savedMarkerLatLng = null;   // official position (snap-back when read-only)
 
         var coordEl   = document.getElementById(uid + 'coord');
         var uncRow    = document.getElementById(uid + 'uncrow');
         var uncInput  = document.getElementById(uid + 'uncinput');
         var uncSlider = document.getElementById(uid + 'uncslider');
+        var uncText   = document.getElementById(uid + 'unctext');
         var copyBtn   = document.getElementById(uid + 'copy');
+        var recenterBtn = document.getElementById(uid + 'recenter');
+        var titleEl   = document.getElementById(uid + 'title');
+
+        // Read-only mode: no slider / no editable radius field — the radius is plain text
+        // beside the coordinates; expose a re-center button; relabel the header.
+        if (ro) {{
+            if (uncInput)    uncInput.style.display    = 'none';
+            if (uncSlider)   uncSlider.style.display   = 'none';
+            if (uncText)     uncText.style.display     = 'inline';
+            if (recenterBtn) recenterBtn.style.display = 'inline-flex';
+            if (titleEl)     titleEl.textContent       = 'Location';
+        }}
 
         function updateDisplay(lat, lng, u) {{
             if (coordEl)   coordEl.textContent    = lat.toFixed(6) + ', ' + lng.toFixed(6);
             if (uncRow)    uncRow.style.display   = 'flex';
             if (uncInput)  uncInput.value         = u ? Math.round(u) : '';
             if (uncSlider) uncSlider.value        = Math.min(u ? Math.round(u) : 0, 2000);
+            if (uncText)   uncText.textContent    = (u ? Math.round(u) : 0);
             if (copyBtn)   copyBtn.style.display  = 'inline-flex';
         }}
 
@@ -462,6 +488,9 @@ def build_map_picker(
                 ro = v;
                 if (uncInput)  uncInput.disabled  = v;
                 if (uncSlider) uncSlider.disabled = v;
+            }},
+            recenter: function() {{
+                if (marker) map.setView(marker.getLatLng(), Math.max(map.getZoom(), 12));
             }}
         }};
 
