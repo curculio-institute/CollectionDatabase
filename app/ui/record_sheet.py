@@ -224,7 +224,7 @@ def _render_specimen(ident, curatorial, det_hist, assocs, life_stages, ext_ids, 
 
         with ui.column().classes("w-full lg:w-96 shrink-0 gap-4"):
             with ui.card().classes("w-full shadow-sm"):
-                ui.html('<div class="rsheet-hd">Where &amp; when</div>')
+                ui.html('<div class="rsheet-hd">Collecting event</div>')
                 _where_block(place, ev, on_open_event)
             if any(curatorial.values()):
                 with ui.card().classes("w-full shadow-sm"):
@@ -308,9 +308,10 @@ def _where_block(place, ev, on_open_event) -> None:
             m["fly_to"](e["lat"], e["lon"], e["unc"])   # opens + places the point (init-safe)
         ui.button("View on map", icon="place", on_click=_view_map) \
             .props("flat dense no-caps size=sm").classes("mt-1")
-    if ev["event_id"] and on_open_event and ev["n_here"] > 1:
-        ui.button(f'{ev["n_here"] - 1} more specimen(s) from this event',
-                  icon="arrow_forward", on_click=lambda: on_open_event(ev["event_id"])) \
+    if ev["event_id"] and on_open_event:
+        label = ("Open collecting event"
+                 + (f' ({ev["n_here"]} specimens)' if ev["n_here"] > 1 else ""))
+        ui.button(label, icon="open_in_new", on_click=lambda: on_open_event(ev["event_id"])) \
             .props("flat dense no-caps size=sm").classes("mt-1")
 
 

@@ -879,8 +879,10 @@ def build_records_tab(session_factory, *, on_saved: callable | None = None) -> N
             if cos:
                 with ui.expansion(f"Linked specimens ({n})").classes("w-full mb-3"):
                     for c_id, ns, cn in cos:
-                        ui.label(f"#{c_id}  {id_svc.format_catalog_display(ns, cn)}") \
-                            .classes("text-xs font-mono")
+                        lbl = ui.label(f"#{c_id}  {id_svc.format_catalog_display(ns, cn)}") \
+                            .classes("text-xs font-mono cursor-pointer") \
+                            .style("color:var(--tp-secondary,#0369a1);text-decoration:underline")
+                        lbl.on("click", lambda _, cid=c_id: _open_specimen(cid))  # → its record
                     if n > len(cos):
                         ui.label(f"… and {n - len(cos)} more") \
                             .classes("text-xs italic").style("color:var(--tp-base-soft)")

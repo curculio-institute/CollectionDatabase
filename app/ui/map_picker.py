@@ -177,14 +177,15 @@ def build_map_picker(
           style="flex:1; min-width:0; accent-color:var(--tp-secondary,#0369a1); cursor:pointer;"
           title="Uncertainty radius (0–2000 m)">
       </span>
+      <!-- Copy sits right after the coordinates so it is clear WHAT it copies. -->
+      <button id="{uid}copy" class="_mp-btn" style="display:none;"
+        title="Copy latitude, longitude and radius (tab-separated)">
+        <i class="material-icons" style="font-size:1.1rem;">content_copy</i>Copy
+      </button>
       <button id="{uid}recenter" class="_mp-btn" style="display:none;"
         onclick="var a=window['_mpapi_{uid}'];if(a)a.recenter();"
         title="Re-center the map on the point">
         <i class="material-icons" style="font-size:1.1rem;">my_location</i>Re-center
-      </button>
-      <button id="{uid}copy" class="_mp-btn" style="display:none;"
-        title="Copy latitude, longitude and radius (tab-separated)">
-        <i class="material-icons" style="font-size:1.1rem;">content_copy</i>Copy
       </button>
       <span style="flex:1;"></span>
       <button onclick="document.getElementById('{uid}ov').style.display='none'"
@@ -328,6 +329,9 @@ def build_map_picker(
             if (uncText)     uncText.style.display     = 'inline';
             if (recenterBtn) recenterBtn.style.display = 'inline-flex';
             if (titleEl)     titleEl.textContent       = 'Location';
+            // With no slider to fill, don't let the uncertainty row stretch — otherwise it
+            // pushes the Copy button far from the coordinates it copies.
+            if (uncRow)      uncRow.style.flex         = '0';
         }}
 
         function updateDisplay(lat, lng, u) {{
