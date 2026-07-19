@@ -17,6 +17,7 @@ from .media import Media, MediaAttachment
 from .external_identifier import ExternalIdentifier
 from .life_stage import LifeStageRecord
 from .repository import Repository
+from .saved_search import SavedSearch
 from .field_occurrence import FieldOccurrence
 from .import_dataset import ImportDataset, ImportDatasetRecord
 
@@ -47,6 +48,7 @@ __all__ = [
     "ExternalIdentifier",
     "LifeStageRecord",
     "Repository",
+    "SavedSearch",
     "FieldOccurrence",
     "ImportDataset",
     "ImportDatasetRecord",
