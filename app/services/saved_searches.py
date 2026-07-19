@@ -16,7 +16,7 @@ import json
 from sqlalchemy.orm import Session
 
 from app.models import (
-    SavedSearch, Taxon, Person, Repository,
+    SavedSearch, Taxon, Person, Repository, Disposition,
     Country, StateProvince, County, Island, AdministrativeRegion,
 )
 from app.models.base import _utcnow
@@ -146,6 +146,14 @@ def resolve(session: Session, fav: SavedSearch) -> dict:
             if f["kind"] == "date":       # a value filter, not a DB entity → never stale
                 f["stale"] = False
                 continue
+            if f["kind"] == "disposition":   # compose the label incl. the exclude prefix
+                d = session.get(Disposition, int(f["key"]))
+                f["stale"] = d is None
+                if d is None:
+                    stale += 1
+                else:
+                    f["label"] = (f"≠ {d.name}" if f.get("exclude") else d.name)
+                continue
             label = _resolve_facet(session, f["kind"], f["key"])
             if label is None:
                 f["stale"] = True
@@ -167,7 +175,9 @@ def apply_groups(resolved_groups: list[dict]) -> list[dict]:
     then drop any group left empty. Returns clean ``groups`` for the Explore state."""
     out = []
     for g in resolved_groups:
-        facets = [{"kind": f["kind"], "key": f["key"], "label": f["label"], "tag": f["tag"]}
+        # keep every field except the transient `stale` flag (so exclude / date from-to /
+        # any future facet payload survive a favorite round-trip).
+        facets = [{k: v for k, v in f.items() if k != "stale"}
                   for f in g.get("facets", []) if not f.get("stale")]
         if facets:
             out.append({"op": g.get("op", "and"), "facets": facets})

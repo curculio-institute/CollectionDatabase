@@ -40,6 +40,7 @@ def _iso_end(d: str) -> str:
 
 import app.services.explore as ex_svc
 import app.services.saved_searches as fav_svc
+import app.services.vocabularies as vocabs
 
 _CSS = """<style>
 .ex-bar { position: relative; }
@@ -410,6 +411,41 @@ def build_explore_panel(session_factory, *, on_open_specimen, on_open_event) -> 
         dlg.on_value_change(lambda e: dlg.delete() if not e.value else None)
         dlg.open()
 
+    def _open_extra_dialog(g):
+        dispositions = _with(lambda s: [(d.id, d.name)
+                                        for d in vocabs.disposition_vocab.list(s)])
+        dlg = ui.dialog()
+        with dlg, ui.card().classes("gap-2").style("min-width:340px"):
+            ui.label("Extra filters").classes("text-sm font-medium")
+            ui.html('<div class="ex-tag" style="background:none;padding:0">Disposition</div>')
+            if not dispositions:
+                ui.label("No dispositions defined yet.").classes("text-xs italic") \
+                    .style("color:var(--tp-base-soft)")
+            else:
+                sel = ui.select({did: name for did, name in dispositions}, label="Disposition") \
+                    .props("dense outlined").classes("w-full")
+                mode = ui.toggle({"include": "Include", "exclude": "Exclude"}, value="include") \
+                    .props("dense no-caps unelevated")
+
+                def _add_disp():
+                    if sel.value is None:
+                        ui.notify("Pick a disposition.", type="warning")
+                        return
+                    name = dict(dispositions)[sel.value]
+                    excl = mode.value == "exclude"
+                    g["facets"].append({
+                        "kind": "disposition", "key": sel.value, "exclude": excl,
+                        "label": (f"≠ {name}" if excl else name), "tag": "Disposition"})
+                    state["dash_dates"] = None
+                    _render_groups()
+                    _refresh()
+                    dlg.close()
+                with ui.row().classes("justify-end w-full gap-2"):
+                    ui.button("Cancel", on_click=dlg.close).props("flat dense no-caps")
+                    ui.button("Add filter", on_click=_add_disp).props("dense no-caps unelevated")
+        dlg.on_value_change(lambda e: dlg.delete() if not e.value else None)
+        dlg.open()
+
     def _remove_chip(g, i):
         del g["facets"][i]
         if not g["facets"] and len(state["groups"]) > 1:
@@ -450,6 +486,9 @@ def build_explore_panel(session_factory, *, on_open_specimen, on_open_event) -> 
                 ui.button(icon="calendar_month", on_click=lambda _, gg=g: _open_date_dialog(gg)) \
                     .props("flat dense round size=sm") \
                     .tooltip("Add a date filter (collecting or identified date)")
+                ui.button(icon="tune", on_click=lambda _, gg=g: _open_extra_dialog(gg)) \
+                    .props("flat dense round size=sm") \
+                    .tooltip("Extra filters (disposition, …)")
                 if len(state["groups"]) > 1:
                     ui.button(icon="close", on_click=lambda _, gg=g: _remove_group(gg)) \
                         .props("flat dense round size=sm").tooltip("Remove this search")

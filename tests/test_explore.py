@@ -184,6 +184,33 @@ def test_date_range_filter(session):
     assert {r.catalog for r in ex.query_specimens(session, flt)} == {"A1"}
 
 
+def test_disposition_filter_include_and_exclude(session):
+    """#137: a disposition facet includes or excludes a holding status; exclude also keeps
+    specimens that have no disposition."""
+    from app.models import Disposition
+    fam = _taxon(session, "Curculionidae", "family")
+    gen = _taxon(session, "Otiorhynchus", "genus", parent=fam)
+    sp = _taxon(session, "Otiorhynchus sulcatus", "species", parent=gen)
+    ev = ev_svc.create_collecting_event(session, country="Germany", locality="X")
+    def _disp(name):
+        d = session.query(Disposition).filter_by(name=name).first()
+        if d is None:
+            d = Disposition(name=name, created_at=_utcnow(), updated_at=_utcnow())
+            session.add(d); session.flush()
+        return d
+    loaned = _disp("loaned to Jeffrey")
+    incoll = _disp("in collection")
+    a1 = _specimen(session, sp, ev, "A1"); a1.disposition_id = loaned.id
+    a2 = _specimen(session, sp, ev, "A2"); a2.disposition_id = incoll.id
+    _specimen(session, sp, ev, "A3")                       # no disposition
+    session.flush()
+
+    inc = [{"kind": "disposition", "key": loaned.id}]
+    assert {r.catalog for r in ex.query_specimens(session, inc)} == {"A1"}
+    exc = [{"kind": "disposition", "key": loaned.id, "exclude": True}]
+    assert {r.catalog for r in ex.query_specimens(session, exc)} == {"A2", "A3"}   # incl. no-disp
+
+
 def test_collection_facet_filters_by_repository(session):
     """#135: typing a collection code surfaces it as a facet and filters to its
     specimens only."""

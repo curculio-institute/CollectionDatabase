@@ -252,6 +252,10 @@ def _apply_filters(session: Session, q, filters: list[dict], idx: dict[int, Taxo
             return TaxonDetermination.identified_by_id == pid if pid is not None else false()
         if kind == "collection":
             return CollectionObject.repository_id == int(key)
+        if kind == "disposition":
+            col = CollectionObject.disposition_id
+            # exclude also keeps specimens with NO disposition (they aren't "loaned" either).
+            return or_(col.is_(None), col != int(key)) if f.get("exclude") else col == int(key)
         if kind == "date":
             # A date range on the collecting date (event_date) or the identification date.
             # ISO date strings sort lexicographically, so >= from / <= to work directly (the
