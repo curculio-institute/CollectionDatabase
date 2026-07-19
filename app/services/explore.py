@@ -17,7 +17,7 @@ import io
 from collections import defaultdict
 from dataclasses import dataclass, field
 
-from sqlalchemy import func, and_, or_
+from sqlalchemy import func, and_, or_, false
 from sqlalchemy.orm import Session, joinedload
 
 from app.models import (
@@ -194,45 +194,45 @@ def _apply_filters(session: Session, q, filters: list[dict], idx: dict[int, Taxo
                    *, combine: str = "and"):
     """Apply facet filters to a query over (CollectionObject join det/event).
 
-    Each **kind** contributes one clause that is the OR over its own keys (pick two
-    countries → specimens from *either* — a specimen has only one country, so its keys
-    can only ever combine as OR; #66). The per-kind clauses are then combined by
-    ``combine`` (#135):
+    **Every facet is its own clause**, and ``combine`` decides how they combine —
+    uniformly, whether the two facets are the same kind or not (#135):
 
-    * ``"and"`` (default) — a specimen must match every kind's clause (country +
-      collector → both). This is the historic behaviour.
-    * ``"or"``  — a specimen matching *any* clause is included (union across kinds):
-      Collector X + identified-by Y → everything X collected *plus* everything Y
-      identified.
+    * ``"and"`` (default) — a specimen must match *every* facet. Two families →
+      ``taxon_id in Carabidae`` AND ``taxon_id in Curculionidae`` → **0** (a
+      determination has one taxon, so disjoint subtrees can't both hold). Collector
+      X + country Y → specimens X collected in Y.
+    * ``"or"``  — a specimen matching *any* facet is included (union): two families →
+      all Carabidae *plus* all Curculionidae; Collector X + identified-by Y →
+      everything X collected *plus* everything Y identified.
+
+    (Historically same-kind facets were hard-wired to OR — "a specimen has one
+    country" (#66) — but with an explicit AND/OR toggle the toggle must govern the
+    same-kind case too, or "Carabidae AND Curculionidae" wrongly returns the union.)
     """
     children: dict[int, list[int]] = defaultdict(list)
     for t in idx.values():
         if t.parent_name_usage_id:
             children[t.parent_name_usage_id].append(t.id)
-    by_kind: dict[str, list] = defaultdict(list)
-    for f in filters:
-        by_kind[f["kind"]].append(f["key"])
-    clauses = []
-    for kind, keys in by_kind.items():
+
+    def _clause(kind, key):
         if kind == "taxon":
-            ids: list[int] = []
-            for k in keys:
-                ids.extend(_descendant_ids(int(k), children))
-            clauses.append(TaxonDetermination.taxon_id.in_(ids))
-        elif kind in _GEO_FACETS:
+            return TaxonDetermination.taxon_id.in_(_descendant_ids(int(key), children))
+        if kind in _GEO_FACETS:
             _model, attr = _GEO_FACETS[kind]
-            clauses.append(getattr(CollectingEvent, attr).in_([int(k) for k in keys]))
-        elif kind == "collector":
-            clauses.append(Person.full_name.in_(keys))
-        elif kind == "identified_by":
-            # keys are person full_names; resolve to ids and match the determination's
-            # identifiedBy. (recordedBy already has a Person join; the identifier is a
-            # different person, matched by id to avoid a second Person alias.)
-            pids = [pid for (pid,) in
-                    session.query(Person.id).filter(Person.full_name.in_(keys)).all()]
-            clauses.append(TaxonDetermination.identified_by_id.in_(pids))
-        elif kind == "collection":
-            clauses.append(CollectionObject.repository_id.in_([int(k) for k in keys]))
+            return getattr(CollectingEvent, attr) == int(key)
+        if kind == "collector":
+            return Person.full_name == key
+        if kind == "identified_by":
+            # key is a person full_name (UNIQUE); resolve to the id and match the
+            # determination's identifiedBy. A name that resolves to nothing is an
+            # impossible clause, never "IS NULL" (which would match un-identified rows).
+            pid = session.query(Person.id).filter(Person.full_name == key).scalar()
+            return TaxonDetermination.identified_by_id == pid if pid is not None else false()
+        if kind == "collection":
+            return CollectionObject.repository_id == int(key)
+        return None
+
+    clauses = [c for f in filters if (c := _clause(f["kind"], f["key"])) is not None]
     if not clauses:
         return q
     return q.filter(or_(*clauses) if combine == "or" else and_(*clauses))

@@ -211,6 +211,25 @@ def test_and_vs_or_combine(session):
     assert ex.counts(session, flt, combine="or")["specimens"] == 2
 
 
+def test_and_across_two_taxa_is_intersection(session):
+    """#135: two taxa of disjoint subtrees under AND → 0 (a determination has one
+    taxon, so it can't be in both). Under OR → the union."""
+    cara = _taxon(session, "Carabidae", "family")
+    curc = _taxon(session, "Curculionidae", "family")
+    cg = _taxon(session, "Carabus", "genus", parent=cara)
+    og = _taxon(session, "Otiorhynchus", "genus", parent=curc)
+    csp = _taxon(session, "Carabus granulatus", "species", parent=cg)
+    osp = _taxon(session, "Otiorhynchus sulcatus", "species", parent=og)
+    ev = ev_svc.create_collecting_event(session, country="Germany", locality="X")
+    session.flush()
+    _specimen(session, csp, ev, "A1")   # a carabid
+    _specimen(session, osp, ev, "A2")   # a curculionid
+
+    flt = [{"kind": "taxon", "key": cara.id}, {"kind": "taxon", "key": curc.id}]
+    assert ex.counts(session, flt, combine="and")["specimens"] == 0
+    assert ex.counts(session, flt, combine="or")["specimens"] == 2
+
+
 def test_events_axis_groups_specimens(session):
     _fixture(session)
     evs = ex.events(session)
