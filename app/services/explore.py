@@ -574,7 +574,12 @@ class Dashboard:
     accum_collected: list[tuple[int, int]]        # (year, cumulative distinct species) collecting
     accum_identified: list[tuple[int, int]]       # (year, cumulative distinct species) identifying
     phenology: list[int]                          # 12 months, #specimens by collecting month
-    hosts: list[tuple[str, int]]                  # (host taxon, #specimens), most-associated first
+    hosts: list[tuple[str, int]]                  # (host taxon, #specimens total), most-associated first
+    # Per-host breakdown by biological relationship, for the stacked host bars: host name →
+    # {relationship: #specimens}. `host_relationships` is the distinct relationship set
+    # (most-frequent first) → one coloured, stacked series each.
+    host_breakdown: dict[str, dict[str, int]]
+    host_relationships: list[str]
     undated_collected: int                        # specimens with no parseable collecting year
     undated_identified: int                       # specimens with no parseable identification year
 
@@ -609,6 +614,7 @@ def dashboard(session: Session, filters: list[dict] | None = None,
     first_coll: dict[int, int] = {}     # taxon_id → earliest collecting year
     first_ident: dict[int, int] = {}    # taxon_id → earliest identification year
     hosts: dict[str, int] = defaultdict(int)
+    host_by_rel: dict[str, dict[str, int]] = defaultdict(lambda: defaultdict(int))
     undated_c = undated_i = 0
 
     for r in rows:
@@ -630,11 +636,20 @@ def dashboard(session: Session, filters: list[dict] | None = None,
                 first_coll[r.taxon_id] = min(cy, first_coll.get(r.taxon_id, cy))
             if iy is not None:
                 first_ident[r.taxon_id] = min(iy, first_ident.get(r.taxon_id, iy))
-        for _rel, name, _rank in r.hosts:
+        for rel, name, _rank in r.hosts:
             if name:
                 hosts[name] += 1
+                host_by_rel[name][rel or "association"] += 1
 
     top_hosts = sorted(hosts.items(), key=lambda kv: (-kv[1], kv[0]))[:host_limit]
+    top_names = [n for n, _ in top_hosts]
+    # distinct relationships across the shown hosts, most-frequent first (stable colours).
+    rel_totals: dict[str, int] = defaultdict(int)
+    for n in top_names:
+        for rel, c in host_by_rel[n].items():
+            rel_totals[rel] += c
+    host_relationships = [r for r, _ in
+                          sorted(rel_totals.items(), key=lambda kv: (-kv[1], kv[0]))]
     return Dashboard(
         total=len(rows),
         collected_by_year=_fill_years(coll_year),
@@ -643,6 +658,8 @@ def dashboard(session: Session, filters: list[dict] | None = None,
         accum_identified=_accumulate(first_ident),
         phenology=phenology,
         hosts=top_hosts,
+        host_breakdown={n: dict(host_by_rel[n]) for n in top_names},
+        host_relationships=host_relationships,
         undated_collected=undated_c,
         undated_identified=undated_i,
     )

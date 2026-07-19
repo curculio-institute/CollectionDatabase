@@ -132,6 +132,36 @@ def test_specimen_row_place_excludes_date_and_host(session):
     assert "#None" not in r.locality                          # the composed label is clean too
 
 
+def test_dashboard_hosts_break_down_by_relationship(session):
+    """#137: the host chart stacks by biological relationship — same host under two
+    relationships contributes to two coloured segments."""
+    fam = _taxon(session, "Curculionidae", "family")
+    gen = _taxon(session, "Otiorhynchus", "genus", parent=fam)
+    sp = _taxon(session, "Otiorhynchus sulcatus", "species", parent=gen)
+    oak = _taxon(session, "Quercus robur", "species")
+    ev = ev_svc.create_collecting_event(session, country="Germany", locality="X")
+    session.flush()
+
+    def _rel(name):
+        r = session.query(BiologicalRelationship).filter_by(name=name).first()
+        if r is None:
+            r = BiologicalRelationship(name=name, created_at=_utcnow(), updated_at=_utcnow())
+            session.add(r); session.flush()
+        return r
+
+    for cat, relname in (("A1", "collected from"), ("A2", "reared from")):
+        co = _specimen(session, sp, ev, cat)
+        session.add(BiologicalAssociation(
+            biological_relationship_id=_rel(relname).id, subject_collection_object_id=co.id,
+            object_taxon_id=oak.id, created_at=_utcnow(), updated_at=_utcnow()))
+    session.flush()
+
+    d = ex.dashboard(session)
+    assert d.hosts == [("Quercus robur", 2)]                      # 2 specimens total
+    assert d.host_breakdown["Quercus robur"] == {"collected from": 1, "reared from": 1}
+    assert set(d.host_relationships) == {"collected from", "reared from"}
+
+
 def test_collection_facet_filters_by_repository(session):
     """#135: typing a collection code surfaces it as a facet and filters to its
     specimens only."""

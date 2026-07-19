@@ -655,7 +655,9 @@ def build_explore_panel(session_factory, *, on_open_specimen, on_open_event) -> 
                     show_legend=compare,
                 )).classes("w-full").style("height:280px")
 
-        # ── host associations — one chart per cohort in compare mode ──
+        # ── host associations — bars STACKED and coloured by biological relationship
+        # (one chart per cohort in compare mode). Hovering a bar reveals each relationship's
+        # share (axis tooltip); the legend maps colour → relationship. ──
         for ci, (label, d) in enumerate(cohorts):
             if not d.hosts:
                 continue
@@ -663,16 +665,21 @@ def build_explore_panel(session_factory, *, on_open_specimen, on_open_event) -> 
                 title = f"Host associations — {label}" if compare else "Host associations"
                 ui.label(title).classes("text-sm font-medium")
                 names = [n for n, _ in d.hosts][::-1]      # bottom-up for horizontal bars
-                vals = [c for _, c in d.hosts][::-1]
+                rels = d.host_relationships
+                series = [{
+                    "name": rel, "type": "bar", "stack": "host",
+                    "data": [d.host_breakdown.get(n, {}).get(rel, 0) for n in names],
+                    "itemStyle": {"color": _SERIES_COLORS[ri % len(_SERIES_COLORS)]},
+                } for ri, rel in enumerate(rels)]
                 ui.echart({
                     "tooltip": {"trigger": "axis", "axisPointer": {"type": "shadow"}},
-                    "grid": {"left": 8, "right": 24, "top": 12, "bottom": 8,
+                    "legend": {"top": 0, "type": "scroll", "data": rels},
+                    "grid": {"left": 8, "right": 24, "top": 34, "bottom": 8,
                              "containLabel": True},
                     "xAxis": {"type": "value", "minInterval": 1},
                     "yAxis": {"type": "category", "data": names},
-                    "series": [{"type": "bar", "data": vals,
-                                "itemStyle": {"color": _color(ci, "collected")}}],
-                }).classes("w-full").style(f"height:{max(200, 26 * len(names) + 60)}px")
+                    "series": series,
+                }).classes("w-full").style(f"height:{max(220, 26 * len(names) + 96)}px")
 
         # newly-built charts render dark text by default — theme them to the app's mode.
         ui.run_javascript("window._tpThemeECharts && window._tpThemeECharts()")
