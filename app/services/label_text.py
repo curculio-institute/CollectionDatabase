@@ -127,6 +127,29 @@ def format_geo_prefix(
     return country, state          # neither has a code: keep both, let the label grow
 
 
+def format_place(ev: "CollectingEvent | None") -> str:
+    """The geographic place only — ``Country: stateProvince, Municipality, Locality`` —
+    without coordinates, habitat, associations, collector or date. For compact record
+    summaries (Explore / the Records picker) that show those parts separately, so reusing
+    the full ``format_locality_label`` there would duplicate them. Shares the country/state
+    collapsing rule with the full label via ``format_geo_prefix``."""
+    if ev is None:
+        return ""
+    _country = ev.country_obj.name if ev.country_obj else None
+    _state = ev.state_province_obj.name if ev.state_province_obj else None
+    _country_code = ev.country_obj.iso_code if ev.country_obj else None
+    _state_code = ev.state_province_obj.iso_code if ev.state_province_obj else None
+    _c_text, _s_text = format_geo_prefix(_country, _country_code, _state, _state_code)
+    prefix = ", ".join(t for t in (_c_text, _s_text) if t)
+    parts = [f for f in (ev.municipality, ev.locality) if f]
+    if not ev.locality and not ev.municipality and not _state and ev.verbatim_locality:
+        parts.append(ev.verbatim_locality)
+    body = ", ".join(parts)
+    if prefix:
+        return f"{prefix}: {body}" if body else prefix
+    return body
+
+
 def format_locality_label(
     ev: "CollectingEvent | None",
     associated_species: list[str] | None = None,

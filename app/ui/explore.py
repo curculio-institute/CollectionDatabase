@@ -50,6 +50,13 @@ _CSS = """<style>
 .ex-fav-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ex-fav-star { color: #f59e0b; flex-shrink: 0; font-size: 1rem; }
 .ex-fav-empty { font-size: .78rem; color: var(--tp-base-soft, #9ca3af); padding: 2px 6px; line-height: 1.4; }
+/* flat specimen list — the same two-line record-summary row as the Records picker,
+   given the picker's clickable/hover/separator chrome */
+.ex-spec-row { padding: 6px 10px; border-radius: 6px; cursor: pointer;
+               border-bottom: 1px solid var(--tp-base-border, #eef2f6); }
+.ex-spec-row:last-child { border-bottom: none; }
+.ex-spec-row:hover { background: rgba(3,105,161,.07); }
+.dark .ex-spec-row:hover { background: rgba(56,189,248,.10); }
 /* stacked search groups (#135): each group is a bordered block; groups joined by AND */
 .ex-group { border: 1px solid var(--tp-base-border, #e2e8f0); border-radius: 10px;
             padding: 10px 12px; background: var(--tp-base-foreground, #fff); }
@@ -274,6 +281,8 @@ def build_explore_panel(session_factory, *, on_open_specimen, on_open_event) -> 
                         .style("color:var(--tp-base-soft)")
                     ui.space()
                     taxa_btn = ui.button("Taxa", icon="account_tree").props("dense no-caps")
+                    specimens_btn = ui.button("Specimens", icon="list") \
+                        .props("dense no-caps flat").tooltip("Flat list of matching specimens")
                     events_btn = ui.button("Events", icon="place").props("dense no-caps flat")
                     dashboard_btn = ui.button("Dashboard", icon="insights") \
                         .props("dense no-caps flat").tooltip("Charts for the filtered set")
@@ -441,6 +450,30 @@ def build_explore_panel(session_factory, *, on_open_specimen, on_open_event) -> 
                                         row = ui.html('<div class="ex-lot" style="padding-left:18px">'
                                                       f'<span class="ex-cat">{_html.escape(lot.catalog)}</span>{m}</div>')
                                         row.on("click", lambda _, c=lot.co_id: on_open_specimen(c))
+
+    def _render_specimens(rows):
+        """Flat list of matching specimens, each as the same two-line record-summary row
+        the Records picker uses; click to open in Records."""
+        if not rows:
+            ui.label("No specimens match.").classes("text-sm italic mt-3") \
+                .style("color:var(--tp-base-soft)")
+            return
+        for r in rows:
+            row = ui.html(rs.specimen_html(
+                catalog=r.catalog,
+                name=r.taxon_name or r.taxon_label,
+                rank=r.taxon_rank,
+                authorship=r.authorship,
+                hosts=r.hosts,
+                sex=r.sex,
+                count=r.count,
+                locality=r.locality_place,     # place only — date/collector/hosts shown separately
+                event_date=r.event_date,
+                recorded_by=r.recorded_by,
+                confidential=r.confidential,
+                event_confidential=r.event_confidential,
+            )).classes("ex-spec-row w-full")
+            row.on("click", lambda _, c=r.co_id: on_open_specimen(c))
 
     def _render_events(evs):
         if not evs:
@@ -663,12 +696,15 @@ def build_explore_panel(session_factory, *, on_open_specimen, on_open_event) -> 
         with results:
             if state["view"] == "taxa":
                 _render_taxa(_with(lambda s: ex_svc.checklist(s, flt)))
+            elif state["view"] == "specimens":
+                _render_specimens(_with(lambda s: ex_svc.query_specimens(s, flt)))
             elif state["view"] == "events":
                 _render_events(_with(lambda s: ex_svc.events(s, flt)))
             else:
                 _render_dashboard()   # fetches its own cohorts (combined or per-search)
 
-    _view_btns = {"taxa": taxa_btn, "events": events_btn, "dashboard": dashboard_btn}
+    _view_btns = {"taxa": taxa_btn, "specimens": specimens_btn,
+                  "events": events_btn, "dashboard": dashboard_btn}
 
     def _set_view(v):
         state["view"] = v
@@ -677,6 +713,7 @@ def build_explore_panel(session_factory, *, on_open_specimen, on_open_event) -> 
         _refresh()
 
     taxa_btn.on_click(lambda: _set_view("taxa"))
+    specimens_btn.on_click(lambda: _set_view("specimens"))
     events_btn.on_click(lambda: _set_view("events"))
     dashboard_btn.on_click(lambda: _set_view("dashboard"))
 

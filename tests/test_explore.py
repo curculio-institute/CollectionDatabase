@@ -1,8 +1,10 @@
 """Explore service — faceted search, drawer-order checklist, filtering, CSV (#40)."""
-from app.models import Taxon, CollectingEvent, CollectionObject, TaxonDetermination, Person
+from app.models import (Taxon, CollectingEvent, CollectionObject, TaxonDetermination, Person,
+                        BiologicalAssociation, BiologicalRelationship)
 from app.models.base import _utcnow
 import app.services.events as ev_svc
 import app.services.explore as ex
+from app.services.label_text import format_place
 from tests.helpers import ensure_repo
 
 
@@ -88,6 +90,46 @@ def test_species_group_count_excludes_genus_level(session):
     c = ex.counts(session)
     assert c["specimens"] == 4                         # all four specimens counted
     assert c["species_group"] == 2                     # but only the two species
+
+
+def test_format_place_is_geographic_only(session):
+    """#137: the place string is Country: state, municipality, locality — no coords,
+    habitat, collector or date (those are shown separately in the summary)."""
+    ev = ev_svc.create_collecting_event(
+        session, country="Germany", state_province="Bavaria", municipality="Uffing",
+        locality="Staffelsee", decimal_latitude=47.7, decimal_longitude=11.1,
+        recorded_by_id=_person(session, "J. Jilg").id, event_date="2024-06-15")
+    session.flush()
+    place = format_place(ev)
+    assert "Germany" in place and "Uffing" in place and "Staffelsee" in place
+    assert "47.7" not in place and "leg." not in place and "2024" not in place
+
+
+def test_specimen_row_place_excludes_date_and_host(session):
+    """The specimen summary's locality is place-only (no date/collector/associations),
+    and a host association resolves into `hosts` — no duplication, no 'specimen #None'."""
+    fam = _taxon(session, "Curculionidae", "family")
+    gen = _taxon(session, "Otiorhynchus", "genus", parent=fam)
+    sp = _taxon(session, "Otiorhynchus sulcatus", "species", parent=gen)
+    plant = _taxon(session, "Quercus robur", "species")
+    ev = ev_svc.create_collecting_event(session, country="Germany", locality="Watzmann",
+                                        event_date="2024-06-15")
+    session.flush()
+    co = _specimen(session, sp, ev, "A1")
+    rel = session.query(BiologicalRelationship).filter_by(name="collected from").first()
+    if rel is None:
+        rel = BiologicalRelationship(name="collected from",
+                                     created_at=_utcnow(), updated_at=_utcnow())
+        session.add(rel); session.flush()
+    session.add(BiologicalAssociation(
+        biological_relationship_id=rel.id, subject_collection_object_id=co.id,
+        object_taxon_id=plant.id, created_at=_utcnow(), updated_at=_utcnow()))
+    session.flush()
+    r = ex.query_specimens(session)[0]
+    assert r.locality_place == "Germany: Watzmann"          # place only
+    assert "2024" not in r.locality_place and "Quercus" not in r.locality_place
+    assert r.hosts == [("collected from", "Quercus robur", "species")]
+    assert "#None" not in r.locality                          # the composed label is clean too
 
 
 def test_collection_facet_filters_by_repository(session):

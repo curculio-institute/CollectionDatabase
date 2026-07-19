@@ -25,7 +25,23 @@ from app.models import (
     Country, StateProvince, County, Island, AdministrativeRegion, Repository,
 )
 from app.services.taxa import format_scientific_name, parse_scientific_name
-from app.services.label_text import format_locality_label
+from app.services.label_text import format_locality_label, format_place
+import app.services.field_occurrence as fo_svc
+
+
+def _assoc_host(session: Session, a) -> tuple[str, str, str | None] | None:
+    """(relationship, taxon name, rank) for an association whose object is a taxon — the
+    host plant, usually. The object may be a taxon directly *or* a field occurrence (the
+    current model records a host as a HumanObservation), so resolve through the field
+    occurrence's current determination too; otherwise its host is invisible here (#137)."""
+    t = a.object_taxon
+    if t is None and a.object_field_occurrence is not None:
+        det = fo_svc.current_determination(session, a.object_field_occurrence)
+        t = det.taxon if det else None
+    if t is None:
+        return None
+    rel = a.biological_relationship.name if a.biological_relationship else ""
+    return (rel, t.scientific_name or "", t.taxon_rank)
 
 # Geography facet kind → (vocab model, collecting_event FK attr).
 _GEO_FACETS = {
@@ -177,7 +193,8 @@ class SpecimenRow:
     count: int = 1
     type_status: str | None = None
     event_id: int | None = None
-    locality: str = ""         # one-line locality label (incl. associated species)
+    locality: str = ""         # composed one-line label (incl. associations, date, collector)
+    locality_place: str = ""   # place only (locality + country) — for the specimen summary
     event_date: str | None = None
     date_identified: str | None = None   # dwc:dateIdentified of the current determination
     recorded_by: str | None = None
@@ -291,12 +308,22 @@ def query_specimens(session: Session, filters: list[dict] | None = None,
         seen.add(co.id)
         t = idx.get(td.taxon_id) if td else None
         rank = (t.taxon_rank if t else None)
-        # Biological associations of this specimen (subject role): identity for the
-        # collapse key + the object names for the locality line.
+        # Biological associations of this specimen (subject role). `hosts` (relationship +
+        # host taxon) drives the summary's "collected from …"; `assoc_names` feeds the
+        # composed locality label + collapse key. A host may be a taxon or a field
+        # occurrence — _assoc_host resolves both; an association to another *specimen*
+        # contributes its catalog id, and one that resolves to nothing is skipped (never
+        # the old "specimen #None").
         assocs = co.subject_associations
-        assoc_taxa = [format_scientific_name(a.object_taxon) if a.object_taxon
-                      else f"specimen #{a.object_collection_object_id}" for a in assocs]
-        loc = format_locality_label(ev, assoc_taxa or None) if ev else ""
+        hosts = [h for a in assocs if (h := _assoc_host(session, a))]
+        assoc_names = [h[1] for h in hosts] + [
+            f"specimen #{a.object_collection_object_id}"
+            for a in assocs if a.object_collection_object_id]
+        loc = format_locality_label(ev, assoc_names or None) if ev else ""
+        # A place-only locality for the specimen summary — the composed `loc` above bundles
+        # associations/coords/habitat/date/collector, which the summary already shows
+        # separately, so reusing it would duplicate them (and print "specimen #None").
+        place = format_place(ev) if ev else ""
         rows.append(SpecimenRow(
             co_id=co.id,
             catalog=co.catalog_number,
@@ -306,10 +333,7 @@ def query_specimens(session: Session, filters: list[dict] | None = None,
             taxon_name=((t.scientific_name or "") if t else ""),
             taxon_rank=rank,
             authorship=((t.scientific_name_authorship or None) if t else None),
-            hosts=[(a.biological_relationship.name if a.biological_relationship else "",
-                    a.object_taxon.scientific_name or "",
-                    a.object_taxon.taxon_rank)
-                   for a in assocs if a.object_taxon],
+            hosts=hosts,
             confidential=bool(co.confidential),
             event_confidential=bool(ev.confidential) if ev else False,
             needs_attention=(t is None or rank not in ("species", "subspecies", "variety", "form")),
@@ -318,6 +342,7 @@ def query_specimens(session: Session, filters: list[dict] | None = None,
             type_status=(td.type_status if td else None),
             event_id=co.collecting_event_id,
             locality=loc,
+            locality_place=place,
             event_date=(ev.event_date if ev else None),
             date_identified=(td.date_identified if td else None),
             recorded_by=(ev.recorded_by_person.full_name if (ev and ev.recorded_by_person) else None),
