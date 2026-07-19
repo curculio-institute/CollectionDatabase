@@ -95,9 +95,13 @@ def _name_auth(name: str, auth: str) -> str:
     return out
 
 
-# Colour-blind-safe categorical palette (Okabe-Ito-ish), by cohort/series index.
-_SERIES_COLORS = ("#0369a1", "#ea7317", "#059669", "#d81b60", "#7b5cff",
-                  "#b45309", "#0891b2", "#65a30d")
+# Colour-blind-safe categorical palette, by cohort/series index. These are the
+# LIGHT-background (darker) shades used when the option is built; the client-side
+# themer swaps each to the index-aligned brighter shade in dark mode (_ECHART_DARK
+# below must stay in the same order). A dark-blue line is fine on white but too dark
+# on near-black, so the palette itself has to follow the theme, not just the text.
+_SERIES_COLORS = ("#0369a1", "#ea7317", "#059669", "#be185d", "#6d28d9",
+                  "#b45309", "#0e7490", "#4d7c0f")
 
 # Re-theme ECharts (canvas → can't read the app's `.dark` CSS) from the current theme,
 # and again whenever the theme toggles. `_tpThemeECharts` is also called by the server
@@ -107,6 +111,16 @@ _SERIES_COLORS = ("#0369a1", "#ea7317", "#059669", "#d81b60", "#7b5cff",
 _ECHART_THEME_JS = """
 <script>
 (function () {
+  // Index-aligned with Python _SERIES_COLORS (light) — brighter shades for dark bg.
+  var LP = ["#0369a1","#ea7317","#059669","#be185d","#6d28d9","#b45309","#0e7490","#4d7c0f"];
+  var DP = ["#38bdf8","#fb923c","#34d399","#f472b6","#a78bfa","#fbbf24","#22d3ee","#a3e635"];
+  function swap(c, dark) {              // map a palette colour to the current theme
+    if (!c) return null;
+    var i = LP.indexOf(c);
+    if (i < 0) i = DP.indexOf(c);       // already swapped on an earlier pass → re-map
+    if (i < 0) return null;             // not one of ours (e.g. gridline) → leave it
+    return dark ? DP[i] : LP[i];
+  }
   function themeOne(el) {
     var inst = window.echarts && window.echarts.getInstanceByDom(el);
     if (!inst) return false;
@@ -115,24 +129,51 @@ _ECHART_THEME_JS = """
     var axis = dark ? '#94a3b8' : '#475569';
     var line = dark ? 'rgba(255,255,255,0.16)' : 'rgba(0,0,0,0.15)';
     var split = dark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)';
+    // Series colours: swap each between the light/dark palette by index; only
+    // itemStyle.color is touched, so the solid/dashed lineStyle survives the merge.
+    var series = [];
+    (inst.getOption().series || []).forEach(function (s) {
+      var cur = (s.itemStyle && s.itemStyle.color) || s.color;
+      var mapped = swap(cur, dark);
+      series.push(mapped ? { itemStyle: { color: mapped } } : {});
+    });
     inst.setOption({
       textStyle: { color: text },
       legend: { textStyle: { color: text } },
       xAxis: { axisLabel: { color: axis }, axisLine: { lineStyle: { color: line } } },
       yAxis: { axisLabel: { color: axis }, axisLine: { lineStyle: { color: line } },
-               splitLine: { lineStyle: { color: split } } }
+               splitLine: { lineStyle: { color: split } } },
+      series: series
     });
     return true;
   }
-  window._tpThemeECharts = function (tries) {
+  // Theme ONE chart, retrying until its instance exists — charts in a multi-chart
+  // dashboard mount at slightly different times, so each retries independently (a
+  // single shared retry that stopped at the first success left the rest dark).
+  function themeEl(el, tries) {
     tries = tries || 0;
-    var els = document.querySelectorAll('.nicegui-echart');
-    var any = false;
-    els.forEach(function (el) { if (themeOne(el)) any = true; });
-    if (!any && tries < 12) setTimeout(function () { window._tpThemeECharts(tries + 1); }, 100);
-  };
-  new MutationObserver(function () { window._tpThemeECharts(); })
+    if (themeOne(el)) return;
+    if (tries < 25) setTimeout(function () { themeEl(el, tries + 1); }, 80);
+  }
+  function themeAll() {
+    document.querySelectorAll('.nicegui-echart').forEach(function (el) { themeEl(el, 0); });
+  }
+  window._tpThemeECharts = themeAll;
+  // Re-theme on dark-mode toggle (class flips on <html>).
+  new MutationObserver(themeAll)
     .observe(document.documentElement, { attributes: true, attributeFilter: ['class'] });
+  // Theme every chart the moment it is added to the DOM, independent of any server
+  // call — so a freshly (re)built dashboard is never left with default dark text.
+  new MutationObserver(function (muts) {
+    muts.forEach(function (m) {
+      m.addedNodes.forEach(function (n) {
+        if (n.nodeType !== 1) return;
+        if (n.classList && n.classList.contains('nicegui-echart')) themeEl(n, 0);
+        else if (n.querySelectorAll)
+          n.querySelectorAll('.nicegui-echart').forEach(function (el) { themeEl(el, 0); });
+      });
+    });
+  }).observe(document.body, { childList: true, subtree: true });
 })();
 </script>
 """
