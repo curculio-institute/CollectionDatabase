@@ -90,6 +90,43 @@ def _name_auth(name: str, auth: str) -> str:
     return out
 
 
+# Colour-blind-safe two-series palette (blue / orange), reused across the dashboard.
+_SERIES_COLORS = ("#0369a1", "#ea7317")
+
+
+def _line_chart(categories: list[str], series: list[tuple], *, show_legend: bool = True) -> dict:
+    """ECharts option for a category-axis chart. `series` = [(name, values, type)],
+    where type is 'line' or 'bar'. Integer y-axis (specimen/species counts)."""
+    return {
+        "tooltip": {"trigger": "axis"},
+        "legend": {"show": show_legend, "top": 0,
+                   "data": [name for name, _v, _t in series]},
+        "grid": {"left": 8, "right": 16, "top": 34 if show_legend else 12,
+                 "bottom": 8, "containLabel": True},
+        "xAxis": {"type": "category", "data": categories,
+                  "axisLabel": {"hideOverlap": True}},
+        "yAxis": {"type": "value", "minInterval": 1},
+        "series": [
+            {"name": name, "type": typ, "data": values, "smooth": typ == "line",
+             "showSymbol": typ == "line",
+             "itemStyle": {"color": _SERIES_COLORS[i % len(_SERIES_COLORS)]}}
+            for i, (name, values, typ) in enumerate(series)
+        ],
+    }
+
+
+def _carry(accum: list[tuple[int, int]], years: list[int]) -> list[int]:
+    """Expand a cumulative (year → running total) curve onto `years`, carrying the
+    last value forward across gap years (a saturation curve never dips)."""
+    d = dict(accum)
+    out, last = [], 0
+    for y in years:
+        if y in d:
+            last = d[y]
+        out.append(last)
+    return out
+
+
 def build_explore_panel(session_factory, *, on_open_specimen, on_open_event) -> dict:
     ui.add_head_html(_CSS)
     ui.add_head_html(rs.CSS)
@@ -112,6 +149,8 @@ def build_explore_panel(session_factory, *, on_open_specimen, on_open_event) -> 
             ui.space()
             taxa_btn = ui.button("Taxa", icon="account_tree").props("dense no-caps")
             events_btn = ui.button("Events", icon="place").props("dense no-caps flat")
+            dashboard_btn = ui.button("Dashboard", icon="insights").props("dense no-caps flat") \
+                .tooltip("Charts for the filtered set")
             csv_btn = ui.button("CSV", icon="download").props("flat dense no-caps") \
                 .tooltip("Export the filtered set as CSV")
 
@@ -263,6 +302,76 @@ def build_explore_panel(session_factory, *, on_open_specimen, on_open_event) -> 
                     ))
                     row.on("click", lambda _, c=lot.co_id: on_open_specimen(c))
 
+    def _undated_note(d):
+        bits = []
+        if d.undated_collected:
+            bits.append(f"{d.undated_collected} without a collecting date")
+        if d.undated_identified:
+            bits.append(f"{d.undated_identified} without an identification date")
+        if bits:
+            ui.html('<span class="text-xs" style="color:var(--tp-base-soft)">'
+                    f'Not shown: {"; ".join(_html.escape(b) for b in bits)}.</span>')
+
+    def _render_dashboard(d):
+        if d.total == 0:
+            ui.label("No specimens match.").classes("text-sm italic mt-3") \
+                .style("color:var(--tp-base-soft)")
+            return
+
+        # ── timelines: specimens collected vs identified, per year ──
+        t_years = sorted({y for y, _ in d.collected_by_year}
+                         | {y for y, _ in d.identified_by_year})
+        coll = dict(d.collected_by_year)
+        iden = dict(d.identified_by_year)
+        with ui.card().classes("w-full shadow-sm mt-2"):
+            ui.label("Specimens over time").classes("text-sm font-medium")
+            ui.echart(_line_chart(
+                [str(y) for y in t_years],
+                [("Collected", [coll.get(y, 0) for y in t_years], "bar"),
+                 ("Identified", [iden.get(y, 0) for y in t_years], "bar")],
+            )).classes("w-full").style("height:300px")
+            _undated_note(d)
+
+        # ── species-accumulation (saturation) curves ──
+        a_years = sorted({y for y, _ in d.accum_collected}
+                         | {y for y, _ in d.accum_identified})
+        with ui.card().classes("w-full shadow-sm mt-2"):
+            ui.label("Species accumulation").classes("text-sm font-medium")
+            ui.html('<span class="text-xs" style="color:var(--tp-base-soft)">'
+                    'cumulative distinct species-group names</span>')
+            ui.echart(_line_chart(
+                [str(y) for y in a_years],
+                [("by collecting date", _carry(d.accum_collected, a_years), "line"),
+                 ("by identification date", _carry(d.accum_identified, a_years), "line")],
+            )).classes("w-full").style("height:300px")
+
+        # ── phenology (collecting month) ──
+        with ui.card().classes("w-full shadow-sm mt-2"):
+            ui.label("Phenology").classes("text-sm font-medium")
+            ui.html('<span class="text-xs" style="color:var(--tp-base-soft)">'
+                    'specimens by month of collection</span>')
+            ui.echart(_line_chart(
+                list(ex_svc._MONTHS),
+                [("Specimens", list(d.phenology), "bar")],
+                show_legend=False,
+            )).classes("w-full").style("height:280px")
+
+        # ── host associations ──
+        if d.hosts:
+            with ui.card().classes("w-full shadow-sm mt-2"):
+                ui.label("Host associations").classes("text-sm font-medium")
+                names = [n for n, _ in d.hosts][::-1]      # bottom-up for horizontal bars
+                vals = [c for _, c in d.hosts][::-1]
+                ui.echart({
+                    "tooltip": {"trigger": "axis", "axisPointer": {"type": "shadow"}},
+                    "grid": {"left": 8, "right": 24, "top": 12, "bottom": 8,
+                             "containLabel": True},
+                    "xAxis": {"type": "value", "minInterval": 1},
+                    "yAxis": {"type": "category", "data": names},
+                    "series": [{"type": "bar", "data": vals,
+                                "itemStyle": {"color": "#0369a1"}}],
+                }).classes("w-full").style(f"height:{max(200, 26 * len(names) + 60)}px")
+
     def _refresh():
         flt = state["filters"]
         c = _with(lambda s: ex_svc.counts(s, flt))
@@ -273,17 +382,22 @@ def build_explore_panel(session_factory, *, on_open_specimen, on_open_event) -> 
         with results:
             if state["view"] == "taxa":
                 _render_taxa(_with(lambda s: ex_svc.checklist(s, flt)))
-            else:
+            elif state["view"] == "events":
                 _render_events(_with(lambda s: ex_svc.events(s, flt)))
+            else:
+                _render_dashboard(_with(lambda s: ex_svc.dashboard(s, flt)))
+
+    _view_btns = {"taxa": taxa_btn, "events": events_btn, "dashboard": dashboard_btn}
 
     def _set_view(v):
         state["view"] = v
-        taxa_btn.props(f'{"" if v=="taxa" else "flat"}')
-        events_btn.props(f'{"" if v=="events" else "flat"}')
+        for name, btn in _view_btns.items():
+            btn.props(f'{"" if name == v else "flat"}')
         _refresh()
 
     taxa_btn.on_click(lambda: _set_view("taxa"))
     events_btn.on_click(lambda: _set_view("events"))
+    dashboard_btn.on_click(lambda: _set_view("dashboard"))
 
     def _export():
         rows = _with(lambda s: ex_svc.query_specimens(s, state["filters"]))

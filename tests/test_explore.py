@@ -106,6 +106,57 @@ def test_collection_facet_filters_by_repository(session):
     assert cats == {"Z1"}
 
 
+def _dated_specimen(session, taxon, event, catalog, date_identified):
+    co = _specimen(session, taxon, event, catalog)
+    det = session.query(TaxonDetermination).filter_by(collection_object_id=co.id).one()
+    det.date_identified = date_identified
+    session.flush()
+    return co
+
+
+def test_dashboard_timelines_accumulation_and_phenology(session):
+    """#135: collecting/identification timelines, species-accumulation curves, and
+    a month-of-year phenology histogram over the current filter set."""
+    fam = _taxon(session, "Curculionidae", "family")
+    gen = _taxon(session, "Otiorhynchus", "genus", parent=fam)
+    sp1 = _taxon(session, "Otiorhynchus sulcatus", "species", parent=gen)
+    sp2 = _taxon(session, "Otiorhynchus iratus", "species", parent=gen)
+    e2019 = ev_svc.create_collecting_event(session, country="Germany", locality="A", event_date="2019-06-15")
+    e2021 = ev_svc.create_collecting_event(session, country="Germany", locality="B", event_date="2021-08-02")
+    session.flush()
+    _dated_specimen(session, sp1, e2019, "A1", "2020-01-10")
+    _dated_specimen(session, sp1, e2021, "A2", "2020-01-11")   # same species, later collect
+    _dated_specimen(session, sp2, e2021, "A3", "2022-03-04")   # new species in 2021/2022
+
+    d = ex.dashboard(session)
+    assert d.total == 3
+    # collecting timeline: 2019→1, 2020→0 (gap filled), 2021→2
+    assert d.collected_by_year == [(2019, 1), (2020, 0), (2021, 2)]
+    # identification timeline: 2020→2, 2021→0, 2022→1
+    assert d.identified_by_year == [(2020, 2), (2021, 0), (2022, 1)]
+    # accumulation by collecting date: sp1 first in 2019, sp2 first in 2021
+    assert d.accum_collected == [(2019, 1), (2021, 2)]
+    # accumulation by identification date: sp1 first in 2020, sp2 first in 2022
+    assert d.accum_identified == [(2020, 1), (2022, 2)]
+    # phenology: June (idx 5) has 1, August (idx 7) has 2
+    assert d.phenology[5] == 1 and d.phenology[7] == 2 and sum(d.phenology) == 3
+    assert d.undated_collected == 0 and d.undated_identified == 0
+
+
+def test_dashboard_counts_undated_and_top_hosts(session):
+    """Undated specimens are tallied separately (not silently dropped); genus-level
+    determinations never enter the accumulation curve."""
+    fam = _taxon(session, "Curculionidae", "family")
+    gen = _taxon(session, "Otiorhynchus", "genus", parent=fam)
+    e = ev_svc.create_collecting_event(session, country="Germany", locality="X")   # no date
+    session.flush()
+    _specimen(session, gen, e, "A1")            # genus-level, undated
+    d = ex.dashboard(session)
+    assert d.total == 1
+    assert d.undated_collected == 1 and d.undated_identified == 1
+    assert d.accum_collected == [] and d.accum_identified == []   # genus excluded
+
+
 def test_events_axis_groups_specimens(session):
     _fixture(session)
     evs = ex.events(session)

@@ -175,6 +175,7 @@ class SpecimenRow:
     event_id: int | None = None
     locality: str = ""         # one-line locality label (incl. associated species)
     event_date: str | None = None
+    date_identified: str | None = None   # dwc:dateIdentified of the current determination
     recorded_by: str | None = None
     lat: float | None = None
     lon: float | None = None
@@ -271,6 +272,7 @@ def query_specimens(session: Session, filters: list[dict] | None = None) -> list
             event_id=co.collecting_event_id,
             locality=loc,
             event_date=(ev.event_date if ev else None),
+            date_identified=(td.date_identified if td else None),
             recorded_by=(ev.recorded_by_person.full_name if (ev and ev.recorded_by_person) else None),
             lat=(ev.decimal_latitude if ev else None),
             lon=(ev.decimal_longitude if ev else None),
@@ -473,3 +475,110 @@ def counts(session: Session, filters: list[dict] | None = None) -> dict:
         "events": len({r.event_id for r in rows if r.event_id}),
         "georeferenced": sum(1 for r in rows if r.lat is not None and r.lon is not None),
     }
+
+
+# ── dashboard (data visualisations, #135) ─────────────────────────────────────
+
+_MONTHS = ("Jan", "Feb", "Mar", "Apr", "May", "Jun",
+           "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
+
+
+def _iso_year(s: str | None) -> int | None:
+    """Leading year of an ISO 8601 date or interval (`2024-06/…` → 2024). None if absent."""
+    head = (s or "").split("/")[0].strip()
+    return int(head[:4]) if len(head) >= 4 and head[:4].isdigit() else None
+
+
+def _iso_month(s: str | None) -> int | None:
+    """1–12 month of an ISO 8601 date, or None. Used for phenology (collecting season)."""
+    head = (s or "").split("/")[0].strip()
+    if len(head) >= 7 and head[4] == "-" and head[5:7].isdigit():
+        m = int(head[5:7])
+        return m if 1 <= m <= 12 else None
+    return None
+
+
+@dataclass
+class Dashboard:
+    """Aggregated series for the Explore dashboard over the current filter set.
+
+    All counts are of specimen *records* (matching the headline `specimens` figure),
+    not summed individualCount. Year series are gap-free over [min, max] so the line
+    charts don't imply activity in years that simply have no bin."""
+    total: int
+    collected_by_year: list[tuple[int, int]]      # (year, #specimens) by collecting date
+    identified_by_year: list[tuple[int, int]]     # (year, #specimens) by identification date
+    accum_collected: list[tuple[int, int]]        # (year, cumulative distinct species) collecting
+    accum_identified: list[tuple[int, int]]       # (year, cumulative distinct species) identifying
+    phenology: list[int]                          # 12 months, #specimens by collecting month
+    hosts: list[tuple[str, int]]                  # (host taxon, #specimens), most-associated first
+    undated_collected: int                        # specimens with no parseable collecting year
+    undated_identified: int                       # specimens with no parseable identification year
+
+
+def _fill_years(counts_by_year: dict[int, int]) -> list[tuple[int, int]]:
+    """Sorted (year, count), with every intervening year present at 0."""
+    if not counts_by_year:
+        return []
+    lo, hi = min(counts_by_year), max(counts_by_year)
+    return [(y, counts_by_year.get(y, 0)) for y in range(lo, hi + 1)]
+
+
+def _accumulate(first_seen: dict[int, int]) -> list[tuple[int, int]]:
+    """Cumulative distinct-species curve from {taxon_id: first-seen year}."""
+    per_year: dict[int, int] = defaultdict(int)
+    for y in first_seen.values():
+        per_year[y] += 1
+    out, run = [], 0
+    for y in sorted(per_year):
+        run += per_year[y]
+        out.append((y, run))
+    return out
+
+
+def dashboard(session: Session, filters: list[dict] | None = None, *, host_limit: int = 15) -> Dashboard:
+    """Build the dashboard series for the specimens matching ``filters``."""
+    rows = query_specimens(session, filters)
+    coll_year: dict[int, int] = defaultdict(int)
+    ident_year: dict[int, int] = defaultdict(int)
+    phenology = [0] * 12
+    first_coll: dict[int, int] = {}     # taxon_id → earliest collecting year
+    first_ident: dict[int, int] = {}    # taxon_id → earliest identification year
+    hosts: dict[str, int] = defaultdict(int)
+    undated_c = undated_i = 0
+
+    for r in rows:
+        cy = _iso_year(r.event_date)
+        if cy is not None:
+            coll_year[cy] += 1
+        else:
+            undated_c += 1
+        iy = _iso_year(r.date_identified)
+        if iy is not None:
+            ident_year[iy] += 1
+        else:
+            undated_i += 1
+        m = _iso_month(r.event_date)
+        if m is not None:
+            phenology[m - 1] += 1
+        if r.taxon_id and (r.taxon_rank or "").lower() in _SPECIES_GROUP_RANKS:
+            if cy is not None:
+                first_coll[r.taxon_id] = min(cy, first_coll.get(r.taxon_id, cy))
+            if iy is not None:
+                first_ident[r.taxon_id] = min(iy, first_ident.get(r.taxon_id, iy))
+        for _rel, name, _rank in r.hosts:
+            if name:
+                hosts[name] += 1
+
+    top_hosts = sorted(hosts.items(), key=lambda kv: (-kv[1], kv[0]))[:host_limit]
+    return Dashboard(
+        total=len(rows),
+        collected_by_year=_fill_years(coll_year),
+        identified_by_year=_fill_years(ident_year),
+        accum_collected=_accumulate(first_coll),
+        accum_identified=_accumulate(first_ident),
+        phenology=phenology,
+        hosts=top_hosts,
+        undated_collected=undated_c,
+        undated_identified=undated_i,
+    )
