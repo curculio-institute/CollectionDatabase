@@ -143,6 +143,9 @@ def resolve(session: Session, fav: SavedSearch) -> dict:
     stale = 0
     for g in groups:
         for f in g.get("facets", []):
+            if f["kind"] == "date":       # a value filter, not a DB entity → never stale
+                f["stale"] = False
+                continue
             label = _resolve_facet(session, f["kind"], f["key"])
             if label is None:
                 f["stale"] = True

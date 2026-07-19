@@ -162,6 +162,28 @@ def test_dashboard_hosts_break_down_by_relationship(session):
     assert set(d.host_relationships) == {"collected from", "reared from"}
 
 
+def test_date_range_filter(session):
+    """#137: a date facet windows on the collecting date or the identification date."""
+    fam = _taxon(session, "Curculionidae", "family")
+    gen = _taxon(session, "Otiorhynchus", "genus", parent=fam)
+    sp = _taxon(session, "Otiorhynchus sulcatus", "species", parent=gen)
+    e19 = ev_svc.create_collecting_event(session, country="Germany", locality="A", event_date="2019-06-15")
+    e21 = ev_svc.create_collecting_event(session, country="Germany", locality="B", event_date="2021-08-02")
+    session.flush()
+    _dated_specimen(session, sp, e19, "A1", "2020-01-10")
+    _dated_specimen(session, sp, e21, "A2", "2022-03-04")
+
+    # collecting date within 2019 → only A1
+    flt = [{"kind": "date", "field": "collected", "from": "2019-01-01", "to": "2019-12-31"}]
+    assert {r.catalog for r in ex.query_specimens(session, flt)} == {"A1"}
+    # collecting date >= 2021 → only A2
+    flt = [{"kind": "date", "field": "collected", "from": "2021-01-01", "to": None}]
+    assert {r.catalog for r in ex.query_specimens(session, flt)} == {"A2"}
+    # identification date <= 2020 → only A1 (identified 2020, A2 identified 2022)
+    flt = [{"kind": "date", "field": "identified", "from": None, "to": "2020-12-31"}]
+    assert {r.catalog for r in ex.query_specimens(session, flt)} == {"A1"}
+
+
 def test_collection_facet_filters_by_repository(session):
     """#135: typing a collection code surfaces it as a facet and filters to its
     specimens only."""

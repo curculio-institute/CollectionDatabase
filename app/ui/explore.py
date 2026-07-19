@@ -326,6 +326,62 @@ def build_explore_panel(session_factory, *, on_open_specimen, on_open_event) -> 
         _render_groups()
         _refresh()
 
+    def _add_date_chip(g, field, dfrom, dto):
+        """Add a date facet — a single day or a range, on the collecting or ident. date."""
+        dfrom = (dfrom or "").strip() or None
+        dto = (dto or "").strip() or None
+        if not dfrom and not dto:
+            ui.notify("Pick at least one date.", type="warning")
+            return
+        # A typed ISO 8601 interval ("2019-06-15/2019-06-20", the eventDate format) IS a range.
+        if dfrom and "/" in dfrom:
+            a, b = dfrom.split("/", 1)
+            dfrom, dto = a.strip() or None, (b.strip() or None)
+        tag = "Collected" if field == "collected" else "Identified date"
+        if dfrom and not dto:
+            dto = dfrom                    # a single date = ON that day (=), not ≥
+        if dfrom and dto:
+            label = dfrom if dfrom == dto else f"{dfrom} – {dto}"
+        else:                              # only an upper bound
+            label = f"≤ {dto}"
+        g["facets"].append({"kind": "date", "field": field, "from": dfrom, "to": dto,
+                            "label": label, "tag": tag})
+        state["dash_dates"] = None
+        _render_groups()
+        _refresh()
+
+    def _open_date_dialog(g):
+        dlg = ui.dialog()
+        with dlg, ui.card().classes("gap-2").style("min-width:300px"):
+            ui.label("Add a date filter").classes("text-sm font-medium")
+            dtype = ui.toggle({"collected": "Collecting date", "identified": "Identified date"},
+                              value="collected").props("dense no-caps unelevated")
+
+            def _date_field(label):
+                # A typed field (write the year directly — no scrolling) with a calendar popup.
+                # `no-parent-event` keeps each field's popup independent; `minimal` drops the
+                # q-date title banner (which showed a stray "—" with no value).
+                inp = ui.input(label, placeholder="YYYY-MM-DD").props("dense outlined").classes("w-full")
+                with ui.menu().props("no-parent-event") as menu:
+                    ui.date().bind_value(inp).props("minimal today-btn")
+                    with ui.row().classes("justify-end w-full"):
+                        ui.button("Close", on_click=menu.close).props("flat dense no-caps")
+                with inp.add_slot("append"):
+                    ui.icon("edit_calendar").classes("cursor-pointer").on("click", menu.open)
+                return inp
+
+            from_in = _date_field("From")
+            to_in = _date_field("To (optional — leave blank for a single date / open range)")
+            with ui.row().classes("justify-end w-full gap-2"):
+                ui.button("Cancel", on_click=dlg.close).props("flat dense no-caps")
+
+                def _do():
+                    _add_date_chip(g, dtype.value, from_in.value, to_in.value)
+                    dlg.close()
+                ui.button("Add filter", on_click=_do).props("dense no-caps unelevated")
+        dlg.on_value_change(lambda e: dlg.delete() if not e.value else None)
+        dlg.open()
+
     def _remove_chip(g, i):
         del g["facets"][i]
         if not g["facets"] and len(state["groups"]) > 1:
@@ -363,6 +419,9 @@ def build_explore_panel(session_factory, *, on_open_specimen, on_open_event) -> 
                         .props("outlined dense clearable").classes("w-full")
                     drop = ui.element("div").classes("ex-drop").style("display:none")
                 inp.on_value_change(lambda e, gg=g, dd=drop: _refresh_dropdown(gg, dd, e.value or ""))
+                ui.button(icon="calendar_month", on_click=lambda _, gg=g: _open_date_dialog(gg)) \
+                    .props("flat dense round size=sm") \
+                    .tooltip("Add a date filter (collecting or identified date)")
                 if len(state["groups"]) > 1:
                     ui.button(icon="close", on_click=lambda _, gg=g: _remove_group(gg)) \
                         .props("flat dense round size=sm").tooltip("Remove this search")

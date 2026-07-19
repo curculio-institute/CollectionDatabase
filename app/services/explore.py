@@ -234,7 +234,9 @@ def _apply_filters(session: Session, q, filters: list[dict], idx: dict[int, Taxo
         if t.parent_name_usage_id:
             children[t.parent_name_usage_id].append(t.id)
 
-    def _clause(kind, key):
+    def _clause(f):
+        kind = f["kind"]
+        key = f.get("key")
         if kind == "taxon":
             return TaxonDetermination.taxon_id.in_(_descendant_ids(int(key), children))
         if kind in _GEO_FACETS:
@@ -250,12 +252,25 @@ def _apply_filters(session: Session, q, filters: list[dict], idx: dict[int, Taxo
             return TaxonDetermination.identified_by_id == pid if pid is not None else false()
         if kind == "collection":
             return CollectionObject.repository_id == int(key)
+        if kind == "date":
+            # A date range on the collecting date (event_date) or the identification date.
+            # ISO date strings sort lexicographically, so >= from / <= to work directly (the
+            # eventDate interval "start/end" sorts by its start — "collected on/after"). A
+            # blank bound is open-ended.
+            col = (CollectingEvent.event_date if f.get("field") == "collected"
+                   else TaxonDetermination.date_identified)
+            conds = []
+            if f.get("from"):
+                conds.append(col >= f["from"])
+            if f.get("to"):
+                conds.append(col <= f["to"])
+            return and_(*conds) if conds else None
         return None
 
     group_clauses = []
     for g in _as_groups(filters, combine):
         facet_clauses = [c for f in g.get("facets", [])
-                         if (c := _clause(f["kind"], f["key"])) is not None]
+                         if (c := _clause(f)) is not None]
         if not facet_clauses:
             continue
         group_clauses.append(or_(*facet_clauses) if g.get("op", "and") == "or"
