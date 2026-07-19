@@ -185,6 +185,118 @@ def sp_svc_count(session, ev_id: int) -> int:
     return ev_svc.count_co_at_event(session, ev_id)
 
 
+def _co_summary(session, co) -> dict:
+    """rs.specimen_html kwargs for one specimen under its event (locality omitted — the
+    event IS the locality above)."""
+    dets = sp_svc.get_determination_history(session, co.id)
+    cur = next((d for d in dets if d.is_current), None) or (dets[0] if dets else None)
+    t = cur.taxon if cur else None
+    return {
+        "co_id": co.id,
+        "catalog": co.catalog_number,
+        "name": (t.scientific_name or "") if t else "",
+        "rank": t.taxon_rank if t else None,
+        "authorship": t.scientific_name_authorship if t else None,
+        "hosts": [h for a in co.subject_associations if (h := bio_svc.association_host(session, a))],
+        "sex": cur.sex if cur else None,
+        "count": co.individual_count,
+        "identified_by": cur.identified_by_person.full_name
+                         if (cur and cur.identified_by_person) else None,
+        "date_identified": cur.date_identified if cur else None,
+        "confidential": bool(co.confidential),
+        "event_confidential": bool(co.collecting_event.confidential) if co.collecting_event else False,
+    }
+
+
+def build_event_sheet(session_factory, ev_id: int, *, on_edit, on_open_specimen=None) -> None:
+    """Read-only collecting-event sheet: the place (map + habitat media) and the specimens
+    collected there, each linking to its own record."""
+    ui.add_head_html(rs.CSS)
+    ui.add_head_html(CSS)
+    add_map_assets()
+
+    with session_factory() as s:
+        ev = s.get(CollectingEvent, ev_id)
+        if ev is None:
+            ui.label("Event not found.").classes("text-sm text-negative")
+            return
+        place = format_place(ev)
+        ev_data = {
+            "date": ev.event_date, "verbatim_date": ev.verbatim_event_date,
+            "recorded_by": ev.recorded_by_person.full_name if ev.recorded_by_person else None,
+            "habitat": ev.habitat_obj.name if ev.habitat_obj else None,
+            "protocol": ev.sampling_protocol_obj.name if ev.sampling_protocol_obj else None,
+            "lat": ev.decimal_latitude, "lon": ev.decimal_longitude,
+            "unc": ev.coordinate_uncertainty_in_meters,
+            "confidential": bool(ev.confidential),
+            "verbatim_locality": ev.verbatim_locality,
+        }
+        detail = {
+            "Country": ev.country_obj.name if ev.country_obj else None,
+            "State / province": ev.state_province_obj.name if ev.state_province_obj else None,
+            "Region": ev.administrative_region_obj.name if ev.administrative_region_obj else None,
+            "County": ev.county_obj.name if ev.county_obj else None,
+            "Municipality": ev.municipality,
+            "Island": ev.island_obj.name if ev.island_obj else None,
+            "Verbatim locality": ev.verbatim_locality,
+            "Verbatim date": ev.verbatim_event_date,
+        }
+        media = _media_items(s, "collecting_event", ev_id, "Event")
+        specimens = [_co_summary(s, co) for co in ev.collection_objects]
+
+    _render_event(place, ev_data, detail, media, specimens,
+                  on_edit=on_edit, on_open_specimen=on_open_specimen)
+
+
+def _render_event(place, ev, detail, media, specimens, *, on_edit, on_open_specimen) -> None:
+    # ── locality banner ──
+    with ui.card().classes("w-full shadow-sm"):
+        with ui.row().classes("items-start gap-3 w-full no-wrap"):
+            with ui.column().classes("flex-1 min-w-0 gap-1"):
+                lock = rs.lock_html(own=ev["confidential"])
+                ui.html(f'<div class="rsheet-hero" style="font-size:1.25rem">'
+                        f'{_html.escape(place or "— no locality —")} {lock}</div>')
+                meta = "  ·  ".join(x for x in (
+                    ev["date"], f'leg. {ev["recorded_by"]}' if ev["recorded_by"] else "",
+                    ev["habitat"], ev["protocol"]) if x)
+                if meta:
+                    ui.html(f'<div class="rsheet-muted">{_html.escape(meta)}</div>')
+            ui.button("Edit", icon="edit", on_click=on_edit).props("no-caps unelevated")
+
+    with ui.row().classes("w-full gap-4 items-start"):
+        with ui.column().classes("flex-1 min-w-0 gap-4"):
+            with ui.card().classes("w-full shadow-sm"):
+                ui.html(f'<div class="rsheet-hd">Specimens ({len(specimens)})</div>')
+                if specimens:
+                    for sp in specimens:
+                        row = ui.html(rs.specimen_html(
+                            catalog=sp["catalog"], name=sp["name"], rank=sp["rank"],
+                            authorship=sp["authorship"], hosts=sp["hosts"], sex=sp["sex"],
+                            count=sp["count"], locality="", identified_by=sp["identified_by"],
+                            date_identified=sp["date_identified"],
+                            confidential=sp["confidential"],
+                            event_confidential=sp["event_confidential"],
+                        )).classes("ex-spec-row w-full")
+                        if on_open_specimen:
+                            row.on("click", lambda _, c=sp["co_id"]: on_open_specimen(c))
+                else:
+                    ui.html('<div class="rsheet-muted">No specimens.</div>')
+            if media:
+                with ui.card().classes("w-full shadow-sm"):
+                    ui.html('<div class="rsheet-hd">Habitat media</div>')
+                    _media_block(media)
+
+        with ui.column().classes("w-full lg:w-96 shrink-0 gap-4"):
+            if ev["lat"] is not None and ev["lon"] is not None:
+                with ui.card().classes("w-full shadow-sm"):
+                    ui.html('<div class="rsheet-hd">Location</div>')
+                    _coord_map(ev["lat"], ev["lon"], ev["unc"])
+            if any(detail.values()):
+                with ui.card().classes("w-full shadow-sm"):
+                    ui.html('<div class="rsheet-hd">Details</div>')
+                    _grid(detail)
+
+
 def _render_specimen(ident, curatorial, det_hist, assocs, life_stages, ext_ids, media,
                      place, ev, *, on_edit, on_open_event) -> None:
     # ── identity banner ──
@@ -275,6 +387,34 @@ def _ecology_block(assocs, life_stages, ext_ids) -> None:
                 f'rel="noopener">{lbl}</a></div>')
 
 
+def _coord_map(lat, lon, unc) -> None:
+    """Coordinates + copy button + a read-only 'View on map'. Shared by the specimen and
+    event sheets so the map/copy behaviour is defined once."""
+    if lat is None or lon is None:
+        return
+    unc_txt = f' ±{int(unc)} m' if unc else ""
+    # Copy exactly like Specimen Digitization: lat, lon, radius — tab-separated.
+    copy_text = f'{lat}\t{lon}\t{"" if unc is None else int(unc)}'
+
+    def _copy(t=copy_text):
+        ui.run_javascript(f"navigator.clipboard.writeText({json.dumps(t)})")
+        ui.notify("Coordinates copied", type="positive")
+
+    with ui.row().classes("items-center gap-1 mt-1"):
+        ui.html(f'<span class="rsheet-muted">{lat:.5f}, {lon:.5f}{unc_txt}</span>')
+        ui.button(icon="content_copy", on_click=_copy).props("flat dense round size=sm") \
+            .tooltip("Copy latitude, longitude and radius (tab-separated)")
+    # read_only baked in at build time → the dot is locked from init (can't be dragged),
+    # regardless of the async open (set_readonly around open() races init and loses).
+    _map = build_map_picker(lambda *_: None,
+                            default_layer=get_config().map_default_layer, read_only=True)
+
+    def _view_map(m=_map):
+        m["fly_to"](lat, lon, unc)   # opens + places the point (init-safe)
+    ui.button("View on map", icon="place", on_click=_view_map) \
+        .props("flat dense no-caps size=sm").classes("mt-1")
+
+
 def _where_block(place, ev, on_open_event) -> None:
     # place is geography only (no date/collector) — those follow on the meta line, so the
     # block never repeats itself.
@@ -285,29 +425,7 @@ def _where_block(place, ev, on_open_event) -> None:
         ev["habitat"], ev["protocol"]) if x)
     if meta:
         ui.html(f'<div class="rsheet-muted mt-1">{_html.escape(meta)}</div>')
-    if ev["lat"] is not None and ev["lon"] is not None:
-        unc = ev["unc"]
-        unc_txt = f' ±{int(unc)} m' if unc else ""
-        # Copy exactly like Specimen Digitization: lat, lon, radius — tab-separated.
-        copy_text = f'{ev["lat"]}\t{ev["lon"]}\t{"" if unc is None else int(unc)}'
-
-        def _copy(t=copy_text):
-            ui.run_javascript(f"navigator.clipboard.writeText({json.dumps(t)})")
-            ui.notify("Coordinates copied", type="positive")
-
-        with ui.row().classes("items-center gap-1 mt-1"):
-            ui.html(f'<span class="rsheet-muted">{ev["lat"]:.5f}, {ev["lon"]:.5f}{unc_txt}</span>')
-            ui.button(icon="content_copy", on_click=_copy).props("flat dense round size=sm") \
-                .tooltip("Copy latitude, longitude and radius (tab-separated)")
-        # read_only baked in at build time → the dot is locked from init (can't be dragged),
-        # regardless of the async open (set_readonly around open() races init and loses).
-        _map = build_map_picker(lambda *_: None,
-                                default_layer=get_config().map_default_layer, read_only=True)
-
-        def _view_map(m=_map, e=ev):
-            m["fly_to"](e["lat"], e["lon"], e["unc"])   # opens + places the point (init-safe)
-        ui.button("View on map", icon="place", on_click=_view_map) \
-            .props("flat dense no-caps size=sm").classes("mt-1")
+    _coord_map(ev["lat"], ev["lon"], ev["unc"])
     if ev["event_id"] and on_open_event:
         label = ("Open collecting event"
                  + (f' ({ev["n_here"]} specimens)' if ev["n_here"] > 1 else ""))

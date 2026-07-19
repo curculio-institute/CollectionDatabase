@@ -379,8 +379,18 @@ def build_records_tab(session_factory, *, on_saved: callable | None = None) -> N
             )
 
     # ── Event loader ─────────────────────────────────────────────────────────
-    def _load_event(ev_id: int) -> None:
+    def _load_event(ev_id: int, edit: bool = False) -> None:
         detail.clear()
+
+        # Read-only event sheet by default (#137): the place + habitat media + the specimens
+        # collected there (each linking to its record). "Edit" reveals the event form.
+        if not edit:
+            with detail:
+                record_sheet.build_event_sheet(
+                    session_factory, ev_id,
+                    on_edit=lambda eid=ev_id: _load_event(eid, edit=True),
+                    on_open_specimen=_open_specimen)
+            return
 
         with session_factory() as s:
             ev = s.get(CollectingEvent, ev_id)
@@ -445,6 +455,10 @@ def build_records_tab(session_factory, *, on_saved: callable | None = None) -> N
     def _build_specimen_form(
         co_id, ev_id, ev_n, co_snap, det_snaps, ev_snap, assocs
     ):
+        # Discard edits and return to the read-only sheet (top + beside Save, #137).
+        with ui.row().classes("w-full px-1"):
+            ui.button("Drop changes, back to overview", icon="arrow_back",
+                      on_click=lambda: _load_specimen(co_id)).props("flat no-caps")
 
         # ── Specimen card ────────────────────────────────────────────────
         # Shared specimen-field block (see app/ui/specimen_form.py), edit policy:
@@ -820,6 +834,8 @@ def build_records_tab(session_factory, *, on_saved: callable | None = None) -> N
             _load_specimen(co_id)
 
         with ui.row().classes("w-full items-center gap-4 px-1"):
+            ui.button("Drop changes, back to overview", icon="arrow_back",
+                      on_click=lambda: _load_specimen(co_id)).props("flat no-caps")
             ui.space()
             ui.button("Save changes", icon="save", on_click=_save).classes("btn-save")
 
@@ -866,6 +882,11 @@ def build_records_tab(session_factory, *, on_saved: callable | None = None) -> N
         # rewrites the event for every linked specimen.
         shared = n > 1
 
+        # Discard edits and return to the read-only event sheet (top + beside Save, #137).
+        with ui.row().classes("w-full px-1"):
+            ui.button("Drop changes, back to overview", icon="arrow_back",
+                      on_click=lambda: _load_event(ev_id)).props("flat no-caps")
+
         with ui.card().classes("w-full shadow-sm"):
             with ui.row().classes("items-center gap-2 mb-1"):
                 ui.label("Collecting Event").classes("section-label")
@@ -876,16 +897,7 @@ def build_records_tab(session_factory, *, on_saved: callable | None = None) -> N
                     )
             ui.separator().classes("mb-3")
 
-            if cos:
-                with ui.expansion(f"Linked specimens ({n})").classes("w-full mb-3"):
-                    for c_id, ns, cn in cos:
-                        lbl = ui.label(f"#{c_id}  {id_svc.format_catalog_display(ns, cn)}") \
-                            .classes("text-xs font-mono cursor-pointer") \
-                            .style("color:var(--tp-secondary,#0369a1);text-decoration:underline")
-                        lbl.on("click", lambda _, cid=c_id: _open_specimen(cid))  # → its record
-                    if n > len(cos):
-                        ui.label(f"… and {n - len(cos)} more") \
-                            .classes("text-xs italic").style("color:var(--tp-base-soft)")
+            # The specimens-collected list lives on the read-only event PAGE, not the form.
 
             if shared:
                 def _unlock(e):
@@ -936,8 +948,11 @@ def build_records_tab(session_factory, *, on_saved: callable | None = None) -> N
             _ev_baseline["v"] = _ev_values()   # saved → no longer dirty
             if on_saved:
                 on_saved()
+            _load_event(ev_id)                 # back to the read-only event sheet
 
         with ui.row().classes("w-full items-center gap-4 px-1 mt-2"):
+            ui.button("Drop changes, back to overview", icon="arrow_back",
+                      on_click=lambda: _load_event(ev_id)).props("flat no-caps")
             ui.space()
             save_btn = ui.button("Save event", icon="save", on_click=_save_event).classes("btn-save")
             if shared:
