@@ -49,6 +49,8 @@ Search taxon names, import them with synonymy status, authorship and their paren
 On Linux, having python and conda installed should be sufficient for a start to move forward:
 
 ```bash
+git clone https://github.com/curculio-institute/CollectionDatabase # or just download the directory through your browser
+cd ./CollectionDatabase # enter the directory
 conda env create -f environment.yml # create a new conda environment from the template file, to install dependencies
 conda activate collection # activate the environment
 python run.py              # starts the app at http://127.0.0.1:8080
