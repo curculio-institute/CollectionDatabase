@@ -329,9 +329,10 @@ def build_map_picker(
             if (uncText)     uncText.style.display     = 'inline';
             if (recenterBtn) recenterBtn.style.display = 'inline-flex';
             if (titleEl)     titleEl.textContent       = 'Location';
-            // With no slider to fill, don't let the uncertainty row stretch — otherwise it
-            // pushes the Copy button far from the coordinates it copies.
-            if (uncRow)      uncRow.style.flex         = '0';
+            // With no slider to fill, size the uncertainty row to its content ('none' =
+            // 0 0 auto). Plain flex:0 collapses its box to 0 width (min-width:0) so the
+            // "± N m" text overflows onto the Copy button; 'none' keeps them apart.
+            if (uncRow)      uncRow.style.flex         = 'none';
         }}
 
         function updateDisplay(lat, lng, u) {{

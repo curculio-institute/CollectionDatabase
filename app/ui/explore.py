@@ -10,11 +10,33 @@ so nothing about editing is rebuilt. A CSV export dumps the current filtered set
 """
 from __future__ import annotations
 
+import calendar as _calendar
 import html as _html
 
 from nicegui import ui
 
 import app.ui.record_summary as rs
+
+
+def _iso_start(d: str) -> str:
+    """A partial ISO date → its first day. 2024 → 2024-01-01, 2024-06 → 2024-06-01."""
+    d = d.strip()
+    if len(d) == 4:
+        return f"{d}-01-01"
+    if len(d) == 7:
+        return f"{d}-01"
+    return d
+
+
+def _iso_end(d: str) -> str:
+    """A partial ISO date → its last day. 2024 → 2024-12-31, 2024-06 → 2024-06-30."""
+    d = d.strip()
+    if len(d) == 4:
+        return f"{d}-12-31"
+    if len(d) == 7:
+        y, m = int(d[:4]), int(d[5:7])
+        return f"{d}-{_calendar.monthrange(y, m)[1]:02d}"
+    return d
 
 import app.services.explore as ex_svc
 import app.services.saved_searches as fav_svc
@@ -338,13 +360,16 @@ def build_explore_panel(session_factory, *, on_open_specimen, on_open_event) -> 
             a, b = dfrom.split("/", 1)
             dfrom, dto = a.strip() or None, (b.strip() or None)
         tag = "Collected" if field == "collected" else "Identified date"
-        if dfrom and not dto:
-            dto = dfrom                    # a single date = ON that day (=), not ≥
-        if dfrom and dto:
-            label = dfrom if dfrom == dto else f"{dfrom} – {dto}"
-        else:                              # only an upper bound
-            label = f"≤ {dto}"
-        g["facets"].append({"kind": "date", "field": field, "from": dfrom, "to": dto,
+        # Expand partial dates to full-day bounds: a lone "2024" spans the whole year, and a
+        # range "2024/2025" spans 2024-01-01 … 2025-12-31 (same for months). A single full
+        # date collapses to that one day (from == to).
+        lo = _iso_start(dfrom) if dfrom else None
+        hi = _iso_end(dto) if dto else (_iso_end(dfrom) if dfrom else None)
+        if lo and hi:
+            label = lo if lo == hi else f"{lo} to {hi}"
+        else:
+            label = f"up to {hi}"
+        g["facets"].append({"kind": "date", "field": field, "from": lo, "to": hi,
                             "label": label, "tag": tag})
         state["dash_dates"] = None
         _render_groups()
