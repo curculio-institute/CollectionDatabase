@@ -190,20 +190,37 @@ class SpecimenRow:
     data_key: str = ""
 
 
+def _as_groups(filters: list[dict] | None, combine: str) -> list[dict]:
+    """Normalise the two accepted ``filters`` shapes to a list of groups (#135):
+
+    * **Grouped** — ``[{"op": "and"|"or", "facets": [facet, …]}, …]`` (the UI's stacked
+      searches). Passed through unchanged.
+    * **Flat** — ``[facet, …]`` (a single implicit group). Wrapped into one group whose
+      op is ``combine``. This is what the tests and any legacy caller pass.
+
+    A facet is ``{"kind", "key", …}``.
+    """
+    filters = filters or []
+    if filters and isinstance(filters[0], dict) and "facets" in filters[0]:
+        return filters
+    return [{"op": combine, "facets": list(filters)}]
+
+
 def _apply_filters(session: Session, q, filters: list[dict], idx: dict[int, Taxon],
                    *, combine: str = "and"):
     """Apply facet filters to a query over (CollectionObject join det/event).
 
-    **Every facet is its own clause**, and ``combine`` decides how they combine —
-    uniformly, whether the two facets are the same kind or not (#135):
+    Filters are a list of **groups**; each facet is its own clause. Within a group the
+    facets combine by the group's ``op`` (AND/OR); the groups themselves combine by AND
+    — the stacked-search model (#135). A flat facet list is treated as one group whose
+    op is ``combine`` (see ``_as_groups``).
 
-    * ``"and"`` (default) — a specimen must match *every* facet. Two families →
+    * within-group ``"and"`` — a specimen must match every facet. Two families →
       ``taxon_id in Carabidae`` AND ``taxon_id in Curculionidae`` → **0** (a
-      determination has one taxon, so disjoint subtrees can't both hold). Collector
-      X + country Y → specimens X collected in Y.
-    * ``"or"``  — a specimen matching *any* facet is included (union): two families →
-      all Carabidae *plus* all Curculionidae; Collector X + identified-by Y →
-      everything X collected *plus* everything Y identified.
+      determination has one taxon, so disjoint subtrees can't both hold).
+    * within-group ``"or"``  — a specimen matching *any* facet: all Carabidae *plus*
+      all Curculionidae.
+    * across groups (always AND) — ``(Carabidae OR Curculionidae) AND (Jakob AND JJPC)``.
 
     (Historically same-kind facets were hard-wired to OR — "a specimen has one
     country" (#66) — but with an explicit AND/OR toggle the toggle must govern the
@@ -232,10 +249,17 @@ def _apply_filters(session: Session, q, filters: list[dict], idx: dict[int, Taxo
             return CollectionObject.repository_id == int(key)
         return None
 
-    clauses = [c for f in filters if (c := _clause(f["kind"], f["key"])) is not None]
-    if not clauses:
+    group_clauses = []
+    for g in _as_groups(filters, combine):
+        facet_clauses = [c for f in g.get("facets", [])
+                         if (c := _clause(f["kind"], f["key"])) is not None]
+        if not facet_clauses:
+            continue
+        group_clauses.append(or_(*facet_clauses) if g.get("op", "and") == "or"
+                             else and_(*facet_clauses))
+    if not group_clauses:
         return q
-    return q.filter(or_(*clauses) if combine == "or" else and_(*clauses))
+    return q.filter(and_(*group_clauses))
 
 
 def query_specimens(session: Session, filters: list[dict] | None = None,

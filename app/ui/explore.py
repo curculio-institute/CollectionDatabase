@@ -37,6 +37,11 @@ _CSS = """<style>
            padding: 2px 6px 2px 10px; font-size: .82rem; }
 .ex-chip .ex-x { cursor: pointer; color: #9ca3af; font-weight: 700; }
 .ex-chip .ex-x:hover { color: #dc2626; }
+/* stacked search groups (#135): each group is a bordered block; groups joined by AND */
+.ex-group { border: 1px solid var(--tp-base-border, #e2e8f0); border-radius: 10px;
+            padding: 10px 12px; background: var(--tp-base-foreground, #fff); }
+.ex-and { align-self: center; font-size: .66rem; font-weight: 700; letter-spacing: .08em;
+          color: var(--tp-base-soft, #9ca3af); padding: 4px 0; }
 /* checklist — published-catalogue look: flush-left ranked headers distinguished by
    SIZE (higher taxa bigger), not deep indentation; subgenus is its own header. */
 .ex-hdr   { display: flex; align-items: baseline; gap: 8px; line-height: 1.25; }
@@ -135,22 +140,19 @@ def build_explore_panel(session_factory, *, on_open_specimen, on_open_event) -> 
         with session_factory() as s:
             return fn(s)
 
-    # filters: list of {kind,label,key,tag}; combine: how they AND/OR-combine (#135)
-    state = {"filters": [], "view": "taxa", "combine": "and"}
+    # Stacked search groups (#135): each group = {op, facets:[{kind,label,key,tag}]}.
+    # Facets within a group combine by its op (AND/OR); the groups combine by AND.
+    state = {"groups": [{"op": "and", "facets": []}], "view": "taxa"}
+    _PLACEHOLDER = "Search taxa, localities, collectors, collections…"
 
-    # ── search bar + chips ────────────────────────────────────────────────
+    def _all_facets():
+        return [f for g in state["groups"] for f in g["facets"]]
+
+    # ── search groups + toolbar ───────────────────────────────────────────
     with ui.card().classes("w-full shadow-sm"):
-        with ui.element("div").classes("ex-bar w-full"):
-            search_in = (ui.input(placeholder="Search taxa, localities, collectors, collections…")
-                         .props("outlined dense clearable").classes("w-full"))
-            dropdown = ui.element("div").classes("ex-drop").style("display:none")
-        chips_row = ui.row().classes("items-center gap-2 mt-2")
+        groups_box = ui.column().classes("w-full gap-0")
         with ui.row().classes("items-center gap-3 mt-2 w-full"):
             count_lbl = ui.label("").classes("text-sm").style("color:var(--tp-base-soft)")
-            combine_tog = ui.toggle({"and": "AND", "or": "OR"}, value="and") \
-                .props("dense no-caps unelevated size=sm") \
-                .tooltip("How multiple filters combine — AND: match every filter · "
-                         "OR: match any filter")
             ui.space()
             taxa_btn = ui.button("Taxa", icon="account_tree").props("dense no-caps")
             events_btn = ui.button("Events", icon="place").props("dense no-caps flat")
@@ -161,68 +163,100 @@ def build_explore_panel(session_factory, *, on_open_specimen, on_open_event) -> 
 
     results = ui.column().classes("w-full gap-0 mt-2")
 
-    # ── facet dropdown ────────────────────────────────────────────────────
-    def _refresh_dropdown(term: str):
-        dropdown.clear()
+    # ── facet dropdown (per group input) ──────────────────────────────────
+    def _refresh_dropdown(g, drop, term: str):
+        drop.clear()
         term = (term or "").strip()
         if not term:
-            dropdown.style("display:none")
+            drop.style("display:none")
             return
         facets = _with(lambda s: ex_svc.search_facets(s, term, limit=8))
-        # hide facets already active
-        active = {(f["kind"], str(f["key"])) for f in state["filters"]}
+        active = {(f["kind"], str(f["key"])) for f in g["facets"]}   # already in THIS group
         facets = [f for f in facets if (f.kind, str(f.key)) not in active]
         if not facets:
-            dropdown.style("display:none")
+            drop.style("display:none")
             return
-        with dropdown:
+        with drop:
             for f in facets:
                 item = ui.element("div").classes("ex-item")
                 with item:
                     ui.html(f'<span class="ex-tag">{_html.escape(f.tag)}</span>'
                             f'<span>{_html.escape(f.label)}</span>')
-                item.on("click", lambda _, fc=f: _add_chip(fc))
-        dropdown.style("display:block")
+                item.on("click", lambda _, fc=f, gg=g: _add_chip(gg, fc))
+        drop.style("display:block")
 
-    def _add_chip(f):
-        state["filters"].append({"kind": f.kind, "label": f.label, "key": f.key, "tag": f.tag})
-        search_in.value = ""
-        dropdown.style("display:none")
-        _render_chips()
+    def _add_chip(g, f):
+        g["facets"].append({"kind": f.kind, "label": f.label, "key": f.key, "tag": f.tag})
+        _render_groups()
         _refresh()
 
-    def _remove_chip(i):
-        del state["filters"][i]
-        _render_chips()
+    def _remove_chip(g, i):
+        del g["facets"][i]
+        if not g["facets"] and len(state["groups"]) > 1:
+            state["groups"].remove(g)          # an emptied group disappears (never the last)
+        _render_groups()
         _refresh()
 
-    def _render_chips():
-        chips_row.clear()
-        with chips_row:
-            for i, f in enumerate(state["filters"]):
-                chip = ui.element("div").classes("ex-chip")
-                with chip:
-                    ui.html(f'<span class="ex-tag">{_html.escape(f["tag"])}</span>'
-                            f'<span>{_html.escape(f["label"])}</span>')
-                    ui.html('<span class="ex-x" title="Remove">✕</span>').on(
-                        "click", lambda _, idx=i: _remove_chip(idx))
-            if state["filters"]:
-                ui.button("Clear all", on_click=_clear_all).props("flat dense no-caps size=sm")
-        # AND/OR only matters with two or more chips to combine.
-        combine_tog.set_visibility(len(state["filters"]) >= 2)
-
-    def _set_combine(v):
-        state["combine"] = v or "and"
+    def _set_op(g, v):
+        g["op"] = v or "and"
         _refresh()
 
-    combine_tog.on_value_change(lambda e: _set_combine(e.value))
+    def _add_group():
+        state["groups"].append({"op": "and", "facets": []})
+        _render_groups()                        # empty group changes nothing → no _refresh
+
+    def _remove_group(g):
+        state["groups"].remove(g)
+        if not state["groups"]:
+            state["groups"].append({"op": "and", "facets": []})
+        _render_groups()
+        _refresh()
 
     def _clear_all():
-        state["filters"] = []
-        _render_chips()
+        state["groups"] = [{"op": "and", "facets": []}]
+        _render_groups()
         _refresh()
 
-    search_in.on_value_change(lambda e: _refresh_dropdown(e.value or ""))
+    def _build_group(g):
+        with ui.element("div").classes("ex-group w-full"):
+            with ui.row().classes("items-center gap-2 w-full no-wrap"):
+                with ui.element("div").classes("ex-bar w-full"):
+                    inp = ui.input(placeholder=_PLACEHOLDER) \
+                        .props("outlined dense clearable").classes("w-full")
+                    drop = ui.element("div").classes("ex-drop").style("display:none")
+                inp.on_value_change(lambda e, gg=g, dd=drop: _refresh_dropdown(gg, dd, e.value or ""))
+                if len(state["groups"]) > 1:
+                    ui.button(icon="close", on_click=lambda _, gg=g: _remove_group(gg)) \
+                        .props("flat dense round size=sm").tooltip("Remove this search")
+            if g["facets"]:
+                with ui.row().classes("items-center gap-2 mt-2"):
+                    for i, f in enumerate(g["facets"]):
+                        chip = ui.element("div").classes("ex-chip")
+                        with chip:
+                            ui.html(f'<span class="ex-tag">{_html.escape(f["tag"])}</span>'
+                                    f'<span>{_html.escape(f["label"])}</span>')
+                            ui.html('<span class="ex-x" title="Remove">✕</span>').on(
+                                "click", lambda _, gg=g, idx=i: _remove_chip(gg, idx))
+                    if len(g["facets"]) >= 2:
+                        tog = ui.toggle({"and": "AND", "or": "OR"}, value=g["op"]) \
+                            .props("dense no-caps unelevated size=sm") \
+                            .tooltip("How the filters in this search combine — "
+                                     "AND: match every filter · OR: match any filter")
+                        tog.on_value_change(lambda e, gg=g: _set_op(gg, e.value))
+
+    def _render_groups():
+        groups_box.clear()
+        with groups_box:
+            for gi, g in enumerate(state["groups"]):
+                if gi > 0:
+                    ui.html('<div class="ex-and">AND</div>')
+                _build_group(g)
+            with ui.row().classes("items-center gap-2 mt-2"):
+                ui.button("Add another search", icon="add", on_click=_add_group) \
+                    .props("flat dense no-caps size=sm") \
+                    .tooltip("Stack another search — combined with AND")
+                if _all_facets():
+                    ui.button("Clear all", on_click=_clear_all).props("flat dense no-caps size=sm")
 
     # ── results ───────────────────────────────────────────────────────────
     def _lot_line(lot) -> str:
@@ -335,7 +369,7 @@ def build_explore_panel(session_factory, *, on_open_specimen, on_open_event) -> 
         # shows the collecting-date views (and hides identification, which isn't what
         # you filtered for); filtering by "identified by" shows the identification-date
         # views. With both, or neither (the overview), everything is shown.
-        kinds = {f["kind"] for f in state["filters"]}
+        kinds = {f["kind"] for f in _all_facets()}
         has_coll, has_ident = "collector" in kinds, "identified_by" in kinds
         show_collecting = has_coll or not has_ident
         show_identification = has_ident or not has_coll
@@ -404,20 +438,19 @@ def build_explore_panel(session_factory, *, on_open_specimen, on_open_event) -> 
                 }).classes("w-full").style(f"height:{max(200, 26 * len(names) + 60)}px")
 
     def _refresh():
-        flt = state["filters"]
-        cmb = state["combine"]
-        c = _with(lambda s: ex_svc.counts(s, flt, combine=cmb))
+        flt = state["groups"]
+        c = _with(lambda s: ex_svc.counts(s, flt))
         count_lbl.set_text(
             f"{c['specimens']} specimens · {c['species_group']} species-group names"
             f" · {c['events']} events · {c['georeferenced']} specimens georeferenced")
         results.clear()
         with results:
             if state["view"] == "taxa":
-                _render_taxa(_with(lambda s: ex_svc.checklist(s, flt, combine=cmb)))
+                _render_taxa(_with(lambda s: ex_svc.checklist(s, flt)))
             elif state["view"] == "events":
-                _render_events(_with(lambda s: ex_svc.events(s, flt, combine=cmb)))
+                _render_events(_with(lambda s: ex_svc.events(s, flt)))
             else:
-                _render_dashboard(_with(lambda s: ex_svc.dashboard(s, flt, combine=cmb)))
+                _render_dashboard(_with(lambda s: ex_svc.dashboard(s, flt)))
 
     _view_btns = {"taxa": taxa_btn, "events": events_btn, "dashboard": dashboard_btn}
 
@@ -432,11 +465,10 @@ def build_explore_panel(session_factory, *, on_open_specimen, on_open_event) -> 
     dashboard_btn.on_click(lambda: _set_view("dashboard"))
 
     def _export():
-        rows = _with(lambda s: ex_svc.query_specimens(
-            s, state["filters"], combine=state["combine"]))
+        rows = _with(lambda s: ex_svc.query_specimens(s, state["groups"]))
         ui.download(ex_svc.to_csv(rows), filename="collection_export.csv", media_type="text/csv")
     csv_btn.on_click(_export)
 
-    _render_chips()   # establishes the (empty) chip row + hides the AND/OR toggle
+    _render_groups()   # renders the first (empty) search group + Add-another button
     _refresh()
     return {"refresh": _refresh}

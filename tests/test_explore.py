@@ -230,6 +230,35 @@ def test_and_across_two_taxa_is_intersection(session):
     assert ex.counts(session, flt, combine="or")["specimens"] == 2
 
 
+def test_grouped_searches_and_across_or_within(session):
+    """#135: stacked searches — facets combine by each group's op; groups AND together.
+    (Carabidae OR Curculionidae) AND (collected by Jakob)."""
+    cara = _taxon(session, "Carabidae", "family")
+    curc = _taxon(session, "Curculionidae", "family")
+    cg = _taxon(session, "Carabus", "genus", parent=cara)
+    og = _taxon(session, "Otiorhynchus", "genus", parent=curc)
+    csp = _taxon(session, "Carabus granulatus", "species", parent=cg)
+    osp = _taxon(session, "Otiorhynchus sulcatus", "species", parent=og)
+    jakob = _person(session, "Jakob Jilg")
+    ev_j = ev_svc.create_collecting_event(session, country="Germany", locality="X",
+                                          recorded_by_id=jakob.id)
+    ev_o = ev_svc.create_collecting_event(session, country="Germany", locality="Y")  # no collector
+    session.flush()
+    _specimen(session, csp, ev_j, "A1")   # carabid, Jakob
+    _specimen(session, osp, ev_j, "A2")   # curculionid, Jakob
+    _specimen(session, csp, ev_o, "A3")   # carabid, no collector
+
+    groups = [
+        {"op": "or", "facets": [{"kind": "taxon", "key": cara.id},
+                                {"kind": "taxon", "key": curc.id}]},
+        {"op": "and", "facets": [{"kind": "collector", "key": "Jakob Jilg"}]},
+    ]
+    # (Carabidae OR Curculionidae) AND (Jakob) → A1, A2 (not A3, no collector)
+    cats = {r.catalog for r in ex.query_specimens(session, groups)}
+    assert cats == {"A1", "A2"}
+    assert ex.counts(session, groups)["specimens"] == 2
+
+
 def test_events_axis_groups_specimens(session):
     _fixture(session)
     evs = ex.events(session)
