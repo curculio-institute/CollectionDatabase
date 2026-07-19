@@ -146,8 +146,15 @@ def build_specimen_sheet(session_factory, co_id: int, *, on_edit, on_open_event=
             media += _media_items(s, "collecting_event", ev.id, "Event")
         assocs = []
         for a in bio_svc.get_associations_for_specimen(s, co_id):
-            a_ext = [{"value": e.value, "label": e.label} for e in extid_svc.list_identifiers(
-                s, target_kind="biological_association", target_id=a.id)]
+            # External identifiers can hang off the association itself OR off its field
+            # occurrence (the host observation — where an iNaturalist URL naturally lives,
+            # since the iNat observation *is* the host observation). Gather both arcs.
+            ext_rows = extid_svc.list_identifiers(
+                s, target_kind="biological_association", target_id=a.id)
+            if a.object_field_occurrence_id:
+                ext_rows += extid_svc.list_identifiers(
+                    s, target_kind="field_occurrence", target_id=a.object_field_occurrence_id)
+            a_ext = [{"value": e.value, "label": e.label} for e in ext_rows]
             assocs.append({"rel": a.rel_name, "label": a.object_label,
                            "qualifier": a.identification_qualifier, "ext_ids": a_ext})
             media += _media_items(s, "biological_association", a.id, "Biological association")
