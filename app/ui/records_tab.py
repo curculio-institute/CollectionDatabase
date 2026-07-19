@@ -154,8 +154,18 @@ def build_records_tab(session_factory, *, on_saved: callable | None = None) -> N
                 the next interaction (a keystroke, the 2 s refresh timer).
             There is no supported hook, so `_update_options` is wrapped on this instance to
             re-attach the html each time it rebuilds.
+
+            **Only re-set the options when the rows actually changed.** `set_options` resets the
+            frontend q-select, discarding whatever the user has typed to filter — so an
+            unconditional 2 s refresh made a typed search ("Otiorhynchus") snap back to the full
+            list on the next tick. The list rarely changes, so the timer is now almost always a
+            no-op and the active filter survives.
             """
-            _rows_cache[:] = _specimen_rows()
+            new_rows = _specimen_rows()
+            if [(r["value"], r["label"]) for r in new_rows] == \
+               [(r["value"], r["label"]) for r in _rows_cache]:
+                return                      # unchanged → don't clobber the user's filter typing
+            _rows_cache[:] = new_rows
             spec_select.set_options({r["value"]: r["label"] for r in _rows_cache})
 
         def _attach_option_html() -> None:
@@ -203,7 +213,17 @@ def build_records_tab(session_factory, *, on_saved: callable | None = None) -> N
             .classes("w-full")
             .style("display:none")
         )
-        ui.timer(2.0, lambda: ev_select.set_options(_event_opts()))
+        _ev_opts_cache: dict = {}
+
+        def _apply_event_opts() -> None:
+            opts = _event_opts()
+            if opts == _ev_opts_cache:
+                return                      # unchanged → keep the user's typed event filter
+            _ev_opts_cache.clear(); _ev_opts_cache.update(opts)
+            ev_select.set_options(opts)
+
+        _apply_event_opts()
+        ui.timer(2.0, _apply_event_opts)
 
     # ── Detail area ─────────────────────────────────────────────────────────
     detail = ui.column().classes("w-full gap-4")
