@@ -95,28 +95,73 @@ def _name_auth(name: str, auth: str) -> str:
     return out
 
 
-# Colour-blind-safe two-series palette (blue / orange), reused across the dashboard.
-_SERIES_COLORS = ("#0369a1", "#ea7317")
+# Colour-blind-safe categorical palette (Okabe-Ito-ish), by cohort/series index.
+_SERIES_COLORS = ("#0369a1", "#ea7317", "#059669", "#d81b60", "#7b5cff",
+                  "#b45309", "#0891b2", "#65a30d")
+
+# Re-theme ECharts (canvas → can't read the app's `.dark` CSS) from the current theme,
+# and again whenever the theme toggles. `_tpThemeECharts` is also called by the server
+# after (re)building the dashboard charts. Series colours are left untouched — only the
+# chrome text/lines follow the theme. Retries because a chart's instance may not exist
+# yet the instant its div is added.
+_ECHART_THEME_JS = """
+<script>
+(function () {
+  function themeOne(el) {
+    var inst = window.echarts && window.echarts.getInstanceByDom(el);
+    if (!inst) return false;
+    var dark = document.documentElement.classList.contains('dark');
+    var text = dark ? '#cbd5e1' : '#334155';
+    var axis = dark ? '#94a3b8' : '#475569';
+    var line = dark ? 'rgba(255,255,255,0.16)' : 'rgba(0,0,0,0.15)';
+    var split = dark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)';
+    inst.setOption({
+      textStyle: { color: text },
+      legend: { textStyle: { color: text } },
+      xAxis: { axisLabel: { color: axis }, axisLine: { lineStyle: { color: line } } },
+      yAxis: { axisLabel: { color: axis }, axisLine: { lineStyle: { color: line } },
+               splitLine: { lineStyle: { color: split } } }
+    });
+    return true;
+  }
+  window._tpThemeECharts = function (tries) {
+    tries = tries || 0;
+    var els = document.querySelectorAll('.nicegui-echart');
+    var any = false;
+    els.forEach(function (el) { if (themeOne(el)) any = true; });
+    if (!any && tries < 12) setTimeout(function () { window._tpThemeECharts(tries + 1); }, 100);
+  };
+  new MutationObserver(function () { window._tpThemeECharts(); })
+    .observe(document.documentElement, { attributes: true, attributeFilter: ['class'] });
+})();
+</script>
+"""
 
 
-def _line_chart(categories: list[str], series: list[tuple], *, show_legend: bool = True) -> dict:
-    """ECharts option for a category-axis chart. `series` = [(name, values, type)],
-    where type is 'line' or 'bar'. Integer y-axis (specimen/species counts)."""
+def _line_chart(categories: list[str], series: list[dict], *, show_legend: bool = True) -> dict:
+    """ECharts option for a category-axis chart. Each series is a dict:
+    ``{"name", "values", "type" ('line'|'bar'), "color"?, "dashed"?}``. A missing
+    colour falls back to the palette by position. Integer y-axis (counts)."""
+    out_series = []
+    for i, s in enumerate(series):
+        typ = s["type"]
+        color = s.get("color") or _SERIES_COLORS[i % len(_SERIES_COLORS)]
+        spec = {"name": s["name"], "type": typ, "data": s["values"],
+                "smooth": typ == "line", "showSymbol": typ == "line",
+                "itemStyle": {"color": color}}
+        if typ == "line" and s.get("dashed"):
+            spec["lineStyle"] = {"type": "dashed"}
+        out_series.append(spec)
     return {
         "tooltip": {"trigger": "axis"},
         "legend": {"show": show_legend, "top": 0,
-                   "data": [name for name, _v, _t in series]},
+                   "data": [s["name"] for s in series]},
         "grid": {"left": 8, "right": 16, "top": 34 if show_legend else 12,
                  "bottom": 8, "containLabel": True},
         "xAxis": {"type": "category", "data": categories,
                   "axisLabel": {"hideOverlap": True}},
         "yAxis": {"type": "value", "minInterval": 1},
-        "series": [
-            {"name": name, "type": typ, "data": values, "smooth": typ == "line",
-             "showSymbol": typ == "line",
-             "itemStyle": {"color": _SERIES_COLORS[i % len(_SERIES_COLORS)]}}
-            for i, (name, values, typ) in enumerate(series)
-        ],
+        "series": out_series,
     }
 
 
@@ -135,6 +180,10 @@ def _carry(accum: list[tuple[int, int]], years: list[int]) -> list[int]:
 def build_explore_panel(session_factory, *, on_open_specimen, on_open_event) -> dict:
     ui.add_head_html(_CSS)
     ui.add_head_html(rs.CSS)
+    # ECharts renders to canvas, so it can't inherit the app's `.dark` CSS theme — its
+    # legend/axis text stays dark and is unreadable in dark mode. Re-theme every chart
+    # instance from the current theme, and again whenever the theme toggles.
+    ui.add_head_html(_ECHART_THEME_JS)
 
     def _with(fn):
         with session_factory() as s:
@@ -142,7 +191,10 @@ def build_explore_panel(session_factory, *, on_open_specimen, on_open_event) -> 
 
     # Stacked search groups (#135): each group = {op, facets:[{kind,label,key,tag}]}.
     # Facets within a group combine by its op (AND/OR); the groups combine by AND.
-    state = {"groups": [{"op": "and", "facets": []}], "view": "taxa"}
+    # dash_compare: plot each group as its own cohort/series (needs ≥2 groups).
+    # dash_dates: which date axes to plot; None = the role-based auto default.
+    state = {"groups": [{"op": "and", "facets": []}], "view": "taxa",
+             "dash_compare": False, "dash_dates": None}
     _PLACEHOLDER = "Search taxa, localities, collectors, collections…"
 
     def _all_facets():
@@ -187,6 +239,7 @@ def build_explore_panel(session_factory, *, on_open_specimen, on_open_event) -> 
 
     def _add_chip(g, f):
         g["facets"].append({"kind": f.kind, "label": f.label, "key": f.key, "tag": f.tag})
+        state["dash_dates"] = None       # a changed filter re-applies the smart date default
         _render_groups()
         _refresh()
 
@@ -194,6 +247,7 @@ def build_explore_panel(session_factory, *, on_open_specimen, on_open_event) -> 
         del g["facets"][i]
         if not g["facets"] and len(state["groups"]) > 1:
             state["groups"].remove(g)          # an emptied group disappears (never the last)
+        state["dash_dates"] = None
         _render_groups()
         _refresh()
 
@@ -214,6 +268,7 @@ def build_explore_panel(session_factory, *, on_open_specimen, on_open_event) -> 
 
     def _clear_all():
         state["groups"] = [{"op": "and", "facets": []}]
+        state["dash_dates"] = None
         _render_groups()
         _refresh()
 
@@ -349,6 +404,33 @@ def build_explore_panel(session_factory, *, on_open_specimen, on_open_event) -> 
                     ))
                     row.on("click", lambda _, c=lot.co_id: on_open_specimen(c))
 
+    def _effective_dates():
+        """(show_collecting, show_identification) — the explicit Dates selection if the
+        user set one, else the role-based smart default (#135): filtering by Collector
+        reveals the collecting-date axis and hides identification (not what you filtered
+        for); filtering by 'identified by' does the reverse; both / neither → both."""
+        if state["dash_dates"] is not None:
+            return ("collected" in state["dash_dates"], "identified" in state["dash_dates"])
+        kinds = {f["kind"] for f in _all_facets()}
+        has_coll, has_ident = "collector" in kinds, "identified_by" in kinds
+        return (has_coll or not has_ident, has_ident or not has_coll)
+
+    def _toggle_date(key):
+        show_c, show_i = _effective_dates()
+        cur = {k for k, on in (("collected", show_c), ("identified", show_i)) if on}
+        cur.symmetric_difference_update({key})
+        if cur:                              # never let both switch off (nothing to plot)
+            state["dash_dates"] = cur
+            _refresh()
+
+    def _set_dash_compare(v):
+        state["dash_compare"] = bool(v)
+        _refresh()
+
+    def _group_label(g):
+        labels = [f["label"] for f in g["facets"]]
+        return (" OR " if g.get("op") == "or" else " + ").join(labels) or "All"
+
     def _undated_note(d, *, collecting, identification):
         bits = []
         if collecting and d.undated_collected:
@@ -359,45 +441,90 @@ def build_explore_panel(session_factory, *, on_open_specimen, on_open_event) -> 
             ui.html('<span class="text-xs" style="color:var(--tp-base-soft)">'
                     f'Not shown: {"; ".join(_html.escape(b) for b in bits)}.</span>')
 
-    def _render_dashboard(d):
-        if d.total == 0:
-            ui.label("No specimens match.").classes("text-sm italic mt-3") \
-                .style("color:var(--tp-base-soft)")
+    def _render_dashboard():
+        groups_with_facets = [g for g in state["groups"] if g["facets"]]
+        can_compare = len(groups_with_facets) >= 2
+        compare = state["dash_compare"] and can_compare
+        show_c, show_i = _effective_dates()
+
+        # cohorts: in compare mode, one per search group (each evaluated on its own);
+        # otherwise the single combined set.
+        if compare:
+            cohorts = [(_group_label(g),
+                        _with(lambda s, gg=g: ex_svc.dashboard(s, [gg])))
+                       for g in groups_with_facets]
+        else:
+            cohorts = [(None, _with(lambda s: ex_svc.dashboard(s, state["groups"])))]
+
+        # ── controls ──
+        with ui.row().classes("items-center gap-4 mt-2 w-full"):
+            if can_compare:
+                ui.toggle({False: "Combined", True: "Compare searches"}, value=compare) \
+                    .props("dense no-caps unelevated size=sm") \
+                    .on_value_change(lambda e: _set_dash_compare(e.value)) \
+                    .tooltip("Combined: the searches AND into one set · "
+                             "Compare: one series per search")
+            with ui.row().classes("items-center gap-1"):
+                ui.label("Dates:").classes("text-xs").style("color:var(--tp-base-soft)")
+                for lbl, key, on in (("Collected", "collected", show_c),
+                                     ("Identified", "identified", show_i)):
+                    ui.button(lbl, on_click=lambda k=key: _toggle_date(k)) \
+                        .props(f'dense no-caps size=sm {"unelevated" if on else "outline"}')
+
+        if all(d.total == 0 for _l, d in cohorts):
+            with ui.column().classes("gap-1 mt-3"):
+                ui.label("No specimens match.").classes("text-sm italic") \
+                    .style("color:var(--tp-base-soft)")
+                if can_compare and not compare:
+                    ui.label("The searches are combined with AND. To chart each search "
+                             "separately, switch to “Compare searches”.") \
+                        .classes("text-xs").style("color:var(--tp-base-soft)")
             return
 
-        # A person filter reveals *its own* date axis (#135): filtering by Collector
-        # shows the collecting-date views (and hides identification, which isn't what
-        # you filtered for); filtering by "identified by" shows the identification-date
-        # views. With both, or neither (the overview), everything is shown.
-        kinds = {f["kind"] for f in _all_facets()}
-        has_coll, has_ident = "collector" in kinds, "identified_by" in kinds
-        show_collecting = has_coll or not has_ident
-        show_identification = has_ident or not has_coll
+        # colour: by cohort in compare mode; by date-role in combined mode.
+        def _color(ci, role):
+            return _SERIES_COLORS[ci % len(_SERIES_COLORS)] if compare \
+                else _SERIES_COLORS[0 if role == "collected" else 1]
+
+        def _series_name(label, role):
+            role_txt = "collected" if role == "collected" else "identified"
+            if compare:
+                return f"{label} — {role_txt}" if (show_c and show_i) else label
+            return "Collected" if role == "collected" else "Identified"
 
         # ── timelines: specimens collected / identified, per year ──
-        t_series = []
-        if show_collecting:
-            t_series.append(("Collected", d.collected_by_year, "bar"))
-        if show_identification:
-            t_series.append(("Identified", d.identified_by_year, "bar"))
-        t_years = sorted({y for _n, data, _t in t_series for y, _c in data})
+        raw = []   # (name, [(year,count)], type, color, dashed)
+        typ = "line" if compare else "bar"
+        for ci, (label, d) in enumerate(cohorts):
+            if show_c:
+                raw.append((_series_name(label, "collected"), d.collected_by_year, typ,
+                            _color(ci, "collected"), False))
+            if show_i:
+                raw.append((_series_name(label, "identified"), d.identified_by_year, typ,
+                            _color(ci, "identified"), compare and show_c))
+        t_years = sorted({y for _n, data, *_ in raw for y, _c in data})
         with ui.card().classes("w-full shadow-sm mt-2"):
             ui.label("Specimens over time").classes("text-sm font-medium")
             ui.echart(_line_chart(
                 [str(y) for y in t_years],
-                [(name, [dict(data).get(y, 0) for y in t_years], typ)
-                 for name, data, typ in t_series],
-                show_legend=len(t_series) > 1,
+                [{"name": n, "values": [dict(data).get(y, 0) for y in t_years],
+                  "type": tp, "color": col, "dashed": dsh}
+                 for n, data, tp, col, dsh in raw],
+                show_legend=len(raw) > 1,
             )).classes("w-full").style("height:300px")
-            _undated_note(d, collecting=show_collecting, identification=show_identification)
+            if not compare:
+                _undated_note(cohorts[0][1], collecting=show_c, identification=show_i)
 
         # ── species-accumulation (saturation) curves ──
-        a_series = []
-        if show_collecting:
-            a_series.append(("by collecting date", d.accum_collected))
-        if show_identification:
-            a_series.append(("by identification date", d.accum_identified))
-        a_years = sorted({y for _n, data in a_series for y, _c in data})
+        araw = []
+        for ci, (label, d) in enumerate(cohorts):
+            if show_c:
+                araw.append((_series_name(label, "collected"), d.accum_collected,
+                             _color(ci, "collected"), False))
+            if show_i:
+                araw.append((_series_name(label, "identified"), d.accum_identified,
+                             _color(ci, "identified"), compare and show_c))
+        a_years = sorted({y for _n, data, *_ in araw for y, _c in data})
         if a_years:
             with ui.card().classes("w-full shadow-sm mt-2"):
                 ui.label("Species accumulation").classes("text-sm font-medium")
@@ -405,26 +532,32 @@ def build_explore_panel(session_factory, *, on_open_specimen, on_open_event) -> 
                         'cumulative distinct species-group names</span>')
                 ui.echart(_line_chart(
                     [str(y) for y in a_years],
-                    [(name, _carry(data, a_years), "line") for name, data in a_series],
-                    show_legend=len(a_series) > 1,
+                    [{"name": n, "values": _carry(data, a_years), "type": "line",
+                      "color": col, "dashed": dsh} for n, data, col, dsh in araw],
+                    show_legend=len(araw) > 1,
                 )).classes("w-full").style("height:300px")
 
-        # ── phenology (collecting month) — a collecting-date view ──
-        if show_collecting:
+        # ── phenology (collecting month) — a collecting-date view, one series/cohort ──
+        if show_c:
             with ui.card().classes("w-full shadow-sm mt-2"):
                 ui.label("Phenology").classes("text-sm font-medium")
                 ui.html('<span class="text-xs" style="color:var(--tp-base-soft)">'
                         'specimens by month of collection</span>')
                 ui.echart(_line_chart(
                     list(ex_svc._MONTHS),
-                    [("Specimens", list(d.phenology), "bar")],
-                    show_legend=False,
+                    [{"name": (label or "Specimens"), "values": list(d.phenology),
+                      "type": "bar", "color": _color(ci, "collected")}
+                     for ci, (label, d) in enumerate(cohorts)],
+                    show_legend=compare,
                 )).classes("w-full").style("height:280px")
 
-        # ── host associations ──
-        if d.hosts:
+        # ── host associations — one chart per cohort in compare mode ──
+        for ci, (label, d) in enumerate(cohorts):
+            if not d.hosts:
+                continue
             with ui.card().classes("w-full shadow-sm mt-2"):
-                ui.label("Host associations").classes("text-sm font-medium")
+                title = f"Host associations — {label}" if compare else "Host associations"
+                ui.label(title).classes("text-sm font-medium")
                 names = [n for n, _ in d.hosts][::-1]      # bottom-up for horizontal bars
                 vals = [c for _, c in d.hosts][::-1]
                 ui.echart({
@@ -434,15 +567,29 @@ def build_explore_panel(session_factory, *, on_open_specimen, on_open_event) -> 
                     "xAxis": {"type": "value", "minInterval": 1},
                     "yAxis": {"type": "category", "data": names},
                     "series": [{"type": "bar", "data": vals,
-                                "itemStyle": {"color": "#0369a1"}}],
+                                "itemStyle": {"color": _color(ci, "collected")}}],
                 }).classes("w-full").style(f"height:{max(200, 26 * len(names) + 60)}px")
+
+        # newly-built charts render dark text by default — theme them to the app's mode.
+        ui.run_javascript("window._tpThemeECharts && window._tpThemeECharts()")
 
     def _refresh():
         flt = state["groups"]
-        c = _with(lambda s: ex_svc.counts(s, flt))
-        count_lbl.set_text(
-            f"{c['specimens']} specimens · {c['species_group']} species-group names"
-            f" · {c['events']} events · {c['georeferenced']} specimens georeferenced")
+        groups_with_facets = [g for g in state["groups"] if g["facets"]]
+        comparing = (state["view"] == "dashboard" and state["dash_compare"]
+                     and len(groups_with_facets) >= 2)
+        if comparing:
+            # each search is its own cohort; the AND-combined total would read 0 for
+            # disjoint searches, so show per-search specimen counts instead.
+            parts = [f"{_group_label(g)}: "
+                     f"{_with(lambda s, gg=g: ex_svc.counts(s, [gg]))['specimens']}"
+                     for g in groups_with_facets]
+            count_lbl.set_text("Comparing — " + "  ·  ".join(parts))
+        else:
+            c = _with(lambda s: ex_svc.counts(s, flt))
+            count_lbl.set_text(
+                f"{c['specimens']} specimens · {c['species_group']} species-group names"
+                f" · {c['events']} events · {c['georeferenced']} specimens georeferenced")
         results.clear()
         with results:
             if state["view"] == "taxa":
@@ -450,7 +597,7 @@ def build_explore_panel(session_factory, *, on_open_specimen, on_open_event) -> 
             elif state["view"] == "events":
                 _render_events(_with(lambda s: ex_svc.events(s, flt)))
             else:
-                _render_dashboard(_with(lambda s: ex_svc.dashboard(s, flt)))
+                _render_dashboard()   # fetches its own cohorts (combined or per-search)
 
     _view_btns = {"taxa": taxa_btn, "events": events_btn, "dashboard": dashboard_btn}
 
