@@ -267,8 +267,8 @@ def build_explore_panel(session_factory, *, on_open_specimen, on_open_event) -> 
         flt = state["filters"]
         c = _with(lambda s: ex_svc.counts(s, flt))
         count_lbl.set_text(
-            f"{c['specimens']} specimens · {c['taxa']} taxa · {c['events']} events"
-            f" · {c['georeferenced']} mapped")
+            f"{c['specimens']} specimens · {c['species_group']} species-group names"
+            f" · {c['events']} events · {c['georeferenced']} specimens georeferenced")
         results.clear()
         with results:
             if state["view"] == "taxa":

@@ -437,12 +437,23 @@ def to_csv(rows: list[SpecimenRow]) -> bytes:
     return buf.getvalue().encode("utf-8")
 
 
+# A "species-group name" (zoology) is a species or subspecies. The headline taxon count is
+# these only — a specimen determined merely to genus/subgenus is NOT a species-group name and
+# must not inflate the figure (#135). Distinct species and distinct subspecies both count.
+_SPECIES_GROUP_RANKS = frozenset({"species", "subspecies"})
+
+
 def counts(session: Session, filters: list[dict] | None = None) -> dict:
-    """Headline counts for the current filter set."""
+    """Headline counts for the current filter set.
+
+    ``species_group`` = distinct species/subspecies determinations (genus/subgenus-level
+    determinations are excluded); ``georeferenced`` = specimens carrying coordinates."""
     rows = query_specimens(session, filters)
     return {
         "specimens": len(rows),
-        "taxa": len({r.taxon_id for r in rows if r.taxon_id}),
+        "species_group": len({
+            r.taxon_id for r in rows
+            if r.taxon_id and (r.taxon_rank or "").lower() in _SPECIES_GROUP_RANKS}),
         "events": len({r.event_id for r in rows if r.event_id}),
         "georeferenced": sum(1 for r in rows if r.lat is not None and r.lon is not None),
     }

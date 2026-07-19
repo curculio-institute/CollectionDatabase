@@ -72,6 +72,18 @@ def test_country_facet_filters_checklist_and_counts(session):
     assert any("iratus" in l for l in labels) and not any("sulcatus" in l for l in labels)
 
 
+def test_species_group_count_excludes_genus_level(session):
+    """#135: the headline taxon figure counts species-group names (species/subspecies)
+    only — a specimen determined merely to genus must not inflate it."""
+    f = _fixture(session)                             # 3 specimens, 2 species
+    gen = f["gen"]
+    de = f["de"]
+    _specimen(session, gen, de, "A4")                 # a genus-level determination
+    c = ex.counts(session)
+    assert c["specimens"] == 4                         # all four specimens counted
+    assert c["species_group"] == 2                     # but only the two species
+
+
 def test_events_axis_groups_specimens(session):
     _fixture(session)
     evs = ex.events(session)
