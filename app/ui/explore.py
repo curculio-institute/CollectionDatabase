@@ -261,7 +261,9 @@ def build_explore_panel(session_factory, *, on_open_specimen, on_open_event) -> 
     def _all_facets():
         return [f for g in state["groups"] for f in g["facets"]]
 
-    # ── layout: main content + favorites rail (right on wide, stacked below on narrow) ──
+    # ── layout: the search bar shares a row with the favorites rail (right on wide,
+    # below on narrow); the RESULTS span the full container width underneath, so the
+    # dashboard charts / checklist use the whole reclaimed wide-screen space (#137). ──
     with ui.row().classes("w-full gap-4 items-start"):
         with ui.column().classes("flex-1 min-w-0 gap-2"):
             # ── search groups + toolbar ───────────────────────────────────
@@ -278,9 +280,9 @@ def build_explore_panel(session_factory, *, on_open_specimen, on_open_event) -> 
                     csv_btn = ui.button("CSV", icon="download").props("flat dense no-caps") \
                         .tooltip("Export the filtered set as CSV")
 
-            results = ui.column().classes("w-full gap-0 mt-2")
-
         fav_rail = ui.column().classes("ex-fav-rail w-full lg:w-56 shrink-0 gap-1 order-last")
+
+    results = ui.column().classes("w-full gap-0 mt-2")
 
     # ── facet dropdown (per group input) ──────────────────────────────────
     def _refresh_dropdown(g, drop, term: str):
