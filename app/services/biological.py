@@ -70,6 +70,24 @@ class RelationshipOption:
     taxonworks_id: int | None
 
 
+def association_host(session: Session, a: BiologicalAssociation) -> tuple[str, str, str | None] | None:
+    """(relationship, host taxon name, rank) for an association whose object resolves to a
+    taxon — the host, usually a plant. The object may be a taxon directly *or* a field
+    occurrence (the current model records a host as a HumanObservation), so resolve through
+    the field occurrence's current determination too; an object that is another specimen (or
+    resolves to no taxon) returns None. One owner so every browse surface renders hosts the
+    same way (Explore + the Records picker)."""
+    from app.services import field_occurrence as fo_svc
+    t = a.object_taxon
+    if t is None and a.object_field_occurrence is not None:
+        det = fo_svc.current_determination(session, a.object_field_occurrence)
+        t = det.taxon if det else None
+    if t is None:
+        return None
+    rel = a.biological_relationship.name if a.biological_relationship else ""
+    return (rel, t.scientific_name or "", t.taxon_rank)
+
+
 def get_relationship_options(session: Session) -> list[RelationshipOption]:
     """Return all local biological relationships ordered: active first, legacy last."""
     rows = (

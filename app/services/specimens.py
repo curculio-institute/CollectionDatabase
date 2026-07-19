@@ -12,6 +12,7 @@ from app.models import (
     TaxonDetermination,
 )
 from app.models.base import _utcnow
+import app.services.biological as bio_svc
 from app.services.biological import (
     save_biological_association, save_association_as_field_occurrence)
 from app.services.events import create_collecting_event, get_or_create_exact_event
@@ -22,6 +23,7 @@ from app.services.print_queue import (
     enqueue_identifier,
 )
 from app.services.taxa import format_scientific_name
+from app.services.label_text import format_place
 
 
 @dataclass(frozen=True)
@@ -40,9 +42,11 @@ class RecentRow:
     individual_count: int | None
     country: str | None
     locality: str | None
+    place: str                 # Country: state, municipality, locality (format_place)
     event_date: str | None
     recorded_by: str | None
     identified_by: str | None
+    date_identified: str | None
 
 
 def create_collection_object(
@@ -406,19 +410,19 @@ def recent_specimens(session: Session, limit: int = 200) -> list[RecentRow]:
             scientific_name=(t.scientific_name or "") if t else "",
             authorship=(t.scientific_name_authorship if t else None),
             taxon_rank=(t.taxon_rank if t else None),
-            hosts=[(a.biological_relationship.name if a.biological_relationship else "",
-                    a.object_taxon.scientific_name or "",
-                    a.object_taxon.taxon_rank)
-                   for a in co.subject_associations if a.object_taxon],
+            hosts=[h for a in co.subject_associations
+                   if (h := bio_svc.association_host(session, a))],
             confidential=bool(co.confidential),
             event_confidential=bool(ce.confidential) if ce else False,
             sex=td.sex if td else None,
             individual_count=co.individual_count,
             country=(ce.country_obj.name if (ce and ce.country_obj) else None),
             locality=(ce.locality or ce.verbatim_locality) if ce else None,
+            place=format_place(ce),
             event_date=(ce.event_date or ce.verbatim_event_date) if ce else None,
             recorded_by=ce.recorded_by_person.full_name if (ce and ce.recorded_by_person) else None,
             identified_by=td.identified_by_person.full_name if (td and td.identified_by_person) else None,
+            date_identified=(td.date_identified if td else None),
         )
         for co, td, ce, t in rows
     ]

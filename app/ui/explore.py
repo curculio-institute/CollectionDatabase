@@ -470,6 +470,8 @@ def build_explore_panel(session_factory, *, on_open_specimen, on_open_event) -> 
                 locality=r.locality_place,     # place only — date/collector/hosts shown separately
                 event_date=r.event_date,
                 recorded_by=r.recorded_by,
+                identified_by=r.identified_by,
+                date_identified=r.date_identified,
                 confidential=r.confidential,
                 event_confidential=r.event_confidential,
             )).classes("ex-spec-row w-full")
@@ -689,9 +691,14 @@ def build_explore_panel(session_factory, *, on_open_specimen, on_open_event) -> 
             count_lbl.set_text("Comparing — " + "  ·  ".join(parts))
         else:
             c = _with(lambda s: ex_svc.counts(s, flt))
+            def _n(n, one, many):        # singular for 0 or 1, plural for ≥2
+                return f"{n} {one if n <= 1 else many}"
             count_lbl.set_text(
-                f"{c['specimens']} specimens · {c['species_group']} species-group names"
-                f" · {c['events']} events · {c['georeferenced']} specimens georeferenced")
+                f"{_n(c['specimens'], 'specimen', 'specimens')}"
+                f" · {_n(c['species_group'], 'species-group name', 'species-group names')}"
+                f" · {_n(c['events'], 'event', 'events')}"
+                f" · {c['georeferenced']} {'specimen' if c['georeferenced'] <= 1 else 'specimens'}"
+                " georeferenced")
         results.clear()
         with results:
             if state["view"] == "taxa":

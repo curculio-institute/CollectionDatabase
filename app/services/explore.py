@@ -26,22 +26,7 @@ from app.models import (
 )
 from app.services.taxa import format_scientific_name, parse_scientific_name
 from app.services.label_text import format_locality_label, format_place
-import app.services.field_occurrence as fo_svc
-
-
-def _assoc_host(session: Session, a) -> tuple[str, str, str | None] | None:
-    """(relationship, taxon name, rank) for an association whose object is a taxon — the
-    host plant, usually. The object may be a taxon directly *or* a field occurrence (the
-    current model records a host as a HumanObservation), so resolve through the field
-    occurrence's current determination too; otherwise its host is invisible here (#137)."""
-    t = a.object_taxon
-    if t is None and a.object_field_occurrence is not None:
-        det = fo_svc.current_determination(session, a.object_field_occurrence)
-        t = det.taxon if det else None
-    if t is None:
-        return None
-    rel = a.biological_relationship.name if a.biological_relationship else ""
-    return (rel, t.scientific_name or "", t.taxon_rank)
+from app.services.biological import association_host as _assoc_host
 
 # Geography facet kind → (vocab model, collecting_event FK attr).
 _GEO_FACETS = {
@@ -197,6 +182,7 @@ class SpecimenRow:
     locality_place: str = ""   # place only (locality + country) — for the specimen summary
     event_date: str | None = None
     date_identified: str | None = None   # dwc:dateIdentified of the current determination
+    identified_by: str | None = None     # the determiner (person) of the current determination
     recorded_by: str | None = None
     lat: float | None = None
     lon: float | None = None
@@ -345,6 +331,8 @@ def query_specimens(session: Session, filters: list[dict] | None = None,
             locality_place=place,
             event_date=(ev.event_date if ev else None),
             date_identified=(td.date_identified if td else None),
+            identified_by=(td.identified_by_person.full_name
+                           if (td and td.identified_by_person) else None),
             recorded_by=(ev.recorded_by_person.full_name if (ev and ev.recorded_by_person) else None),
             lat=(ev.decimal_latitude if ev else None),
             lon=(ev.decimal_longitude if ev else None),

@@ -96,6 +96,17 @@ def _bits(sex: str | None, count: int | None) -> str:
     return (f'<span class="rs-badge">{_html.escape(" ".join(out))}</span>') if out else ""
 
 
+def _det_html(identified_by: str | None, date_identified: str | None) -> str:
+    """"det. J. Jilg 2026" — the determiner + identification year, muted, on the name line
+    (it's part of the *identity*, parallel to the taxon authorship). Year shown only when a
+    4-digit year can be read from the ISO dateIdentified."""
+    if not identified_by:
+        return ""
+    yr = (date_identified or "")[:4]
+    txt = f"det. {identified_by}" + (f" {yr}" if yr.isdigit() and len(yr) == 4 else "")
+    return f'<span class="rs-det">{_html.escape(txt)}</span>'
+
+
 def specimen_html(
     *,
     catalog: str,
@@ -109,22 +120,36 @@ def specimen_html(
     event_date: str | None = None,
     recorded_by: str | None = None,
     identified_by: str | None = None,
+    date_identified: str | None = None,
     confidential: bool = False,
     event_confidential: bool = False,
     undetermined_note: str = "— no identification —",
 ) -> str:
-    """The two-line specimen row used by every browse surface."""
+    """The two-line specimen row used by every browse surface.
+
+    Name line: catalog · name (+authorship) · sex/count · **det. Determiner Year** · lock.
+    Meta line: place · **collected from Host** · eventDate · leg. Collector. The
+    determination lives with the name (identity); the host sits between place and date on
+    the collection line."""
     ident = name_html(name, rank, authorship) if name else \
         f'<span class="rs-none">{_html.escape(undetermined_note)}</span>'
-    meta = [m for m in (locality, event_date,
-                        f"leg. {recorded_by}" if recorded_by else "",
-                        f"det. {identified_by}" if identified_by else "") if m]
-    sub = "  ·  ".join(_html.escape(m) for m in meta)
+    # Meta line — plain-text bits are escaped; the host bit is trusted HTML (italic name).
+    meta: list[str] = []
+    if locality:
+        meta.append(_html.escape(locality))
+    host = hosts_html(hosts)
+    if host:
+        meta.append(host)
+    if event_date:
+        meta.append(_html.escape(event_date))
+    if recorded_by:
+        meta.append(_html.escape(f"leg. {recorded_by}"))
+    sub = "  ·  ".join(meta)
     return (
         '<div class="rs-row">'
         '<div class="rs-top">'
         f'<span class="rs-cat">{_html.escape(catalog or "—")}</span>'
-        f'{ident}{_bits(sex, count)}{hosts_html(hosts)}'
+        f'{ident}{_bits(sex, count)}{_det_html(identified_by, date_identified)}'
         f'<span class="rs-spacer"></span>'
         f'{lock_html(own=confidential, from_event=event_confidential)}'
         '</div>'
@@ -182,6 +207,7 @@ CSS = f"""
 .rs-cat     {{ font-family:ui-monospace,monospace; font-size:.78rem; font-weight:600;
                color:var(--tp-secondary); flex-shrink:0; }}
 .rs-ev      {{ font-size:.9rem; }}
+.rs-det     {{ font-size:.76rem; color:var(--tp-base-soft); white-space:nowrap; flex-shrink:0; }}
 .rs-host    {{ font-size:.82rem; color:var(--tp-base-soft); white-space:nowrap; }}
 .rs-host i  {{ font-style:italic; }}
 .rs-more    {{ font-size:.7rem; opacity:.75; }}

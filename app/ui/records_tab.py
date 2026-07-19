@@ -124,10 +124,11 @@ def build_records_tab(session_factory, *, on_saved: callable | None = None) -> N
                     hosts=r.hosts,
                     sex=r.sex,
                     count=r.individual_count,
-                    locality=", ".join(x for x in (r.locality, r.country) if x),
+                    locality=r.place,   # Country: state, municipality, locality (format_place)
                     event_date=r.event_date,
                     recorded_by=r.recorded_by,
                     identified_by=r.identified_by,
+                    date_identified=r.date_identified,
                 )
                 out.append({
                     "value": r.collection_object_id,
