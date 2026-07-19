@@ -1879,7 +1879,9 @@ def index():
         # TAB: EXPLORE  (#40 — faceted browse over the dataset; drills into Records)
         # ================================================================
         with ui.tab_panel("explore"):
-            with ui.column().classes("w-full max-w-5xl mx-auto px-4 pt-6 pb-16 gap-2"):
+            # Wider than the other tabs (#137): Explore has a favorites rail on the left
+            # and data/charts on the right that both benefit from reclaimed wide-screen space.
+            with ui.column().classes("w-full max-w-[88rem] mx-auto px-4 pt-6 pb-16 gap-2"):
                 def _explore_open_spec(co_id):
                     _records_handle["open_specimen"](co_id)
                     main_tabs.set_value("records")

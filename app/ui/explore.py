@@ -17,6 +17,7 @@ from nicegui import ui
 import app.ui.record_summary as rs
 
 import app.services.explore as ex_svc
+import app.services.saved_searches as fav_svc
 
 _CSS = """<style>
 .ex-bar { position: relative; }
@@ -37,6 +38,18 @@ _CSS = """<style>
            padding: 2px 6px 2px 10px; font-size: .82rem; }
 .ex-chip .ex-x { cursor: pointer; color: #9ca3af; font-weight: 700; }
 .ex-chip .ex-x:hover { color: #dc2626; }
+/* favorites rail (#137): quick-buttons for saved searches, in the left margin */
+.ex-fav-rail { position: sticky; top: 8px; }
+.ex-fav-hd { font-size: .66rem; font-weight: 700; text-transform: uppercase;
+             letter-spacing: .06em; color: var(--tp-base-soft, #9ca3af); padding: 2px 4px; }
+.ex-fav { display: flex; align-items: center; gap: 4px; width: 100%; border-radius: 8px;
+          padding: 5px 6px 5px 9px; cursor: pointer; font-size: .86rem; line-height: 1.2;
+          border: 1px solid transparent; }
+.ex-fav:hover { background: rgba(3,105,161,.08); border-color: var(--tp-base-border,#e2e8f0); }
+.dark .ex-fav:hover { background: rgba(56,189,248,.12); }
+.ex-fav-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ex-fav-star { color: #f59e0b; flex-shrink: 0; font-size: 1rem; }
+.ex-fav-empty { font-size: .78rem; color: var(--tp-base-soft, #9ca3af); padding: 2px 6px; line-height: 1.4; }
 /* stacked search groups (#135): each group is a bordered block; groups joined by AND */
 .ex-group { border: 1px solid var(--tp-base-border, #e2e8f0); border-radius: 10px;
             padding: 10px 12px; background: var(--tp-base-foreground, #fff); }
@@ -230,6 +243,13 @@ def build_explore_panel(session_factory, *, on_open_specimen, on_open_event) -> 
         with session_factory() as s:
             return fn(s)
 
+    def _write(fn):
+        """Like _with but commits — for favorite create/rename/delete/default writes."""
+        with session_factory() as s:
+            r = fn(s)
+            s.commit()
+            return r
+
     # Stacked search groups (#135): each group = {op, facets:[{kind,label,key,tag}]}.
     # Facets within a group combine by its op (AND/OR); the groups combine by AND.
     # dash_compare: plot each group as its own cohort/series (needs ≥2 groups).
@@ -241,20 +261,26 @@ def build_explore_panel(session_factory, *, on_open_specimen, on_open_event) -> 
     def _all_facets():
         return [f for g in state["groups"] for f in g["facets"]]
 
-    # ── search groups + toolbar ───────────────────────────────────────────
-    with ui.card().classes("w-full shadow-sm"):
-        groups_box = ui.column().classes("w-full gap-0")
-        with ui.row().classes("items-center gap-3 mt-2 w-full"):
-            count_lbl = ui.label("").classes("text-sm").style("color:var(--tp-base-soft)")
-            ui.space()
-            taxa_btn = ui.button("Taxa", icon="account_tree").props("dense no-caps")
-            events_btn = ui.button("Events", icon="place").props("dense no-caps flat")
-            dashboard_btn = ui.button("Dashboard", icon="insights").props("dense no-caps flat") \
-                .tooltip("Charts for the filtered set")
-            csv_btn = ui.button("CSV", icon="download").props("flat dense no-caps") \
-                .tooltip("Export the filtered set as CSV")
+    # ── layout: main content + favorites rail (right on wide, stacked below on narrow) ──
+    with ui.row().classes("w-full gap-4 items-start"):
+        with ui.column().classes("flex-1 min-w-0 gap-2"):
+            # ── search groups + toolbar ───────────────────────────────────
+            with ui.card().classes("w-full shadow-sm"):
+                groups_box = ui.column().classes("w-full gap-0")
+                with ui.row().classes("items-center gap-3 mt-2 w-full"):
+                    count_lbl = ui.label("").classes("text-sm") \
+                        .style("color:var(--tp-base-soft)")
+                    ui.space()
+                    taxa_btn = ui.button("Taxa", icon="account_tree").props("dense no-caps")
+                    events_btn = ui.button("Events", icon="place").props("dense no-caps flat")
+                    dashboard_btn = ui.button("Dashboard", icon="insights") \
+                        .props("dense no-caps flat").tooltip("Charts for the filtered set")
+                    csv_btn = ui.button("CSV", icon="download").props("flat dense no-caps") \
+                        .tooltip("Export the filtered set as CSV")
 
-    results = ui.column().classes("w-full gap-0 mt-2")
+            results = ui.column().classes("w-full gap-0 mt-2")
+
+        fav_rail = ui.column().classes("ex-fav-rail w-full lg:w-56 shrink-0 gap-1 order-last")
 
     # ── facet dropdown (per group input) ──────────────────────────────────
     def _refresh_dropdown(g, drop, term: str):
@@ -657,6 +683,114 @@ def build_explore_panel(session_factory, *, on_open_specimen, on_open_event) -> 
         ui.download(ex_svc.to_csv(rows), filename="collection_export.csv", media_type="text/csv")
     csv_btn.on_click(_export)
 
+    # ── favorites (saved searches) ────────────────────────────────────────
+    def _load_search(groups):
+        """Replace the current search with `groups` (used by apply-favorite)."""
+        state["groups"] = groups or [{"op": "and", "facets": []}]
+        state["dash_dates"] = None
+        _render_groups()
+        _refresh()
+
+    def _apply_favorite(fav_id):
+        res = _with(lambda s: fav_svc.resolve_by_id(s, fav_id))
+        if res is None:
+            _refresh_favorites()          # vanished under us
+            return
+        applied = fav_svc.apply_groups(res["groups"])
+        _load_search(applied)
+        if res["stale"]:
+            ui.notify(f"{res['stale']} filter(s) in this favorite no longer exist and "
+                      "were skipped.", type="warning")
+
+    def _save_current():
+        if not _all_facets():
+            ui.notify("Add at least one filter before saving a favorite.", type="warning")
+            return
+        dlg = ui.dialog()
+        with dlg, ui.card().classes("gap-2 min-w-[320px]"):
+            ui.label("Save this search as a favorite").classes("text-sm font-medium")
+            name_in = ui.input("Name").props("outlined dense autofocus").classes("w-full")
+
+            def do_save():
+                try:
+                    _write(lambda s: fav_svc.create(s, name_in.value, state["groups"]))
+                except ValueError as e:
+                    ui.notify(str(e), type="warning"); return
+                dlg.close(); _refresh_favorites()
+                ui.notify("Favorite saved.", type="positive")
+
+            name_in.on("keydown.enter", lambda _: do_save())
+            with ui.row().classes("w-full justify-end gap-2"):
+                ui.button("Cancel", on_click=dlg.close).props("flat dense no-caps")
+                ui.button("Save", on_click=do_save).props("dense no-caps unelevated")
+        dlg.on_value_change(lambda e: dlg.delete() if not e.value else None)
+        dlg.open()
+
+    def _rename_favorite(fav_id, current):
+        dlg = ui.dialog()
+        with dlg, ui.card().classes("gap-2 min-w-[320px]"):
+            ui.label("Rename favorite").classes("text-sm font-medium")
+            name_in = ui.input("Name", value=current) \
+                .props("outlined dense autofocus").classes("w-full")
+
+            def do_rename():
+                try:
+                    _write(lambda s: fav_svc.rename(s, fav_id, name_in.value))
+                except ValueError as e:
+                    ui.notify(str(e), type="warning"); return
+                dlg.close(); _refresh_favorites()
+
+            name_in.on("keydown.enter", lambda _: do_rename())
+            with ui.row().classes("w-full justify-end gap-2"):
+                ui.button("Cancel", on_click=dlg.close).props("flat dense no-caps")
+                ui.button("Save", on_click=do_rename).props("dense no-caps unelevated")
+        dlg.on_value_change(lambda e: dlg.delete() if not e.value else None)
+        dlg.open()
+
+    def _delete_favorite(fav_id):
+        _write(lambda s: fav_svc.delete(s, fav_id))
+        _refresh_favorites()
+
+    def _toggle_default(fav_id, make_default):
+        _write(lambda s: fav_svc.set_default(s, fav_id if make_default else None))
+        _refresh_favorites()
+
+    def _refresh_favorites():
+        fav_rail.clear()
+        favs = _with(lambda s: fav_svc.list_searches(s))
+        with fav_rail:
+            ui.html('<div class="ex-fav-hd">★ Favorites</div>')
+            if not favs:
+                ui.html('<div class="ex-fav-empty">No favorites yet. Build a search, then '
+                        '“Save current search”.</div>')
+            for fav in favs:
+                is_def = bool(fav.is_default)
+                row = ui.element("div").classes("ex-fav")
+                with row:
+                    if is_def:
+                        ui.html('<span class="ex-fav-star material-icons" '
+                                'title="Applied when Explore opens">star</span>')
+                    ui.html(f'<span class="ex-fav-name" title="{_html.escape(fav.name)}">'
+                            f'{_html.escape(fav.name)}</span>')
+                    # the row (minus the ⋮) applies the favorite
+                    row.on("click", lambda _, fid=fav.id: _apply_favorite(fid))
+                    menu_btn = ui.button(icon="more_vert") \
+                        .props("flat dense round size=xs").on("click.stop", lambda: None)
+                    with menu_btn, ui.menu().props("auto-close"):
+                        ui.menu_item("Set as default" if not is_def else "Unset default",
+                                     lambda fid=fav.id, d=is_def: _toggle_default(fid, not d))
+                        ui.menu_item("Rename",
+                                     lambda fid=fav.id, nm=fav.name: _rename_favorite(fid, nm))
+                        ui.menu_item("Delete", lambda fid=fav.id: _delete_favorite(fid))
+            ui.button("Save current search", icon="star_border", on_click=_save_current) \
+                .props("flat dense no-caps size=sm").classes("mt-1 self-start")
+
     _render_groups()   # renders the first (empty) search group + Add-another button
-    _refresh()
+    # Apply the default favorite on open, if one is set (otherwise the empty search).
+    _default = _with(lambda s: fav_svc.get_default(s))
+    if _default is not None:
+        _apply_favorite(_default.id)
+    else:
+        _refresh()
+    _refresh_favorites()
     return {"refresh": _refresh}

@@ -153,6 +153,12 @@ def resolve(session: Session, fav: SavedSearch) -> dict:
     return {"groups": groups, "stale": stale}
 
 
+def resolve_by_id(session: Session, search_id: int) -> dict | None:
+    """`resolve()` for a favorite id, or None if it no longer exists."""
+    fav = session.get(SavedSearch, search_id)
+    return resolve(session, fav) if fav is not None else None
+
+
 def apply_groups(resolved_groups: list[dict]) -> list[dict]:
     """Strip a resolved favorite down to what can actually be applied: drop stale facets,
     then drop any group left empty. Returns clean ``groups`` for the Explore state."""
