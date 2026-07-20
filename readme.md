@@ -66,8 +66,8 @@ run.py creates the database on first start and migrates it on every later start,
 For convenience, it is best to have a bash script that activates the conda environment and starts the program with one click. You can add launch.sh to your systems task bar or start menu, but you may have to adjust paths in the file to make it run on your system.
 
 ### Windows
-- Download this directory as zip, extract content where you want to keep the program. Go into the extracted directory, copy its path to clipboard
-- Download the Miniconda installer (https://www.anaconda.com/download/success), run it to install miniconda
+- [Download this directory as zip](https://github.com/curculio-institute/CollectionDatabase/archive/refs/heads/main.zip), extract content where you want to keep the program. Go into the extracted directory, copy its path to clipboard
+- [Download the Miniconda installer](https://www.anaconda.com/download/success), run it to install miniconda
 - Start the newly installed program "Anaconda Prompt"
 - write cd for change directory and paste the path that you copied from clipboard with a right-click, e.g. "cd C:\Users\Jakob\CollectionDatabase-main"
 - press enter, the command line is now within that directory
