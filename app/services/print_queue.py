@@ -237,6 +237,9 @@ def queued_groups(session: Session) -> list[lbl.LabelGroup]:
             ckey = ("co", lc.collection_object_id) if lc.collection_object_id else ("code", lc.id)
             col = columns.setdefault(ckey, lbl.SpecimenLabels())
             col.id_code = lc.code
+            col.id_qid = row.id
+            if lc.collection_object_id:
+                col.co_id = lc.collection_object_id
 
     return [
         lbl.LabelGroup(source=b["source"], specimens=list(b["columns"].values()))
@@ -348,6 +351,33 @@ def row_auto_html(session: Session, queue_id: int) -> str:
     return ""
 
 
+def row_current_html(session: Session, queue_id: int) -> str:
+    """The formatted HTML currently PRINTED for a data/determination row — the
+    override if one is set, else the auto text. Seeds the larger label editor."""
+    row = session.get(PrintQueue, queue_id)
+    if row is None or not row.collection_object:
+        return ""
+    if row.label_type == "data":
+        return lbl._data_inner_html(_co_to_data_label(row.collection_object, row.text_override))
+    if row.label_type == "determination":
+        dl = _co_to_det_label(row.collection_object, row.text_override)
+        return lbl._det_inner_html(dl) if dl else ""
+    return ""
+
+
+def remove_specimen(session: Session, co_id: int) -> int:
+    """Remove every queued label belonging to one specimen (its data + determination
+    rows, and its identifier row via the code's collection_object). Returns the count."""
+    rows = session.query(PrintQueue).all()
+    victims = [r for r in rows
+               if r.collection_object_id == co_id
+               or (r.label_code and r.label_code.collection_object_id == co_id)]
+    for r in victims:
+        session.delete(r)
+    session.flush()
+    return len(victims)
+
+
 def set_override_for_identical(session: Session, queue_id: int, text: str | None) -> int:
     """Set a print-only override on the given row AND every other queued label
     that is identical to it (same type + same auto text — see _row_auto_identity).
@@ -412,9 +442,10 @@ def preview_sheet(session: Session, printed_at: str | None = None) -> str:
     — identical layout to `build_pdf` (same builder), so what is shown is what prints.
     Pair with `labels.preview_css(borders)` (injected once) for the styling."""
     from app.services import repositories as repo_svc
+    from datetime import datetime
     groups = queued_groups(session)
-    return lbl.preview_html(
-        groups, printed_at or _utcnow(), repo_svc.name_map(session))
+    stamp = printed_at or datetime.now().strftime("%Y-%m-%d %H:%M")
+    return lbl.preview_html(groups, stamp, repo_svc.name_map(session))
 
 
 def clear_queue(session: Session) -> int:

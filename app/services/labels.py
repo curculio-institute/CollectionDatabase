@@ -727,6 +727,7 @@ class SpecimenLabels:
     # apply to every identical label. None everywhere on the print path.
     data_qid:      Optional[int]                = None
     det_qid:       Optional[int]                = None
+    id_qid:        Optional[int]                = None
     data_ident:    Optional[str]                = None
     det_ident:     Optional[str]                = None
     co_id:         Optional[int]                = None
@@ -796,14 +797,19 @@ def _grouped_css(borders: dict[str, str] | None = None,
 # back to its queue row (data-qid) and highlight/apply to every identical label
 # (data-ident). The print PDF passes editable=False, so these attributes never appear
 # on paper. The class hook (pq-edit) is what the preview's blur listener matches.
-def _edit_cell(base_cls: str, inner: str, qid: Optional[int],
-               ident: Optional[str], editable: bool) -> str:
+def _co_attr(co_id: Optional[int]) -> str:
+    return f' data-co="{co_id}"' if co_id is not None else ""
+
+
+def _edit_cell(base_cls: str, inner: str, qid: Optional[int], ident: Optional[str],
+               co_id: Optional[int], editable: bool) -> str:
     """A band cell; when editable and it has a queue id, the box is contenteditable
-    and tagged (data-qid maps a click to the row; data-ident groups identical labels)."""
+    and tagged: data-qid maps a click to the row, data-ident groups identical labels,
+    data-co points at the specimen (open-in-Records)."""
     if editable and qid is not None:
         id_attr = f' data-ident="{_e(ident)}"' if ident else ""
         div = (f'<div class="{base_cls} pq-edit" contenteditable="true" '
-               f'data-qid="{qid}"{id_attr}>{inner}</div>')
+               f'data-qid="{qid}"{id_attr}{_co_attr(co_id)}>{inner}</div>')
     else:
         div = f'<div class="{base_cls}">{inner}</div>'
     return f'<td class="cell">{div}</td>'
@@ -813,20 +819,27 @@ def _data_cell(sp: SpecimenLabels, editable: bool = False) -> str:
     if sp.data is None:
         return '<td class="cell"></td>'
     return _edit_cell("lbl-data", _data_inner_html(sp.data),
-                      sp.data_qid, sp.data_ident, editable)
+                      sp.data_qid, sp.data_ident, sp.co_id, editable)
 
 
 def _det_cell(sp: SpecimenLabels, editable: bool = False) -> str:
     if sp.determination is None:
         return '<td class="cell"></td>'
     return _edit_cell("lbl-det", _det_inner_html(sp.determination),
-                      sp.det_qid, sp.det_ident, editable)
+                      sp.det_qid, sp.det_ident, sp.co_id, editable)
 
 
-def _id_cell(code: Optional[str], names: dict[str, str] | None = None) -> str:
-    if not code:
+def _id_cell(sp: SpecimenLabels, names: dict[str, str] | None = None,
+             editable: bool = False) -> str:
+    if not sp.id_code:
         return '<td class="cell"></td>'
-    inner = _id_label_inner(code, _collection_of(code, names))
+    inner = _id_label_inner(sp.id_code, _collection_of(sp.id_code, names))
+    # The identifier label is READ-ONLY (immutable code), but in editable mode it still
+    # carries its queue id + specimen so the preview's remove / open-in-Records controls
+    # work on an identifier-only column too (e.g. a reserved-code batch).
+    if editable and sp.id_qid is not None:
+        tag = f' data-qid="{sp.id_qid}"{_co_attr(sp.co_id)}'
+        return f'<td class="cell"><div class="lbl-id pq-idrow"{tag}>{inner}</div></td>'
     return f'<td class="cell"><div class="lbl-id">{inner}</div></td>'
 
 
@@ -849,7 +862,7 @@ def _group_html(group: LabelGroup, names: dict[str, str] | None = None,
         # instead stack two border-spacings + the chunk margin (~2.3 mm), which reads
         # as far too much vertical space between rows.
         id_rows = [
-            "<tr>" + "".join(_id_cell(s.id_code, names)
+            "<tr>" + "".join(_id_cell(s, names, editable)
                              for s in specs[start:start + _LABELS_PER_ROW]) + "</tr>"
             for start in range(0, len(specs), _LABELS_PER_ROW)
         ]
@@ -864,7 +877,7 @@ def _group_html(group: LabelGroup, names: dict[str, str] | None = None,
             if has_data:
                 rows.append("<tr>" + "".join(_data_cell(s, editable) for s in chunk) + "</tr>")
             if has_id:
-                rows.append("<tr>" + "".join(_id_cell(s.id_code, names) for s in chunk) + "</tr>")
+                rows.append("<tr>" + "".join(_id_cell(s, names, editable) for s in chunk) + "</tr>")
             if has_det:
                 rows.append("<tr>" + "".join(_det_cell(s, editable) for s in chunk) + "</tr>")
             chunks.append(f'<table class="chunk">{"".join(rows)}</table>')
@@ -911,10 +924,19 @@ def preview_css(borders: dict[str, str] | None = None) -> str:
     css = _grouped_css(borders, "chromium")
     # Drop @page (no meaning on screen).
     css = _re.sub(r"@page\s*\{[^}]*\}", "", css)
+    # The @font-face URLs are file:// (for headless print). A browser loading the app
+    # over http CANNOT read file:// — it would fall back to a system font and NOT match
+    # the print. The fonts are served at /static/fonts, so point the preview there.
+    css = css.replace(_FONTS_DIR.as_uri(), "/static/fonts")
     # Scope the two global rules that would leak into the whole app.
     css = css.replace("* { box-sizing: border-box; margin: 0; padding: 0; }",
                       f"{_PREVIEW_SCOPE} * {{ box-sizing: border-box; margin: 0; padding: 0; }}")
     css = css.replace("body {", f"{_PREVIEW_SCOPE} {{", 1)
+    # The preview is an actual A4 PAGE: same size + margin as the print @page, on white
+    # paper with a drop shadow, so it reads as the printed sheet (not a bare strip of
+    # labels). The labels flow inside exactly as they paginate.
+    css += (f"\n{_PREVIEW_SCOPE} {{ width: 210mm; min-height: 297mm; padding: 5mm;"
+            f" background: #fff; box-shadow: 0 2px 12px rgba(0,0,0,.30); }}\n")
     return css
 
 

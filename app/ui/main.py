@@ -324,33 +324,32 @@ def index():
     # print_queue._data_identity), so identical labels are visible at a glance.
     ui.add_head_html("""
     <style>
-      .pq-prev        { display:flex; flex-direction:column; gap:14px; }
-      .pq-prev-src    { font-size:.7rem; font-weight:700; text-transform:uppercase;
-                        letter-spacing:.08em; color:var(--tp-base-soft); margin-bottom:4px; }
-      .pq-prev-cols   { display:flex; flex-wrap:wrap; gap:10px; }
-      .pq-prev-col    { display:flex; flex-direction:column; gap:3px; width:190px; }
-      .pq-prev-label  { border:1px solid var(--tp-base-border); border-radius:3px;
-                        padding:3px 6px; font-size:.72rem; line-height:1.3;
-                        background:var(--tp-base-foreground); overflow-wrap:anywhere; }
-      .pq-prev-id     { font-family:monospace; color:var(--tp-base-lighter); }
-      /* WYSIWYG label boxes print like the PDF: genus+species bold-italic,
-         subgenus italic, associated species italic — driven by the rendered
-         <strong>/<em> markup, NOT a blanket italic on the whole box (#45/#46). */
-      .pq-prev-label em     { font-style:italic; }
-      .pq-prev-label strong { font-weight:700; }
-      .pq-prev-label[data-ident] { cursor:text; transition:background .1s, outline .1s; }
-      .pq-prev-label[contenteditable]:focus { outline:2px solid var(--tp-secondary);
-                        outline-offset:0; }
-      .pq-ident-hl    { outline:2px solid var(--tp-secondary);
-                        background:rgba(3,105,161,.10) !important; }
-      .pq-prev-edited { background:#fff7ed; border-color:#f59e0b; }
-      .dark .pq-prev-edited { background:rgba(245,158,11,.12); }
-      /* the "open larger editor" affordance sits flush inside the label box */
-      .pq-box-wrap    { position:relative; }
-      .pq-box-toggle  { position:absolute; top:1px; right:1px; opacity:0;
-                        transition:opacity .1s; }
-      .pq-box-wrap:hover .pq-box-toggle { opacity:.5; }
-      .pq-box-toggle:hover { opacity:1 !important; }
+      /* WYSIWYG print-queue preview: the REAL label sheet (labels.preview_html + the
+         scoped label CSS injected separately), zoomed with transform:scale — a POST-
+         layout paint, so labels lay out once at true physical size (wrapping == print)
+         and lines never re-break. */
+      .pq-sheet-wrap  { width:100%; overflow:auto; max-height:80vh; padding:12px;
+                        background:#e9e9ec; border:1px solid var(--tp-base-border);
+                        border-radius:8px; cursor:grab; }
+      .pq-sheet-wrap:active { cursor:grabbing; }
+      .dark .pq-sheet-wrap { background:#3a3a3f; }   /* neutral desk; page is white */
+      .pq-sheet-scale { transform-origin: top left; transform: scale(var(--pq-zoom, 1.5));
+                        width: max-content; }
+      /* editable label affordances on the real .pq-edit boxes */
+      .pq-sheet .pq-edit         { cursor:text; }
+      .pq-sheet .pq-edit:hover   { outline:0.3mm solid var(--tp-secondary); outline-offset:0; }
+      .pq-sheet .pq-edit:focus   { outline:0.3mm solid var(--tp-secondary); outline-offset:0; }
+      .pq-sheet .pq-ident-hl     { background:rgba(3,105,161,.14) !important; }
+      /* an edited (override) label gets a subtle amber tint so overrides are visible */
+      .pq-sheet .pq-edited       { background:#fff7ed !important; }
+      /* floating hover toolbar (edit / open-in-Records / remove), positioned by JS */
+      .pq-tools   { position:fixed; z-index:9999; display:none; gap:1px;
+                    background:var(--tp-base-foreground); border:1px solid var(--tp-base-border);
+                    border-radius:6px; padding:2px; box-shadow:0 2px 10px rgba(0,0,0,.2); }
+      .pq-tools button { border:none; background:none; cursor:pointer; font-size:14px;
+                    line-height:1; padding:3px 6px; border-radius:4px; color:var(--tp-base); }
+      .pq-tools button:hover { background:var(--tp-base-border); }
+      .pq-zoombar { display:flex; align-items:center; gap:6px; }
       /* larger label editor dialog: a readable WYSIWYG area + raw-HTML source */
       .pq-dlg-editor  { min-height:120px; border:1px solid var(--tp-base-border);
                         border-radius:4px; padding:10px 12px; font-size:1rem;
@@ -362,32 +361,123 @@ def index():
       .pq-dlg-editor div    { min-height:1.5em; }
       .pq-dlg-source .q-field__native { font-family:monospace; font-size:.85rem;
                         line-height:1.45; min-height:120px; }
-      .pq-prev-ctl    { justify-content:flex-end; opacity:.55; }
-      .pq-prev-ctl:hover { opacity:1; }
       .pq-prev-empty  { font-size:.85rem; font-style:italic; color:var(--tp-base-soft); }
     </style>
     <script>
     (function(){
       if (window._pqPrevHover) return;
       window._pqPrevHover = true;
+      // Hovering an editable label highlights every IDENTICAL label (same auto text).
       function hl(e, on){
-        var el = e.target.closest && e.target.closest('.pq-prev-label[data-ident]');
+        var el = e.target.closest && e.target.closest('.pq-edit[data-ident]');
         if(!el) return;
         var id = el.getAttribute('data-ident');
-        document.querySelectorAll('.pq-prev-label[data-ident="'+CSS.escape(id)+'"]')
+        document.querySelectorAll('.pq-edit[data-ident="'+CSS.escape(id)+'"]')
           .forEach(function(x){ x.classList.toggle('pq-ident-hl', on); });
       }
       document.addEventListener('mouseover', function(e){ hl(e, true); });
       document.addEventListener('mouseout',  function(e){ hl(e, false); });
-      // Capture-phase blur (blur does not bubble): when a contenteditable label
-      // box loses focus, emit its row id + innerHTML to Python. The DOM node
-      // can't ride NiceGUI's normal event args, so we read innerHTML here.
+      // Capture-phase blur: a contenteditable label box hands back its row id + innerHTML.
       document.addEventListener('blur', function(e){
         var el = e.target;
-        if(el && el.matches && el.matches('.pq-prev-label[contenteditable][data-qid]')){
+        if(el && el.matches && el.matches('.pq-edit[contenteditable][data-qid]')){
           emitEvent('pq_edit', { qid: el.getAttribute('data-qid'), html: el.innerHTML });
         }
       }, true);
+      // Floating hover toolbar: edit (data/det only) / open-in-Records / remove specimen.
+      var tools=null, hideT=null;
+      function mkTools(){
+        if(tools) return tools;
+        tools=document.createElement('div'); tools.className='pq-tools';
+        tools.innerHTML='<button data-a="edit" title="Larger editor (formatting)">&#x2922;</button>'+
+                        '<button data-a="records" title="Open specimen in Records">&#x2197;</button>'+
+                        '<button data-a="remove" title="Remove this specimen from the queue">&#x2715;</button>';
+        document.body.appendChild(tools);
+        tools.addEventListener('mousedown', function(ev){ ev.preventDefault(); });
+        tools.addEventListener('mouseover', function(){ if(hideT){clearTimeout(hideT);hideT=null;} });
+        tools.addEventListener('mouseout',  function(){ hideT=setTimeout(hideTools,250); });
+        tools.addEventListener('click', function(ev){
+          var b=ev.target.closest('button'); if(!b) return;
+          _tpEmit('pq_tool', {action:b.getAttribute('data-a'),
+                              qid:tools._qid||'', co:tools._co||''});
+        });
+        return tools;
+      }
+      function hideTools(){ if(tools) tools.style.display='none'; }
+      document.addEventListener('mouseover', function(e){
+        var el=e.target.closest && e.target.closest('.pq-sheet [data-qid]');
+        if(!el){ return; }
+        var t=mkTools();
+        t._qid=el.getAttribute('data-qid'); t._co=el.getAttribute('data-co')||'';
+        t.querySelector('[data-a="edit"]').style.display = el.classList.contains('pq-edit') ? '' : 'none';
+        t.querySelector('[data-a="records"]').style.display = t._co ? '' : 'none';
+        var r=el.getBoundingClientRect();
+        t.style.left=Math.max(4, r.right-2)+'px'; t.style.top=Math.max(4, r.top-2)+'px';
+        t.style.display='flex';
+        if(hideT){clearTimeout(hideT);hideT=null;}
+      });
+      document.addEventListener('mouseout', function(e){
+        if(e.target.closest && e.target.closest('.pq-sheet [data-qid]')){
+          hideT=setTimeout(hideTools, 250);
+        }
+      });
+      // Zoom: set the CSS var on the scale container (post-layout, no re-wrap).
+      window._pqZoom = function(z){
+        document.querySelectorAll('.pq-sheet-scale').forEach(function(s){
+          s.style.setProperty('--pq-zoom', z); });
+      };
+      // Fit the A4 page to the preview width (210mm = 793.7 CSS px at 96dpi). Returns the
+      // scale so Python can sync the slider.
+      window._pqFit = function(){
+        var wrap = document.querySelector('.pq-sheet-wrap');
+        if(!wrap) return null;
+        var z = Math.max(0.4, Math.min(6, (wrap.clientWidth - 28) / 793.7));
+        z = Math.round(z*20)/20;
+        window._pqZoom(z);
+        return z;
+      };
+      // Drag-to-pan: press on the page background (NOT on an editable label / toolbar /
+      // button) and drag to move around; the cursor shows a grab hand. Clicking a label
+      // still edits it.
+      var pan = null;
+      document.addEventListener('mousedown', function(e){
+        var wrap = e.target.closest && e.target.closest('.pq-sheet-wrap');
+        if(!wrap || e.button !== 0) return;
+        if(e.target.closest('.pq-edit') || e.target.closest('button') ||
+           e.target.closest('.pq-tools')) return;   // let edits / controls through
+        pan = {wrap:wrap, x:e.clientX, y:e.clientY, sl:wrap.scrollLeft, st:wrap.scrollTop};
+        wrap.style.cursor = 'grabbing';
+        e.preventDefault();
+      });
+      document.addEventListener('mousemove', function(e){
+        if(!pan) return;
+        pan.wrap.scrollLeft = pan.sl - (e.clientX - pan.x);
+        pan.wrap.scrollTop  = pan.st - (e.clientY - pan.y);
+      });
+      document.addEventListener('mouseup', function(){
+        if(pan){ pan.wrap.style.cursor = ''; pan = null; }
+      });
+      // Ctrl/⌘ + mouse-wheel zooms the page under the cursor (keeps the point under the
+      // pointer stable). Plain wheel still scrolls the page normally.
+      window._pqCurZoom = 1.5;
+      document.addEventListener('wheel', function(e){
+        if(!(e.ctrlKey || e.metaKey)) return;
+        var wrap = e.target.closest && e.target.closest('.pq-sheet-wrap');
+        if(!wrap) return;
+        e.preventDefault();
+        var scale = document.querySelector('.pq-sheet-scale');
+        var cur = parseFloat(getComputedStyle(scale).transform.split(',')[3]) || window._pqCurZoom;
+        // anchor: content point under the cursor before zoom
+        var ratio = Math.exp(-e.deltaY * 0.0015);
+        var next = Math.max(0.4, Math.min(8, cur * ratio));
+        var rect = wrap.getBoundingClientRect();
+        var cx = wrap.scrollLeft + (e.clientX - rect.left);
+        var cy = wrap.scrollTop  + (e.clientY - rect.top);
+        var k = next / cur;
+        window._pqZoom(next); window._pqCurZoom = next;
+        wrap.scrollLeft = cx * k - (e.clientX - rect.left);
+        wrap.scrollTop  = cy * k - (e.clientY - rect.top);
+      }, { passive: false });
     })();
     // Bridge for emitting a Python event from inside a Vue TEMPLATE (the checklist
     // tree's row actions, added via add_slot). Vue's runtime-compiled template proxy
@@ -2392,7 +2482,7 @@ def index():
         # TAB: LABELS
         # ================================================================
         with ui.tab_panel("labels"):
-            with ui.column().classes("w-full max-w-5xl mx-auto px-4 pt-6 pb-16 gap-6"):
+            with ui.column().classes("w-full max-w-[88rem] mx-auto px-4 pt-6 pb-16 gap-6"):
 
                 # ── Print queue ──────────────────────────────────────────
                 with ui.card().classes("w-full shadow-sm"):
@@ -2401,16 +2491,38 @@ def index():
                         ui.space()
                         queue_count_lbl = ui.label("").classes("text-sm") \
                             .style("color:var(--tp-base-soft)")
+                        # Zoom: transform:scale on the sheet (post-layout, never re-wraps).
+                        with ui.element("div").classes("pq-zoombar"):
+                            ui.icon("zoom_out").classes("text-base") \
+                                .style("color:var(--tp-base-soft)")
+                            zoom_slider = ui.slider(min=0.4, max=6.0, step=0.1, value=1.5) \
+                                .props("dense").classes("w-28")
+                            ui.button(icon="fit_screen").props("flat dense round size=sm") \
+                                .tooltip("Fit page to width") \
+                                .on_click(lambda: ui.run_javascript("window._pqFit && window._pqFit()"))
+                            ui.icon("zoom_in").classes("text-base") \
+                                .style("color:var(--tp-base-soft)")
                         clear_btn  = ui.button("Clear", icon="delete_sweep").props("flat dense")
                         print_btn  = ui.button("Print all", icon="print").props("color=secondary")
 
-                    # Interactive sheet preview (#37) — the PRIMARY surface. Shows
-                    # how the printed sheet groups/lays out; data & determination
-                    # labels are edited INLINE (a print-only override). Editing one
-                    # label edits ALL identical labels (same auto text = same event
-                    # + biological associations). Hovering highlights identical
-                    # labels. Identifier labels are read-only (immutable code).
-                    preview_box = ui.column().classes("w-full mt-1")
+                    # WYSIWYG sheet preview (#37): the REAL label markup + the scoped label
+                    # CSS (injected below), so what is shown is EXACTLY what prints — same
+                    # builder as build_pdf. Data & determination labels are contenteditable
+                    # (print-only override; editing one edits all identical labels); a hover
+                    # toolbar gives the larger editor / open-in-Records / remove. The whole
+                    # sheet is zoomed via transform:scale, which scales pixels after layout so
+                    # lines never re-break (measured: browsers agree on the layout to <0.5 mm).
+                    _pqcfg = get_config()
+                    ui.add_head_html("<style>" + lbl_svc.preview_css({
+                        "data":          _pqcfg.label_border_data,
+                        "determination": _pqcfg.label_border_determination,
+                        "identifier":    _pqcfg.label_border_identifier,
+                    }) + "</style>")
+                    with ui.element("div").classes("pq-sheet-wrap mt-1"):
+                        with ui.element("div").classes("pq-sheet-scale"):
+                            preview_box = ui.html("").classes("w-full")
+                    zoom_slider.on_value_change(
+                        lambda e: ui.run_javascript(f"window._pqZoom && window._pqZoom({e.value})"))
 
                     def _open_in_records(co_id):
                         if _records_handle and co_id:
@@ -2439,10 +2551,10 @@ def index():
                     # client-side and emits 'pq_edit' with the row id + html.
                     ui.on("pq_edit", lambda e: _edit_label(int(e.args["qid"]), e.args["html"]))
 
-                    # Rebuilding the whole preview on every single-column delete floods the
-                    # socket on a large queue — a rapid burst of deletes used to crash the
-                    # connection / restart the server (#132). Coalesce a burst into ONE rebuild
-                    # with a short trailing timer; the DB deletes still happen per click.
+                    # Rebuilding the whole preview on every single delete floods the socket on a
+                    # large queue — a rapid burst used to crash the connection / restart the
+                    # server (#132). Coalesce a burst into ONE rebuild with a short trailing
+                    # timer; the DB deletes still happen per click.
                     _pending_refresh: dict = {"timer": None}
 
                     def _run_pending_refresh():
@@ -2454,15 +2566,27 @@ def index():
                             return
                         _pending_refresh["timer"] = ui.timer(0.06, _run_pending_refresh, once=True)
 
-                    def _delete_column(sp):
-                        qids = [q for q in (sp.get("data_qid"), sp.get("det_qid"), sp.get("id_qid")) if q]
-                        if not qids:
-                            return
-                        with _sf() as session:
-                            with session.begin():
-                                for qid in qids:
-                                    pq_svc.remove_item(session, qid)
-                        _schedule_refresh()
+                    # Hover-toolbar actions on the WYSIWYG sheet (edit / open-in-Records /
+                    # remove). The floating toolbar (head JS) emits pq_tool with the hovered
+                    # label's queue id + specimen id.
+                    def _on_pq_tool(e):
+                        action = e.args.get("action")
+                        qid = e.args.get("qid") or ""
+                        co  = e.args.get("co") or ""
+                        if action == "records":
+                            _open_in_records(int(co) if co else None)
+                        elif action == "edit" and qid:
+                            seed = _with_session(lambda s: pq_svc.row_current_html(s, int(qid)))
+                            _open_label_dialog(int(qid), seed)
+                        elif action == "remove":
+                            with _sf() as session:
+                                with session.begin():
+                                    if co:
+                                        pq_svc.remove_specimen(session, int(co))
+                                    elif qid:
+                                        pq_svc.remove_item(session, int(qid))
+                            _schedule_refresh()
+                    ui.on("pq_tool", _on_pq_tool)
 
                     # Stable DOM ids for the dialog editor (only one open at a time).
                     _DLG_ED, _DLG_SRC = "pq-dlg-editor", "pq-dlg-source"
@@ -2540,53 +2664,6 @@ def index():
                         dlg.on_value_change(lambda e: dlg.delete() if not e.value else None)
                         dlg.open()
 
-                    def _editable_box(kind, sp):
-                        html_seed = sp["data_html"]      if kind == "data" else sp["det_html"]
-                        auto_html = sp["data_auto_html"] if kind == "data" else sp["det_auto_html"]
-                        qid       = sp["data_qid"]       if kind == "data" else sp["det_qid"]
-                        ident     = sp["data_ident"]     if kind == "data" else sp["det_ident"]
-                        cls = f"pq-prev-label pq-prev-{kind}"
-                        if (html_seed or "") != (auto_html or ""):
-                            cls += " pq-prev-edited"
-                        with ui.element("div").classes("pq-box-wrap"):
-                            # Primary surface: a contenteditable box rendered with the
-                            # real formatted label HTML — what you see prints (#46).
-                            # Typing inside a <strong><em> token keeps its styling;
-                            # text added outside stays plain (#45). innerHTML is
-                            # captured by the global blur listener via data-qid.
-                            (ui.html(html_seed or "")
-                             .classes(cls)
-                             .props(f'contenteditable=true data-ident="{ident}" data-qid="{qid}"')
-                             .tooltip("Edit inline for print fit, or open the larger editor "
-                                      "(⤢). Applies to all identical labels; does not change "
-                                      "the record."))
-                            # Larger editor: formatting toolbar + HTML source (#45).
-                            (ui.button(icon="open_in_full")
-                             .props("flat dense round size=xs")
-                             .classes("pq-box-toggle")
-                             .tooltip("Open larger editor (Bold / Italic toolbar + HTML source)")
-                             .on_click(lambda _, q=qid, h=html_seed or "": _open_label_dialog(q, h)))
-
-                    def _render_column(sp):
-                        with ui.element("div").classes("pq-prev-col"):
-                            if sp["data_qid"] is not None:
-                                _editable_box("data", sp)
-                            if sp["id_code"]:
-                                with ui.element("div").classes("pq-prev-label pq-prev-id"):
-                                    ui.label(sp["id_code"])
-                            if sp["det_qid"] is not None:
-                                _editable_box("det", sp)
-                            with ui.row().classes("pq-prev-ctl items-center gap-0 w-full"):
-                                if sp["co_id"]:
-                                    ui.button("", icon="open_in_new") \
-                                        .props("flat dense round size=xs") \
-                                        .tooltip("Open this specimen in Records (substantial edits)") \
-                                        .on_click(lambda _, c=sp["co_id"]: _open_in_records(c))
-                                ui.button("", icon="close") \
-                                    .props("flat dense round size=xs") \
-                                    .tooltip("Remove these labels from the queue") \
-                                    .on_click(lambda _, s=sp: _delete_column(s))
-
                     def _refresh_queue():
                         summary = _with_session(pq_svc.queue_summary)
                         queue_count_lbl.set_text(
@@ -2596,21 +2673,18 @@ def index():
                             f"{summary.n_identifier} id)"
                             if summary.total else "empty"
                         )
-                        model = _with_session(pq_svc.preview_model)
-                        preview_box.clear()
-                        with preview_box:
-                            if not model:
-                                ui.label("Nothing queued yet — labels are added automatically "
-                                         "when you save specimens or generate identifier codes.") \
-                                  .classes("text-sm italic").style("color:var(--tp-base-soft)")
-                                return
-                            with ui.element("div").classes("pq-prev"):
-                                for g in model:
-                                    with ui.element("div").classes("pq-prev-group"):
-                                        ui.label(g["source"] or "Queued labels").classes("pq-prev-src")
-                                        with ui.element("div").classes("pq-prev-cols"):
-                                            for sp in g["specimens"]:
-                                                _render_column(sp)
+                        if not summary.total:
+                            preview_box.set_content(
+                                '<div class="pq-prev-empty">Nothing queued yet — labels are '
+                                'added automatically when you save specimens or generate '
+                                'identifier codes.</div>')
+                            return
+                        # The REAL label sheet (same builder as the print PDF), editable and
+                        # scoped. What is shown is exactly what prints.
+                        preview_box.set_content(_with_session(pq_svc.preview_sheet))
+                        # Fit the A4 page to the preview width once it's in the DOM.
+                        ui.timer(0.05, lambda: ui.run_javascript(
+                            "window._pqFit && window._pqFit()"), once=True)
 
                     def _print_all():
                         summary = _with_session(pq_svc.queue_summary)
