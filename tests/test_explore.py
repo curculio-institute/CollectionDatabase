@@ -465,6 +465,39 @@ def test_not_group_excludes_and_is_null_safe(session):
     assert ex.query_specimens(session, flt) == []
 
 
+def test_null_facets_find_missing_values(session):
+    """#141: typing NULL suggests missing-value facets, and each matches records where
+    that field is NULL — incl. 'species: NULL' for genus-and-above determinations."""
+    fam = _taxon(session, "Curculionidae", "family")
+    gen = _taxon(session, "Otiorhynchus", "genus", parent=fam)
+    sp = _taxon(session, "Otiorhynchus sulcatus", "species", parent=gen)
+    jakob = _person(session, "Jakob Jilg")
+    de = ev_svc.create_collecting_event(session, country="Germany", locality="X",
+                                        recorded_by_id=jakob.id)
+    none_ev = ev_svc.create_collecting_event(session, locality="Y")   # no country, no collector
+    session.flush()
+    _specimen(session, sp, de, "A1")        # species-level ID, Germany, Jakob
+    _specimen(session, sp, none_ev, "A2")   # species-level ID, no country / no collector
+    _specimen(session, gen, none_ev, "G1")  # determined only to genus
+
+    # search_facets("NULL") offers the missing-value facets (all null-flagged)
+    nulls = ex.search_facets(session, "NULL")
+    assert all(f.null for f in nulls)
+    assert {f.kind for f in nulls} >= {"country", "collector", "identified_by",
+                                       "disposition", "species_null"}
+
+    def _cats(facet):
+        return {r.catalog for r in ex.query_specimens(session, [facet])}
+
+    assert _cats({"kind": "country", "key": None, "null": True}) == {"A2", "G1"}
+    assert _cats({"kind": "collector", "key": None, "null": True}) == {"A2", "G1"}
+    # species: NULL → only the genus-level determination
+    assert _cats({"kind": "species_null", "key": None, "null": True}) == {"G1"}
+    # NOT species:NULL → the species-level records
+    flt = [{"op": "not", "facets": [{"kind": "species_null", "key": None, "null": True}]}]
+    assert {r.catalog for r in ex.query_specimens(session, flt)} == {"A1", "A2"}
+
+
 def test_events_axis_groups_specimens(session):
     _fixture(session)
     evs = ex.events(session)

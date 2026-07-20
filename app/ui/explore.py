@@ -293,7 +293,7 @@ def build_explore_panel(session_factory, *, on_open_specimen, on_open_event) -> 
     # default; the user can add past determinations and/or the frozen verbatim text.
     state = {"groups": [{"op": "and", "facets": []}], "view": "taxa",
              "dash_compare": False, "dash_dates": None, "id_scope": {"current"}}
-    _PLACEHOLDER = "Search taxa, localities, collectors, collections…"
+    _PLACEHOLDER = "Search taxa, localities, collectors, collections — or type NULL for missing values…"
 
     def _all_facets():
         return [f for g in state["groups"] for f in g["facets"]]
@@ -346,7 +346,10 @@ def build_explore_panel(session_factory, *, on_open_specimen, on_open_event) -> 
         drop.style("display:block")
 
     def _add_chip(g, f):
-        g["facets"].append({"kind": f.kind, "label": f.label, "key": f.key, "tag": f.tag})
+        chip = {"kind": f.kind, "label": f.label, "key": f.key, "tag": f.tag}
+        if getattr(f, "null", False):
+            chip["null"] = True
+        g["facets"].append(chip)
         state["dash_dates"] = None       # a changed filter re-applies the smart date default
         _render_groups()
         _refresh()

@@ -143,6 +143,9 @@ def resolve(session: Session, fav: SavedSearch) -> dict:
     stale = 0
     for g in groups:
         for f in g.get("facets", []):
+            if f.get("null"):             # a "missing value" facet (#141): no entity → never stale
+                f["stale"] = False
+                continue
             if f["kind"] == "date":       # a value filter, not a DB entity → never stale
                 f["stale"] = False
                 continue

@@ -24,7 +24,7 @@ from app.models import (
     CollectionObject, CollectingEvent, TaxonDetermination, Taxon, Person,
     Country, StateProvince, County, Island, AdministrativeRegion, Repository,
 )
-from app.services.taxa import format_scientific_name, parse_scientific_name
+from app.services.taxa import format_scientific_name, parse_scientific_name, TAXON_RANKS
 from app.services.label_text import format_locality_label, format_place
 from app.services.biological import association_host as _assoc_host
 
@@ -40,6 +40,11 @@ _GEO_LABEL = {
     "country": "Country", "state_province": "State/province",
     "administrative_region": "Region", "county": "County", "island": "Island",
 }
+
+# The species group (species and everything below it) — a determination "to species" has
+# one of these ranks; "genus and above" is everything else. Drives the "species: NULL"
+# facet (#141): records identified only to genus-or-higher.
+_SPECIES_GROUP_RANKS = frozenset(TAXON_RANKS[TAXON_RANKS.index("species"):])
 
 # Ranks shown as their own stacked headers above the species rows (like a published
 # catalogue: superfamily / family / subfamily / tribe / subtribe / genus / subgenus).
@@ -75,10 +80,11 @@ def _species_epithet(t: Taxon) -> tuple[str, str]:
 
 @dataclass(frozen=True)
 class Facet:
-    kind: str          # taxon | country | state_province | … | collector
+    kind: str          # taxon | country | state_province | … | collector | species_null
     label: str         # display text (the value)
-    key: object        # taxon_id / vocab_id / person full_name
+    key: object        # taxon_id / vocab_id / person full_name (None for a NULL facet)
     tag: str           # category tag shown in the dropdown, e.g. "Genus", "Country"
+    null: bool = False # a "missing value" facet — matches records where this field IS NULL (#141)
 
 
 def search_facets(session: Session, term: str, limit: int = 25) -> list[Facet]:
@@ -89,6 +95,19 @@ def search_facets(session: Session, term: str, limit: int = 25) -> list[Facet]:
         return []
     toks = term.split()
     out: list[Facet] = []
+
+    # "NULL" → missing-value facets for every searchable non-taxonomy field, plus a
+    # "species: NULL" for records identified only to genus-and-above (#141). Offered
+    # whenever a token is exactly "null" (case-insensitive), first in the list.
+    if any(tok.lower() == "null" for tok in toks):
+        for kind in _GEO_FACETS:
+            out.append(Facet(kind, "NULL", None, _GEO_LABEL[kind], null=True))
+        out.append(Facet("collector", "NULL", None, "Collector", null=True))
+        out.append(Facet("identified_by", "NULL", None, "identified by", null=True))
+        out.append(Facet("collection", "NULL", None, "Collection", null=True))
+        out.append(Facet("disposition", "NULL", None, "Disposition", null=True))
+        out.append(Facet("species_null", "NULL", None, "Species", null=True))
+        return out
 
     # Taxa (accepted + synonyms) — tag with the rank.
     tq = session.query(Taxon)
@@ -235,9 +254,28 @@ def _apply_filters(session: Session, q, filters: list[dict], idx: dict[int, Taxo
         if t.parent_name_usage_id:
             children[t.parent_name_usage_id].append(t.id)
 
+    def _rank_ids(*, in_species_group: bool):
+        return [t.id for t in idx.values()
+                if ((t.taxon_rank or "") in _SPECIES_GROUP_RANKS) == in_species_group]
+
     def _clause(f):
         kind = f["kind"]
         key = f.get("key")
+        if f.get("null"):                          # a "missing value" facet (#141): field IS NULL
+            if kind in _GEO_FACETS:
+                _m, attr = _GEO_FACETS[kind]
+                return getattr(CollectingEvent, attr).is_(None)
+            if kind == "collector":
+                return CollectingEvent.recorded_by_id.is_(None)
+            if kind == "identified_by":
+                return TaxonDetermination.identified_by_id.is_(None)
+            if kind == "collection":
+                return CollectionObject.repository_id.is_(None)
+            if kind == "disposition":
+                return CollectionObject.disposition_id.is_(None)
+            if kind == "species_null":             # identified only to genus-and-above
+                return TaxonDetermination.taxon_id.in_(_rank_ids(in_species_group=False))
+            return None
         if kind == "taxon":
             ids = _descendant_ids(int(key), children)
             # Which determinations the taxon filter searches (#137): the CURRENT one
@@ -299,6 +337,21 @@ def _apply_filters(session: Session, q, filters: list[dict], idx: dict[int, Taxo
         ``NOT EXISTS``."""
         kind = f["kind"]
         key = f.get("key")
+        if f.get("null"):                          # NOT missing → the field HAS a value
+            if kind in _GEO_FACETS:
+                _m, attr = _GEO_FACETS[kind]
+                return getattr(CollectingEvent, attr).isnot(None)
+            if kind == "collector":
+                return CollectingEvent.recorded_by_id.isnot(None)
+            if kind == "identified_by":
+                return TaxonDetermination.identified_by_id.isnot(None)
+            if kind == "collection":
+                return CollectionObject.repository_id.isnot(None)
+            if kind == "disposition":
+                return CollectionObject.disposition_id.isnot(None)
+            if kind == "species_null":             # has a species-level determination
+                return TaxonDetermination.taxon_id.in_(_rank_ids(in_species_group=True))
+            return None
         if kind == "taxon":
             ids = _descendant_ids(int(key), children)
             negs = []                              # NOT(current OR past OR verbatim)
