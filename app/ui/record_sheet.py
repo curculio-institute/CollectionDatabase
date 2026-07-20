@@ -208,9 +208,11 @@ def _co_summary(session, co) -> dict:
     }
 
 
-def build_event_sheet(session_factory, ev_id: int, *, on_edit, on_open_specimen=None) -> None:
+def build_event_sheet(session_factory, ev_id: int, *, on_edit, on_open_specimen=None,
+                      on_open_event=None) -> None:
     """Read-only collecting-event sheet: the place (map + habitat media) and the specimens
     collected there, each linking to its own record."""
+    import app.services.events as ev_svc
     ui.add_head_html(rs.CSS)
     ui.add_head_html(CSS)
     add_map_assets()
@@ -243,12 +245,14 @@ def build_event_sheet(session_factory, ev_id: int, *, on_edit, on_open_specimen=
         }
         media = _media_items(s, "collecting_event", ev_id, "Event")
         specimens = [_co_summary(s, co) for co in ev.collection_objects]
+        nearby = ev_svc.nearest_events(s, ev_id, n=5)
 
-    _render_event(place, ev_data, detail, media, specimens,
-                  on_edit=on_edit, on_open_specimen=on_open_specimen)
+    _render_event(place, ev_data, detail, media, specimens, nearby,
+                  on_edit=on_edit, on_open_specimen=on_open_specimen, on_open_event=on_open_event)
 
 
-def _render_event(place, ev, detail, media, specimens, *, on_edit, on_open_specimen) -> None:
+def _render_event(place, ev, detail, media, specimens, nearby, *,
+                  on_edit, on_open_specimen, on_open_event) -> None:
     # ── locality banner ──
     with ui.card().classes("w-full shadow-sm"):
         with ui.row().classes("items-start gap-3 w-full no-wrap"):
@@ -295,6 +299,19 @@ def _render_event(place, ev, detail, media, specimens, *, on_edit, on_open_speci
                 with ui.card().classes("w-full shadow-sm"):
                     ui.html('<div class="rsheet-hd">Details</div>')
                     _grid(detail)
+            if nearby:
+                with ui.card().classes("w-full shadow-sm"):
+                    ui.html('<div class="rsheet-hd">Nearby events</div>')
+                    for e in nearby:
+                        km = e["distance_m"] / 1000
+                        dist = f"{e['distance_m']:.0f} m" if km < 1 else f"{km:.1f} km"
+                        row = ui.element("div").classes("ex-spec-row w-full")
+                        with row:
+                            ui.html(f'<div style="font-size:.85rem">{_html.escape(e["label"])}'
+                                    f'</div><div class="rsheet-muted">{dist} away · '
+                                    f'{e["n_specimens"]} specimen(s)</div>')
+                        if on_open_event:
+                            row.on("click", lambda _, i=e["id"]: on_open_event(i))
 
 
 def _render_specimen(ident, curatorial, det_hist, assocs, life_stages, ext_ids, media,

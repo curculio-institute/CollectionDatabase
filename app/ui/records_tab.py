@@ -392,7 +392,8 @@ def build_records_tab(session_factory, *, on_saved: callable | None = None) -> N
                 record_sheet.build_event_sheet(
                     session_factory, ev_id,
                     on_edit=lambda eid=ev_id: _load_event(eid, edit=True),
-                    on_open_specimen=_open_specimen)
+                    on_open_specimen=_open_specimen,
+                    on_open_event=_open_event)
             return
 
         with session_factory() as s:

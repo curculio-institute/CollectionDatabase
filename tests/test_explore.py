@@ -184,6 +184,22 @@ def test_date_range_filter(session):
     assert {r.catalog for r in ex.query_specimens(session, flt)} == {"A1"}
 
 
+def test_nearest_events_by_distance(session):
+    """#137: the event page's nearest-events list is ordered by great-circle distance,
+    only over events that carry coordinates, excluding the event itself."""
+    here = ev_svc.create_collecting_event(session, country="Germany", locality="Here",
+                                          decimal_latitude=48.0, decimal_longitude=11.0)
+    near = ev_svc.create_collecting_event(session, country="Germany", locality="Near",
+                                          decimal_latitude=48.1, decimal_longitude=11.0)
+    far = ev_svc.create_collecting_event(session, country="Germany", locality="Far",
+                                         decimal_latitude=49.0, decimal_longitude=11.0)
+    ev_svc.create_collecting_event(session, country="Germany", locality="NoCoords")  # excluded
+    session.flush()
+    out = ev_svc.nearest_events(session, here.id, n=5)
+    assert [o["id"] for o in out] == [near.id, far.id]          # order by distance, self excluded
+    assert out[0]["distance_m"] < out[1]["distance_m"]
+
+
 def test_id_scope_current_past_verbatim(session):
     """#137: the taxon filter searches the current determination by default; `past` also
     matches historical determinations; `verbatim` matches the frozen name text."""

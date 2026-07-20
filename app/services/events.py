@@ -228,6 +228,47 @@ def count_co_at_event(session: Session, event_id: int) -> int:
     return session.query(_CO).filter(_CO.collecting_event_id == event_id).count()
 
 
+def _haversine_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    """Great-circle distance in metres between two lat/lon points."""
+    import math
+    r = 6371000.0
+    p1, p2 = math.radians(lat1), math.radians(lat2)
+    dphi = math.radians(lat2 - lat1)
+    dlmb = math.radians(lon2 - lon1)
+    a = math.sin(dphi / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dlmb / 2) ** 2
+    return 2 * r * math.asin(math.sqrt(a))
+
+
+def nearest_events(session: Session, event_id: int, n: int = 5) -> list[dict]:
+    """The ``n`` geographically closest OTHER collecting events (both must have coordinates).
+
+    Returns ``[{id, label, distance_m, n_specimens}, …]`` nearest first. SQLite has no
+    spatial functions, but the event count is small enough that a haversine over every
+    coordinate-bearing event and a sort is instant.
+    """
+    ev = session.get(CollectingEvent, event_id)
+    if ev is None or ev.decimal_latitude is None or ev.decimal_longitude is None:
+        return []
+    lat0, lon0 = ev.decimal_latitude, ev.decimal_longitude
+    others = (session.query(CollectingEvent)
+              .filter(CollectingEvent.id != event_id,
+                      CollectingEvent.decimal_latitude.isnot(None),
+                      CollectingEvent.decimal_longitude.isnot(None))
+              .all())
+    scored = sorted(
+        ((_haversine_m(lat0, lon0, o.decimal_latitude, o.decimal_longitude), o) for o in others),
+        key=lambda t: t[0])
+    out = []
+    for dist, o in scored[:n]:
+        out.append({
+            "id": o.id,
+            "label": format_locality_label(o) or f"Event #{o.id}",
+            "distance_m": dist,
+            "n_specimens": count_co_at_event(session, o.id),
+        })
+    return out
+
+
 def copy_and_relink_event(session: Session, co_id: int) -> int:
     """Copy the collecting event linked to co_id, relink only this specimen.
 
