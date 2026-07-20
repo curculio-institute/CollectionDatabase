@@ -289,8 +289,10 @@ def build_explore_panel(session_factory, *, on_open_specimen, on_open_event) -> 
     # Facets within a group combine by its op (AND/OR); the groups combine by AND.
     # dash_compare: plot each group as its own cohort/series (needs ≥2 groups).
     # dash_dates: which date axes to plot; None = the role-based auto default.
+    # id_scope: which determinations the taxon filter searches (#137) — current only by
+    # default; the user can add past determinations and/or the frozen verbatim text.
     state = {"groups": [{"op": "and", "facets": []}], "view": "taxa",
-             "dash_compare": False, "dash_dates": None}
+             "dash_compare": False, "dash_dates": None, "id_scope": {"current"}}
     _PLACEHOLDER = "Search taxa, localities, collectors, collections…"
 
     def _all_facets():
@@ -415,34 +417,65 @@ def build_explore_panel(session_factory, *, on_open_specimen, on_open_event) -> 
         dispositions = _with(lambda s: [(d.id, d.name)
                                         for d in vocabs.disposition_vocab.list(s)])
         dlg = ui.dialog()
-        with dlg, ui.card().classes("gap-2").style("min-width:340px"):
+        with dlg, ui.card().classes("gap-2").style("min-width:380px"):
             ui.label("Extra filters").classes("text-sm font-medium")
+            # ── disposition include/exclude (adds a chip to this search) ──
             ui.html('<div class="ex-tag" style="background:none;padding:0">Disposition</div>')
             if not dispositions:
                 ui.label("No dispositions defined yet.").classes("text-xs italic") \
                     .style("color:var(--tp-base-soft)")
             else:
-                sel = ui.select({did: name for did, name in dispositions}, label="Disposition") \
-                    .props("dense outlined").classes("w-full")
-                mode = ui.toggle({"include": "Include", "exclude": "Exclude"}, value="include") \
-                    .props("dense no-caps unelevated")
+                with ui.row().classes("items-center gap-2 w-full no-wrap"):
+                    sel = ui.select({did: name for did, name in dispositions}, label="Disposition") \
+                        .props("dense outlined").classes("flex-1")
+                    mode = ui.toggle({"include": "Include", "exclude": "Exclude"},
+                                     value="include").props("dense no-caps unelevated")
 
-                def _add_disp():
-                    if sel.value is None:
-                        ui.notify("Pick a disposition.", type="warning")
-                        return
-                    name = dict(dispositions)[sel.value]
-                    excl = mode.value == "exclude"
-                    g["facets"].append({
-                        "kind": "disposition", "key": sel.value, "exclude": excl,
-                        "label": (f"≠ {name}" if excl else name), "tag": "Disposition"})
-                    state["dash_dates"] = None
-                    _render_groups()
-                    _refresh()
-                    dlg.close()
-                with ui.row().classes("justify-end w-full gap-2"):
-                    ui.button("Cancel", on_click=dlg.close).props("flat dense no-caps")
-                    ui.button("Add filter", on_click=_add_disp).props("dense no-caps unelevated")
+                    def _add_disp():
+                        if sel.value is None:
+                            ui.notify("Pick a disposition.", type="warning")
+                            return
+                        name = dict(dispositions)[sel.value]
+                        excl = mode.value == "exclude"
+                        g["facets"].append({
+                            "kind": "disposition", "key": sel.value, "exclude": excl,
+                            "label": (f"≠ {name}" if excl else name), "tag": "Disposition"})
+                        state["dash_dates"] = None
+                        _render_groups()
+                        _refresh()
+                        ui.notify("Filter added.", type="positive")
+                    ui.button(icon="add", on_click=_add_disp).props("dense round unelevated") \
+                        .tooltip("Add this disposition filter")
+            ui.separator()
+            # ── identification scope (global) — make the selections, then Apply. Applying
+            # live closed nothing but made "only past" impossible to set (the never-empty
+            # guard re-checked current before you could uncheck it). ──
+            ui.html('<div class="ex-tag" style="background:none;padding:0">'
+                    'Which identifications to search / retrieve</div>')
+            local_scope = set(state["id_scope"])
+            chks = {}
+            for label, key in (("Current identification (default)", "current"),
+                               ("Past identifications (any determination)", "past"),
+                               ("Verbatim (name as originally written)", "verbatim")):
+                c = ui.checkbox(label, value=(key in local_scope)).props("dense")
+                c.on_value_change(lambda e, k=key: (local_scope.add(k) if e.value
+                                                    else local_scope.discard(k)))
+                chks[key] = c
+
+            def _apply_scope():
+                if not local_scope:
+                    ui.notify("Select at least one identification scope.", type="warning")
+                    return
+                state["id_scope"] = set(local_scope)
+                _render_groups()   # show/update the global scope chip
+                _refresh()
+                ui.notify("Identification scope applied.", type="positive")
+            with ui.row().classes("items-center w-full"):
+                ui.button("Apply scope", icon="add", on_click=_apply_scope) \
+                    .props("dense no-caps unelevated") \
+                    .tooltip("Apply the identification scope")
+                ui.space()
+                ui.button("Close", on_click=dlg.close).props("flat dense no-caps")
         dlg.on_value_change(lambda e: dlg.delete() if not e.value else None)
         dlg.open()
 
@@ -508,6 +541,11 @@ def build_explore_panel(session_factory, *, on_open_specimen, on_open_event) -> 
                                      "AND: match every filter · OR: match any filter")
                         tog.on_value_change(lambda e, gg=g: _set_op(gg, e.value))
 
+    def _reset_scope():
+        state["id_scope"] = {"current"}
+        _render_groups()
+        _refresh()
+
     def _render_groups():
         groups_box.clear()
         with groups_box:
@@ -521,6 +559,19 @@ def build_explore_panel(session_factory, *, on_open_specimen, on_open_event) -> 
                     .tooltip("Stack another search — combined with AND")
                 if _all_facets():
                     ui.button("Clear all", on_click=_clear_all).props("flat dense no-caps size=sm")
+            # Non-default identification scope is a global setting — surface it as a chip so
+            # it's never a silent modifier (#137).
+            if state["id_scope"] != {"current"}:
+                names = {"current": "current", "past": "past IDs", "verbatim": "verbatim"}
+                shown = " + ".join(names[k] for k in ("current", "past", "verbatim")
+                                   if k in state["id_scope"])
+                with ui.row().classes("items-center gap-2 mt-2"):
+                    chip = ui.element("div").classes("ex-chip")
+                    with chip:
+                        ui.html('<span class="ex-tag">Identifications</span>'
+                                f'<span>{_html.escape(shown)}</span>')
+                        ui.html('<span class="ex-x" title="Reset to current only">✕</span>') \
+                            .on("click", lambda: _reset_scope())
 
     # ── results ───────────────────────────────────────────────────────────
     def _lot_line(lot) -> str:
@@ -686,10 +737,10 @@ def build_explore_panel(session_factory, *, on_open_specimen, on_open_event) -> 
         # otherwise the single combined set.
         if compare:
             cohorts = [(_group_label(g),
-                        _with(lambda s, gg=g: ex_svc.dashboard(s, [gg])))
+                        _with(lambda s, gg=g: ex_svc.dashboard(s, [gg], id_scope=state["id_scope"])))
                        for g in groups_with_facets]
         else:
-            cohorts = [(None, _with(lambda s: ex_svc.dashboard(s, state["groups"])))]
+            cohorts = [(None, _with(lambda s: ex_svc.dashboard(s, state["groups"], id_scope=state["id_scope"])))]
 
         # ── controls ──
         with ui.row().classes("items-center gap-4 mt-2 w-full"):
@@ -824,11 +875,11 @@ def build_explore_panel(session_factory, *, on_open_specimen, on_open_event) -> 
             # each search is its own cohort; the AND-combined total would read 0 for
             # disjoint searches, so show per-search specimen counts instead.
             parts = [f"{_group_label(g)}: "
-                     f"{_with(lambda s, gg=g: ex_svc.counts(s, [gg]))['specimens']}"
+                     f"{_with(lambda s, gg=g: ex_svc.counts(s, [gg], id_scope=state["id_scope"]))['specimens']}"
                      for g in groups_with_facets]
             count_lbl.set_text("Comparing — " + "  ·  ".join(parts))
         else:
-            c = _with(lambda s: ex_svc.counts(s, flt))
+            c = _with(lambda s: ex_svc.counts(s, flt, id_scope=state["id_scope"]))
             def _n(n, one, many):        # singular for 0 or 1, plural for ≥2
                 return f"{n} {one if n <= 1 else many}"
             count_lbl.set_text(
@@ -840,11 +891,11 @@ def build_explore_panel(session_factory, *, on_open_specimen, on_open_event) -> 
         results.clear()
         with results:
             if state["view"] == "taxa":
-                _render_taxa(_with(lambda s: ex_svc.checklist(s, flt)))
+                _render_taxa(_with(lambda s: ex_svc.checklist(s, flt, id_scope=state["id_scope"])))
             elif state["view"] == "specimens":
-                _render_specimens(_with(lambda s: ex_svc.query_specimens(s, flt)))
+                _render_specimens(_with(lambda s: ex_svc.query_specimens(s, flt, id_scope=state["id_scope"])))
             elif state["view"] == "events":
-                _render_events(_with(lambda s: ex_svc.events(s, flt)))
+                _render_events(_with(lambda s: ex_svc.events(s, flt, id_scope=state["id_scope"])))
             else:
                 _render_dashboard()   # fetches its own cohorts (combined or per-search)
 
@@ -863,7 +914,7 @@ def build_explore_panel(session_factory, *, on_open_specimen, on_open_event) -> 
     dashboard_btn.on_click(lambda: _set_view("dashboard"))
 
     def _export():
-        rows = _with(lambda s: ex_svc.query_specimens(s, state["groups"]))
+        rows = _with(lambda s: ex_svc.query_specimens(s, state["groups"], id_scope=state["id_scope"]))
         ui.download(ex_svc.to_csv(rows), filename="collection_export.csv", media_type="text/csv")
     csv_btn.on_click(_export)
 

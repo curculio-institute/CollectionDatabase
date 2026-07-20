@@ -17,8 +17,8 @@ import io
 from collections import defaultdict
 from dataclasses import dataclass, field
 
-from sqlalchemy import func, and_, or_, false
-from sqlalchemy.orm import Session, joinedload
+from sqlalchemy import func, and_, or_, false, exists
+from sqlalchemy.orm import Session, joinedload, aliased
 
 from app.models import (
     CollectionObject, CollectingEvent, TaxonDetermination, Taxon, Person,
@@ -210,7 +210,7 @@ def _as_groups(filters: list[dict] | None, combine: str) -> list[dict]:
 
 
 def _apply_filters(session: Session, q, filters: list[dict], idx: dict[int, Taxon],
-                   *, combine: str = "and"):
+                   *, combine: str = "and", id_scope=("current",)):
     """Apply facet filters to a query over (CollectionObject join det/event).
 
     Filters are a list of **groups**; each facet is its own clause. Within a group the
@@ -238,7 +238,25 @@ def _apply_filters(session: Session, q, filters: list[dict], idx: dict[int, Taxo
         kind = f["kind"]
         key = f.get("key")
         if kind == "taxon":
-            return TaxonDetermination.taxon_id.in_(_descendant_ids(int(key), children))
+            ids = _descendant_ids(int(key), children)
+            # Which determinations the taxon filter searches (#137): the CURRENT one
+            # (default), ANY past determination, and/or the frozen verbatim text.
+            conds = []
+            if "current" in id_scope:                 # the joined current determination
+                conds.append(TaxonDetermination.taxon_id.in_(ids))
+            if "past" in id_scope:                    # any determination, not just current
+                td = aliased(TaxonDetermination)
+                conds.append(exists().where(and_(
+                    td.collection_object_id == CollectionObject.id, td.taxon_id.in_(ids))))
+            if "verbatim" in id_scope:                # the frozen verbatimIdentification text
+                t = idx.get(int(key))
+                name = t.scientific_name if t else None
+                if name:
+                    tdv = aliased(TaxonDetermination)
+                    conds.append(exists().where(and_(
+                        tdv.collection_object_id == CollectionObject.id,
+                        tdv.verbatim_identification.ilike(f"%{name}%"))))
+            return or_(*conds) if conds else false()
         if kind in _GEO_FACETS:
             _model, attr = _GEO_FACETS[kind]
             return getattr(CollectingEvent, attr) == int(key)
@@ -285,9 +303,11 @@ def _apply_filters(session: Session, q, filters: list[dict], idx: dict[int, Taxo
 
 
 def query_specimens(session: Session, filters: list[dict] | None = None,
-                    *, combine: str = "and") -> list[SpecimenRow]:
+                    *, combine: str = "and", id_scope=("current",)) -> list[SpecimenRow]:
     """Specimens matching the facet filters, with display fields for list/map/CSV.
-    ``combine`` ("and"/"or") is how facets of different kinds combine (#135)."""
+    ``combine`` ("and"/"or") is how facets of different kinds combine (#135); ``id_scope``
+    is which determinations the taxon filter searches (current / past / verbatim, #137).
+    The DISPLAYED determination is always the current one regardless of scope."""
     filters = filters or []
     idx = _taxon_index(session)
     q = (
@@ -299,7 +319,24 @@ def query_specimens(session: Session, filters: list[dict] | None = None,
         .outerjoin(CollectingEvent, CollectingEvent.id == CollectionObject.collecting_event_id)
         .outerjoin(Person, Person.id == CollectingEvent.recorded_by_id)
     )
-    q = _apply_filters(session, q, filters, idx, combine=combine)
+    q = _apply_filters(session, q, filters, idx, combine=combine, id_scope=id_scope)
+    # Identification-scope requirement (#137): with 'current' unselected, restrict to records
+    # that actually HAVE an identification of the chosen kind(s) — "only past" → only
+    # re-identified records. 'current' is permissive (imposes nothing), so the default still
+    # shows every specimen, undetermined ones included.
+    if "current" not in id_scope:
+        reqs = []
+        if "past" in id_scope:
+            tdp = aliased(TaxonDetermination)
+            reqs.append(exists().where(and_(
+                tdp.collection_object_id == CollectionObject.id, tdp.is_current == 0)))
+        if "verbatim" in id_scope:
+            tdv = aliased(TaxonDetermination)
+            reqs.append(exists().where(and_(
+                tdv.collection_object_id == CollectionObject.id,
+                tdv.verbatim_identification.isnot(None))))
+        if reqs:
+            q = q.filter(or_(*reqs))
     q = q.order_by(CollectionObject.id.desc())
 
     rows: list[SpecimenRow] = []
@@ -415,11 +452,11 @@ def _group_lots(lots: list[SpecimenRow]) -> list[LotGroup]:
 
 
 def checklist(session: Session, filters: list[dict] | None = None,
-              *, combine: str = "and") -> list[ChecklistGroup]:
+              *, combine: str = "and", id_scope=("current",)) -> list[ChecklistGroup]:
     """Matching specimens grouped under their taxonomy in drawer order: a list of
     genus groups (each carrying the family→genus header path) with species rows +
     their lots. Mirrors the Käfersammlung layout."""
-    rows = query_specimens(session, filters, combine=combine)
+    rows = query_specimens(session, filters, combine=combine, id_scope=id_scope)
     idx = _taxon_index(session)
 
     # Group lots by the taxon they were determined as.
@@ -498,9 +535,9 @@ class EventGroup:
 
 
 def events(session: Session, filters: list[dict] | None = None,
-           *, combine: str = "and") -> list[EventGroup]:
+           *, combine: str = "and", id_scope=("current",)) -> list[EventGroup]:
     """Collecting events whose specimens match the filters, each with its lots."""
-    rows = query_specimens(session, filters, combine=combine)
+    rows = query_specimens(session, filters, combine=combine, id_scope=id_scope)
     by_event: dict[int | None, list[SpecimenRow]] = defaultdict(list)
     for r in rows:
         by_event[r.event_id].append(r)
@@ -543,12 +580,12 @@ _SPECIES_GROUP_RANKS = frozenset({"species", "subspecies"})
 
 
 def counts(session: Session, filters: list[dict] | None = None,
-           *, combine: str = "and") -> dict:
+           *, combine: str = "and", id_scope=("current",)) -> dict:
     """Headline counts for the current filter set.
 
     ``species_group`` = distinct species/subspecies determinations (genus/subgenus-level
     determinations are excluded); ``georeferenced`` = specimens carrying coordinates."""
-    rows = query_specimens(session, filters, combine=combine)
+    rows = query_specimens(session, filters, combine=combine, id_scope=id_scope)
     return {
         "specimens": len(rows),
         "species_group": len({
@@ -624,9 +661,9 @@ def _accumulate(first_seen: dict[int, int]) -> list[tuple[int, int]]:
 
 
 def dashboard(session: Session, filters: list[dict] | None = None,
-              *, combine: str = "and", host_limit: int = 15) -> Dashboard:
+              *, combine: str = "and", id_scope=("current",), host_limit: int = 15) -> Dashboard:
     """Build the dashboard series for the specimens matching ``filters``."""
-    rows = query_specimens(session, filters, combine=combine)
+    rows = query_specimens(session, filters, combine=combine, id_scope=id_scope)
     coll_year: dict[int, int] = defaultdict(int)
     ident_year: dict[int, int] = defaultdict(int)
     phenology = [0] * 12

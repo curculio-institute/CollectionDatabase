@@ -184,6 +184,37 @@ def test_date_range_filter(session):
     assert {r.catalog for r in ex.query_specimens(session, flt)} == {"A1"}
 
 
+def test_id_scope_current_past_verbatim(session):
+    """#137: the taxon filter searches the current determination by default; `past` also
+    matches historical determinations; `verbatim` matches the frozen name text."""
+    fam = _taxon(session, "Curculionidae", "family")
+    gen = _taxon(session, "Otiorhynchus", "genus", parent=fam)
+    spA = _taxon(session, "Otiorhynchus sulcatus", "species", parent=gen)
+    spB = _taxon(session, "Otiorhynchus iratus", "species", parent=gen)
+    ev = ev_svc.create_collecting_event(session, country="Germany", locality="X")
+    session.flush()
+    co = _specimen(session, spA, ev, "A1")               # current determination = sulcatus
+    session.add(TaxonDetermination(                       # a past (non-current) det = iratus
+        collection_object_id=co.id, taxon_id=spB.id, is_current=0,
+        verbatim_identification="Otiorhynchus iratus Muller, 1900",
+        created_at=_utcnow(), updated_at=_utcnow()))
+    session.flush()
+
+    _specimen(session, spA, ev, "A2")                    # a plain record, current det only
+    session.flush()
+
+    flt = [{"kind": "taxon", "key": spB.id}]              # search for iratus
+    assert ex.query_specimens(session, flt) == []                                  # current only → miss
+    assert {r.catalog for r in ex.query_specimens(session, flt, id_scope=("current", "past"))} == {"A1"}
+    assert {r.catalog for r in ex.query_specimens(session, flt, id_scope=("current", "verbatim"))} == {"A1"}
+
+    # Scope also FILTERS retrieval: only-past → only records that HAVE a past identification,
+    # regardless of taxon filter. A1 was re-identified; A2 was not.
+    assert {r.catalog for r in ex.query_specimens(session, [], id_scope=("past",))} == {"A1"}
+    # the default (current) is permissive — every record shows.
+    assert {r.catalog for r in ex.query_specimens(session, [])} == {"A1", "A2"}
+
+
 def test_disposition_filter_include_and_exclude(session):
     """#137: a disposition facet includes or excludes a holding status; exclude also keeps
     specimens that have no disposition."""
