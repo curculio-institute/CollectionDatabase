@@ -24,11 +24,15 @@ Search taxon names, import them with synonymy status, authorship and their paren
 - The database is snapshotted at every launch and checked for corruption before the app serves a page. A warning appears whenever a form holds unsaved data.
 #### Workflows
 - **Specimen Digitization**: Digitize Specimens based on the Darwin Core Format
-- **Mounting Session**: Stage several specimens that share a collecting event and print their labels in one go
-- **Digitize other Collection**: Record specimens from a foreign collection, e.g. during a museum visit
+    - Standard: For specimens that have labels but are not databased yet. Can use pre-printed catalog number labels.
+    - Mounting session: For specimens that have no labels, labels will be sent to print queue. Aimed at workflows that involve several specimens from one collecting event.
+    - Digitize other collection: For specimens at other collections, or loaned material. Can use any catalog number format.
+- **Records**: View and edit records 
+- **Explore**: Filter your dataset based on sets of AND/OR/NOT filters. View/compare the filtered results in various formats or download a spreadsheet. You can also open specimens or events in "Records".
 - **Import & Assign**: Assign unique identifier labels to a collection that was digitized without unique identifiers for specimens
 - **Explore**: Browse the collection as a taxonomic checklist, search it by taxon, geography or collector, and export the result
 - **Batch tools**: Apply one change (e.g. a disposition, or a move to another collection) to many specimens at once
+- **Labels**: Print labels and generate catalogue numbers
 #### Media and other attachments
 - Add media files (images, sound, video, documents, sequences) to collecting events, specimens and biological associations. Files are copied into a managed folder, so the original may be moved or deleted afterwards.
 - Link a specimen to an external resource, e.g. an iNaturalist observation.
