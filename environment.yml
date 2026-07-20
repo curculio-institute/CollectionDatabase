@@ -12,6 +12,10 @@ dependencies:
   - pip:
       - nicegui==2.*
       - weasyprint==69.*
+      # Chromium label-PDF backend (app/services/pdf_backend.py). The pip package is
+      # declared here; the browser binary is fetched once by run.py on first launch
+      # (`playwright install chromium-headless-shell`) — it is not a pip/conda artifact.
+      - playwright==1.*
       - qrcode[pil]==8.*
       - pycountry==26.*
       # Geo mirror → GeoPackage for QGIS (app/services/geo_mirror.py). pyogrio ships GDAL

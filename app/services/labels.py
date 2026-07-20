@@ -815,12 +815,16 @@ def _grouped_html(groups: list[LabelGroup], printed_at: str,
 
 def grouped_sheet(groups: list[LabelGroup], printed_at: str,
                   names: dict[str, str] | None = None,
-                  borders: dict[str, str] | None = None) -> bytes:
+                  borders: dict[str, str] | None = None,
+                  backend: str = "weasyprint") -> bytes:
     """Render queued labels as a grouped, column-aligned sheet (see module note).
 
     ``names`` maps collection code → full name for the identifier band (#56).
     ``borders`` maps ``"data"``/``"determination"``/``"identifier"`` → ``"black"``
-    | ``"none"`` (AppConfig.label_border_*); default black."""
-    return HTML(string=_grouped_html(groups, printed_at, names, borders)).write_pdf()
+    | ``"none"`` (AppConfig.label_border_*); default black.
+    ``backend`` selects the renderer (``"weasyprint"`` | ``"chromium"``); the HTML
+    is identical either way (see ``pdf_backend.render_pdf``)."""
+    from app.services.pdf_backend import render_pdf
+    return render_pdf(_grouped_html(groups, printed_at, names, borders), backend)
 
 
