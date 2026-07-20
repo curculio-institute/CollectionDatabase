@@ -91,6 +91,15 @@ _FONT_FACE_CSS = "\n".join((
     _font_face("italic", "400", "FiraSansCompressed-Italic.ttf"),
     _font_face("italic", "700", "FiraSansCompressed-BoldItalic.ttf"),
 )) + "\n"
+
+# Text-metric rules that make every backend lay out identically. Chromium auto-applies
+# text-rendering:optimizeSpeed at these micro sizes, which DISABLES kerning — glyphs then
+# use default advance widths and spread out (e.g. "48.320 0"), so a Chromium label came
+# out wider (and wrapped differently) than the same WeasyPrint label. geometricPrecision
+# forces kerning on regardless of size; font-kerning:normal states it explicitly. Applied
+# to both the render CSS and the fit-measurement CSS so the width WeasyPrint measures is
+# the width every backend prints. WeasyPrint already kerns, so these are no-ops for it.
+_TEXT_METRICS = "text-rendering: geometricPrecision; font-kerning: normal;"
 _LINE_H     = "1.41mm"   # 0.0555 in
 _PAD        = "0.19mm 0.53mm"   # top/bottom  left/right
 # Gap between neighbouring labels on the grouped sheet — matched to the mybioform
@@ -117,7 +126,8 @@ def _border_rule(choice: str) -> str:
 _BASE_CSS = _FONT_FACE_CSS + f"""
 @page {{ size: A4; margin: 5mm; }}
 * {{ box-sizing: border-box; margin: 0; padding: 0; }}
-body {{ font-family: {_FONT}; font-size: {_FONT_SIZE}; line-height: {_LINE_H}; }}
+body {{ font-family: {_FONT}; font-size: {_FONT_SIZE}; line-height: {_LINE_H};
+       {_TEXT_METRICS} }}
 /* Block flow with inline-block items (not flex): flex containers do not
    fragment across pages in WeasyPrint, which wasted page 1 on any multi-page
    sheet. Block flow lays items left-to-right, wraps, AND paginates. */
@@ -501,7 +511,8 @@ def _det_name_html(lbl: DeterminationLabel) -> str:
 _FIT_CSS = _FONT_FACE_CSS + f"""
 @page {{ size: 60mm 60mm; margin: 0; }}
 * {{ box-sizing: border-box; margin: 0; padding: 0; }}
-body {{ font-family: {_FONT}; font-size: {_FONT_SIZE}; line-height: {_LINE_H}; }}
+body {{ font-family: {_FONT}; font-size: {_FONT_SIZE}; line-height: {_LINE_H};
+       {_TEXT_METRICS} }}
 .m {{ width: {_W}; padding: {_PAD}; }}
 """
 
