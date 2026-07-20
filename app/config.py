@@ -59,7 +59,7 @@ class AppConfig:
 
     # Printed-label borders, per label type. "black" → a thin solid cut-guide line
     # around each label; "none" → no border. Independent per type so the user can,
-    # e.g., border identifier labels but not data labels. See labels._border_rule.
+    # e.g., border identifier labels but not data labels. See labels._border_decl.
     label_border_data: str = "black"
     label_border_determination: str = "black"
     label_border_identifier: str = "black"

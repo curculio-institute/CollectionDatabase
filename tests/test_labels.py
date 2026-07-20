@@ -248,7 +248,7 @@ def test_event_preview_includes_db_id():
 # Identifier redesign + per-type borders + touching layout (2026-07-07)
 # ---------------------------------------------------------------------------
 from app.services.labels import (  # noqa: E402
-    _id_label_inner, _border_rule, _grouped_css,
+    _id_label_inner, _border_decl, _grouped_css,
 )
 
 
@@ -277,17 +277,20 @@ def test_identifier_legacy_code_without_hyphen():
     assert 'class="id-number"' in html and ">abcd</div>" in html
 
 
-def test_border_rule_choices():
-    assert _border_rule("black") == "0.1mm solid #000"
-    assert _border_rule("none") == "none"
-    assert _border_rule("anything-else") == "none"
+def test_border_decl_choices():
+    # WeasyPrint: a real 0.1mm border; "none"/anything else → no line (empty decl).
+    assert _border_decl("black") == "border: 0.1mm solid #000;"
+    assert _border_decl("none") == ""
+    assert _border_decl("anything-else") == ""
+    # Chromium floors a border to 1 device px, so the hairline is an inset box-shadow.
+    assert _border_decl("black", "chromium") == "box-shadow: inset 0 0 0 0.1mm #000;"
+    assert _border_decl("none", "chromium") == ""
 
 
 def test_grouped_css_threads_per_type_borders():
     css = _grouped_css({"data": "none", "determination": "black", "identifier": "black"})
-    # data band → no border; det + id bands → solid black.
-    assert ".lbl-data {" in css and "border: none;" in css
-    assert "0.1mm solid #000" in css                     # det/id borders present
+    # data band → no border; det + id bands → solid black (WeasyPrint default backend).
+    assert css.count("0.1mm solid #000") == 2            # only det + id, not data
     # labels within a group are separated by a small gap (each its own border),
     # small enough for one cut per edge — not touching (bordered labels need space).
     assert "border-collapse: separate;" in css
@@ -296,8 +299,14 @@ def test_grouped_css_threads_per_type_borders():
 
 def test_grouped_css_default_is_black_everywhere():
     css = _grouped_css(None)
-    assert "border: none;" not in css
-    assert css.count("0.1mm solid #000") >= 3            # all three bands
+    assert css.count("0.1mm solid #000") == 3            # all three bands
+
+
+def test_grouped_css_chromium_uses_box_shadow_borders():
+    """The Chromium backend draws hairlines as inset box-shadow (border is floored)."""
+    css = _grouped_css(None, "chromium")
+    assert css.count("box-shadow: inset 0 0 0 0.1mm #000;") == 3
+    assert "0.1mm solid #000" not in css                 # no floored CSS borders
 
 
 # ── "Country, State:" prefix — collapse ONE of the two, never both ───────────────

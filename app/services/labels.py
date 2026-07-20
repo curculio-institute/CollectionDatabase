@@ -19,7 +19,7 @@ Within the grouped sheet, labels tile with a small gap (border-collapse: separat
 ``_LABEL_GAP_BORDERED``) so each keeps its own complete border yet a single cut down
 the gap separates two neighbours (no leftover strip, not two cuts). Each type's
 border ("black" cut-guide line or "none") is a config choice — see
-AppConfig.label_border_* / _border_rule.
+AppConfig.label_border_* / _border_decl.
 
 All return raw PDF bytes.
 
@@ -110,13 +110,23 @@ _PAD        = "0.19mm 0.53mm"   # top/bottom  left/right
 _LABEL_GAP_BORDERED = "0.4mm"
 
 
-def _border_rule(choice: str) -> str:
-    """CSS `border` shorthand for a per-label-type border config choice.
+def _border_decl(choice: str, backend: str = "weasyprint") -> str:
+    """CSS declaration drawing a band's 0.1 mm hairline cut guide, or '' for none.
 
-    ``"black"`` → a thin hairline cut-guide line (~0.1 mm, matching the
-    Etikettenmuster reference); anything else (``"none"``) → no border. Default is
-    black everywhere (see AppConfig.label_border_*)."""
-    return "0.1mm solid #000" if choice == "black" else "none"
+    ``"black"`` → a thin hairline (~0.1 mm, matching the Etikettenmuster reference);
+    anything else (``"none"``) → no line. Default is black (AppConfig.label_border_*).
+
+    The declaration is **backend-specific**, because no single CSS property draws a
+    0.1 mm line in both engines: WeasyPrint renders a real 0.1 mm ``border`` as a fill,
+    but Chromium floors any ``border`` to one device pixel (0.75 pt ≈ 0.27 mm, ~2.6×
+    too thick). For Chromium the hairline is drawn as an **inset box-shadow**, which it
+    paints at true thickness — and which WeasyPrint, conversely, does not render at all.
+    Measured both ways (2026-07-20); this split is deliberate, not redundant."""
+    if choice != "black":
+        return ""
+    if backend == "chromium":
+        return "box-shadow: inset 0 0 0 0.1mm #000;"
+    return "border: 0.1mm solid #000;"
 
 
 # ---------------------------------------------------------------------------
@@ -642,6 +652,12 @@ _ID_TEXT_CSS = """
 /* All regular weight (not bold): at these micro sizes bold thickens/fills the digit
    counters on a real printer; regular stays cleaner (decided 2026-07-07). */
 .id-collname {
+    /* line-height 1.4 (not the id-text default 1.0) gives the caps top clearance:
+       Chromium seats a line-height:1.0 first line's glyph tops right at the label's
+       overflow:hidden edge and clips them ("Jilg Private Collection" lost its tops);
+       the extra leading drops the glyphs clear. WeasyPrint had clearance already, so
+       this only adds a hair of space there. (measured 2026-07-20) */
+    line-height: 1.4;
     font-size: 2.5pt; font-weight: 400; letter-spacing: 0;
     white-space: nowrap; overflow: hidden;
 }
@@ -712,11 +728,12 @@ class LabelGroup:
 # different queue actions separable (decided 2026-07-07: small gap within a group,
 # large gap between groups). Per-band borders come from config (AppConfig.label_border_*).
 
-def _grouped_css(borders: dict[str, str] | None = None) -> str:
+def _grouped_css(borders: dict[str, str] | None = None,
+                 backend: str = "weasyprint") -> str:
     borders = borders or {}
-    bd = _border_rule(borders.get("data", "black"))
-    bt = _border_rule(borders.get("determination", "black"))
-    bi = _border_rule(borders.get("identifier", "black"))
+    bd = _border_decl(borders.get("data", "black"), backend)
+    bt = _border_decl(borders.get("determination", "black"), backend)
+    bi = _border_decl(borders.get("identifier", "black"), backend)
     return _BASE_CSS + _ID_TEXT_CSS + f"""
 .printed-at {{ font-size: 5pt; color: #666; margin-bottom: 3mm; }}
 .group {{ display: inline-block; vertical-align: top; line-height: {_LINE_H}; margin: 0 {_GROUP_GAP} {_GROUP_GAP} 0; }}
@@ -734,18 +751,18 @@ def _grouped_css(borders: dict[str, str] | None = None) -> str:
 .cell {{ width: 18mm; padding: 0; vertical-align: top; }}
 .lbl-data {{
     min-height: 2.5mm;
-    border: {bd}; padding: 0.19mm 0.53mm; overflow: hidden;
+    {bd} padding: 0.19mm 0.53mm; overflow: hidden;
     font-size: {_FONT_SIZE};
 }}
 .lbl-det {{
     min-height: 4.9mm;
-    border: {bt}; padding: 0.19mm 0.53mm; overflow: visible;
+    {bt} padding: 0.19mm 0.53mm; overflow: visible;
     font-size: {_FONT_SIZE};
 }}
 .lbl-id {{
     /* tiny top space so the collection-name line doesn't touch the top border;
        no bottom padding — the number's own line-box already leaves ~0.4mm there. */
-    border: {bi}; padding: 0.15mm 0.5mm 0 0.5mm;
+    {bi} padding: 0.15mm 0.5mm 0 0.5mm;
     overflow: hidden;
 }}
 """
@@ -817,10 +834,11 @@ def _group_html(group: LabelGroup, names: dict[str, str] | None = None) -> str:
 
 def _grouped_html(groups: list[LabelGroup], printed_at: str,
                   names: dict[str, str] | None = None,
-                  borders: dict[str, str] | None = None) -> str:
+                  borders: dict[str, str] | None = None,
+                  backend: str = "weasyprint") -> str:
     body = "".join(_group_html(g, names) for g in groups if g.specimens)
     stamp = f'<div class="printed-at">Printed: {_e(printed_at)}</div>'
-    return (f"<html><head><style>{_grouped_css(borders)}</style></head>"
+    return (f"<html><head><style>{_grouped_css(borders, backend)}</style></head>"
             f'<body>{stamp}<div class="sheet">{body}</div></body></html>')
 
 
@@ -836,6 +854,6 @@ def grouped_sheet(groups: list[LabelGroup], printed_at: str,
     ``backend`` selects the renderer (``"weasyprint"`` | ``"chromium"``); the HTML
     is identical either way (see ``pdf_backend.render_pdf``)."""
     from app.services.pdf_backend import render_pdf
-    return render_pdf(_grouped_html(groups, printed_at, names, borders), backend)
+    return render_pdf(_grouped_html(groups, printed_at, names, borders, backend), backend)
 
 
