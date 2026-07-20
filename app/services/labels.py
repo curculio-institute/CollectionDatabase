@@ -721,6 +721,15 @@ class SpecimenLabels:
     data:          Optional[DataLabel]          = None
     determination: Optional[DeterminationLabel] = None
     id_code:       Optional[str]                = None
+    # Preview-only metadata (ignored by the print PDF). When the sheet is rendered
+    # editable=True (the WYSIWYG Print-queue preview), the data / determination boxes
+    # carry these as contenteditable hooks so a click maps to the queue row and edits
+    # apply to every identical label. None everywhere on the print path.
+    data_qid:      Optional[int]                = None
+    det_qid:       Optional[int]                = None
+    data_ident:    Optional[str]                = None
+    det_ident:     Optional[str]                = None
+    co_id:         Optional[int]                = None
 
 
 @dataclass
@@ -782,16 +791,36 @@ def _grouped_css(borders: dict[str, str] | None = None,
 """
 
 
-def _data_cell(d: Optional[DataLabel]) -> str:
-    if d is None:
-        return '<td class="cell"></td>'
-    return f'<td class="cell"><div class="lbl-data">{_data_inner_html(d)}</div></td>'
+# When the sheet is rendered editable (the WYSIWYG Print-queue preview), a data /
+# determination box becomes contenteditable and tagged so the browser can map a click
+# back to its queue row (data-qid) and highlight/apply to every identical label
+# (data-ident). The print PDF passes editable=False, so these attributes never appear
+# on paper. The class hook (pq-edit) is what the preview's blur listener matches.
+def _edit_cell(base_cls: str, inner: str, qid: Optional[int],
+               ident: Optional[str], editable: bool) -> str:
+    """A band cell; when editable and it has a queue id, the box is contenteditable
+    and tagged (data-qid maps a click to the row; data-ident groups identical labels)."""
+    if editable and qid is not None:
+        id_attr = f' data-ident="{_e(ident)}"' if ident else ""
+        div = (f'<div class="{base_cls} pq-edit" contenteditable="true" '
+               f'data-qid="{qid}"{id_attr}>{inner}</div>')
+    else:
+        div = f'<div class="{base_cls}">{inner}</div>'
+    return f'<td class="cell">{div}</td>'
 
 
-def _det_cell(d: Optional[DeterminationLabel]) -> str:
-    if d is None:
+def _data_cell(sp: SpecimenLabels, editable: bool = False) -> str:
+    if sp.data is None:
         return '<td class="cell"></td>'
-    return f'<td class="cell"><div class="lbl-det">{_det_inner_html(d)}</div></td>'
+    return _edit_cell("lbl-data", _data_inner_html(sp.data),
+                      sp.data_qid, sp.data_ident, editable)
+
+
+def _det_cell(sp: SpecimenLabels, editable: bool = False) -> str:
+    if sp.determination is None:
+        return '<td class="cell"></td>'
+    return _edit_cell("lbl-det", _det_inner_html(sp.determination),
+                      sp.det_qid, sp.det_ident, editable)
 
 
 def _id_cell(code: Optional[str], names: dict[str, str] | None = None) -> str:
@@ -801,7 +830,8 @@ def _id_cell(code: Optional[str], names: dict[str, str] | None = None) -> str:
     return f'<td class="cell"><div class="lbl-id">{inner}</div></td>'
 
 
-def _group_html(group: LabelGroup, names: dict[str, str] | None = None) -> str:
+def _group_html(group: LabelGroup, names: dict[str, str] | None = None,
+                editable: bool = False) -> str:
     specs = group.specimens
     if not specs:
         return ""
@@ -832,11 +862,11 @@ def _group_html(group: LabelGroup, names: dict[str, str] | None = None) -> str:
             # band is a table row with one cell per column (empty <td> if missing)
             # so columns stay aligned across bands.
             if has_data:
-                rows.append("<tr>" + "".join(_data_cell(s.data) for s in chunk) + "</tr>")
+                rows.append("<tr>" + "".join(_data_cell(s, editable) for s in chunk) + "</tr>")
             if has_id:
                 rows.append("<tr>" + "".join(_id_cell(s.id_code, names) for s in chunk) + "</tr>")
             if has_det:
-                rows.append("<tr>" + "".join(_det_cell(s.determination) for s in chunk) + "</tr>")
+                rows.append("<tr>" + "".join(_det_cell(s, editable) for s in chunk) + "</tr>")
             chunks.append(f'<table class="chunk">{"".join(rows)}</table>')
 
     header = f'<div class="group-header">{_e(group.source)}</div>' if group.source else ""
@@ -849,11 +879,54 @@ def _group_html(group: LabelGroup, names: dict[str, str] | None = None) -> str:
 def _grouped_html(groups: list[LabelGroup], printed_at: str,
                   names: dict[str, str] | None = None,
                   borders: dict[str, str] | None = None,
-                  backend: str = "weasyprint") -> str:
-    body = "".join(_group_html(g, names) for g in groups if g.specimens)
+                  backend: str = "weasyprint", editable: bool = False) -> str:
+    body = "".join(_group_html(g, names, editable) for g in groups if g.specimens)
     stamp = f'<div class="printed-at">Printed: {_e(printed_at)}</div>'
     return (f"<html><head><style>{_grouped_css(borders, backend)}</style></head>"
             f'<body>{stamp}<div class="sheet">{body}</div></body></html>')
+
+
+# ---------------------------------------------------------------------------
+# WYSIWYG preview (Print-queue tab)
+# ---------------------------------------------------------------------------
+# The preview must show EXACTLY what prints, so it renders the SAME label markup +
+# CSS as the PDF — not a separate approximation. It is embedded inline in the app
+# page (not the print PDF's full document), so:
+#   * the CSS is SCOPED under a container (.pq-sheet) — the label CSS carries a
+#     global `* { margin:0; padding:0 }` reset and a bare `body {…}` rule that would
+#     otherwise clobber the whole app; @page is dropped (meaningless on screen);
+#   * the sheet is rendered editable=True so data/determination boxes are
+#     contenteditable + tagged for the click-to-edit / hand-abbreviation flow.
+# Zoom is applied by the UI as `transform: scale()` on the container — a POST-layout
+# paint scale, so the labels lay out once at true physical size (wrapping == print)
+# and only the pixels are magnified; lines can never re-break (measured: browsers
+# agree on the layout to <0.5 mm, so what you see is what prints).
+_PREVIEW_SCOPE = ".pq-sheet"
+
+
+def preview_css(borders: dict[str, str] | None = None) -> str:
+    """The label CSS, scoped for safe inline embedding in the app page."""
+    # Browsers render the box-shadow hairline (the 'chromium' border variant), same as
+    # the Chromium print backend — so preview and print match.
+    css = _grouped_css(borders, "chromium")
+    # Drop @page (no meaning on screen).
+    css = _re.sub(r"@page\s*\{[^}]*\}", "", css)
+    # Scope the two global rules that would leak into the whole app.
+    css = css.replace("* { box-sizing: border-box; margin: 0; padding: 0; }",
+                      f"{_PREVIEW_SCOPE} * {{ box-sizing: border-box; margin: 0; padding: 0; }}")
+    css = css.replace("body {", f"{_PREVIEW_SCOPE} {{", 1)
+    return css
+
+
+def preview_html(groups: list[LabelGroup], printed_at: str,
+                 names: dict[str, str] | None = None,
+                 borders: dict[str, str] | None = None) -> str:
+    """The queued sheet as an editable, scoped HTML fragment for the app page (no
+    <html>/<head>; the CSS is injected once via `preview_css`). Layout is identical
+    to the print PDF — same builder, editable=True."""
+    body = "".join(_group_html(g, names, True) for g in groups if g.specimens)
+    stamp = f'<div class="printed-at">Printed: {_e(printed_at)}</div>'
+    return f'<div class="pq-sheet">{stamp}<div class="sheet">{body}</div></div>'
 
 
 def grouped_sheet(groups: list[LabelGroup], printed_at: str,

@@ -213,10 +213,23 @@ def queued_groups(session: Session) -> list[lbl.LabelGroup]:
             ckey = ("co", row.collection_object_id)
             col = columns.setdefault(ckey, lbl.SpecimenLabels())
             col.data = _co_to_data_label(row.collection_object, row.text_override)
+            # Preview-only metadata (ignored by the print PDF): row id + identity of
+            # the AUTO text so the WYSIWYG preview can click-map and group identical
+            # labels. Identity is the auto (override-independent) text, matching
+            # preview_model / set_override_for_identical.
+            col.data_qid = row.id
+            col.data_ident = _ident(lbl.label_plaintext(
+                _co_to_data_label(row.collection_object)))
+            col.co_id = row.collection_object_id
         elif row.label_type == "determination" and row.collection_object:
             ckey = ("co", row.collection_object_id)
             col = columns.setdefault(ckey, lbl.SpecimenLabels())
             col.determination = _co_to_det_label(row.collection_object, row.text_override)
+            col.det_qid = row.id
+            _auto_dl = _co_to_det_label(row.collection_object)
+            _auto = lbl.label_plaintext(_auto_dl) if _auto_dl else ""
+            col.det_ident = _ident(_auto) if _auto else None
+            col.co_id = row.collection_object_id
         elif row.label_type == "identifier" and row.label_code:
             lc = row.label_code
             # Align an assigned code under its specimen's data label; an
@@ -390,7 +403,18 @@ def build_pdf(session: Session, printed_at: str | None = None) -> bytes:
         "identifier":    cfg.label_border_identifier,
     }
     return lbl.grouped_sheet(
-        groups, printed_at or _utcnow(), repo_svc.name_map(session), borders)
+        groups, printed_at or _utcnow(), repo_svc.name_map(session), borders,
+        backend="chromium")
+
+
+def preview_sheet(session: Session, printed_at: str | None = None) -> str:
+    """The queued sheet as an editable, scoped HTML fragment for the WYSIWYG preview
+    — identical layout to `build_pdf` (same builder), so what is shown is what prints.
+    Pair with `labels.preview_css(borders)` (injected once) for the styling."""
+    from app.services import repositories as repo_svc
+    groups = queued_groups(session)
+    return lbl.preview_html(
+        groups, printed_at or _utcnow(), repo_svc.name_map(session))
 
 
 def clear_queue(session: Session) -> int:
