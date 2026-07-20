@@ -44,8 +44,13 @@ from pathlib import Path as _Path
 from typing import Optional
 
 import qrcode
-from weasyprint import HTML
-from weasyprint.formatting_structure.boxes import LineBox as _LineBox
+
+# NOTE: WeasyPrint is imported lazily inside `_fits_one_line` (the only place that
+# uses it), NOT at module scope. WeasyPrint binds to the native GTK/Pango/Cairo
+# stack, which is absent on a fresh Windows/macOS box (`OSError: cannot load
+# library 'libgobject-2.0-0'`); a top-level import there crashes the whole app at
+# startup. The production PDF path uses the Chromium (Playwright) backend, which
+# needs no system libraries — so the app must boot and print without WeasyPrint.
 
 from app.services.label_text import (abbreviate_name, format_coords,
                                      format_geo_prefix)
@@ -547,8 +552,13 @@ def _fits_one_line(inner_html: str) -> bool:
     with WeasyPrint because character count is a poor proxy for width in a
     proportional condensed font (e.g. wide "M…" vs narrow "i…"). On any error,
     default to True — the label grows rather than clips, so a wrong "fits" never
-    loses data."""
+    loses data. WeasyPrint is imported here (not at module scope) so its native
+    GTK/Pango stack is only required when this measurement runs; where it is
+    unavailable (e.g. a stock Windows install) the ImportError is caught and the
+    label grows rather than clips."""
     try:
+        from weasyprint import HTML
+        from weasyprint.formatting_structure.boxes import LineBox as _LineBox
         html = (f'<html><head><style>{_FIT_CSS}</style></head>'
                 f'<body><div class="m">{inner_html}</div></body></html>')
         doc = HTML(string=html).render()

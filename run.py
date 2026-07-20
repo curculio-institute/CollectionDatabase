@@ -5,6 +5,12 @@ from nicegui import ui, app
 
 logging.basicConfig(level=logging.INFO)
 
+# WeasyPrint is used only as a text-width ruler in labels._fits_one_line (the PDF
+# itself is rendered by the Chromium backend). Its stylesheet carries
+# `text-rendering: geometricPrecision` for Chromium, which WeasyPrint doesn't know
+# and warns about on every measurement — harmless noise, so quiet it to errors.
+logging.getLogger("weasyprint").setLevel(logging.ERROR)
+
 app.add_static_files('/static', Path(__file__).parent / 'app' / 'static')
 
 # ── Data-safety checks: checkpoint WAL, snapshot, verify integrity ──────────
@@ -30,6 +36,12 @@ from app import config as _config
 _moved = _config.migrate_legacy_dirs()
 if _moved:
     logging.getLogger(__name__).info("Name sources: %s", _moved)
+
+# The Chromium label-PDF backend needs Playwright's browser binary, which the pip
+# package does not ship. Fetch it once on first launch (idempotent no-op after).
+import app.services.pdf_backend as _pdf_backend
+
+_pdf_backend.ensure_chromium()
 
 import app.ui.main  # registers the @ui.page('/') route  # noqa: F401
 

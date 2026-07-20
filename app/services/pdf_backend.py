@@ -19,9 +19,44 @@ loop of its own — safe whether called from the async UI or a plain script.
 """
 from __future__ import annotations
 
+import logging
+import subprocess
+import sys
 import tempfile
 import threading
 from pathlib import Path
+
+_log = logging.getLogger(__name__)
+
+
+def ensure_chromium() -> None:
+    """Install Playwright's Chromium browser if it is missing (idempotent).
+
+    The ``playwright`` pip package ships **no** browser binary — it is fetched
+    separately (``playwright install chromium``). The Chromium PDF backend needs
+    it, so run.py calls this once at startup; environment.yml documents that
+    contract. Safe to call on every launch: a no-op when the browser is already
+    present, and a network/permission failure only **warns** (label printing
+    degrades to an error at print time, but the app still starts and runs)."""
+    try:
+        from playwright.sync_api import sync_playwright
+        with sync_playwright() as p:
+            if Path(p.chromium.executable_path).exists():
+                return  # already installed — nothing to do
+    except Exception:
+        pass  # not installed (or path lookup failed) → fall through and install
+
+    _log.info("Installing Chromium for label PDFs (one-time download)…")
+    try:
+        subprocess.run(
+            [sys.executable, "-m", "playwright", "install", "chromium"],
+            check=True,
+        )
+        _log.info("Chromium installed.")
+    except Exception as exc:  # offline / no permissions — don't block startup
+        _log.warning(
+            "Could not install Chromium (label printing will be unavailable "
+            "until 'python -m playwright install chromium' succeeds): %s", exc)
 
 
 def render_pdf(html: str, backend: str = "weasyprint") -> bytes:
