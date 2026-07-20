@@ -290,13 +290,72 @@ def _apply_filters(session: Session, q, filters: list[dict], idx: dict[int, Taxo
             return and_(*conds) if conds else None
         return None
 
+    def _neg_clause(f):
+        """NULL-safe negation of a facet, for a NOT group (#140). A specimen matches iff it
+        does NOT positively match — a record MISSING the field counts as "not it" (no
+        collector *is* "not collected by Jakob"; an undetermined specimen *is* "not
+        Carabidae"). SQLite ``IS NOT`` (``is_distinct_from``) delivers that for the plain
+        column facets; the EXISTS-based taxon/verbatim clauses negate NULL-safely via
+        ``NOT EXISTS``."""
+        kind = f["kind"]
+        key = f.get("key")
+        if kind == "taxon":
+            ids = _descendant_ids(int(key), children)
+            negs = []                              # NOT(current OR past OR verbatim)
+            if "current" in id_scope:
+                col = TaxonDetermination.taxon_id
+                negs.append(or_(col.is_(None), col.notin_(ids)))
+            if "past" in id_scope:
+                td = aliased(TaxonDetermination)
+                negs.append(~exists().where(and_(
+                    td.collection_object_id == CollectionObject.id, td.taxon_id.in_(ids))))
+            if "verbatim" in id_scope:
+                t = idx.get(int(key))
+                name = t.scientific_name if t else None
+                if name:
+                    tdv = aliased(TaxonDetermination)
+                    negs.append(~exists().where(and_(
+                        tdv.collection_object_id == CollectionObject.id,
+                        tdv.verbatim_identification.ilike(f"%{name}%"))))
+            return and_(*negs) if negs else None
+        if kind in _GEO_FACETS:
+            _model, attr = _GEO_FACETS[kind]
+            return getattr(CollectingEvent, attr).is_distinct_from(int(key))
+        if kind == "collector":
+            return Person.full_name.is_distinct_from(key)
+        if kind == "identified_by":
+            pid = session.query(Person.id).filter(Person.full_name == key).scalar()
+            # negation of an impossible clause (unresolvable name) is "everything" → no restriction
+            return (TaxonDetermination.identified_by_id.is_distinct_from(pid)
+                    if pid is not None else None)
+        if kind == "collection":
+            return CollectionObject.repository_id.is_distinct_from(int(key))
+        if kind == "disposition":
+            return CollectionObject.disposition_id.is_distinct_from(int(key))
+        if kind == "date":
+            col = (CollectingEvent.event_date if f.get("field") == "collected"
+                   else TaxonDetermination.date_identified)
+            conds = []                             # outside the range …
+            if f.get("from"):
+                conds.append(col < f["from"])
+            if f.get("to"):
+                conds.append(col > f["to"])
+            return or_(col.is_(None), *conds) if conds else None   # … or no date at all
+        return None
+
     group_clauses = []
     for g in _as_groups(filters, combine):
-        facet_clauses = [c for f in g.get("facets", [])
-                         if (c := _clause(f)) is not None]
+        op = g.get("op", "and")
+        facets = g.get("facets", [])
+        if op == "not":                            # match NONE of the group's facets
+            negs = [c for f in facets if (c := _neg_clause(f)) is not None]
+            if negs:
+                group_clauses.append(and_(*negs))  # NOT A AND NOT B  (= NOT(A OR B))
+            continue
+        facet_clauses = [c for f in facets if (c := _clause(f)) is not None]
         if not facet_clauses:
             continue
-        group_clauses.append(or_(*facet_clauses) if g.get("op", "and") == "or"
+        group_clauses.append(or_(*facet_clauses) if op == "or"
                              else and_(*facet_clauses))
     if not group_clauses:
         return q

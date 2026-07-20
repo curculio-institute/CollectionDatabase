@@ -427,6 +427,44 @@ def test_grouped_searches_and_across_or_within(session):
     assert ex.counts(session, groups)["specimens"] == 2
 
 
+def test_not_group_excludes_and_is_null_safe(session):
+    """#140: a NOT group matches specimens that satisfy NONE of its facets, NULL-safely —
+    a record MISSING the field counts as 'not it' (no collector = 'not collected by
+    Jakob'; an undetermined specimen = 'not Carabidae')."""
+    cara = _taxon(session, "Carabidae", "family")
+    curc = _taxon(session, "Curculionidae", "family")
+    cg = _taxon(session, "Carabus", "genus", parent=cara)
+    og = _taxon(session, "Otiorhynchus", "genus", parent=curc)
+    csp = _taxon(session, "Carabus granulatus", "species", parent=cg)
+    osp = _taxon(session, "Otiorhynchus sulcatus", "species", parent=og)
+    jakob = _person(session, "Jakob Jilg")
+    ev_j = ev_svc.create_collecting_event(session, country="Germany", locality="X",
+                                          recorded_by_id=jakob.id)
+    ev_o = ev_svc.create_collecting_event(session, country="Germany", locality="Y")  # no collector
+    session.flush()
+    _specimen(session, csp, ev_j, "A1")   # carabid, Jakob
+    _specimen(session, osp, ev_j, "A2")   # curculionid, Jakob
+    _specimen(session, csp, ev_o, "A3")   # carabid, no collector
+
+    # NOT collected by Jakob → only A3 (no-collector record IS 'not Jakob', A1/A2 are Jakob)
+    flt = [{"op": "not", "facets": [{"kind": "collector", "key": "Jakob Jilg"}]}]
+    assert {r.catalog for r in ex.query_specimens(session, flt)} == {"A3"}
+
+    # NOT Carabidae → only A2 (the curculionid); the two carabids are excluded
+    flt = [{"op": "not", "facets": [{"kind": "taxon", "key": cara.id}]}]
+    assert {r.catalog for r in ex.query_specimens(session, flt)} == {"A2"}
+
+    # NOT (Carabidae OR Jakob) → match none of the two → A3 is a carabid (out), A1/A2 Jakob (out) → none
+    flt = [{"op": "not", "facets": [{"kind": "taxon", "key": cara.id},
+                                    {"kind": "collector", "key": "Jakob Jilg"}]}]
+    assert ex.query_specimens(session, flt) == []
+
+    # a NOT group AND a positive group: NOT Jakob, in Curculionidae → none (A2 is Jakob)
+    flt = [{"op": "not", "facets": [{"kind": "collector", "key": "Jakob Jilg"}]},
+           {"op": "and", "facets": [{"kind": "taxon", "key": curc.id}]}]
+    assert ex.query_specimens(session, flt) == []
+
+
 def test_events_axis_groups_specimens(session):
     _fixture(session)
     evs = ex.events(session)

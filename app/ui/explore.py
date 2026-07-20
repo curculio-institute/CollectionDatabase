@@ -419,7 +419,8 @@ def build_explore_panel(session_factory, *, on_open_specimen, on_open_event) -> 
         dlg = ui.dialog()
         with dlg, ui.card().classes("gap-2").style("min-width:380px"):
             ui.label("Extra filters").classes("text-sm font-medium")
-            # ── disposition include/exclude (adds a chip to this search) ──
+            # ── disposition (adds a chip to this search). To EXCLUDE a disposition, set the
+            #    search's operator to NOT (#140) — the old include/exclude toggle is gone. ──
             ui.html('<div class="ex-tag" style="background:none;padding:0">Disposition</div>')
             if not dispositions:
                 ui.label("No dispositions defined yet.").classes("text-xs italic") \
@@ -428,18 +429,15 @@ def build_explore_panel(session_factory, *, on_open_specimen, on_open_event) -> 
                 with ui.row().classes("items-center gap-2 w-full no-wrap"):
                     sel = ui.select({did: name for did, name in dispositions}, label="Disposition") \
                         .props("dense outlined").classes("flex-1")
-                    mode = ui.toggle({"include": "Include", "exclude": "Exclude"},
-                                     value="include").props("dense no-caps unelevated")
 
                     def _add_disp():
                         if sel.value is None:
                             ui.notify("Pick a disposition.", type="warning")
                             return
                         name = dict(dispositions)[sel.value]
-                        excl = mode.value == "exclude"
                         g["facets"].append({
-                            "kind": "disposition", "key": sel.value, "exclude": excl,
-                            "label": (f"≠ {name}" if excl else name), "tag": "Disposition"})
+                            "kind": "disposition", "key": sel.value,
+                            "label": name, "tag": "Disposition"})
                         state["dash_dates"] = None
                         _render_groups()
                         _refresh()
@@ -534,11 +532,13 @@ def build_explore_panel(session_factory, *, on_open_specimen, on_open_event) -> 
                                     f'<span>{_html.escape(f["label"])}</span>')
                             ui.html('<span class="ex-x" title="Remove">✕</span>').on(
                                 "click", lambda _, gg=g, idx=i: _remove_chip(gg, idx))
-                    if len(g["facets"]) >= 2:
-                        tog = ui.toggle({"and": "AND", "or": "OR"}, value=g["op"]) \
+                    # The operator shows from the FIRST chip — NOT applies to a single
+                    # filter too (#140). AND/OR are equivalent for one facet; NOT negates it.
+                    if g["facets"]:
+                        tog = ui.toggle({"and": "AND", "or": "OR", "not": "NOT"}, value=g["op"]) \
                             .props("dense no-caps unelevated size=sm") \
-                            .tooltip("How the filters in this search combine — "
-                                     "AND: match every filter · OR: match any filter")
+                            .tooltip("How this search's filters combine — AND: match every "
+                                     "filter · OR: match any · NOT: match none (exclude them)")
                         tog.on_value_change(lambda e, gg=g: _set_op(gg, e.value))
 
     def _reset_scope():
@@ -715,7 +715,10 @@ def build_explore_panel(session_factory, *, on_open_specimen, on_open_event) -> 
 
     def _group_label(g):
         labels = [f["label"] for f in g["facets"]]
-        return (" OR " if g.get("op") == "or" else " + ").join(labels) or "All"
+        op = g.get("op")
+        if op == "not":
+            return "NOT " + (" OR ".join(labels) or "—")   # match none of these
+        return (" OR " if op == "or" else " + ").join(labels) or "All"
 
     def _undated_note(d, *, collecting, identification):
         bits = []
