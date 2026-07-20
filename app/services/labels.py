@@ -40,6 +40,7 @@ import re as _re
 from dataclasses import dataclass, replace as _replace
 from functools import lru_cache
 from html.parser import HTMLParser as _HTMLParser
+from pathlib import Path as _Path
 from typing import Optional
 
 import qrcode
@@ -63,6 +64,33 @@ def _e(v: str | None) -> str:
 _W          = "18mm"
 _FONT       = "'Fira Sans Compressed', 'Fira Sans Condensed', Arial Narrow, sans-serif"
 _FONT_SIZE  = "4pt"
+
+
+# The label font is BUNDLED (app/static/fonts) and referenced by absolute file://
+# URL, not left to the host OS. WeasyPrint renders the PDF server-side, and on a
+# fresh Windows/macOS machine 'Fira Sans Compressed' is not installed — WeasyPrint
+# would silently fall back to a different font with different metrics and change the
+# label width (clipping on an 18 mm label). Embedding the four faces here makes the
+# rendered PDF byte-identical on every platform. `HTML(string=…)` is called with no
+# base_url, so relative url() cannot resolve — absolute file:// URLs are required.
+_FONTS_DIR = _Path(__file__).resolve().parent.parent / "static" / "fonts"
+
+
+def _font_face(style: str, weight: str, filename: str) -> str:
+    return f"""@font-face {{
+    font-family: 'Fira Sans Compressed';
+    font-style: {style};
+    font-weight: {weight};
+    src: url('{(_FONTS_DIR / filename).as_uri()}') format('truetype');
+}}"""
+
+
+_FONT_FACE_CSS = "\n".join((
+    _font_face("normal", "400", "FiraSansCompressed-Regular.ttf"),
+    _font_face("normal", "700", "FiraSansCompressed-Bold.ttf"),
+    _font_face("italic", "400", "FiraSansCompressed-Italic.ttf"),
+    _font_face("italic", "700", "FiraSansCompressed-BoldItalic.ttf"),
+)) + "\n"
 _LINE_H     = "1.41mm"   # 0.0555 in
 _PAD        = "0.19mm 0.53mm"   # top/bottom  left/right
 # Gap between neighbouring labels on the grouped sheet — matched to the mybioform
@@ -86,7 +114,7 @@ def _border_rule(choice: str) -> str:
 # Shared base CSS
 # ---------------------------------------------------------------------------
 
-_BASE_CSS = f"""
+_BASE_CSS = _FONT_FACE_CSS + f"""
 @page {{ size: A4; margin: 5mm; }}
 * {{ box-sizing: border-box; margin: 0; padding: 0; }}
 body {{ font-family: {_FONT}; font-size: {_FONT_SIZE}; line-height: {_LINE_H}; }}
@@ -470,7 +498,7 @@ def _det_name_html(lbl: DeterminationLabel) -> str:
 # content width + font. Deliberately independent of the sheet/.label layout (which
 # is inline-block for pagination) so the line-box count reflects only text
 # wrapping, not an anonymous line box around an inline-block.
-_FIT_CSS = f"""
+_FIT_CSS = _FONT_FACE_CSS + f"""
 @page {{ size: 60mm 60mm; margin: 0; }}
 * {{ box-sizing: border-box; margin: 0; padding: 0; }}
 body {{ font-family: {_FONT}; font-size: {_FONT_SIZE}; line-height: {_LINE_H}; }}
