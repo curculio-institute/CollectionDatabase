@@ -101,7 +101,20 @@ _FONT_FACE_CSS = "\n".join((
 # the width every backend prints. WeasyPrint already kerns, so these are no-ops for it.
 _TEXT_METRICS = "text-rendering: geometricPrecision; font-kerning: normal;"
 _LINE_H     = "1.41mm"   # 0.0555 in
-_PAD        = "0.19mm 0.53mm"   # top/bottom  left/right
+_PAD        = "0.19mm 0.53mm"   # top/bottom  left/right — fit-measurement box (width only)
+
+# Vertical padding inside a label band — the ROBUST clearance that keeps ink off the
+# border in every engine. WeasyPrint's line boxes leave slack above the first line, but
+# Chromium seats a first line flush with the content-box top, so at the tight 1em
+# line-height a bold-italic ascender (the determination genus) crossed the top border and
+# a cap (the id collection name) touched it. The fix is not per-engine slack but explicit
+# padding sized to the worst-case ascender/descender overshoot at 4pt, so the same values
+# hold no matter which backend renders. Horizontal padding is unchanged (0.53mm data/det,
+# 0.5mm id) so the one-line fit width (_FIT_CSS / _PAD) still matches what prints.
+_PAD_TOP    = "0.45mm"   # first-line ascenders clear the top border
+_PAD_BOT    = "0.3mm"    # last-line descenders clear the bottom border
+_PAD_LR     = "0.53mm"   # data / determination — matches _PAD's horizontal (fit width)
+_PAD_LR_ID  = "0.5mm"    # identifier band
 # Gap between neighbouring labels on the grouped sheet — matched to the mybioform
 # "Etikettenmuster" reference (measured 2026-07-08: ~0.1 mm hairline borders,
 # ~0.42–0.47 mm gap on both axes). The gap is the cut lane: it must be wide enough
@@ -751,18 +764,19 @@ def _grouped_css(borders: dict[str, str] | None = None,
 .cell {{ width: 18mm; padding: 0; vertical-align: top; }}
 .lbl-data {{
     min-height: 2.5mm;
-    {bd} padding: 0.19mm 0.53mm; overflow: hidden;
+    {bd} padding: {_PAD_TOP} {_PAD_LR} {_PAD_BOT}; overflow: hidden;
     font-size: {_FONT_SIZE};
 }}
 .lbl-det {{
     min-height: 4.9mm;
-    {bt} padding: 0.19mm 0.53mm; overflow: visible;
+    /* overflow hidden (not visible): a first line whose bold-italic ascenders would
+       otherwise poke past the border is kept inside it — the vertical padding is sized
+       so real text never actually reaches the clip, so nothing is lost (see _PAD_TOP). */
+    {bt} padding: {_PAD_TOP} {_PAD_LR} {_PAD_BOT}; overflow: hidden;
     font-size: {_FONT_SIZE};
 }}
 .lbl-id {{
-    /* tiny top space so the collection-name line doesn't touch the top border;
-       no bottom padding — the number's own line-box already leaves ~0.4mm there. */
-    {bi} padding: 0.15mm 0.5mm 0 0.5mm;
+    {bi} padding: {_PAD_TOP} {_PAD_LR_ID} {_PAD_BOT};
     overflow: hidden;
 }}
 """
