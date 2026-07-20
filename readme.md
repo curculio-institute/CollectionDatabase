@@ -50,6 +50,7 @@ Search taxon names, import them with synonymy status, authorship and their paren
 - Enrich collecting events with a habitat classification, by intersecting the coordinates with a habitat map
 
 ## How to get it running
+### Linux
 On Linux, having python and conda installed should be sufficient for a start to move forward:
 
 ```bash
@@ -61,10 +62,18 @@ python run.py              # starts the app at http://127.0.0.1:8080
 ```
 run.py creates the database on first start and migrates it on every later start, so there is nothing to set up by hand.
 
-**After those steps, it is sufficient to execute run.py with the conda environment activated.**  
+**After those steps, you can run start.sh in console or start run.py from a terminal that has the conda environment activated.**  
 For convenience, it is best to have a bash script that activates the conda environment and starts the program with one click. You can add launch.sh to your systems task bar or start menu, but you may have to adjust paths in the file to make it run on your system.
 
-On Windows it will also run, but I have not tested to figure out how.
+### Windows
+- Download this directory as zip, extract content where you want to keep the program. Go into the extracted directory, copy its path to clipboard
+- Download the Miniconda installer (https://www.anaconda.com/download/success), run it to install miniconda
+- Start the newly installed program "Anaconda Prompt"
+- write cd for change directory and paste the path that you copied from clipboard with a right-click, e.g. "cd C:\Users\Jakob\CollectionDatabase-main"
+- press enter, the command line is now within that directory
+- type this command, press enter: "conda eng create -f environment.yml"
+- follow instructions. Installing all the dependencies can take a while.
+- You successfully installed the program! From now on, you can simply start it with the file Start-Collection.bat
 
 ## First steps
 In settings, add the TaxonWorks and TaxonPages URLs and the API token. Add a collection under Controlled Vocabularies and mark it as the default collection in settings — it stamps every new specimen and gives the catalog numbers their prefix. If you record host plants, download the World Checklist of Vascular Plants from the settings as well.
