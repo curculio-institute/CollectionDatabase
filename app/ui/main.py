@@ -583,9 +583,14 @@ def index():
       }
       body              { background:var(--tp-base-background); color:var(--tp-base-content);
                           font-size:15px; }
-      .app-header       { background:var(--tp-primary) !important;
-                          color:var(--tp-primary-content) !important; }
-      .app-header-row   { padding:.35rem 1.5rem; }
+      /* Header is LIGHT overall; only the TITLE row is a grey bar (#142), so the tab row
+         and the Digitize mode row sit on light with no grey strip peeking between them.
+         Dark mode keeps the near-black title bar. */
+      .app-header       { background:var(--tp-base-foreground) !important;
+                          color:var(--tp-base-content) !important; }
+      .app-header-row   { padding:.35rem 1.5rem;
+                          background:rgb(82,82,91); color:var(--tp-primary-content); }
+      .dark .app-header-row { background:var(--tp-primary); }
       .app-mode-row     { padding:.3rem 1.5rem;
                           background:var(--tp-base-foreground);
                           border-bottom:1px solid var(--tp-base-border); }
@@ -887,7 +892,10 @@ def index():
                     return
             _set_mode(val)
 
-        with ui.row().classes("app-mode-row w-full max-w-5xl mx-auto") as _mode_row:
+        # Full-width light bar so the grey header doesn't show through its sides (#142);
+        # the toggle stays aligned with the page content via the inner max-w wrapper.
+        with ui.row().classes("app-mode-row w-full") as _mode_row:
+          with ui.element("div").classes("w-full flex justify-center"):
             with ui.element("div").classes("seg-toggle"):
                 for _val, _label, _icon, _color in _mode_defs:
                     _b = (
