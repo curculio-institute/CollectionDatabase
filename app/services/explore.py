@@ -61,10 +61,11 @@ def _header_label(t: Taxon) -> tuple[str, str]:
 
 
 def _species_epithet(t: Taxon) -> tuple[str, str]:
-    """(epithet, authorship) — the species without genus/subgenus (those are headers).
-    Falls back to the full name for genus-or-higher determinations."""
-    _g, _sg, sp, infra = parse_scientific_name(t.scientific_name or "")
-    base = " ".join(p for p in (sp, infra) if p)
+    """(name, authorship) for a species row: **Genus species** — the genus is printed
+    before the epithet for readability (#139); the SUBGENUS is dropped (it's a header in
+    the checklist). Falls back to the full name for genus-or-higher determinations."""
+    g, _sg, sp, infra = parse_scientific_name(t.scientific_name or "")
+    base = " ".join(p for p in (g, sp, infra) if p)
     if not base:
         return format_scientific_name(t), ""
     return base, (t.scientific_name_authorship or "")
