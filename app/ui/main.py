@@ -918,7 +918,14 @@ def index():
                 .tooltip("Settings")
             )
             (
-                ui.button(icon="restart_alt", on_click=lambda: os.execv(sys.executable, [sys.executable] + sys.argv))
+                # Re-exec the same process. Force --no-browser so the restart does NOT
+                # open a second window in app mode — the current window reconnects to
+                # the new server on its own once it is back up.
+                ui.button(icon="restart_alt", on_click=lambda: os.execv(
+                    sys.executable,
+                    [sys.executable, *sys.argv]
+                    + ([] if "--no-browser" in sys.argv else ["--no-browser"]),
+                ))
                 .props("flat round dense")
                 .style("color:rgb(156,163,175)")
                 .tooltip("Restart server")
