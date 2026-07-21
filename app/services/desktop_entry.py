@@ -17,12 +17,37 @@ desktop integration must never take down startup.
 from __future__ import annotations
 
 import logging
+import shutil
+import subprocess
 import sys
 from pathlib import Path
 
 _log = logging.getLogger(__name__)
 
 _ENTRY_NAME = "collection-database.desktop"
+
+
+def _refresh_menu_cache(applications_dir: Path) -> None:
+    """Tell the desktop environment to re-read the menu database. Best-effort.
+
+    KDE Plasma caches menu entries (sycoca) and does NOT reliably notice a rewritten
+    ``Exec``, so a changed entry keeps launching the OLD command until the cache is
+    rebuilt — e.g. an entry that once pointed at a since-deleted script would fail
+    silently forever. Rebuild after every write: ``update-desktop-database`` (the
+    freedesktop standard, covers GNOME/XFCE/…) plus ``kbuildsycoca`` (KDE). Never
+    raises; missing tools are simply skipped.
+    """
+    cmds: list[list[str]] = []
+    if shutil.which("update-desktop-database"):
+        cmds.append(["update-desktop-database", str(applications_dir)])
+    kbuildsycoca = shutil.which("kbuildsycoca6") or shutil.which("kbuildsycoca5")
+    if kbuildsycoca:
+        cmds.append([kbuildsycoca])
+    for cmd in cmds:
+        try:
+            subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except Exception as exc:
+            _log.debug("menu-cache refresh %s failed (%s)", cmd[0], exc)
 
 
 def _quote(path: str) -> str:
@@ -60,6 +85,7 @@ def ensure_desktop_entry() -> str | None:
             return None                      # already current — nothing to do
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(content, encoding="utf-8")
+        _refresh_menu_cache(target.parent)   # so the DE picks up the new Exec now
         return str(target)
     except OSError as exc:
         _log.warning("Could not write desktop entry %s (%s)", target, exc)
