@@ -5,8 +5,9 @@ REM
 REM  Double-click this file to start the app. It:
 REM    1. activates the 'collection' conda environment,
 REM    2. launches the server (run.py), which fetches the Chromium print
-REM       browser on first launch,
-REM    3. opens the app in your default web browser.
+REM       browser on first launch and opens the app once it is up
+REM       (a browser tab or a chromeless app window, per the Launch mode
+REM       setting in Settings).
 REM
 REM  Close this console window to stop the app.
 REM ===========================================================================
@@ -55,14 +56,13 @@ if not defined CONDA_OK (
     exit /b 1
 )
 
-REM --- Open the browser a few seconds after the server starts -----------------
-REM  Done in a detached child so the app (below) keeps this window's output.
-start "" /b cmd /c "timeout /t 5 >nul & start http://127.0.0.1:8080"
-
 REM --- Start the app (blocks; close this window to stop it) -------------------
+REM  run.py opens the UI itself once the server is up (a browser tab or a
+REM  chromeless app window, per the Launch mode setting). Do NOT open the
+REM  browser from here as well, or app mode gets a stray extra tab.
 echo.
 echo   Starting Collection Database...
-echo   Your browser will open at http://127.0.0.1:8080
+echo   The app will open at http://127.0.0.1:8080
 echo   (Close this window to stop the app.)
 echo.
 python run.py

@@ -1,9 +1,22 @@
-"""Convenience launcher: python run.py"""
+"""Convenience launcher: python run.py [--no-browser]
+
+--no-browser suppresses auto-opening the UI (for headless/debug runs, e.g.
+start.sh or a Playwright-driven test on a spare port). Without it the app opens
+per config.launch_mode: a normal browser tab, or a chromeless app window.
+"""
+import argparse
 import logging
 from pathlib import Path
-from nicegui import ui, app
+# Alias NiceGUI's `app`: a later `import app.ui.main` binds the name `app` to our
+# own top-level package, which would shadow this and break `app.on_startup` below.
+from nicegui import ui, app as ng_app
 
 logging.basicConfig(level=logging.INFO)
+
+_args = argparse.ArgumentParser(description="Collection Database launcher")
+_args.add_argument("--no-browser", action="store_true",
+                   help="do not auto-open the UI in a browser")
+_cli = _args.parse_args()
 
 # WeasyPrint is used only as a text-width ruler in labels._fits_one_line (the PDF
 # itself is rendered by the Chromium backend). Its stylesheet carries
@@ -11,7 +24,7 @@ logging.basicConfig(level=logging.INFO)
 # and warns about on every measurement — harmless noise, so quiet it to errors.
 logging.getLogger("weasyprint").setLevel(logging.ERROR)
 
-app.add_static_files('/static', Path(__file__).parent / 'app' / 'static')
+ng_app.add_static_files('/static', Path(__file__).parent / 'app' / 'static')
 
 # ── Data-safety checks: checkpoint WAL, snapshot, verify integrity ──────────
 # Run before the UI serves any page so a damaged file is caught up front and a
@@ -44,6 +57,18 @@ import app.services.pdf_backend as _pdf_backend
 _pdf_backend.ensure_chromium()
 
 import app.ui.main  # registers the @ui.page('/') route  # noqa: F401
+
+# Open the UI once the server is up. NiceGUI's own show= uses the same on_startup
+# hook, so it fires late enough that the page is being served. We do it here (not
+# in the shell launchers) because the tab-vs-app choice lives in config.json, which
+# only Python reads — one cross-platform owner. --no-browser opts a debug/headless
+# run out. show=False so NiceGUI doesn't also open a second tab.
+_APP_URL = "http://127.0.0.1:8080"
+if not _cli.no_browser:
+    import app.services.launcher as _launcher
+    from app.config import get_config as _get_config
+
+    ng_app.on_startup(lambda: _launcher.open_ui(_APP_URL, _get_config().launch_mode))
 
 ui.run(
     host="127.0.0.1",   # localhost only — not exposed on the network

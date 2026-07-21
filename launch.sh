@@ -1,7 +1,11 @@
 #!/usr/bin/env bash
-# Launch Collection in the background and open the browser.
-# Use this for the desktop file / app-menu shortcut.
+# Launch Collection in the background (detached from the terminal), logging to a
+# file. Use this for the desktop file / app-menu shortcut.
 # For terminal/debug use, run start.sh instead (logs to stdout).
+#
+# run.py opens the UI itself once the server is up (a browser tab or a chromeless
+# app window, per the Launch mode setting) — so this script does NOT open the
+# browser, or app mode would get a stray extra tab.
 
 set -euo pipefail
 
@@ -17,12 +21,3 @@ cd "$PROJ"
 nohup "$PYTHON" run.py > "$LOG" 2>&1 &
 APP_PID=$!
 echo "Collection started (PID $APP_PID) — tail -f $LOG"
-
-# Wait up to 6 s for the server to accept connections, then open the browser.
-for i in $(seq 1 20); do
-    sleep 0.3
-    if curl -sf http://127.0.0.1:8080 > /dev/null 2>&1; then
-        break
-    fi
-done
-xdg-open "http://127.0.0.1:8080" 2>/dev/null || true

@@ -43,6 +43,17 @@ class AppConfig:
     # card at a time, advancing card-to-card with the real Save on the last step.
     digitize_layout: str = "normal"
 
+    # How the launcher opens the UI on startup. "tab" → the OS default browser, a
+    # normal tab (works everywhere). "app" → a Chromium-class browser (Edge/Chrome/
+    # Chromium) in --app window mode: a chromeless, app-like window that is STILL a
+    # real browser, so the beforeunload unsaved-changes guard, inline PDF viewing,
+    # and /media tabs all keep working — unlike a pywebview native window, which is
+    # deliberately NOT used (see CLAUDE.md §3 "The browser is the UI"). Falls back to
+    # a normal tab when no Chromium-class browser is found. Applied at launch only
+    # (the window already exists once the app is running), so it takes effect on the
+    # next start, not live like digitize_layout.
+    launch_mode: str = "tab"
+
     # Managed media store: every attached file is copied here, content-addressed by
     # SHA-256. Relative paths resolve against the project data/ dir; "" → data/media.
     media_dir: str = ""

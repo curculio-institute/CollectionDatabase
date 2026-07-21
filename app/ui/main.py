@@ -313,9 +313,18 @@ def index():
     }, true);
     </script>""")
 
-    # ── SVG favicon (vector, sharp at any size) ──────────────────────────
+    # ── Favicons ─────────────────────────────────────────────────────────
+    # SVG for the browser tab (vector, sharp at any size), plus an explicit,
+    # correctly-typed RASTER PNG for the app-window / taskbar icon. A Chromium
+    # `--app` window (launch mode "app") derives its window icon from a raster
+    # favicon fetched AFTER the window opens; with only an SVG declared it often
+    # can't rasterize one in time and keeps a generated monogram placeholder (the
+    # intermittent "white W in a yellow circle"). A sized PNG at a stable /static
+    # URL gives it an unambiguous raster to use, making the icon deterministic.
     ui.add_head_html(
         '<link rel="icon" type="image/svg+xml" href="/static/beetle_blue.svg">'
+        '<link rel="icon" type="image/png" sizes="256x256" href="/static/collection_icon.png">'
+        '<link rel="apple-touch-icon" href="/static/collection_icon.png">'
     )
 
     # ── Print-queue sheet preview (#37): styling + hover-highlight ───────
@@ -3318,16 +3327,27 @@ def index():
 
             async def _ds_rebuild(ds) -> None:
                 n = ui.notification(f"Rebuilding {ds.label}…", spinner=True, timeout=None)
+                # progress fires on the io_bound worker thread, so it may only write
+                # state; a ui.timer reads it and updates the notification (never the
+                # thread itself — same rule as the WCVP install above). n.message is an
+                # attribute: assign it, never call it (calling the str raised
+                # "'str' object is not callable").
+                state = {"rows": 0}
+                timer = ui.timer(0.2, lambda: setattr(
+                    n, "message", f"Indexing… {state['rows']:,} names read"))
                 try:
                     report = await run.io_bound(
                         ds_svc.rebuild, ds,
-                        progress=lambda k: n.message(f"Indexing… {k:,} names read"),
+                        progress=lambda k: state.__setitem__("rows", k),
                     )
                 except Exception as exc:      # noqa: BLE001
                     n.dismiss()
                     ui.notify(f"Rebuild failed: {exc}", type="negative",
                               timeout=0, close_button="Got it")
                     return
+                finally:
+                    timer.deactivate()
+                    timer.delete()          # per the dialog timer-leak rule
                 n.dismiss()
                 ui.notify(f"Rebuilt {ds.label} — {report.rows:,} names.", type="positive")
                 _ds_refresh()
@@ -3571,6 +3591,22 @@ def index():
 
             ui.separator().classes("my-3")
 
+            # ── Launch mode ───────────────────────────────────────────────
+            ui.label("Launch mode").classes("text-sm font-medium mb-1")
+            ui.label(
+                "How the app opens on startup. Browser tab uses your default "
+                "browser. App window opens a chromeless, app-like window "
+                "(Edge/Chrome/Chromium) — still a real browser, so PDFs, media, "
+                "and the unsaved-changes guard all keep working. Takes effect the "
+                "next time you start the app."
+            ).classes("text-xs mb-2").style("color:var(--tp-base-soft)")
+            launch_mode_toggle = ui.toggle(
+                {"tab": "Browser tab", "app": "App window"},
+                value=get_config().launch_mode,
+            ).props("no-caps")
+
+            ui.separator().classes("my-3")
+
             # ── Printed-label borders (per type) ──────────────────────────
             ui.label("Printed-label borders").classes("text-sm font-medium mb-1")
             ui.label(
@@ -3664,6 +3700,7 @@ def index():
                 cfg.taxonpages_base       = tp_base_in.value.strip() or cfg.taxonpages_base
                 cfg.map_default_layer     = map_layer_sel.value or "street"
                 cfg.digitize_layout       = digitize_layout_toggle.value or "normal"
+                cfg.launch_mode           = launch_mode_toggle.value or "tab"
                 cfg.default_license       = default_license_sel.value or ""
                 cfg.label_border_data          = label_border_data_tog.value or "black"
                 cfg.label_border_determination = label_border_det_tog.value or "black"
@@ -3720,6 +3757,7 @@ def index():
         collection_code_in.value  = _def_code or ""
         map_layer_sel.value     = cfg.map_default_layer or "street"
         digitize_layout_toggle.value = cfg.digitize_layout or "normal"
+        launch_mode_toggle.value = cfg.launch_mode or "tab"
         default_license_sel.value = cfg.default_license or ""
         with _sf() as _s:
             _idby, _recby, _rights = pd_svc.get_defaults(_s)
