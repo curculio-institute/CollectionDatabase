@@ -75,37 +75,23 @@ def _chromium_browser() -> list[str] | None:
     return None
 
 
-def _app_window_flags() -> list[str]:
-    """Flags to make the ``--app`` window fill the screen instead of opening slim.
-
-    Chromium ignores ``--start-maximized`` in ``--app`` mode on some versions, so we
-    also pass an explicit ``--window-size`` measured from the screen (via tkinter,
-    stdlib) when we can — one of the two always takes. Best-effort: if the screen
-    can't be measured we still send ``--start-maximized``.
-    """
-    flags = ["--start-maximized"]
-    try:
-        import tkinter
-        root = tkinter.Tk()
-        root.withdraw()
-        w, h = root.winfo_screenwidth(), root.winfo_screenheight()
-        root.destroy()
-        if w > 0 and h > 0:
-            flags += ["--window-position=0,0", f"--window-size={w},{h}"]
-    except Exception:
-        pass                              # no display / no tk — --start-maximized only
-    return flags
-
-
 def open_ui(url: str, mode: str = "tab") -> None:
     """Open *url* in the browser per *mode* (``"tab"`` | ``"app"``). Never raises."""
     if mode == "app":
         browser = _chromium_browser()
         if browser is not None:
             try:
+                # --start-maximized fills the screen instead of opening a slim
+                # default window (verified in --app mode on Linux/KDE). If a future
+                # platform is found to ignore it in --app mode, add an explicit
+                # --window-size there rather than for everyone.
+                # start_new_session detaches the browser from our process group, so
+                # it survives run.py exiting immediately after (the attach path) and
+                # is not taken down when the server is later restarted/stopped.
                 subprocess.Popen(
-                    browser + [f"--app={url}", *_app_window_flags()],
-                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    browser + [f"--app={url}", "--start-maximized"],
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                    start_new_session=True)
                 _log.info("Opened app window via %s", Path(browser[0]).name)
                 return
             except Exception as exc:  # launch failed → degrade to a normal tab
