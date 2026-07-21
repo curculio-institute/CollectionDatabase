@@ -64,7 +64,7 @@ run.py creates the database on first start and migrates it on every later start,
 
 **After those steps, you can run `start.sh` in a console** (or `python run.py` from a terminal with the conda environment activated) — this is the verbose/debug way, with logs printed to the terminal.
 
-**For everyday use, run `collection-tray.sh`** — it starts the app with no terminal and puts an icon in the system tray with *Open Collection* and *Quit*. Point your desktop / app-menu shortcut at it (a `Collection.desktop` template is included; edit the paths inside both files to match where you cloned the repo).
+**For everyday use, start it from your application menu.** The first time you run the app, it registers a *Collection Database* entry in your menu automatically (with the correct paths filled in), pointing at the no-terminal tray front end — an icon in the system tray with *Open Collection* and *Quit*. You can also start the tray by hand with `collection-tray.sh`.
 
 ### Windows
 - [Download this directory as zip](https://github.com/curculio-institute/CollectionDatabase/archive/refs/heads/main.zip), extract content where you want to keep the program. Go into the extracted directory, copy its path to clipboard

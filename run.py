@@ -50,6 +50,15 @@ _moved = _config.migrate_legacy_dirs()
 if _moved:
     logging.getLogger(__name__).info("Name sources: %s", _moved)
 
+# Self-register a Linux application-menu entry with correct absolute paths (no-op
+# off Linux, idempotent, never raises). So the app appears in the menu / launcher
+# after the first start, pointing at the no-console tray front end.
+import app.services.desktop_entry as _desktop_entry
+
+_desktop_written = _desktop_entry.ensure_desktop_entry()
+if _desktop_written:
+    logging.getLogger(__name__).info("Desktop entry: wrote %s", _desktop_written)
+
 # The Chromium label-PDF backend needs Playwright's browser binary, which the pip
 # package does not ship. Fetch it once on first launch (idempotent no-op after).
 import app.services.pdf_backend as _pdf_backend
