@@ -261,7 +261,7 @@ def build_map_picker(
         /* ── Tile layers ─────────────────────────────────────────────────── */
         var osm = L.tileLayer(
             'https://{{s}}.tile.openstreetmap.org/{{z}}/{{x}}/{{y}}.png',
-            {{attribution:'© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
+            {{attribution:'© <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a>',
               maxZoom:19}}
         );
         var _img = 'https://server.arcgisonline.com/ArcGIS/rest/services/'

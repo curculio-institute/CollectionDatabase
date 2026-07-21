@@ -24,9 +24,18 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 from pathlib import Path
 
 _log = logging.getLogger(__name__)
+
+# How many times to (re)try the one-time Chromium download before giving up for
+# this launch. The download is ~170 MB from cdn.playwright.dev and a flaky
+# connection drops it mid-stream (ECONNRESET) or the DNS lookup fails
+# (ENOTFOUND) — both recover on a retry, and a partial download resumes rather
+# than restarting. A failure here only warns; the next launch tries again.
+_INSTALL_ATTEMPTS = 4
+_RETRY_BACKOFF_S = (3, 10, 30)  # waited before attempts 2, 3, 4
 
 
 def ensure_chromium() -> None:
@@ -46,17 +55,29 @@ def ensure_chromium() -> None:
     except Exception:
         pass  # not installed (or path lookup failed) → fall through and install
 
+    # --no-shell skips the separate chrome-headless-shell binary: we launch the
+    # full Chromium build via channel="chromium" (see _chromium_pdf_sync), so the
+    # shell is dead weight — and it was the fragile *second* download that failed
+    # on a flaky connection even after the full browser downloaded fine.
+    cmd = [sys.executable, "-m", "playwright", "install", "--no-shell", "chromium"]
     _log.info("Installing Chromium for label PDFs (one-time download)…")
-    try:
-        subprocess.run(
-            [sys.executable, "-m", "playwright", "install", "chromium"],
-            check=True,
-        )
-        _log.info("Chromium installed.")
-    except Exception as exc:  # offline / no permissions — don't block startup
-        _log.warning(
-            "Could not install Chromium (label printing will be unavailable "
-            "until 'python -m playwright install chromium' succeeds): %s", exc)
+    for attempt in range(1, _INSTALL_ATTEMPTS + 1):
+        try:
+            subprocess.run(cmd, check=True)
+            _log.info("Chromium installed.")
+            return
+        except Exception as exc:  # offline / no permissions / dropped download
+            if attempt < _INSTALL_ATTEMPTS:
+                wait = _RETRY_BACKOFF_S[min(attempt - 1, len(_RETRY_BACKOFF_S) - 1)]
+                _log.warning(
+                    "Chromium download attempt %d/%d failed (%s) — retrying in %ds…",
+                    attempt, _INSTALL_ATTEMPTS, exc, wait)
+                time.sleep(wait)
+            else:
+                _log.warning(
+                    "Could not install Chromium after %d attempts (label printing "
+                    "will be unavailable until 'python -m playwright install "
+                    "--no-shell chromium' succeeds): %s", _INSTALL_ATTEMPTS, exc)
 
 
 def render_pdf(html: str, backend: str = "weasyprint") -> bytes:
@@ -96,7 +117,13 @@ def _chromium_pdf_sync(html: str) -> bytes:
         page_file = Path(td) / "sheet.html"
         page_file.write_text(html, encoding="utf-8")
         with sync_playwright() as p:
-            browser = p.chromium.launch(args=["--allow-file-access-from-files"])
+            # channel="chromium" launches the full Chromium build in new-headless
+            # mode. Without it, recent Playwright defaults headless launches to the
+            # *separate* chrome-headless-shell binary — a second download that may be
+            # missing (flaky network) even when the full browser installed fine, so
+            # the launch fails with "Executable doesn't exist …chrome-headless-shell".
+            browser = p.chromium.launch(
+                channel="chromium", args=["--allow-file-access-from-files"])
             try:
                 page = browser.new_page()
                 page.goto(page_file.as_uri(), wait_until="networkidle")
