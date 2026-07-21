@@ -64,7 +64,7 @@ run.py creates the database on first start and migrates it on every later start,
 
 **After those steps, you can run `start.sh` in a console** (or `python run.py` from a terminal with the conda environment activated) — this is the verbose/debug way, with logs printed to the terminal.
 
-**For everyday use, start it from your application menu.** The first time you run the app, it registers a *Collection Database* entry in your menu automatically (with the correct paths filled in), pointing at the no-terminal tray front end — an icon in the system tray with *Open Collection* and *Quit*. You can also start the tray by hand with `collection-tray.sh`.
+**For everyday use, start it from your application menu.** The first time you run the app, it registers a *Collection Database* entry in your menu automatically (with the correct paths filled in). Launched that way the app runs with no terminal, and **closing the window shuts the server down** (you get a desktop notification), so nothing is left running in the background.
 
 ### Windows
 - [Download this directory as zip](https://github.com/curculio-institute/CollectionDatabase/archive/refs/heads/main.zip), extract content where you want to keep the program. Go into the extracted directory, copy its path to clipboard
@@ -74,7 +74,7 @@ run.py creates the database on first start and migrates it on every later start,
 - press enter, the command line is now within that directory
 - type this command, press enter: "conda eng create -f environment.yml"
 - follow instructions. Installing all the dependencies can take a while.
-- You successfully installed the program! From now on, you can simply start it by **double-clicking `Collection.vbs`** — it launches the app with no console window and shows a tray icon with *Open Collection* and *Quit*. If the app ever misbehaves, run `Start-Collection.bat` instead: it keeps a console window open with the logs so you can see what went wrong.
+- You successfully installed the program! From now on, you can simply start it by **double-clicking `Collection.vbs`** — it launches the app with no console window, and **closing the app window shuts the server down** (with a desktop notification). If the app ever misbehaves, run `Start-Collection.bat` instead: it keeps a console window open with the logs so you can see what went wrong.
 
 ## First steps
 In settings, add the TaxonWorks and TaxonPages URLs and the API token. Add a collection under Controlled Vocabularies and mark it as the default collection in settings — it stamps every new specimen and gives the catalog numbers their prefix. If you record host plants, download the World Checklist of Vascular Plants from the settings as well.

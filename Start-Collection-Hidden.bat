@@ -1,15 +1,15 @@
 @echo off
 REM ===========================================================================
-REM  Collection Database - Windows tray launcher (no console window)
+REM  Collection Database - Windows front door (no console window)
 REM
 REM  Normally invoked by Collection.vbs, which runs this fully hidden. It:
 REM    1. activates the 'collection' conda environment,
-REM    2. starts the tray launcher with pythonw (no console), which supervises
-REM       the server and shows a tray icon with Open Collection / Quit.
+REM    2. starts the server with pythonw (no console), passing --auto-shutdown so
+REM       closing the app window quits the server (with a desktop notification) —
+REM       no invisible server left running.
 REM
 REM  Exit code 1 = the 'collection' env could not be activated; Collection.vbs
-REM  shows an error box in that case. Server start-up failures are reported by
-REM  the tray launcher itself (an error dialog + the log).
+REM  shows an error box in that case.
 REM
 REM  For a visible/debug run with logs in the window, use Start-Collection.bat.
 REM ===========================================================================
@@ -44,7 +44,7 @@ if not defined CONDA_OK (
 
 if not defined CONDA_OK exit /b 1
 
-REM Start the tray launcher detached and with no console (pythonw). The tray
-REM process outlives this script, which then exits.
-start "" pythonw "%~dp0collection_tray.py"
+REM Start the server detached and with no console (pythonw). It outlives this
+REM script, which then exits; closing the app window shuts the server down.
+start "" pythonw "%~dp0run.py" --auto-shutdown
 exit /b 0

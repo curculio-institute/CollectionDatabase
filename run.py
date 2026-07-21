@@ -1,8 +1,14 @@
-"""Convenience launcher: python run.py [--no-browser]
+"""Convenience launcher: python run.py [--no-browser] [--auto-shutdown]
 
 --no-browser suppresses auto-opening the UI (for headless/debug runs, e.g.
 start.sh or a Playwright-driven test on a spare port). Without it the app opens
 per config.launch_mode: a normal browser tab, or a chromeless app window.
+
+--auto-shutdown makes the server quit when the last browser window closes (with a
+desktop notification). The no-terminal front-door launchers (Collection.vbs / the
+generated .desktop entry) pass it so closing the window quits the app like a native
+desktop app — no invisible server left running. A plain `python run.py` / start.sh
+run omits it, so a developer's reloads and tab-closes never kill the server.
 """
 import argparse
 import logging
@@ -16,6 +22,8 @@ logging.basicConfig(level=logging.INFO)
 _args = argparse.ArgumentParser(description="Collection Database launcher")
 _args.add_argument("--no-browser", action="store_true",
                    help="do not auto-open the UI in a browser")
+_args.add_argument("--auto-shutdown", action="store_true",
+                   help="quit the server when the last browser window closes")
 _cli = _args.parse_args()
 
 # WeasyPrint is used only as a text-width ruler in labels._fits_one_line (the PDF
@@ -23,6 +31,28 @@ _cli = _args.parse_args()
 # `text-rendering: geometricPrecision` for Chromium, which WeasyPrint doesn't know
 # and warns about on every measurement — harmless noise, so quiet it to errors.
 logging.getLogger("weasyprint").setLevel(logging.ERROR)
+
+# If a server is already running on our port — the launcher was clicked while the
+# app is already open, or a previous instance is still up — do NOT try to bind a
+# second one (that fails with "address already in use", and Terminal=false hides the
+# error, so the launch appears to do nothing). Instead just open a window pointing at
+# the running server and exit. Makes launching idempotent. Skipped under
+# --no-browser so a debug/headless run still surfaces a bind clash. Checked before
+# any DB work, so we never touch the file another instance owns.
+_APP_URL = "http://127.0.0.1:8080"
+
+def _already_serving() -> bool:
+    import socket
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.settimeout(0.5)
+        return s.connect_ex(("127.0.0.1", 8080)) == 0
+
+if not _cli.no_browser and _already_serving():
+    import app.services.launcher as _launcher
+    from app.config import get_config as _get_config
+    logging.getLogger(__name__).info("Server already running — opening a window.")
+    _launcher.open_ui(_APP_URL, _get_config().launch_mode)
+    raise SystemExit(0)
 
 ng_app.add_static_files('/static', Path(__file__).parent / 'app' / 'static')
 
@@ -52,7 +82,7 @@ if _moved:
 
 # Self-register a Linux application-menu entry with correct absolute paths (no-op
 # off Linux, idempotent, never raises). So the app appears in the menu / launcher
-# after the first start, pointing at the no-console tray front end.
+# after the first start, pointing at the no-terminal front door (run.py --auto-shutdown).
 import app.services.desktop_entry as _desktop_entry
 
 _desktop_written = _desktop_entry.ensure_desktop_entry()
@@ -72,12 +102,18 @@ import app.ui.main  # registers the @ui.page('/') route  # noqa: F401
 # in the shell launchers) because the tab-vs-app choice lives in config.json, which
 # only Python reads — one cross-platform owner. --no-browser opts a debug/headless
 # run out. show=False so NiceGUI doesn't also open a second tab.
-_APP_URL = "http://127.0.0.1:8080"
 if not _cli.no_browser:
     import app.services.launcher as _launcher
     from app.config import get_config as _get_config
 
     ng_app.on_startup(lambda: _launcher.open_ui(_APP_URL, _get_config().launch_mode))
+
+# Close-to-quit (end-user front door only): when the last window closes, the server
+# shuts down with a desktop notification, so nothing lingers invisibly.
+if _cli.auto_shutdown:
+    import app.services.auto_shutdown as _auto_shutdown
+
+    _auto_shutdown.register(ng_app)
 
 ui.run(
     host="127.0.0.1",   # localhost only — not exposed on the network

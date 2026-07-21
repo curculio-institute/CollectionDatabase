@@ -5,8 +5,8 @@ hand-edit (which interpreter? where is the repo?). Generating it at startup avoi
 that entirely: we already know the real interpreter (``sys.executable`` — the env
 python actually running us, so no conda-activation and no hard-coded miniforge
 path), the real repo location (from ``__file__``), and the real icon path. The
-entry launches the tray front end, so the menu item behaves like the double-click
-launcher: no terminal, an Open/Quit tray icon.
+entry launches the app with no terminal (``run.py --auto-shutdown``), so closing
+the window quits the server rather than leaving it running invisibly.
 
 Written to ``~/.local/share/applications/`` (the per-user location the app menu
 scans). Idempotent and self-healing: rewritten only when the desired content
@@ -33,14 +33,14 @@ def _quote(path: str) -> str:
 
 def _render(repo: Path) -> str:
     python = _quote(sys.executable)
-    entry = _quote(str(repo / "collection_tray.py"))
+    entry = _quote(str(repo / "run.py"))
     icon = repo / "app" / "static" / "collection_icon.png"
     return (
         "[Desktop Entry]\n"
         "Type=Application\n"
         "Name=Collection Database\n"
         "Comment=Entomological specimen collection manager\n"
-        f"Exec={python} {entry}\n"
+        f"Exec={python} {entry} --auto-shutdown\n"
         f"Path={repo}\n"
         f"Icon={icon}\n"
         "Terminal=false\n"

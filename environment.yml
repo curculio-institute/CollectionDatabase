@@ -23,8 +23,3 @@ dependencies:
       # wheels, so no system GDAL is needed.
       - geopandas==1.*
       - pyogrio==0.*
-      # System-tray front-end launcher (app/services/tray.py): a no-console way to
-      # start/stop the app with an Open/Quit menu. Uses the win32 backend on Windows
-      # and the Xorg backend (python-xlib) on Linux; Pillow is already pulled in by
-      # qrcode[pil]/weasyprint for the tray icon image.
-      - pystray==0.19.*
