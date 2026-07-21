@@ -62,8 +62,9 @@ python run.py              # starts the app at http://127.0.0.1:8080
 ```
 run.py creates the database on first start and migrates it on every later start, so there is nothing to set up by hand.
 
-**After those steps, you can run start.sh in console or start run.py from a terminal that has the conda environment activated.**  
-For convenience, it is best to have a bash script that activates the conda environment and starts the program with one click. You can add launch.sh to your systems task bar or start menu, but you may have to adjust paths in the file to make it run on your system.
+**After those steps, you can run `start.sh` in a console** (or `python run.py` from a terminal with the conda environment activated) — this is the verbose/debug way, with logs printed to the terminal.
+
+**For everyday use, run `collection-tray.sh`** — it starts the app with no terminal and puts an icon in the system tray with *Open Collection* and *Quit*. Point your desktop / app-menu shortcut at it (a `Collection.desktop` template is included; edit the paths inside both files to match where you cloned the repo).
 
 ### Windows
 - [Download this directory as zip](https://github.com/curculio-institute/CollectionDatabase/archive/refs/heads/main.zip), extract content where you want to keep the program. Go into the extracted directory, copy its path to clipboard
@@ -73,7 +74,7 @@ For convenience, it is best to have a bash script that activates the conda envir
 - press enter, the command line is now within that directory
 - type this command, press enter: "conda eng create -f environment.yml"
 - follow instructions. Installing all the dependencies can take a while.
-- You successfully installed the program! From now on, you can simply start it with the file Start-Collection.bat
+- You successfully installed the program! From now on, you can simply start it by **double-clicking `Collection.vbs`** — it launches the app with no console window and shows a tray icon with *Open Collection* and *Quit*. If the app ever misbehaves, run `Start-Collection.bat` instead: it keeps a console window open with the logs so you can see what went wrong.
 
 ## First steps
 In settings, add the TaxonWorks and TaxonPages URLs and the API token. Add a collection under Controlled Vocabularies and mark it as the default collection in settings — it stamps every new specimen and gives the catalog numbers their prefix. If you record host plants, download the World Checklist of Vascular Plants from the settings as well.

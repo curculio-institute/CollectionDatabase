@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Collection Database
+Comment=Entomological specimen collection manager
+# Adjust this absolute path to where you cloned the repository.
+Exec=/bin/bash -lc "$HOME/CollectionDatabase/collection-tray.sh"
+Icon=/home/USER/CollectionDatabase/app/static/collection_icon.png
+Terminal=false
+Categories=Science;Database;
