@@ -38,6 +38,7 @@ app.add_media_files("/media", media_dir())
 import app.services.person_defaults as pd_svc
 import app.services.events as ev_svc
 import app.services.db_safety as db_safety
+import app.services.launcher as launcher
 from app.services.label_text import format_event_preview_html
 from app.models import CollectionObject, CollectingEvent, TaxonDetermination
 from app.ui.taxon_search import build_taxon_search
@@ -314,15 +315,17 @@ def index():
     </script>""")
 
     # ── Favicons ─────────────────────────────────────────────────────────
-    # SVG for the browser tab (vector, sharp at any size), plus an explicit,
-    # correctly-typed RASTER PNG for the app-window / taskbar icon. A Chromium
-    # `--app` window (launch mode "app") derives its window icon from a raster
-    # favicon fetched AFTER the window opens; with only an SVG declared it often
-    # can't rasterize one in time and keeps a generated monogram placeholder (the
-    # intermittent "white W in a yellow circle"). A sized PNG at a stable /static
-    # URL gives it an unambiguous raster to use, making the icon deterministic.
+    # One raster PNG for every surface — the browser tab AND the Chromium `--app`
+    # window / taskbar icon. The SVG favicon was dropped deliberately: Chromium
+    # prefers it when setting the Wayland window icon, and our vector silhouette
+    # (beetle_blue.svg) sits ~41px left of centre, so the taskbar showed an
+    # off-centre beetle. The framed woodcut PNG is centred — it is the icon we
+    # want everywhere — and a sized PNG at a stable /static URL also gives Chromium
+    # an unambiguous raster, so the app-window icon is deterministic (no monogram
+    # placeholder while an SVG is rasterised). Cold-start icon determinism on
+    # Wayland is additionally pinned via the window class → .desktop match; see
+    # launcher.open_ui and desktop_entry.
     ui.add_head_html(
-        '<link rel="icon" type="image/svg+xml" href="/static/beetle_blue.svg">'
         '<link rel="icon" type="image/png" sizes="256x256" href="/static/collection_icon.png">'
         '<link rel="apple-touch-icon" href="/static/collection_icon.png">'
     )
@@ -1040,6 +1043,18 @@ def index():
                 ).classes("text-sm font-medium")
 
     ui.timer(0.1, _init_theme, once=True)
+
+    # ── App-mode fallback notice ─────────────────────────────────────────
+    # The launcher (in this same process) sets launcher.app_mode_fallback when
+    # "App window" was chosen but no Chromium-class browser was available, so it
+    # opened a plain tab instead. A system notification already fired; surface it
+    # in the app too, once (clear the flag so a reload doesn't repeat it).
+    _app_fb = launcher.app_mode_fallback
+    if _app_fb:
+        launcher.app_mode_fallback = None
+        ui.timer(0.6, lambda m=_app_fb: ui.notify(
+            m, type="warning", multi_line=True, timeout=12000, close_button="OK"),
+            once=True)
 
     # ── Sync TW biological relationships once per session (background) ───
     async def _bio_sync():
@@ -3603,13 +3618,28 @@ def index():
             ui.label(
                 "How the app opens on startup. Browser tab uses your default "
                 "browser. App window opens a chromeless, app-like window "
-                "(Edge/Chrome/Chromium) — still a real browser, so PDFs, media, "
-                "and the unsaved-changes guard all keep working. Takes effect the "
-                "next time you start the app."
+                "(Chrome/Chromium/Edge/Brave) — still a real browser, so PDFs, "
+                "media, and the unsaved-changes guard all keep working. Takes "
+                "effect the next time you start the app."
             ).classes("text-xs mb-2").style("color:var(--tp-base-soft)")
+
+            def _warn_if_no_app_browser(e) -> None:
+                # Warn the moment 'App window' is picked on a machine with no
+                # Chromium-class browser, so the user isn't surprised at next launch
+                # by a plain tab. Firefox has no --app equivalent, so it cannot
+                # provide app mode (see launcher).
+                if e.value == "app" and not launcher.chromium_available():
+                    ui.notify(
+                        "App window needs Chrome, Chromium, Edge or Brave — none is "
+                        "installed. The app will open in a browser tab until you "
+                        "install one.",
+                        type="warning", multi_line=True, timeout=10000,
+                        close_button="OK")
+
             launch_mode_toggle = ui.toggle(
                 {"tab": "Browser tab", "app": "App window"},
                 value=get_config().launch_mode,
+                on_change=_warn_if_no_app_browser,
             ).props("no-caps")
 
             ui.separator().classes("my-3")

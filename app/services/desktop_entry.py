@@ -69,6 +69,18 @@ def _render(repo: Path) -> str:
         f"Path={repo}\n"
         f"Icon={icon}\n"
         "Terminal=false\n"
+        # Wayland taskbar-icon fix. A chromeless Chromium `--app` window carries no
+        # per-window icon in the core Wayland protocol; KWin instead resolves the
+        # window's app_id to a .desktop file and shows its Icon=. Chromium derives
+        # that app_id from the URL *host* — measured as "chrome-127.0.0.1__-Default"
+        # for our fixed http://127.0.0.1:8080 front door, and identical for any
+        # other port (the port is not part of it); `--class` does NOT override it.
+        # Matching that exact string here makes KWin paint the centred woodcut the
+        # instant the window maps, instead of a generic monogram until the page
+        # favicon loads (which only happened after a server restart). Value is
+        # Chromium/Chrome-specific (Brave/Edge would differ); this install uses
+        # Chromium. Re-measure with a KWin script if the front-door URL host changes.
+        "StartupWMClass=chrome-127.0.0.1__-Default\n"
         "Categories=Science;Database;\n"
     )
 
