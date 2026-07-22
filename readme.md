@@ -76,5 +76,18 @@ run.py creates the database on first start and migrates it on every later start,
 - follow instructions. Installing all the dependencies can take a while.
 - You successfully installed the program! From now on, you can simply start it by **double-clicking `Collection.vbs`** — it launches the app with no console window, and **closing the app window shuts the server down** (with a desktop notification). If the app ever misbehaves, run `Start-Collection.bat` instead: it keeps a console window open with the logs so you can see what went wrong.
 
+### macOS
+- Install [Miniforge or Miniconda](https://www.anaconda.com/download/success), then open Terminal and set the project up once:
+
+```bash
+git clone https://github.com/curculio-institute/CollectionDatabase # or download the zip and extract it
+cd ./CollectionDatabase
+conda env create -f environment.yml # install dependencies (can take a while)
+```
+
+- From now on, start it by **double-clicking `Collection.command`** in Finder — it starts the app detached and closes its own Terminal window, so no console is left behind, and **closing the app window shuts the server down** (with a desktop notification).
+- **The first time**, macOS Gatekeeper may block a downloaded script ("unidentified developer"): **right-click `Collection.command` → Open** once to approve it. (If double-clicking does nothing, make it executable first: `chmod +x Collection.command` in Terminal.)
+- App-window mode needs a Chromium-based browser (Chrome, Chromium, Edge or Brave); with none installed the app opens in a normal tab instead and tells you so. For a verbose/debug run with logs in the terminal, run `python run.py` from a Terminal with the `collection` environment activated.
+
 ## First steps
 In settings, add the TaxonWorks and TaxonPages URLs and the API token. Add a collection under Controlled Vocabularies and mark it as the default collection in settings — it stamps every new specimen and gives the catalog numbers their prefix. If you record host plants, download the World Checklist of Vascular Plants from the settings as well.
