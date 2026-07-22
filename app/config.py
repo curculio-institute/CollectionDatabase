@@ -191,13 +191,15 @@ def get_config() -> AppConfig:
 def save_config(cfg: AppConfig) -> None:
     global _instance
     _instance = cfg
-    _CONFIG_PATH.write_text(json.dumps(asdict(cfg), indent=2))
+    # encoding is explicit so config.json round-trips identically on every platform
+    # (the Windows default is cp1252, which would choke on any non-ASCII value).
+    _CONFIG_PATH.write_text(json.dumps(asdict(cfg), indent=2), encoding="utf-8")
 
 
 def _load() -> AppConfig:
     if _CONFIG_PATH.exists():
         try:
-            data = json.loads(_CONFIG_PATH.read_text())
+            data = json.loads(_CONFIG_PATH.read_text(encoding="utf-8"))
             return AppConfig(**{k: v for k, v in data.items() if k in AppConfig.__dataclass_fields__})
         except Exception:
             pass

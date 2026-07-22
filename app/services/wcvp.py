@@ -769,6 +769,9 @@ def write_readme(folder: Path, report: BuildReport, *, archive: Path, source: st
     was copied from. A provenance note that misstates provenance is worse than none.
     """
     path = folder / "README.md"
+    # encoding is explicit: the template carries '→'/'—', and the platform default is
+    # cp1252 on Windows, which cannot encode them (UnicodeEncodeError → install aborts
+    # after the index is already built, misreported to the user as "Install failed").
     path.write_text(_README.format(
         label=report.meta.label,
         source=source,
@@ -781,7 +784,7 @@ def write_readme(folder: Path, report: BuildReport, *, archive: Path, source: st
         refused=report.refused,
         citation=report.meta.citation,
         license=WCVP_LICENSE,
-    ))
+    ), encoding="utf-8")
     return path
 
 

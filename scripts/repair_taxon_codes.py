@@ -24,6 +24,14 @@ import sqlite3
 import sys
 from pathlib import Path
 
+# This CLI prints '→'. A default Windows console is cp850/cp1252, which cannot
+# encode it, so print() would raise a fatal UnicodeEncodeError. Force UTF-8 output.
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8")  # type: ignore[union-attr]
+    except (AttributeError, ValueError):
+        pass
+
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from app.services.taxa import TAXON_RANKS

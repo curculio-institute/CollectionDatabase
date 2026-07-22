@@ -19,6 +19,15 @@ import argparse
 import sys
 from pathlib import Path
 
+# This CLI prints '→'/'…'/'—'. A default Windows console is cp850/cp1252, which
+# cannot encode them, so print() would raise UnicodeEncodeError (fatal here — after
+# the whole index build finishes, at the final report). Force UTF-8 output.
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8")  # type: ignore[union-attr]
+    except (AttributeError, ValueError):
+        pass
+
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from app import config

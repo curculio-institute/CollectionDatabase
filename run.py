@@ -12,10 +12,22 @@ run omits it, so a developer's reloads and tab-closes never kill the server.
 """
 import argparse
 import logging
+import sys
 from pathlib import Path
 # Alias NiceGUI's `app`: a later `import app.ui.main` binds the name `app` to our
 # own top-level package, which would shadow this and break `app.on_startup` below.
 from nicegui import ui, app as ng_app
+
+# Log lines carry '—'/'…'/'→' (see the service modules). A default Windows console
+# is cp850/cp1252, which cannot encode them, so every such record would trip a
+# "--- Logging error ---" traceback in the StreamHandler. Force UTF-8 so the visible
+# launcher (Start-Collection.bat) shows clean logs; a no-op where stdout is UTF-8 or
+# absent (pythonw front door).
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8")  # type: ignore[union-attr]
+    except (AttributeError, ValueError):
+        pass
 
 logging.basicConfig(level=logging.INFO)
 
