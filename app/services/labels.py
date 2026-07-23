@@ -945,8 +945,11 @@ def preview_css(borders: dict[str, str] | None = None) -> str:
     # The preview is an actual A4 PAGE: same size + margin as the print @page, on white
     # paper with a drop shadow, so it reads as the printed sheet (not a bare strip of
     # labels). The labels flow inside exactly as they paginate.
+    # Pin black text on the white paper: the preview is embedded in the app page, so
+    # in dark mode it would otherwise inherit the theme's light text colour and render
+    # white-on-white. The print PDF defaults to black and needs no such rule.
     css += (f"\n{_PREVIEW_SCOPE} {{ width: 210mm; min-height: 297mm; padding: 5mm;"
-            f" background: #fff; box-shadow: 0 2px 12px rgba(0,0,0,.30); }}\n")
+            f" background: #fff; color: #000; box-shadow: 0 2px 12px rgba(0,0,0,.30); }}\n")
     return css
 
 
