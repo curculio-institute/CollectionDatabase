@@ -25,6 +25,7 @@ import app.services.biological as bio_svc
 import app.services.media as media_svc
 import app.services.external_ids as extid_svc
 import app.services.life_stage as ls_svc
+import app.services.print_queue as pq_svc
 from app.services.taxa import format_scientific_name
 from app.services.label_text import format_place
 
@@ -176,8 +177,28 @@ def build_specimen_sheet(session_factory, co_id: int, *, on_edit, on_open_event=
             "n_here": sp_svc_count(s, ev.id) if ev else 0,
         }
 
+    def _reprint():
+        # Queue a full reprint of this saved specimen (#38): locality + identifier +
+        # one label per identification. Grouped under "Reprint" in the queue, where the
+        # user reviews/prunes/prints. Does not touch the record — only stages labels.
+        try:
+            with session_factory() as s:
+                with s.begin():
+                    summ = pq_svc.reprint_specimen(s, co_id)
+        except Exception as exc:
+            ui.notify(f"Reprint failed: {exc}", type="negative")
+            return
+        if summ.total == 0:
+            ui.notify("Nothing to reprint for this specimen.", type="warning")
+            return
+        ui.notify(
+            f"Queued {summ.total} label{'s' if summ.total != 1 else ''} for reprint — "
+            "open the Print queue tab to review and print.",
+            type="positive")
+
     _render_specimen(ident, curatorial, det_hist, assocs, life_stages, ext_ids, media,
-                     place, ev_data, on_edit=on_edit, on_open_event=on_open_event)
+                     place, ev_data, on_edit=on_edit, on_open_event=on_open_event,
+                     on_reprint=_reprint)
 
 
 def sp_svc_count(session, ev_id: int) -> int:
@@ -315,7 +336,7 @@ def _render_event(place, ev, detail, media, specimens, nearby, *,
 
 
 def _render_specimen(ident, curatorial, det_hist, assocs, life_stages, ext_ids, media,
-                     place, ev, *, on_edit, on_open_event) -> None:
+                     place, ev, *, on_edit, on_open_event, on_reprint=None) -> None:
     # ── identity banner ──
     with ui.card().classes("w-full shadow-sm"):
         with ui.row().classes("items-start gap-3 w-full no-wrap"):
@@ -333,7 +354,13 @@ def _render_specimen(ident, curatorial, det_hist, assocs, life_stages, ext_ids, 
                 ui.html(f'<span class="rs-cat">{_html.escape(ident["catalog"])}</span>'
                         f'  ·  <span class="rsheet-muted">{_html.escape(ident["collection"] or "")}</span>'
                         f'  {det}  {lock}')
-            ui.button("Edit", icon="edit", on_click=on_edit).props("no-caps unelevated")
+            with ui.row().classes("items-center gap-2 shrink-0"):
+                ui.button("Edit", icon="edit", on_click=on_edit).props("no-caps unelevated")
+                if on_reprint:
+                    ui.button("Reprint", icon="print", on_click=on_reprint) \
+                        .props("no-caps outline") \
+                        .tooltip("Add this specimen's labels — locality, identifier and "
+                                 "every identification — to the print queue")
 
     # ── two zones: left (media / determinations / ecology) · right (where·when / curatorial) ──
     with ui.row().classes("w-full gap-4 items-start"):

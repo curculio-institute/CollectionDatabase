@@ -30,8 +30,18 @@ class PrintQueue(Base, TimestampMixin):
         Integer, ForeignKey("label_code.id", ondelete="CASCADE"), nullable=True
     )
 
-    collection_object = relationship("CollectionObject")
-    label_code        = relationship("LabelCode")
+    # Which identification a 'determination' row prints. NULL → the specimen's
+    # *current* determination (every create path; unchanged). Set only by the Records
+    # reprint (#38), which reproduces EVERY identification a specimen carries — each
+    # as its own row pinned to a specific taxon_determination. FK ON DELETE CASCADE
+    # (migration 0066): deleting an identification drops any queued reprint of it.
+    taxon_determination_id: Mapped[Optional[int]] = mapped_column(
+        Integer, ForeignKey("taxon_determination.id", ondelete="CASCADE"), nullable=True
+    )
+
+    collection_object  = relationship("CollectionObject")
+    label_code         = relationship("LabelCode")
+    taxon_determination = relationship("TaxonDetermination")
 
     __table_args__ = (
         CheckConstraint(

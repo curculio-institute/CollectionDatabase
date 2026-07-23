@@ -58,10 +58,14 @@ def enqueue_data(
 def enqueue_determination(
     session: Session, collection_object_id: int,
     *, print_group_id: int | None = None, source: str | None = None,
+    taxon_determination_id: int | None = None,
 ) -> None:
+    # taxon_determination_id pins the row to a specific identification (Records
+    # reprint, #38); None → the specimen's current determination (create paths).
     session.add(PrintQueue(
         label_type="determination",
         collection_object_id=collection_object_id,
+        taxon_determination_id=taxon_determination_id,
         print_group_id=print_group_id, source=source,
         created_at=_utcnow(), updated_at=_utcnow(),
     ))
@@ -163,10 +167,18 @@ def _co_to_data_label(co: CollectionObject, text_override: str | None = None) ->
     )
 
 
-def _co_to_det_label(co: CollectionObject, text_override: str | None = None) -> lbl.DeterminationLabel | None:
-    det = next((d for d in co.determinations if d.is_current), None)
+def _co_to_det_label(
+    co: CollectionObject, text_override: str | None = None,
+    det: TaxonDetermination | None = None,
+) -> lbl.DeterminationLabel | None:
+    """Render a specimen's determination label. ``det`` names WHICH identification to
+    render (Records reprint, #38, where a specimen reprints *every* determination);
+    when None, falls back to the specimen's *current* determination (every create
+    path, unchanged)."""
+    if det is None:
+        det = next((d for d in co.determinations if d.is_current), None)
     if not det or not det.taxon:
-        # No current identification → no auto text. But an override is print-only text that does
+        # No identification → no auto text. But an override is print-only text that does
         # not need a determination behind it (the user is writing the name by hand), and it used
         # to be dropped here, so a stored edit never reached the paper (#67). Carry it through.
         if lbl.canonical_override(text_override):
@@ -222,11 +234,20 @@ def queued_groups(session: Session) -> list[lbl.LabelGroup]:
                 _co_to_data_label(row.collection_object)))
             col.co_id = row.collection_object_id
         elif row.label_type == "determination" and row.collection_object:
-            ckey = ("co", row.collection_object_id)
+            det = row.taxon_determination  # a pinned identification (reprint) or None → current
+            co_key = ("co", row.collection_object_id)
+            # First determination to land fills the specimen column's determination band;
+            # further ones (a reprint reproduces EVERY identification) each take their own
+            # column so they don't overwrite each other. A single-ID specimen (every create
+            # path) still renders as one column, exactly as before.
+            if co_key in columns and columns[co_key].determination is not None:
+                ckey = ("det", row.taxon_determination_id or row.id)
+            else:
+                ckey = co_key
             col = columns.setdefault(ckey, lbl.SpecimenLabels())
-            col.determination = _co_to_det_label(row.collection_object, row.text_override)
+            col.determination = _co_to_det_label(row.collection_object, row.text_override, det)
             col.det_qid = row.id
-            _auto_dl = _co_to_det_label(row.collection_object)
+            _auto_dl = _co_to_det_label(row.collection_object, det=det)
             _auto = lbl.label_plaintext(_auto_dl) if _auto_dl else ""
             col.det_ident = _ident(_auto) if _auto else None
             col.co_id = row.collection_object_id
@@ -262,7 +283,7 @@ def _row_auto_identity(row: PrintQueue) -> str | None:
     if row.label_type == "data" and row.collection_object:
         return _ident(lbl.label_plaintext(_co_to_data_label(row.collection_object)))
     if row.label_type == "determination" and row.collection_object:
-        dl = _co_to_det_label(row.collection_object)
+        dl = _co_to_det_label(row.collection_object, det=row.taxon_determination)
         return _ident(lbl.label_plaintext(dl)) if dl else None
     return None
 
@@ -309,9 +330,16 @@ def preview_model(session: Session) -> list[dict]:
             col["co_id"] = co.id
         elif row.label_type == "determination" and row.collection_object:
             co = row.collection_object
-            col = _col(("co", row.collection_object_id))
-            dl = _co_to_det_label(co)
-            dl_ov = _co_to_det_label(co, row.text_override)
+            det = row.taxon_determination  # pinned identification (reprint) or None → current
+            co_key = ("co", row.collection_object_id)
+            # Same first-fills-the-column rule as queued_groups, so the preview matches
+            # the printed sheet when a specimen carries several identifications.
+            if co_key in cols and cols[co_key]["det_qid"] is not None:
+                col = _col(("det", row.taxon_determination_id or row.id))
+            else:
+                col = _col(co_key)
+            dl = _co_to_det_label(co, det=det)
+            dl_ov = _co_to_det_label(co, row.text_override, det)
             auto = lbl.label_plaintext(dl) if dl else ""
             col["det_auto"] = auto or "—"
             col["det"] = row.text_override if row.text_override is not None else (auto or "—")
@@ -346,7 +374,7 @@ def row_auto_html(session: Session, queue_id: int) -> str:
     if row.label_type == "data":
         return lbl.label_auto_html(_co_to_data_label(row.collection_object))
     if row.label_type == "determination":
-        dl = _co_to_det_label(row.collection_object)
+        dl = _co_to_det_label(row.collection_object, det=row.taxon_determination)
         return lbl.label_auto_html(dl) if dl else ""
     return ""
 
@@ -360,9 +388,63 @@ def row_current_html(session: Session, queue_id: int) -> str:
     if row.label_type == "data":
         return lbl._data_inner_html(_co_to_data_label(row.collection_object, row.text_override))
     if row.label_type == "determination":
-        dl = _co_to_det_label(row.collection_object, row.text_override)
+        dl = _co_to_det_label(row.collection_object, row.text_override, row.taxon_determination)
         return lbl._det_inner_html(dl) if dl else ""
     return ""
+
+
+def reprint_specimen(session: Session, co_id: int) -> QueueSummary:
+    """Queue a full reprint of one already-saved specimen (#38): its data (locality)
+    label, its identifier label, and one determination label per **identification**
+    the specimen carries — not just the current one. All land in one group under the
+    "Reprint" header, so they print adjacent and can be pruned individually in the
+    Print-queue tab. Returns what was queued.
+
+    Reuses the same three renderers as every other create path (no new label type);
+    a determination row is pinned to its specific `taxon_determination` so each
+    identification prints as its own label. Skips nothing silently — the identifier
+    is only queued if the specimen has a bound code (a visiting-mode specimen has a
+    foreign catalog number and no reserved code, so there is no identifier to reprint),
+    and the data label only when the specimen has a collecting event.
+    """
+    co = session.get(CollectionObject, co_id)
+    if co is None:
+        raise ValueError(f"Specimen #{co_id} not found.")
+
+    gid = next_print_group_id(session)
+    n_data = n_id = n_det = 0
+
+    if co.collecting_event_id:
+        enqueue_data(session, co_id, print_group_id=gid, source=SOURCE_REPRINT)
+        n_data = 1
+
+    lc = (
+        session.query(LabelCode)
+        .filter(LabelCode.collection_object_id == co_id)
+        .order_by(LabelCode.created_at)
+        .first()
+    )
+    if lc is not None:
+        enqueue_identifier(session, lc.id, print_group_id=gid, source=SOURCE_REPRINT)
+        n_id = 1
+
+    # Current identification first, so it fills the specimen's determination band and
+    # the older ones spill into their own columns beside it.
+    dets = (
+        session.query(TaxonDetermination)
+        .filter(TaxonDetermination.collection_object_id == co_id)
+        .order_by(TaxonDetermination.is_current.desc(), TaxonDetermination.id)
+        .all()
+    )
+    for d in dets:
+        enqueue_determination(
+            session, co_id, print_group_id=gid, source=SOURCE_REPRINT,
+            taxon_determination_id=d.id,
+        )
+        n_det += 1
+
+    session.flush()
+    return QueueSummary(n_data=n_data, n_determination=n_det, n_identifier=n_id)
 
 
 def remove_specimen(session: Session, co_id: int) -> int:
