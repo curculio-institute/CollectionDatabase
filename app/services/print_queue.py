@@ -419,7 +419,17 @@ def reprint_specimen(session: Session, co_id: int) -> QueueSummary:
     if co is None:
         raise ValueError(f"Specimen #{co_id} not found.")
 
-    gid = next_print_group_id(session)
+    # All reprints share ONE "Reprint" group on the sheet: reuse the existing reprint
+    # group if there is one, so reprinting several specimens tiles them side by side
+    # under a single header rather than making a new group per click.
+    existing = (
+        session.query(PrintQueue.print_group_id)
+        .filter(PrintQueue.source == SOURCE_REPRINT,
+                PrintQueue.print_group_id.isnot(None))
+        .order_by(PrintQueue.print_group_id.desc())
+        .first()
+    )
+    gid = existing[0] if existing else next_print_group_id(session)
     n_data = n_id = n_det = 0
 
     if co.collecting_event_id:
