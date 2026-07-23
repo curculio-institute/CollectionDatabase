@@ -75,6 +75,12 @@ class AppConfig:
     label_border_determination: str = "black"
     label_border_identifier: str = "black"
 
+    # Sheet paper size for the grouped label print sheet. "A4" (210×297 mm, the
+    # world default) or "Letter" (216×279 mm, US/Canada/Mexico). The label geometry
+    # (18 mm cells, 10 per row) is unchanged — only the page @size differs, so labels
+    # tile onto whichever sheet the user's printer holds. See labels.PAPER_SIZES.
+    paper_format: str = "A4"
+
     # Folder holding the offline plant-name backbone: Kew's downloaded Darwin Core Archive,
     # the SQLite index built from it, and a README recording where both came from. Relative
     # paths resolve against data/; "" → data/wcvp. Neither file is the specimen DB — the index

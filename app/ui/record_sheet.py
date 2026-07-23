@@ -25,6 +25,7 @@ import app.services.biological as bio_svc
 import app.services.media as media_svc
 import app.services.external_ids as extid_svc
 import app.services.life_stage as ls_svc
+import app.services.print_queue as pq_svc
 from app.services.taxa import format_scientific_name
 from app.services.label_text import format_place
 
@@ -176,8 +177,33 @@ def build_specimen_sheet(session_factory, co_id: int, *, on_edit, on_open_event=
             "n_here": sp_svc_count(s, ev.id) if ev else 0,
         }
 
+    with session_factory() as s:
+        already_queued = pq_svc.specimen_in_queue(s, co_id)
+
+    def _reprint() -> bool:
+        # Queue a full reprint of this saved specimen (#38): locality + identifier +
+        # one label per identification. Grouped under "Reprint" in the queue, where the
+        # user reviews/prunes/prints. Does not touch the record — only stages labels.
+        # Returns True on success so the button can disable itself (now already queued).
+        try:
+            with session_factory() as s:
+                with s.begin():
+                    summ = pq_svc.reprint_specimen(s, co_id)
+        except Exception as exc:
+            ui.notify(f"Reprint failed: {exc}", type="negative")
+            return False
+        if summ.total == 0:
+            ui.notify("Nothing to reprint for this specimen.", type="warning")
+            return False
+        ui.notify(
+            f"Queued {summ.total} label{'s' if summ.total != 1 else ''} for reprint — "
+            "open the Print queue tab to review and print.",
+            type="positive")
+        return True
+
     _render_specimen(ident, curatorial, det_hist, assocs, life_stages, ext_ids, media,
-                     place, ev_data, on_edit=on_edit, on_open_event=on_open_event)
+                     place, ev_data, on_edit=on_edit, on_open_event=on_open_event,
+                     on_reprint=_reprint, already_queued=already_queued)
 
 
 def sp_svc_count(session, ev_id: int) -> int:
@@ -315,7 +341,8 @@ def _render_event(place, ev, detail, media, specimens, nearby, *,
 
 
 def _render_specimen(ident, curatorial, det_hist, assocs, life_stages, ext_ids, media,
-                     place, ev, *, on_edit, on_open_event) -> None:
+                     place, ev, *, on_edit, on_open_event, on_reprint=None,
+                     already_queued=False) -> None:
     # ── identity banner ──
     with ui.card().classes("w-full shadow-sm"):
         with ui.row().classes("items-start gap-3 w-full no-wrap"):
@@ -333,7 +360,29 @@ def _render_specimen(ident, curatorial, det_hist, assocs, life_stages, ext_ids, 
                 ui.html(f'<span class="rs-cat">{_html.escape(ident["catalog"])}</span>'
                         f'  ·  <span class="rsheet-muted">{_html.escape(ident["collection"] or "")}</span>'
                         f'  {det}  {lock}')
-            ui.button("Edit", icon="edit", on_click=on_edit).props("no-caps unelevated")
+            with ui.row().classes("items-center gap-2 shrink-0"):
+                ui.button("Edit", icon="edit", on_click=on_edit).props("no-caps unelevated")
+                if on_reprint:
+                    # The tooltip lives on a wrapper, not the button: a disabled Quasar
+                    # button swallows hover, so a tooltip on the button itself would not
+                    # show once it greys out. One tooltip, text updated in place (calling
+                    # .tooltip() twice would stack two that both show on hover).
+                    with ui.element("div").classes("inline-flex"):
+                        reprint_btn = ui.button("Reprint", icon="print").props("no-caps outline")
+                        reprint_tip = ui.tooltip("")
+
+                    def _set_reprint_disabled(disabled: bool):
+                        reprint_btn.set_enabled(not disabled)
+                        reprint_tip.set_text(
+                            "Already in the print queue" if disabled
+                            else "Reprint this specimen's labels")
+
+                    def _do_reprint():
+                        if on_reprint():           # queued OK → now already in the queue
+                            _set_reprint_disabled(True)
+
+                    reprint_btn.on("click", _do_reprint)
+                    _set_reprint_disabled(already_queued)
 
     # ── two zones: left (media / determinations / ecology) · right (where·when / curatorial) ──
     with ui.row().classes("w-full gap-4 items-start"):

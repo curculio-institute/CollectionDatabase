@@ -117,7 +117,7 @@ class TestDeterminationWithoutACurrentIdentification:
     def test_the_edit_is_actually_stored(self, session):
         co = self._specimen_without_det(session)
         row = self._det_row(session, co)
-        assert pq._row_auto_identity(row) is None      # no auto text to group by
+        assert pq._row_auto_identity(session, row) is None  # no auto text to group by
 
         n = pq.set_override_for_identical(session, row.id, "<div>Carabus sp.</div>")
         assert n == 1, "the edit was silently dropped"

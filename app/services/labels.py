@@ -151,8 +151,22 @@ def _border_decl(choice: str, backend: str = "weasyprint") -> str:
 # Shared base CSS
 # ---------------------------------------------------------------------------
 
+# Sheet paper sizes (portrait, w×h). The label geometry never changes — only which
+# page the labels tile onto. A4 is the world default; Letter is US/Canada/Mexico.
+# The @page size is injected per-render by _grouped_css (config.paper_format), and the
+# same dims size the on-screen preview page (.pq-sheet), so preview == print.
+PAPER_SIZES: dict[str, tuple[str, str]] = {
+    "A4":     ("210mm", "297mm"),
+    "Letter": ("216mm", "279mm"),
+}
+
+
+def paper_dims(paper: str | None) -> tuple[str, str]:
+    """(width, height) for a paper-format name; unknown/None falls back to A4."""
+    return PAPER_SIZES.get(paper or "A4", PAPER_SIZES["A4"])
+
+
 _BASE_CSS = _FONT_FACE_CSS + f"""
-@page {{ size: A4; margin: 5mm; }}
 * {{ box-sizing: border-box; margin: 0; padding: 0; }}
 body {{ font-family: {_FONT}; font-size: {_FONT_SIZE}; line-height: {_LINE_H};
        {_TEXT_METRICS} }}
@@ -762,12 +776,14 @@ class LabelGroup:
 # large gap between groups). Per-band borders come from config (AppConfig.label_border_*).
 
 def _grouped_css(borders: dict[str, str] | None = None,
-                 backend: str = "weasyprint") -> str:
+                 backend: str = "weasyprint", paper: str | None = None) -> str:
     borders = borders or {}
     bd = _border_decl(borders.get("data", "black"), backend)
     bt = _border_decl(borders.get("determination", "black"), backend)
     bi = _border_decl(borders.get("identifier", "black"), backend)
+    pw, ph = paper_dims(paper)
     return _BASE_CSS + _ID_TEXT_CSS + f"""
+@page {{ size: {pw} {ph}; margin: 5mm; }}
 .printed-at {{ font-size: 5pt; color: #666; margin-bottom: 3mm; }}
 .group {{ display: inline-block; vertical-align: top; line-height: {_LINE_H}; margin: 0 {_GROUP_GAP} {_GROUP_GAP} 0; }}
 /* A big identifier-only grid must span pages: an inline-block box is atomic (never splits),
@@ -902,10 +918,11 @@ def _group_html(group: LabelGroup, names: dict[str, str] | None = None,
 def _grouped_html(groups: list[LabelGroup], printed_at: str,
                   names: dict[str, str] | None = None,
                   borders: dict[str, str] | None = None,
-                  backend: str = "weasyprint", editable: bool = False) -> str:
+                  backend: str = "weasyprint", editable: bool = False,
+                  paper: str | None = None) -> str:
     body = "".join(_group_html(g, names, editable) for g in groups if g.specimens)
     stamp = f'<div class="printed-at">Printed: {_e(printed_at)}</div>'
-    return (f"<html><head><style>{_grouped_css(borders, backend)}</style></head>"
+    return (f"<html><head><style>{_grouped_css(borders, backend, paper)}</style></head>"
             f'<body>{stamp}<div class="sheet">{body}</div></body></html>')
 
 
@@ -927,11 +944,12 @@ def _grouped_html(groups: list[LabelGroup], printed_at: str,
 _PREVIEW_SCOPE = ".pq-sheet"
 
 
-def preview_css(borders: dict[str, str] | None = None) -> str:
+def preview_css(borders: dict[str, str] | None = None,
+                paper: str | None = None) -> str:
     """The label CSS, scoped for safe inline embedding in the app page."""
     # Browsers render the box-shadow hairline (the 'chromium' border variant), same as
     # the Chromium print backend — so preview and print match.
-    css = _grouped_css(borders, "chromium")
+    css = _grouped_css(borders, "chromium", paper)
     # Drop @page (no meaning on screen).
     css = _re.sub(r"@page\s*\{[^}]*\}", "", css)
     # The @font-face URLs are file:// (for headless print). A browser loading the app
@@ -942,11 +960,15 @@ def preview_css(borders: dict[str, str] | None = None) -> str:
     css = css.replace("* { box-sizing: border-box; margin: 0; padding: 0; }",
                       f"{_PREVIEW_SCOPE} * {{ box-sizing: border-box; margin: 0; padding: 0; }}")
     css = css.replace("body {", f"{_PREVIEW_SCOPE} {{", 1)
-    # The preview is an actual A4 PAGE: same size + margin as the print @page, on white
-    # paper with a drop shadow, so it reads as the printed sheet (not a bare strip of
-    # labels). The labels flow inside exactly as they paginate.
-    css += (f"\n{_PREVIEW_SCOPE} {{ width: 210mm; min-height: 297mm; padding: 5mm;"
-            f" background: #fff; box-shadow: 0 2px 12px rgba(0,0,0,.30); }}\n")
+    # The preview is an actual PAGE at the chosen paper size: same dims + margin as the
+    # print @page, on white paper with a drop shadow, so it reads as the printed sheet
+    # (not a bare strip of labels). The labels flow inside exactly as they paginate.
+    # Pin black text on the white paper: the preview is embedded in the app page, so
+    # in dark mode it would otherwise inherit the theme's light text colour and render
+    # white-on-white. The print PDF defaults to black and needs no such rule.
+    pw, ph = paper_dims(paper)
+    css += (f"\n{_PREVIEW_SCOPE} {{ width: {pw}; min-height: {ph}; padding: 5mm;"
+            f" background: #fff; color: #000; box-shadow: 0 2px 12px rgba(0,0,0,.30); }}\n")
     return css
 
 
@@ -964,15 +986,17 @@ def preview_html(groups: list[LabelGroup], printed_at: str,
 def grouped_sheet(groups: list[LabelGroup], printed_at: str,
                   names: dict[str, str] | None = None,
                   borders: dict[str, str] | None = None,
-                  backend: str = "weasyprint") -> bytes:
+                  backend: str = "weasyprint", paper: str | None = None) -> bytes:
     """Render queued labels as a grouped, column-aligned sheet (see module note).
 
     ``names`` maps collection code → full name for the identifier band (#56).
     ``borders`` maps ``"data"``/``"determination"``/``"identifier"`` → ``"black"``
     | ``"none"`` (AppConfig.label_border_*); default black.
     ``backend`` selects the renderer (``"weasyprint"`` | ``"chromium"``); the HTML
-    is identical either way (see ``pdf_backend.render_pdf``)."""
+    is identical either way (see ``pdf_backend.render_pdf``).
+    ``paper`` selects the sheet size (``"A4"`` | ``"Letter"``; AppConfig.paper_format)."""
     from app.services.pdf_backend import render_pdf
-    return render_pdf(_grouped_html(groups, printed_at, names, borders, backend), backend)
+    return render_pdf(
+        _grouped_html(groups, printed_at, names, borders, backend, paper=paper), backend)
 
 
