@@ -465,6 +465,20 @@ def reprint_specimen(session: Session, co_id: int) -> QueueSummary:
     return QueueSummary(n_data=n_data, n_determination=n_det, n_identifier=n_id)
 
 
+def specimen_in_queue(session: Session, co_id: int) -> bool:
+    """True if any label for this specimen is already queued — its data/determination
+    rows, or its identifier row via the code's collection_object. Drives the Records
+    'Reprint' button's already-queued disabled state."""
+    if (session.query(PrintQueue.id)
+            .filter(PrintQueue.collection_object_id == co_id).first()):
+        return True
+    return bool(
+        session.query(PrintQueue.id)
+        .join(LabelCode, PrintQueue.label_code_id == LabelCode.id)
+        .filter(LabelCode.collection_object_id == co_id).first()
+    )
+
+
 def remove_specimen(session: Session, co_id: int) -> int:
     """Remove every queued label belonging to one specimen (its data + determination
     rows, and its identifier row via the code's collection_object). Returns the count."""
