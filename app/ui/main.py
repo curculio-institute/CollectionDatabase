@@ -2548,7 +2548,7 @@ def index():
                         "data":          _pqcfg.label_border_data,
                         "determination": _pqcfg.label_border_determination,
                         "identifier":    _pqcfg.label_border_identifier,
-                    }) + "</style>")
+                    }, paper=_pqcfg.paper_format) + "</style>")
                     with ui.element("div").classes("pq-sheet-wrap mt-1"):
                         with ui.element("div").classes("pq-sheet-scale"):
                             preview_box = ui.html("").classes("w-full")
@@ -3644,6 +3644,20 @@ def index():
 
             ui.separator().classes("my-3")
 
+            # ── Paper format ──────────────────────────────────────────────
+            ui.label("Label sheet paper").classes("text-sm font-medium mb-1")
+            ui.label(
+                "The page size the label sheet prints on. A4 is the world default; "
+                "Letter is used in the US, Canada and Mexico. The labels themselves "
+                "are unchanged — only the page they tile onto."
+            ).classes("text-xs mb-2").style("color:var(--tp-base-soft)")
+            paper_format_toggle = ui.toggle(
+                {"A4": "A4", "Letter": "US Letter"},
+                value=get_config().paper_format,
+            ).props("no-caps")
+
+            ui.separator().classes("my-3")
+
             # ── Printed-label borders (per type) ──────────────────────────
             ui.label("Printed-label borders").classes("text-sm font-medium mb-1")
             ui.label(
@@ -3739,6 +3753,7 @@ def index():
                 cfg.digitize_layout       = digitize_layout_toggle.value or "normal"
                 cfg.launch_mode           = launch_mode_toggle.value or "tab"
                 cfg.default_license       = default_license_sel.value or ""
+                cfg.paper_format          = paper_format_toggle.value or "A4"
                 cfg.label_border_data          = label_border_data_tog.value or "black"
                 cfg.label_border_determination = label_border_det_tog.value or "black"
                 cfg.label_border_identifier    = label_border_id_tog.value or "black"

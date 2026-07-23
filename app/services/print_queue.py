@@ -434,7 +434,7 @@ def build_pdf(session: Session, printed_at: str | None = None) -> bytes:
     }
     return lbl.grouped_sheet(
         groups, printed_at or _utcnow(), repo_svc.name_map(session), borders,
-        backend="chromium")
+        backend="chromium", paper=cfg.paper_format)
 
 
 def preview_sheet(session: Session, printed_at: str | None = None) -> str:
