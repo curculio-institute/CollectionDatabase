@@ -138,12 +138,20 @@ def queue_summary(session: Session) -> QueueSummary:
 # PDF generation
 # ---------------------------------------------------------------------------
 
-def _co_to_data_label(co: CollectionObject, text_override: str | None = None) -> lbl.DataLabel:
+def _co_to_data_label(
+    session: Session, co: CollectionObject, text_override: str | None = None,
+) -> lbl.DataLabel:
+    # The host a specimen was collected from is a biological association; the current
+    # model records it as a HumanObservation field occurrence, so its object is a
+    # field_occurrence, not a direct object_taxon. Resolve through the single owner
+    # (bio.association_host) — reading ba.object_taxon alone dropped every fo-backed
+    # host from the printed data label.
+    from app.services import biological as bio_svc
     ev = co.collecting_event
     assoc_names = [
-        ba.object_taxon.scientific_name
+        host[1]
         for ba in co.subject_associations
-        if ba.object_taxon
+        if (host := bio_svc.association_host(session, ba)) and host[1]
     ]
     return lbl.DataLabel(
         text_override            = text_override,
@@ -224,14 +232,14 @@ def queued_groups(session: Session) -> list[lbl.LabelGroup]:
         if row.label_type == "data" and row.collection_object:
             ckey = ("co", row.collection_object_id)
             col = columns.setdefault(ckey, lbl.SpecimenLabels())
-            col.data = _co_to_data_label(row.collection_object, row.text_override)
+            col.data = _co_to_data_label(session, row.collection_object, row.text_override)
             # Preview-only metadata (ignored by the print PDF): row id + identity of
             # the AUTO text so the WYSIWYG preview can click-map and group identical
             # labels. Identity is the auto (override-independent) text, matching
             # preview_model / set_override_for_identical.
             col.data_qid = row.id
             col.data_ident = _ident(lbl.label_plaintext(
-                _co_to_data_label(row.collection_object)))
+                _co_to_data_label(session, row.collection_object)))
             col.co_id = row.collection_object_id
         elif row.label_type == "determination" and row.collection_object:
             det = row.taxon_determination  # a pinned identification (reprint) or None → current
@@ -276,12 +284,12 @@ def _ident(text: str | None) -> str:
     return hashlib.md5((text or "").encode("utf-8")).hexdigest()[:12]
 
 
-def _row_auto_identity(row: PrintQueue) -> str | None:
+def _row_auto_identity(session: Session, row: PrintQueue) -> str | None:
     """Identity of a data/determination row's AUTO label text (override-independent),
     so identical labels group together for hover-highlight and batch edit. None for
     identifier rows / rows with no renderable label."""
     if row.label_type == "data" and row.collection_object:
-        return _ident(lbl.label_plaintext(_co_to_data_label(row.collection_object)))
+        return _ident(lbl.label_plaintext(_co_to_data_label(session, row.collection_object)))
     if row.label_type == "determination" and row.collection_object:
         dl = _co_to_det_label(row.collection_object, det=row.taxon_determination)
         return _ident(lbl.label_plaintext(dl)) if dl else None
@@ -319,8 +327,8 @@ def preview_model(session: Session) -> list[dict]:
         if row.label_type == "data" and row.collection_object:
             co = row.collection_object
             col = _col(("co", row.collection_object_id))
-            auto = lbl.label_plaintext(_co_to_data_label(co))
-            dl = _co_to_data_label(co, row.text_override)
+            auto = lbl.label_plaintext(_co_to_data_label(session, co))
+            dl = _co_to_data_label(session, co, row.text_override)
             col["data_auto"] = auto
             col["data"] = row.text_override if row.text_override is not None else auto
             col["data_html"] = lbl._data_inner_html(dl)
@@ -372,7 +380,7 @@ def row_auto_html(session: Session, queue_id: int) -> str:
     if row is None or not row.collection_object:
         return ""
     if row.label_type == "data":
-        return lbl.label_auto_html(_co_to_data_label(row.collection_object))
+        return lbl.label_auto_html(_co_to_data_label(session, row.collection_object))
     if row.label_type == "determination":
         dl = _co_to_det_label(row.collection_object, det=row.taxon_determination)
         return lbl.label_auto_html(dl) if dl else ""
@@ -386,7 +394,7 @@ def row_current_html(session: Session, queue_id: int) -> str:
     if row is None or not row.collection_object:
         return ""
     if row.label_type == "data":
-        return lbl._data_inner_html(_co_to_data_label(row.collection_object, row.text_override))
+        return lbl._data_inner_html(_co_to_data_label(session, row.collection_object, row.text_override))
     if row.label_type == "determination":
         dl = _co_to_det_label(row.collection_object, row.text_override, row.taxon_determination)
         return lbl._det_inner_html(dl) if dl else ""
@@ -484,7 +492,7 @@ def set_override_for_identical(session: Session, queue_id: int, text: str | None
         return 0
 
     value = lbl.canonical_override(text)
-    target = _row_auto_identity(row)
+    target = _row_auto_identity(session, row)
 
     if target is None:
         # No auto text → no group. Edit this row alone (previously: silently dropped).
@@ -495,7 +503,7 @@ def set_override_for_identical(session: Session, queue_id: int, text: str | None
 
     n = 0
     for r in session.query(PrintQueue).filter(PrintQueue.label_type == row.label_type).all():
-        if _row_auto_identity(r) == target:
+        if _row_auto_identity(session, r) == target:
             r.text_override = value
             r.updated_at = _utcnow()
             n += 1
