@@ -361,6 +361,14 @@ def index():
       .pq-tools button { border:none; background:none; cursor:pointer; font-size:14px;
                     line-height:1; padding:3px 6px; border-radius:4px; color:var(--tp-base); }
       .pq-tools button:hover { background:var(--tp-base-border); }
+      /* remove-choice menu off the ✕ (this label vs. every label for the specimen) */
+      .pq-remove-menu { position:fixed; z-index:10000; display:none; flex-direction:column;
+                    background:var(--tp-base-foreground); border:1px solid var(--tp-base-border);
+                    border-radius:6px; padding:3px; box-shadow:0 2px 10px rgba(0,0,0,.2); }
+      .pq-remove-menu button { border:none; background:none; cursor:pointer; font-size:12px;
+                    text-align:left; white-space:nowrap; padding:5px 9px; border-radius:4px;
+                    color:var(--tp-base); }
+      .pq-remove-menu button:hover { background:var(--tp-base-border); }
       .pq-zoombar { display:flex; align-items:center; gap:6px; }
       /* larger label editor dialog: a readable WYSIWYG area + raw-HTML source */
       .pq-dlg-editor  { min-height:120px; border:1px solid var(--tp-base-border);
@@ -396,26 +404,55 @@ def index():
           emitEvent('pq_edit', { qid: el.getAttribute('data-qid'), html: el.innerHTML });
         }
       }, true);
-      // Floating hover toolbar: edit (data/det only) / open-in-Records / remove specimen.
-      var tools=null, hideT=null;
+      // Floating hover toolbar: edit (data/det only) / open-in-Records / remove (menu).
+      var tools=null, hideT=null, rmenu=null;
+      // The ✕ opens a small menu so the user chooses WHAT to remove — this one label,
+      // or every label for the specimen — instead of one click nuking the whole stack.
+      function mkMenu(){
+        if(rmenu) return rmenu;
+        rmenu=document.createElement('div'); rmenu.className='pq-remove-menu';
+        rmenu.innerHTML='<button data-r="one">Remove this label</button>'+
+                        '<button data-r="co">Remove all labels for this specimen</button>';
+        document.body.appendChild(rmenu);
+        rmenu.addEventListener('mousedown', function(ev){ ev.preventDefault(); });
+        rmenu.addEventListener('mouseover', function(){ if(hideT){clearTimeout(hideT);hideT=null;} });
+        rmenu.addEventListener('mouseout',  function(){ hideT=setTimeout(hideTools,250); });
+        rmenu.addEventListener('click', function(ev){
+          var b=ev.target.closest('button'); if(!b) return;
+          _tpEmit('pq_tool', {action: b.getAttribute('data-r')==='co' ? 'remove_co' : 'remove_one',
+                              qid: tools&&tools._qid||'', co: tools&&tools._co||''});
+          hideTools();
+        });
+        return rmenu;
+      }
+      function showMenu(){
+        var m=mkMenu(), rb=tools.querySelector('[data-a="remove"]');
+        var r=rb.getBoundingClientRect();
+        m.style.left=Math.max(4, r.left)+'px'; m.style.top=(r.bottom+2)+'px';
+        // "Remove all for specimen" only applies when the label belongs to a specimen
+        // (a reserved-code identifier standing alone has none).
+        m.querySelector('[data-r="co"]').style.display = tools._co ? '' : 'none';
+        m.style.display='flex';
+      }
       function mkTools(){
         if(tools) return tools;
         tools=document.createElement('div'); tools.className='pq-tools';
         tools.innerHTML='<button data-a="edit" title="Larger editor (formatting)">&#x2922;</button>'+
                         '<button data-a="records" title="Open specimen in Records">&#x2197;</button>'+
-                        '<button data-a="remove" title="Remove this specimen from the queue">&#x2715;</button>';
+                        '<button data-a="remove" title="Remove label…">&#x2715;</button>';
         document.body.appendChild(tools);
         tools.addEventListener('mousedown', function(ev){ ev.preventDefault(); });
         tools.addEventListener('mouseover', function(){ if(hideT){clearTimeout(hideT);hideT=null;} });
         tools.addEventListener('mouseout',  function(){ hideT=setTimeout(hideTools,250); });
         tools.addEventListener('click', function(ev){
           var b=ev.target.closest('button'); if(!b) return;
-          _tpEmit('pq_tool', {action:b.getAttribute('data-a'),
-                              qid:tools._qid||'', co:tools._co||''});
+          var a=b.getAttribute('data-a');
+          if(a==='remove'){ showMenu(); return; }   // choose one-vs-all in the menu
+          _tpEmit('pq_tool', {action:a, qid:tools._qid||'', co:tools._co||''});
         });
         return tools;
       }
-      function hideTools(){ if(tools) tools.style.display='none'; }
+      function hideTools(){ if(tools) tools.style.display='none'; if(rmenu) rmenu.style.display='none'; }
       document.addEventListener('mouseover', function(e){
         var el=e.target.closest && e.target.closest('.pq-sheet [data-qid]');
         if(!el){ return; }
@@ -2609,13 +2646,18 @@ def index():
                         elif action == "edit" and qid:
                             seed = _with_session(lambda s: pq_svc.row_current_html(s, int(qid)))
                             _open_label_dialog(int(qid), seed)
-                        elif action == "remove":
+                        elif action == "remove_one" and qid:
+                            # Remove just this one label (row), leaving the specimen's
+                            # other labels queued.
                             with _sf() as session:
                                 with session.begin():
-                                    if co:
-                                        pq_svc.remove_specimen(session, int(co))
-                                    elif qid:
-                                        pq_svc.remove_item(session, int(qid))
+                                    pq_svc.remove_item(session, int(qid))
+                            _schedule_refresh()
+                        elif action == "remove_co" and co:
+                            # Remove every label for this specimen.
+                            with _sf() as session:
+                                with session.begin():
+                                    pq_svc.remove_specimen(session, int(co))
                             _schedule_refresh()
                     ui.on("pq_tool", _on_pq_tool)
 
