@@ -30,7 +30,7 @@ import app.services.taxonworks as tw_svc
 import app.services.wcvp as wcvp_svc
 import app.services.name_source as ns_svc
 import app.services.datasets as ds_svc
-from app.config import get_config, save_config, printed_pdf_dir, media_dir
+from app.config import get_config, reload_config, save_config, printed_pdf_dir, media_dir
 
 # Serve the managed media store so attached images/files render in the browser
 # (range-request aware → also handles audio/video). Registered once at import.
@@ -3788,9 +3788,13 @@ def index():
                     ui.notify("Select at least one nomenclatural code.", type="warning")
                     return
                 cfg = get_config()
-                cfg.tw_base               = tw_base_in.value.strip() or cfg.tw_base
+                # Stored exactly as typed — NO `or cfg.<old>` fallback. Falling back made
+                # these fields unclearable: blanking one silently re-saved the previous
+                # server/URL, so the app kept talking to a TaxonWorks the user had already
+                # moved away from. Empty means "not configured" (cfg.taxonworks_enabled).
+                cfg.tw_base               = tw_base_in.value.strip()
                 cfg.tw_token              = tw_token_in.value.strip()
-                cfg.taxonpages_base       = tp_base_in.value.strip() or cfg.taxonpages_base
+                cfg.taxonpages_base       = tp_base_in.value.strip()
                 cfg.map_default_layer     = map_layer_sel.value or "street"
                 cfg.digitize_layout       = digitize_layout_toggle.value or "normal"
                 cfg.launch_mode           = launch_mode_toggle.value or "tab"
@@ -3836,7 +3840,10 @@ def index():
                 ui.button("Save", on_click=_save_settings).props("color=secondary")
 
     def _open_settings():
-        cfg = get_config()
+        # Re-read from disk: the cached instance can be stale (edited on disk, or by a
+        # second window), and Save writes back every field — so seeding from the cache
+        # would both show and re-save values the file no longer holds.
+        cfg = reload_config()
         tw_base_in.value        = cfg.tw_base
         tw_token_in.value       = cfg.tw_token
         tp_base_in.value        = cfg.taxonpages_base

@@ -15,10 +15,24 @@ _CONFIG_PATH = _DATA_DIR / "config.json"
 
 @dataclass
 class AppConfig:
-    # TaxonWorks connection
+    # TaxonWorks connection. All three are stored EXACTLY as typed, empty included:
+    # a blank field means "not configured", never "keep the previous value" — a settings
+    # field the user cannot clear silently re-saves a stale server, which is how a token
+    # for one server ended up pointed at another (see taxonworks.TaxonWorksUnreachable).
     tw_base: str = "https://sfg.taxonworks.org/api/v1"
     tw_token: str = ""
     taxonpages_base: str = "https://catalog.curculionoidea.org"
+
+    @property
+    def taxonworks_enabled(self) -> bool:
+        """True when a project token is set — the gate for every TW-dependent surface.
+
+        A token is the credential that makes TW reachable at all, so the sync tab (#149)
+        is only built when one is present. A property, not a stored field, so it can never
+        drift out of sync with the token itself (dataclasses.asdict ignores properties, so
+        it is not persisted).
+        """
+        return bool(self.tw_token.strip() and self.tw_base.strip())
 
     # NOTE: the collection identity (collectionCode / institutionCode) is NOT stored here.
     # It is a property of the repositories vocab — the repository flagged is_default
@@ -191,6 +205,20 @@ def get_config() -> AppConfig:
     global _instance
     if _instance is None:
         _instance = _load()
+    return _instance
+
+
+def reload_config() -> AppConfig:
+    """Re-read config.json from disk, replacing the cached instance.
+
+    `get_config()` caches for the whole process lifetime, and `save_config()` writes back
+    *every* field of that cached object — so a value changed on disk while the app runs
+    (a hand edit, or a second window) would both display stale in the settings dialog and
+    be silently reverted by the next Save. The dialog therefore reloads before it seeds its
+    fields, so what it shows — and what it writes back — is what the file actually holds.
+    """
+    global _instance
+    _instance = _load()
     return _instance
 
 
