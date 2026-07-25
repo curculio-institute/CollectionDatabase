@@ -23,6 +23,12 @@ class AppConfig:
     tw_token: str = ""
     taxonpages_base: str = "https://catalog.curculionoidea.org"
 
+    # Host of the TaxonWorks instance that `taxon.taxonworksOtuID` values belong to (e.g.
+    # "sfg.taxonworks.org"). OTU ids are per-instance: the same integer denotes a different
+    # entity on another server, so an id is only meaningful while this matches tw_base's host.
+    # Empty = unknown provenance, which is treated as untrusted (#149, app/services/tw_sync.py).
+    tw_otu_instance: str = ""
+
     @property
     def taxonworks_enabled(self) -> bool:
         """True when a project token is set — the gate for every TW-dependent surface.

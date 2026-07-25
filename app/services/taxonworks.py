@@ -285,6 +285,58 @@ async def fetch_biological_relationships() -> list[dict]:
         return r.json()
 
 
+async def fetch_taxon_names_exact(name: str, per: int = 50) -> list[dict]:
+    """Exact-match lookup against `cached` — the documented `name[]` + `name_exact` filter
+    (rdoc.taxonworks.org/Queries/TaxonName/Filter.html: "`name` (Array): Matches against
+    cached. See also name_exact"; name_exact=true -> exact match against `cached` or
+    `cached_original_combination`).
+
+    The **scalar** `name=` form is a different, undocumented usage that returns an
+    unfiltered dump (verified: `name=Otiorhynchus` returned 2257 unrelated rows) — never
+    substitute it for the array form (#149).
+    """
+    _require_configured()
+    try:
+        async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
+            r = await client.get(
+                f"{_base()}/taxon_names",
+                params={
+                    "name[]": name,
+                    "name_exact": "true",
+                    "per": per,
+                    "project_token": _token(),
+                },
+            )
+            r.raise_for_status()
+            return r.json()
+    except httpx.HTTPError as exc:
+        raise _explain(exc) from exc
+
+
+async def fetch_taxon_names_by_otu(otu_id: int, per: int = 50) -> list[dict]:
+    """The TaxonName(s) linked to an OTU id — `GET /taxon_names?otu_id[]=<id>`.
+
+    Documented in `taxonworks_api/docs/openapi/taxon_name.yaml` ("Return TaxonNames linked
+    to these OTU ids"). This answers the question an OTU id alone cannot: *on this server,
+    what does this id actually denote?* An OTU id is per-instance, so the same integer names
+    a different entity — or nothing at all — on another TaxonWorks, and a stored id must
+    therefore be verified against the name we expect rather than trusted (#149; see
+    `tw_sync`). Measured: every id captured on sfg.taxonworks.org returns zero rows against
+    sandbox.taxonworks.org.
+    """
+    _require_configured()
+    try:
+        async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
+            r = await client.get(
+                f"{_base()}/taxon_names",
+                params={"otu_id[]": otu_id, "per": per, "project_token": _token()},
+            )
+            r.raise_for_status()
+            return r.json()
+    except httpx.HTTPError as exc:
+        raise _explain(exc) from exc
+
+
 async def fetch_otu_id_for_taxon_name(taxon_name_id: int) -> int | None:
     """Return the OTU id associated with a taxon_name_id, or None if not found.
     Used to build TaxonPages deep-link URLs."""
