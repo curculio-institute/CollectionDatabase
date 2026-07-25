@@ -764,7 +764,9 @@ erDiagram
   <h2>STRICT typing</h2>
   <div class="desc">Core, label, and print-queue tables are declared SQLite <code>STRICT</code>,
     so column types are enforced at write time (no silent affinity coercion).
-    <strong>Exceptions:</strong> <code>person</code> and <code>person_defaults</code> are not STRICT.
+    <strong>Exceptions:</strong> <code>person</code>, <code>person_defaults</code> and
+    <code>export_settings</code> are not STRICT — the latter two are tiny single-row settings
+    tables, not collection data.
     <br><em>Note:</em> migrations 0020/0021/0024–0027 recreated several tables via
     <code>batch_alter_table(recreate=…)</code> and dropped STRICT + CHECKs; migration 0029
     restores them. This page documents the intended (post-0029) schema.</div>
@@ -835,6 +837,7 @@ erDiagram
       <tr><td><span class="tag tag-FK">FK</span></td><td class="col-local">person_defaults</td><td><code>default_rights_holder_id</code> → person ON DELETE RESTRICT (Tier-2 default for media rightsHolder; migration 0036)</td></tr>
       <tr><td><span class="tag tag-FK">FK</span></td><td class="col-local">external_identifier</td><td>each arc FK (<code>collection_object_id</code> / <code>biological_association_id</code>) → its table, ON DELETE CASCADE</td></tr>
       <tr><td><span class="tag tag-FK">FK</span></td><td class="col-local">life_stage_record</td><td><code>collection_object_id</code> → collection_object ON DELETE CASCADE</td></tr>
+      <tr><td><span class="tag tag-FK">FK</span></td><td class="col-local">export_settings</td><td><code>tw_export_taxon_id</code> → taxon <strong>ON DELETE SET NULL</strong> (migration 0067, #149). Deliberately NOT RESTRICT, unlike a person default: this is the taxon the TaxonWorks export was last restricted to, and nothing depends on it existing. If the scoping taxon is deleted or merged away, falling back to "no restriction" is the honest outcome — a dangling id would silently narrow every future export to nothing.</td></tr>
     </tbody>
   </table>
 </div>
