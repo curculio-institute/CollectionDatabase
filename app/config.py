@@ -77,10 +77,28 @@ class AppConfig:
     # person and lives in the DB (person_defaults.default_rights_holder_id), not here.
     default_license: str = ""
 
-    # Privacy: the generic string substituted for a confidential person's name in
-    # the DwC export (recordedBy / identifiedBy). The record is still exported; only
-    # the name is obscured. Confidential specimens/events are dropped entirely.
-    confidential_person_label: str = "Collector obscured (Privacy Policy)"
+    # ── Privacy gate on the TaxonWorks / DwC export (#149) ───────────────────────
+    # Concerns the collecting event's `recordedBy` ONLY. `identifiedBy` is never withheld
+    # or blanked: a determiner's name is a scientific attribution, not personal data the
+    # collection is asked to protect ("A person's name in identifiedBy is never
+    # problematic", #149).
+    #
+    # A withheld name is written as NO VALUE — never a placeholder string. A placeholder
+    # is a claim about the record ("collector obscured") that a downstream aggregator
+    # cannot distinguish from a real collector name; an empty field is simply absent.
+    # This supersedes the former `confidential_person_label`, which is why that setting
+    # is gone (it was only ever read by an export that did not exist yet).
+
+    # A `confidential` recordedBy is NEVER exported — the record is withheld entirely,
+    # unconditionally, with no setting to loosen it. That is the whole point of the flag:
+    # it is set on the rare person who must not be published, so it is not a preference.
+    #
+    # The ONE setting below governs only the undecided middle — a person who is neither
+    # confidential nor `consent_approved` (nobody has asked them yet):
+    #   "name_removed"   → export the record with that person's name removed (default —
+    #                      #149 Step 3.2 states redaction as the primary behaviour)
+    #   "consented_only" → export only data where the recordedBy person has consented
+    tw_export_nonconsent: str = "name_removed"
 
     # Printed-label borders, per label type. "black" → a thin solid cut-guide line
     # around each label; "none" → no border. Independent per type so the user can,
