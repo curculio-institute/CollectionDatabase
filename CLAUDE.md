@@ -39,6 +39,13 @@ tracker, not this file), `gh issue list`:
 - [#38](https://github.com/curculio-institute/CollectionDatabase/issues/38) — Workflow: printing locality labels
 - [#39](https://github.com/curculio-institute/CollectionDatabase/issues/39) — Workflow: bulk-import the existing dataset (unlinked taxon names)
 - [#40](https://github.com/curculio-institute/CollectionDatabase/issues/40) — Collection map view + data analysis tools
+- [#149](https://github.com/curculio-institute/CollectionDatabase/issues/149) — Syncing with TaxonWorks.
+  **Step 3 (emit the export) + the name pre-flight are built** (§5c, `dwc_export.py` /
+  `tw_sync.py` / the TaxonWorks tab). **Still open: Step 1 "Compare"** — which specimens are
+  already on TW (identity = `catalogNumber`, via the `/identifiers` index), duplicate
+  catalogNumbers with their repository, specimens on TW that are confidential locally,
+  field-level differences with a deep link per record, and media comparison — plus Step 2
+  (re-run the comparison after the user has acted on it).
 
 (#41 — data safety: crash recovery + unsaved-changes guard — done; see §8 "Data safety".)
 
@@ -316,8 +323,14 @@ local-master with no automated push.
   route) in a code comment, so assumptions can be re-checked against a future TW release.
 - **Determinations may target synonyms.** Recording a determination under a name that is
   later synonymised is valid scientific practice. `taxon_determination.taxon_id` may point
-  to any `taxon` row, accepted or synonym. The DwC export resolves to the accepted name
-  for upload; the verbatim determination name is preserved in `verbatim_identification`.
+  to any `taxon` row, accepted or synonym. **The DwC export emits the name AS DETERMINED —
+  it does NOT resolve to the accepted name** (revised 2026-07-25, #149): TaxonWorks has no
+  import path for `verbatimIdentification` at all (the term is absent from its occurrence
+  importer), so resolving a synonym to its accepted name would delete the
+  determination-as-made from the exported record with nothing left preserving it. TW models
+  synonymy itself and matches the protonym, so a synonym name imports correctly. Synonymy is
+  never *pushed* either way — `taxonomicStatus` is `[Not mapped]` — so a disagreement between
+  local and TW is reported by the sync tab and corrected by neither.
 - **Determinations freeze the name as used (Epic #30, Phase 5).** Every ID point saves
   `dwc:verbatimIdentification` = the *composed full name* of the chosen taxon **at save time**
   — bare name **plus authorship** (`taxa.compose_full_name`; authorship is part of a name),
@@ -502,9 +515,15 @@ on **three** tables, with **two different export semantics**:
 
 | Table | Confidential means (at DwC export — **Phase 3, contract only; not yet wired**) |
 |-------|------------------------------------------------------------------------------|
-| `person` | **Obscure, don't drop.** The occurrence is still exported, but everywhere this person is `recordedBy` / `identifiedBy` the name is replaced with `config.confidential_person_label` (default `"Collector obscured (Privacy Policy)"`). |
+| `person` | **Drop the record — never obscure it** (revised 2026-07-25, #149). A confidential person as the event's `recordedBy` withholds the specimen entirely, unconditionally: the flag is set on the rare person who must not be published, so it is obeyed, not weighed, and there is deliberately **no setting** that turns it into "export the record without the name". `identifiedBy` is *never* withheld or blanked — a determiner's name is a scientific attribution, not personal data the collection is asked to protect. **Superseded:** the former placeholder-substitution rule and its `config.confidential_person_label` are **gone** — a placeholder is a claim a downstream aggregator cannot tell from a real collector name, so a withheld name is written as *no value at all*. |
 | `collection_object` | **Drop.** The specimen is omitted from the export entirely. |
 | `collecting_event` | **Drop its specimens.** A confidential event withholds *all* its specimens from the export (you cannot keep the occurrence but blank the locality — that breaks the record). |
+
+A person additionally carries `consent_approved` (below). The **undecided middle** — neither
+`confidential` nor `consent_approved`, i.e. nobody has asked them yet — is the *only* privacy
+choice that is configurable, via `AppConfig.tw_export_nonconsent`: `"name_removed"` (default —
+export the record with that person's name removed) or `"consented_only"` (export only data
+whose collector has consented).
 
 The flag is **never pushed** to TaxonWorks (not a DwC term); it only governs what the
 exporter emits. It is **not** stored in `config.json` for the same reason person defaults
@@ -1219,6 +1238,97 @@ manually in the TW UI. This constrains the sync direction to insert-only forever
 
 ---
 
+## 5c. Syncing with TaxonWorks — the export contract (#149, in progress)
+
+The **TaxonWorks** tab (`app/ui/tw_sync_tab.py`) is built only when a connection is configured
+(`AppConfig.taxonworks_enabled` — a base URL *and* a token; with no token every action would
+fail at the first request, so the honest place to say "not set up" is the tab's absence).
+Services: `app/services/dwc_export.py` (eligibility + projection + writer) and
+`app/services/tw_sync.py` (name pre-flight + OTU reconciliation).
+
+**Source-of-truth correction.** §5/§5b cite `occurrence.rb:NNN`. The file is
+**`app/models/dataset_record/darwin_core/occurrence.rb`** (the per-*row* mapper, 1820 lines) —
+*not* `app/models/import_dataset/darwin_core/occurrences.rb` (238 lines, the dataset-level
+staging class). The **line numbers in §5/§5b are stale for the pinned commit `897f385`**
+(§5b cites `associatedTaxa` at ~948; at 897f385 it is at **743**). Re-grep, don't trust them.
+
+### The export is gated on a name pre-flight (decided)
+
+**Nothing is exported until every name it would carry is confirmed present on the currently
+configured instance.** A missing name cannot be repaired afterwards, and the failure mode is
+silent: with TW's *"restrict to existing nomenclature"* **unset** (its default), the importer
+**creates** the missing protonym *and* an OTU (`occurrence.rb:203`, strategy chosen at `:269`),
+walking the whole parent chain — so an export quietly injects names, typos included, into the
+project's nomenclature. With it set, the row errors instead. Recommend setting it.
+
+`tw_sync.check_names` classifies each name `match` / `missing` / `ambiguous` / `rank_mismatch`
+/ `error`; only `match` is exportable. Two safeguards are load-bearing:
+
+- **A false "missing" is worse than no check.** It sends the user to hand-create a name that
+  already exists — manufacturing the homonym duplicate the check exists to prevent. So a
+  **subgenus-only** difference is a match-with-note, never "missing" (placement is unstable
+  and often omitted; see `taxa.binomial_key`).
+- **Authorship is the homonym tiebreaker, not decoration.** TW disambiguates same-spelling
+  protonyms on `scientificNameAuthorship`, including whether it is parenthesised (a subsequent
+  combination) and `year_of_publication` (`occurrence.rb:126-145`). A difference is reported
+  (measured: local `Schönherr, 1826` vs TW `Schoenherr, 1826`).
+
+### OTU ids are per-instance and are verified in reverse, never compared (decided)
+
+`taxon.taxonworksOtuID` was captured from whichever instance the name was imported from. **The
+same integer denotes a different entity — or nothing — on another server.** So:
+
+- `AppConfig.tw_otu_instance` records the **host** the stored ids belong to; empty or differing
+  from `tw_base`'s host ⇒ **untrusted**. (Config, not a per-row column: nothing FKs to a TW id
+  and the app mirrors one instance at a time.)
+- A stored id is checked by asking TW *what it actually denotes here* —
+  `GET /taxon_names?otu_id[]=<id>` — giving `confirmed` / `mismatch` / `absent`. Measured: all
+  39 ids captured on `sfg.taxonworks.org` return **zero rows** against `sandbox.taxonworks.org`.
+- `tw_sync.reconcile_otu_ids` re-points them by name and is called **explicitly**, never as a
+  side effect of checking.
+
+### Verified API facts (probed 2026-07-25; do not re-derive)
+
+Parameters cross-checked three ways: the OpenAPI specs (the user's reference clone at
+`0_TaxonWorks/Reference/taxonworks_api/docs/openapi/`), `rdoc.taxonworks.org`'s
+`Queries::*::Filter` classes, and live probing.
+
+| fact | consequence |
+|---|---|
+| **Unknown query params are silently ignored** (a bogus param returns the unfiltered table) | Never trust that a filter applied. An oversized result set is treated as a *lookup failure*, never as matches — a filter that silently didn't apply would read as "not on TW" and, against a CREATE-ONLY importer, push undeletable duplicates. |
+| `name[]=<composed name>` + `name_exact=true` matches TW's `cached` exactly | The name pre-flight primitive. The **scalar `name=`** form is NOT this filter — it returned 2257 unrelated names. `rank[]`, `validity`, `otu_id[]`, `nomenclature_code` are also real params. |
+| `catalogNumber` is populated on only **1/500** `dwc_occurrences` rows | The DwC projection is **not** a usable identity source. Use `GET /identifiers?type=Identifier::Local::CatalogNumber&identifier_object_type=CollectionObject` (`identifier`, `identifier_object_id`, `namespace_id`). On sandbox 153 CatalogNumbers exist but only **11** are on CollectionObjects — 140 hang on Containers, 2 on Images. |
+| `dwc_occurrence_object_id` = the TW `collection_object_id` | Feeds the deep link `{web_base}/tasks/accessions/comprehensive?collection_object_id=N`. `taxonworks.web_base()` derives the web root from the API base (never a second config field). |
+| `per=5000` is honored; totals in `pagination-total` headers | The whole occurrence set is ~5 requests. Most rows are `AssertedDistribution`/`MaterialCitation`; filter `dwc_occurrence_object_type=CollectionObject`. |
+| **No `/preparation_types`, `/namespaces`, `/repositories`, `/biocuration_classes`** (404) | We **cannot** pre-validate preparations or the namespace mapping — they become a pre-flight checklist the user satisfies in TW by hand. `/otus`, `/people`, `/images`, `/depictions` **do** exist. |
+| `extend=[…]` is ignored on index routes | Resolve related records with a second call. |
+
+### The emitted file (decided)
+
+**Tab-separated, `.tsv`** — TW's default `col_sep` for a flat upload is a tab
+(`import_dataset/darwin_core.rb:315-317`); a comma file parses as **one column**, so every row
+appears to import and is garbage. Header must contain `occurrenceID`, `scientificName`,
+`basisOfRecord` or the dataset fails validation outright
+(`import_dataset/darwin_core/occurrences.rb:8-11`). `occurrenceID` is the deterministic Darwin
+Core triplet `institutionCode:collectionCode:catalogNumber`, so a re-export cannot mint a
+second TW record for one specimen.
+
+**Only columns TW actually maps are emitted** — a `[Not mapped]` column is silently dropped, so
+emitting it would make the file look like it carried data it did not. Confirmed not mapped at
+`897f385`: `lifeStage` (:912), `disposition` (:940), `otherCatalogNumbers` (:950),
+`associatedTaxa` (:743), **`municipality` (:1097) and `locality` (:1099)**, `verbatimIdentification`
+(absent entirely). Because TW keeps `verbatimLocality` verbatim (:1101) but drops the other two,
+our export **folds municipality + locality into `verbatimLocality`** (the event's own verbatim
+string wins when present) or that detail is lost.
+
+**An invalid row is refused, never silently rewritten** (the importer is CREATE-ONLY — a
+half-wrong row cannot be corrected via the API): `basisOfRecord` outside
+PreservedSpecimen/FossilSpecimen (:849), whitespace in `sex` (:892), an interval in
+`dateIdentified` (:1394 — unlike `eventDate`, which allows one), a non-integer
+`coordinateUncertaintyInMeters` (:1138), or no current determination. **`preparations` must
+match an existing TW `PreparationType` or TW errors the row** (:926) — unverifiable via API, so
+the distinct values used are listed for the user to confirm.
+
 ## 6. Application structure
 
 ### App tabs (in `app/ui/main.py`)
@@ -1232,6 +1342,7 @@ manually in the TW UI. This constrains the sync direction to insert-only forever
 | **Labels** | Generate identifier label batches (4-char codes). Preview + download PDF. Reprint a whole batch if unused. Staged-codes dashboard. |
 | **Print queue** | Preview and print all staged labels in one grouped PDF (per queue addition; data/identifier/determination column-aligned per specimen). Saves the PDF to `printed_pdf_dir` on print, then clears the queue. |
 | **Import** | Two sub-tabs under one tab. **Import & Assign** — the row-by-row retroactive-digitisation flow (upload a DwC CSV; live-filter rows; assign taxon + per-specimen fields; save). **Bulk import** — wholesale, staged import of specimen **records** (#39), modelled on TaxonWorks' Import Dataset: upload → stage every row (writes nothing) → status grid + per-reason blocker list → import the `ready` rows, resumable via a cursor. Service: `app/services/bulk_import.py`. See "Bulk import" below. |
+| **TaxonWorks** | Sync with the TaxonWorks mirror (#149). Only present when a connection is configured (`taxonworks_enabled`). Checks every taxon name against the configured instance **before** anything is emitted, reports withheld (privacy) / refused (TW would reject) / redacted specimens, emits the DwC **TSV** for TW's DwC-A Import, and reconciles per-instance OTU ids. See §5c for the contract. |
 | **Batch tools** | Build a **collection-scoped** specimen set — by taxon (all specimens of a taxon + descendants in the working collection) or by a pasted catalog-number list — then bulk-apply one op: set disposition, or reassign to another collection (#78). Working collection defaults to the home collection; an extra click switches to another. Cross-collection specimens can **never** be listed or modified (see below). Service: `app/services/batch_ops.py`. |
 
 #### Digitize layout modes (decided)
@@ -1280,6 +1391,8 @@ arrow-key event, chip styling) is design.md's concern → "Digitize layout modes
 | `name_source.py` | The generic offline-name-source engine (DwC Archive → SQLite index → search → import chain). WCVP is one instance; user datasets are others. See "Offline name sources" below |
 | `datasets.py` | User-added name datasets (**experimental**): install from a chosen file → `data/name_sources/<slug>/`, rebuild, remove, `import_all` |
 | `bulk_import.py` | Bulk import (#39): staged wholesale import, two `kind`s — `create_occurrence_dataset` (records, the primary path: catalogNumber required, collection column, dedup on `UNIQUE(repository_id, catalogNumber)`, reuses the event/determination save + the taxon resolver) and `create_taxon_dataset` (name checklist / internal resolver). Shared: `restage` / `set_dataset_code` (resolve-once) / `import_ready` (resumable) / `retry_errored` / `progress` / `blocker_summary`. |
+| `dwc_export.py` | DwC export (#149): `export_decision` (the single owner of "may this specimen leave the building, and with which fields blanked" — read by both the comparison and the writer, so they cannot disagree), `occurrence_row` (the projection), `export_occurrences` (validate + write the TSV). See §5c. |
+| `tw_sync.py` | TaxonWorks sync (#149): `check_names` (the pre-flight gating any export), `taxa_to_export`, `otu_instance_state` / `reconcile_otu_ids` (per-instance OTU ids, verified in reverse). Read-only except `reconcile_otu_ids`. |
 | `batch_ops.py` | Batch tools (#78): `fetch_by_taxon` / `match_catalog_numbers` (both **scoped to a working `repository_id`**) + `apply_disposition` / `apply_repository`. **Cross-collection safety is structural** — `_load_in_scope` re-asserts every specimen belongs to the working collection before any write, so a bulk op can never touch a specimen held in another collection. `catalog_number` is never changed. |
 
 ### Taxon search widget (`app/ui/taxon_search.py`)
@@ -1312,11 +1425,18 @@ NiceGUI app with 5 tabs: Digitize, Taxonomy, Labels, Print queue, Import & Assig
 Leaflet map view: not yet built (coordinates stored, map tab deferred).
 Biological association UI: CRUD in DB, UI not yet built.
 
-**Phase 3 — Validation, export, sync tools.** ⬜ **Not yet started.**
-- *Validation script:* required DwC fields, coordinate bounds, determination completeness.
-- *Habitat enrichment (GeoPandas):* uncertainty-aware spatial join against a European
+**Phase 3 — Validation, export, sync tools.** 🟡 **Started (#149).**
+- *DwC export:* ✅ **built** — `dwc_export.py` emits the occurrence **TSV** (not CSV: TW's flat
+  upload defaults to tab), gated on the name pre-flight. See §5c for the whole contract; the
+  eligibility/privacy policy is `export_decision`. No `TW:` columns are emitted yet.
+- *Sync diff:* ⬜ Step 1 of #149 — pull the `/identifiers` catalog-number index (**not**
+  `dwc_occurrences`, where `catalogNumber` is populated on 1/500 rows), diff on `catalogNumber`,
+  emit new-only. Snapshot SQLite before any run.
+- *Validation script:* ⬜ required DwC fields, coordinate bounds, determination completeness.
+  (Row-level validity for the export specifically is already enforced by `_validate_row`, which
+  refuses rather than rewrites — §5c.)
+- *Habitat enrichment (GeoPandas):* ⬜ uncertainty-aware spatial join against a European
   habitat layer (EUNIS or CORINE; CRS likely EPSG:3035 / ETRS89-LAEA).
-- *DwC export:* occurrence CSV (standard terms + `TW:` columns) for upload.
 - *Sync diff:* pull `/api/v1/dwc_occurrences`, diff on `catalogNumber`, emit new-only.
   Snapshot SQLite before any run.
 
