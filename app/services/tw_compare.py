@@ -89,8 +89,10 @@ _RETRY_BACKOFF = (0.5, 1.5)
 # collectionCode are namespace bookkeeping that TW rewrites on import (measured above),
 # comparing them would flag every row as diverged for no informative reason. The issue
 # calls out "of particular interest are identifications and repositories" — scientificName
-# (+ authorship) is the identification; institutionCode is compared separately (below,
-# report-only) rather than as a diff field, for the same rewriting reason.
+# (+ authorship) is the identification. The repository half is not a diff field either:
+# collection membership is answered by the namespace on the `/identifiers` index
+# (`CollectionMismatch`, `OrphanRow`), which is what TaxonWorks actually files the
+# specimen under, rather than by dwc_occurrences' `institutionCode` string.
 #
 # `stateProvince` is deliberately excluded too (not merely case-folded, dropped outright):
 # TaxonWorks re-geocodes the coordinate on its own side and can render the admin name in

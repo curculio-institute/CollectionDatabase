@@ -488,9 +488,10 @@ def build_tw_sync_tab(session_factory, refreshers: dict | None = None,
                         ).classes("text-xs mt-2").style("color:var(--tp-base-soft)")
                         ui.label(
                             "The three show \"Check pending\" until that collection's "
-                            "own Check has run — one TaxonWorks lookup per local "
-                            "catalog number, a few seconds even for a large shared "
-                            "project."
+                            "own Check has run — one request for TaxonWorks' whole "
+                            "catalog-number index, then one field lookup per specimen "
+                            "it says is already there. A few seconds even for a large "
+                            "shared project."
                         ).classes("text-xs").style("color:var(--tp-base-soft)")
 
                 _render_report()
@@ -547,7 +548,7 @@ def build_tw_sync_tab(session_factory, refreshers: dict | None = None,
                         # no column for gets a badge: duplicates / withheld-but-on-TW
                         # are rare enough that a silent "0" column would be wasted
                         # space, so they surface here instead, only when non-zero.
-                        if result.duplicates or result.leaked:
+                        if result.duplicates or result.leaked or result.orphaned:
                             with ui.row().classes("gap-3 items-center flex-wrap"):
                                 if result.duplicates:
                                     ui.badge(
@@ -558,6 +559,11 @@ def build_tw_sync_tab(session_factory, refreshers: dict | None = None,
                                     ui.badge(
                                         f"{len(result.leaked)} on TaxonWorks but "
                                         f"withheld locally"
+                                    ).props("color=negative")
+                                if result.orphaned:
+                                    ui.badge(
+                                        f"{len(result.orphaned)} on TaxonWorks but "
+                                        f"not in the local database"
                                     ).props("color=negative")
 
                         # OTU-id provenance — shown only here, contextually, as a fact
@@ -635,6 +641,109 @@ def build_tw_sync_tab(session_factory, refreshers: dict | None = None,
                                         new_tab=True,
                                     ).classes("text-xs")
 
+                        if result.on_tw_not_compared:
+                            with ui.expansion(
+                                    f"On TaxonWorks, fields not compared "
+                                    f"({len(result.on_tw_not_compared)})") \
+                                    .classes("w-full mt-2"):
+                                ui.label(
+                                    "TaxonWorks holds these catalog numbers, but its "
+                                    "dwc_occurrences projection has no row for them "
+                                    "yet — it is generated and cached, so it lags a "
+                                    "fresh import. They are deliberately not counted "
+                                    "as \"not yet uploaded\" (that would upload them "
+                                    "a second time) and not as \"in sync\" either — "
+                                    "nothing was compared. Re-run the check later."
+                                ).classes("text-xs mb-1") \
+                                    .style("color:var(--tp-base-soft)")
+                                for cat in result.on_tw_not_compared:
+                                    ui.label(cat).classes("text-xs")
+
+                        if result.orphaned:
+                            with ui.expansion(
+                                    f"On TaxonWorks, not in the local database "
+                                    f"({len(result.orphaned)})") \
+                                    .classes("w-full mt-2"):
+                                ui.label(
+                                    "Filed on TaxonWorks under this collection's "
+                                    "namespace, but no specimen anywhere in the local "
+                                    "database carries that catalog number — deleted "
+                                    "locally, or uploaded from somewhere else. "
+                                    "TaxonWorks' v1 API has no delete, so this is a "
+                                    "manual correction there."
+                                ).classes("text-xs mb-1") \
+                                    .style("color:var(--tp-base-soft)")
+                                for orp in result.orphaned:
+                                    with ui.row().classes("items-center gap-2"):
+                                        ui.label(orp.catalog_number).classes(
+                                            "text-xs font-medium")
+                                        ui.link(
+                                            "open in TaxonWorks",
+                                            tw_compare.edit_url(orp.tw_object_id),
+                                            new_tab=True,
+                                        ).classes("text-xs")
+
+                        if result.moved:
+                            with ui.expansion(
+                                    f"Held in another local collection "
+                                    f"({len(result.moved)})") \
+                                    .classes("w-full mt-2"):
+                                ui.label(
+                                    "TaxonWorks files these under this collection's "
+                                    "namespace, but locally they now belong to another "
+                                    "collection — a re-home keeps the catalog number "
+                                    "and only moves the collection. Nothing is wrong "
+                                    "locally; TaxonWorks' copy is simply in the old "
+                                    "namespace."
+                                ).classes("text-xs mb-1") \
+                                    .style("color:var(--tp-base-soft)")
+                                for mv in result.moved:
+                                    with ui.row().classes("items-center gap-2"):
+                                        ui.label(
+                                            f"{mv.catalog_number} — now in "
+                                            f"{mv.local_collection}"
+                                        ).classes("text-xs font-medium")
+                                        ui.link(
+                                            "open in TaxonWorks",
+                                            tw_compare.edit_url(mv.tw_object_id),
+                                            new_tab=True,
+                                        ).classes("text-xs")
+
+                        if result.collection_mismatch:
+                            with ui.expansion(
+                                    f"Filed under another TaxonWorks namespace "
+                                    f"({len(result.collection_mismatch)})") \
+                                    .classes("w-full mt-2"):
+                                ui.label(
+                                    "Held here locally, but TaxonWorks has them under "
+                                    "a different namespace — usually the other half of "
+                                    "a re-home. Reported only: the v1 API cannot move "
+                                    "them."
+                                ).classes("text-xs mb-1") \
+                                    .style("color:var(--tp-base-soft)")
+                                for mm in result.collection_mismatch:
+                                    with ui.row().classes("items-center gap-2"):
+                                        ui.label(
+                                            f"{mm.catalog_number} — here "
+                                            f"{mm.local_collection}, on TaxonWorks "
+                                            f"{mm.tw_namespace}"
+                                        ).classes("text-xs font-medium")
+                                        ui.link(
+                                            "open in TaxonWorks",
+                                            tw_compare.edit_url(mm.tw_object_id),
+                                            new_tab=True,
+                                        ).classes("text-xs")
+
+                        if result.orphans_not_compared:
+                            ui.label(
+                                "Records that are on TaxonWorks but not held here were "
+                                "not looked for — this collection has no collection "
+                                "code, so there is no namespace to scope the sweep to, "
+                                "and every other collection in the project would count "
+                                "as its orphan."
+                            ).classes("text-xs mt-2") \
+                                .style("color:var(--tp-base-soft)")
+
                         ui.label(
                             "Associated media is not compared — TaxonWorks' "
                             "projection carries no key shared with our media_attachment "
@@ -661,14 +770,34 @@ def build_tw_sync_tab(session_factory, refreshers: dict | None = None,
                             taxa_list = tw_sync.taxa_to_export(s, cos)
                             catalog_numbers = [co.catalog_number for co in cos]
 
+                        # Identity first, fields second — and in that order for a
+                        # reason (CLAUDE.md §5c). `/identifiers` is the authoritative
+                        # answer to "does TaxonWorks hold this catalog number", in one
+                        # request for the whole project; `dwc_occurrences` is a
+                        # generated projection whose `catalogNumber` is populated on
+                        # ~1/500 rows and which can lag a fresh import, so reading
+                        # existence from it would report a just-uploaded specimen as
+                        # absent and re-upload it into a CREATE-ONLY importer. It is
+                        # asked only for the field values, and only about numbers the
+                        # index already says are there.
+                        def _on_index_progress(done: int, total: int) -> None:
+                            compare_status.set_text(
+                                f"Checking {row['collection']} — reading TaxonWorks' "
+                                f"catalog-number index ({done} of {total})…"
+                            )
+
+                        index = await tw_compare.fetch_catalog_index(
+                            on_progress=_on_index_progress)
+                        present = [c for c in catalog_numbers if index.has(c)]
+
                         def _on_progress(done: int, total: int) -> None:
                             compare_status.set_text(
-                                f"Checking {row['collection']} — looked up {done} "
-                                f"of {total} catalog number(s) on TaxonWorks…"
+                                f"Checking {row['collection']} — compared {done} "
+                                f"of {total} specimen(s) against TaxonWorks…"
                             )
 
                         tw_by_cat = await tw_compare.fetch_tw_rows_for_catalog_numbers(
-                            catalog_numbers, on_progress=_on_progress)
+                            present, on_progress=_on_progress)
 
                         compare_status.set_text(
                             f"Checking {row['collection']} — checking "
@@ -676,7 +805,7 @@ def build_tw_sync_tab(session_factory, refreshers: dict | None = None,
                         )
                         with session_factory() as s:
                             cmp_result = tw_compare.compare_repository(
-                                s, tw_by_cat, repository_id=repo_id)
+                                s, tw_by_cat, repository_id=repo_id, index=index)
                             # `check_names` needs a live session for the whole call —
                             # see the Export step's identical note below; this is
                             # bounded by tw_sync's own concurrency limit, and no
@@ -818,15 +947,26 @@ def build_tw_sync_tab(session_factory, refreshers: dict | None = None,
                         # actually needed by *new* rows — an already-uploaded
                         # specimen identified only to a high rank (e.g. tribe) no
                         # longer wrongly blocks the download for everyone else.
-                        def _on_progress(done: int, total: int) -> None:
+                        #
+                        # Existence is read from the `/identifiers` index, never from
+                        # `dwc_occurrences` (CLAUDE.md §5c): that projection is
+                        # generated and cached, so a specimen uploaded minutes ago can
+                        # legitimately be missing from it — and here a false "not on
+                        # TaxonWorks" does not merely misreport, it puts the specimen
+                        # back into the file and mints a duplicate the API cannot
+                        # delete. The index is also namespace-**un**scoped on purpose:
+                        # a specimen TaxonWorks files under someone else's namespace is
+                        # still on TaxonWorks, and identifier uniqueness is per
+                        # namespace, so TW would accept the re-upload without a word.
+                        def _on_index_progress(done: int, total: int) -> None:
                             check_status.set_text(
-                                f"Checking which of {total} specimen(s) are "
-                                f"already on TaxonWorks… {done}/{total}"
+                                f"Reading TaxonWorks' catalog-number index "
+                                f"({done} of {total})…"
                             )
-                        tw_by_cat = await tw_compare.fetch_tw_rows_for_catalog_numbers(
-                            catalog_numbers, on_progress=_on_progress)
+                        index = await tw_compare.fetch_catalog_index(
+                            on_progress=_on_index_progress)
                         already_uploaded = {
-                            cat for cat, rows in tw_by_cat.items() if rows
+                            cat for cat in catalog_numbers if index.has(cat)
                         }
 
                         with session_factory() as s:
