@@ -21,6 +21,7 @@ from sqlalchemy.exc import IntegrityError
 from app.models import Taxon, TaxonDetermination
 from app.models.base import _utcnow
 import app.services.field_occurrence as fo_svc
+from app.services.dwc_import import normalise_row_dates
 from app.services.events import create_collecting_event
 from app.services.specimens import (
     create_collection_object, create_determination, update_determination_metadata,
@@ -135,3 +136,22 @@ def test_a_field_occurrence_determination_is_constrained_too(session):
     with pytest.raises(IntegrityError, match="ck_td_date_identified_no_interval"):
         session.flush()
     session.rollback()
+
+
+def test_an_imported_row_with_a_range_is_refused_at_parse_time():
+    """Bulk import stages before it writes, so the range must be caught by the shared
+    date normaliser — not left to blow up mid-write. A row staged `ready` that then
+    raises is the two-phase design failing at its one job."""
+    from app.services.dwc_import import normalise_row_dates
+    overrides, err = normalise_row_dates(
+        {"eventDate": "2024-06-15", "dateIdentified": _RANGE})
+    assert overrides == {}
+    assert err is not None and "dateIdentified" in err
+
+
+def test_an_imported_row_may_still_carry_an_event_date_range():
+    """Same call, the other column — the asymmetry has to survive the import path too."""
+    overrides, err = normalise_row_dates(
+        {"eventDate": _RANGE, "dateIdentified": "2026-01-04"})
+    assert err is None
+    assert overrides["event_date"] == _RANGE

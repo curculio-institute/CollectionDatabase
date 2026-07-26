@@ -196,8 +196,13 @@ def normalise_row_dates(row: dict) -> tuple[dict, str | None]:
     if err:
         return ({}, f"eventDate {raw_ed!r}: {err}")
 
+    # No interval here, unlike eventDate above: an identification is made on one date and
+    # TaxonWorks refuses a range (migration 0069, ck_td_date_identified_no_interval).
+    # Caught at *parse* time so a bulk-import row carrying one is staged `errored` with a
+    # reason before anything is written — the two-phase design's whole point — rather than
+    # staging `ready` and raising from `specimens._reject_interval` mid-write.
     raw_di = (row.get("dateIdentified") or "").strip()
-    iso_di, err = parse_dwc_date(raw_di, allow_interval=True, no_future=True)
+    iso_di, err = parse_dwc_date(raw_di, no_future=True)
     if err:
         return ({}, f"dateIdentified {raw_di!r}: {err}")
 
