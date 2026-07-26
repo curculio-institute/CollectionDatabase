@@ -1325,6 +1325,28 @@ same integer denotes a different entity — or nothing — on another server.** 
 - `tw_sync.reconcile_otu_ids` re-points them by name and is called **explicitly**, never as a
   side effect of checking.
 
+**The stamp is asymmetric: hard to earn, easy to lose (decided 2026-07-26).** It is a claim about
+*every* stored id in the database, so `reconcile_otu_ids` records it **only** when nothing anywhere
+is left unvouched, while `invalidate_otu_provenance` retracts it on a **single** `absent`/`mismatch`
+verdict and **never sets it**. A manual fix (`set_stored_otu_id`) never grants it either. This was
+learned the hard way twice: stamping after a *partial* reconcile (fixed in 0068-era `2a63a10`) wrote
+a stamp claiming 39 ids were sandbox's when 28 were sfg ids resolving to nothing there — and because
+the stamp suppresses the tab's warning, the lie hid itself.
+
+**Reconciliation is scoped to `taxa_with_stored_otu_ids`, never to the export's names.** A chain
+import stamps an id on **every ancestor it walks** (`taxa._ensure_parent_rows`), so suborders,
+families, tribes and subgenera carry ids that no export ever names. Measured: 39 rows held an id and
+only 11 were determination targets, so a reconcile scoped to `taxa_to_export` could not reach 28 of
+them *by construction* — `unvouched` could never fall to zero and the tool reported a state it
+offered no way out of.
+
+**What cannot be resolved automatically is listed, not counted** (`ReconcileResult.unvouched_rows`):
+each row names the taxon, the id it still stores, why the match refused, and TaxonWorks' candidates,
+with a per-name manual fix. Choosing between homonyms is the user's judgement — which is exactly why
+`check_names` refuses to guess it — so the picker labels each candidate with its **authorship**, the
+tiebreaker (§5c). **Clearing an id is a legitimate fix:** for a name absent from this instance, an id
+captured elsewhere is a false claim about this server, where an empty column claims nothing (§2).
+
 ### Verified API facts (probed 2026-07-25; do not re-derive)
 
 Parameters cross-checked three ways: the OpenAPI specs (the user's reference clone at
