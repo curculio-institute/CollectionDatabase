@@ -30,7 +30,7 @@ import app.services.taxonworks as tw_svc
 import app.services.wcvp as wcvp_svc
 import app.services.name_source as ns_svc
 import app.services.datasets as ds_svc
-from app.config import get_config, save_config, printed_pdf_dir, media_dir
+from app.config import get_config, reload_config, save_config, printed_pdf_dir, media_dir
 
 # Serve the managed media store so attached images/files render in the browser
 # (range-request aware → also handles audio/video). Registered once at import.
@@ -48,6 +48,7 @@ from app.ui.import_assign import build_import_assign_tab
 from app.ui.controlled_vocab_tab import build_controlled_vocab_tab
 from app.ui.batch_tab import build_batch_tab
 from app.ui.bulk_import_tab import build_bulk_import_tab
+from app.ui.tw_sync_tab import build_tw_sync_tab
 from app.ui.map_picker import add_map_assets
 from app.ui.taxon_editor import build_taxon_editor
 from app.ui.person_field import build_person_field
@@ -992,6 +993,13 @@ def index():
                     ui.tab("batch",    label="Batch tools",           icon="checklist")
                     ui.tab("taxonomy", label="Taxonomy",              icon="account_tree")
                     ui.tab("labels",   label="Labels",                icon="label")
+                    # Only when a TaxonWorks connection is configured (#149): with no token
+                    # every action in the tab would fail at the first request, so the tab
+                    # itself is the honest place to say "not set up" — by not being there.
+                    # Read once per page build, so saving a token in Settings surfaces it on
+                    # the next page load (the tab tree is built once per client).
+                    if get_config().taxonworks_enabled:
+                        ui.tab("twsync", label="TaxonWorks",           icon="cloud_sync")
                     ui.tab("vocab",    label="Controlled Vocabularies", icon="manage_accounts")
         # Row 3: Digitize mode — segmented control, only visible on Digitize tab.
         # Custom (not ui.toggle) so each segment gets its own accent colour + icon.
@@ -2537,6 +2545,24 @@ def index():
                     _refreshers["taxonomy_tree"] = _refresh_tree
 
         # ================================================================
+        # TAB: TAXONWORKS SYNC  (#149)
+        # ================================================================
+        # Built only when a connection is configured — same condition as the tab itself,
+        # or the panel would exist with no tab able to reach it.
+        if get_config().taxonworks_enabled:
+            with ui.tab_panel("twsync"):
+                with ui.column().classes("w-full max-w-5xl mx-auto px-4 pt-6 pb-16 gap-4"):
+                    # Hand a subset of specimens (e.g. "Diverged" for one collection)
+                    # straight to Explore's own views — same "drill into another tab"
+                    # pattern as _explore_open_spec/_explore_open_event above, just in
+                    # the other direction (#149 follow-up).
+                    def _twsync_open_explore(groups):
+                        _explore_handle["open_groups"](groups)
+                        main_tabs.set_value("explore")
+
+                    build_tw_sync_tab(_sf, _refreshers, open_explore=_twsync_open_explore)
+
+        # ================================================================
         # TAB: CONTROLLED VOCABULARIES
         # ================================================================
         with ui.tab_panel("vocab"):
@@ -3047,6 +3073,25 @@ def index():
                 value=cfg_now.taxonpages_base,
                 placeholder="https://catalog.curculionoidea.org",
             ).classes("w-full mt-2")
+
+            # ── Export privacy: collectors who have not consented (#149) ──
+            # Only the undecided middle is configurable. A `confidential` collector is
+            # NEVER exported — that is not a preference, so it is deliberately absent
+            # here (see AppConfig.tw_export_nonconsent). A withheld name is written as
+            # no value at all, never a placeholder.
+            ui.label("TaxonWorks export: Manage privacy consent").classes("text-sm font-medium mt-3")
+            ui.label(
+                "If a person is marked \"confidential\", no specimen collected by "
+                "that person will be exported. Select the privacy level for persons "
+                "who have not explicitly consented to data sharing"
+            ).classes("text-xs mb-1").style("color:var(--tp-base-soft)")
+            nonconsent_sel = ui.select(
+                {
+                    "name_removed": "Export the record with their name removed",
+                    "consented_only": "Export only data where the collector has consented",
+                },
+                value=cfg_now.tw_export_nonconsent or "name_removed",
+            ).props("dense outlined").classes("w-full")
 
             ui.separator().classes("my-3")
 
@@ -3788,9 +3833,14 @@ def index():
                     ui.notify("Select at least one nomenclatural code.", type="warning")
                     return
                 cfg = get_config()
-                cfg.tw_base               = tw_base_in.value.strip() or cfg.tw_base
+                # Stored exactly as typed — NO `or cfg.<old>` fallback. Falling back made
+                # these fields unclearable: blanking one silently re-saved the previous
+                # server/URL, so the app kept talking to a TaxonWorks the user had already
+                # moved away from. Empty means "not configured" (cfg.taxonworks_enabled).
+                cfg.tw_base               = tw_base_in.value.strip()
                 cfg.tw_token              = tw_token_in.value.strip()
-                cfg.taxonpages_base       = tp_base_in.value.strip() or cfg.taxonpages_base
+                cfg.taxonpages_base       = tp_base_in.value.strip()
+                cfg.tw_export_nonconsent  = nonconsent_sel.value or "name_removed"
                 cfg.map_default_layer     = map_layer_sel.value or "street"
                 cfg.digitize_layout       = digitize_layout_toggle.value or "normal"
                 cfg.launch_mode           = launch_mode_toggle.value or "tab"
@@ -3828,6 +3878,10 @@ def index():
                 # form entry survives the settings change).
                 _step_idx[0] = 0
                 _apply_digitize_layout()
+                # Live-refresh the TaxonWorks tab's Collections report (eligible/not
+                # eligible split + the privacy-consent status line both read config)
+                # rather than leaving it showing whatever was true at page load.
+                _refreshers.get("twsync") and _refreshers["twsync"]()
                 settings_dialog.close()
                 ui.notify("Settings saved.", type="positive")
 
@@ -3836,10 +3890,14 @@ def index():
                 ui.button("Save", on_click=_save_settings).props("color=secondary")
 
     def _open_settings():
-        cfg = get_config()
+        # Re-read from disk: the cached instance can be stale (edited on disk, or by a
+        # second window), and Save writes back every field — so seeding from the cache
+        # would both show and re-save values the file no longer holds.
+        cfg = reload_config()
         tw_base_in.value        = cfg.tw_base
         tw_token_in.value       = cfg.tw_token
         tp_base_in.value        = cfg.taxonpages_base
+        nonconsent_sel.value    = cfg.tw_export_nonconsent or "name_removed"
         # Collection identity comes from the flagged default repository (#83).
         with _sf() as _s_d:
             _def = repo_svc.get_default(_s_d)

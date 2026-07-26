@@ -331,7 +331,7 @@ def build_import_assign_tab(session_factory, refreshers: dict, on_saved=None) ->
                 dtid_in = ui.input(placeholder="year") \
                     .props("dense outlined").classes("w-28")
                 dtid_in.value = state["det_year"]
-                attach_date_validation(dtid_in, allow_interval=True, no_future=True)
+                attach_date_validation(dtid_in, no_future=True)
                 dtid_in.on_value_change(
                     lambda e: state.update(det_year=(e.value or "").strip()))
                 state["dtid_in"] = dtid_in
@@ -806,7 +806,7 @@ def build_import_assign_tab(session_factory, refreshers: dict, on_saved=None) ->
                 return ("", "", f"eventDate: {err}")
             if dtid_in is not None:
                 iso_di, err = parse_dwc_date(
-                    (dtid_in.value or "").strip(), allow_interval=True, no_future=True)
+                    (dtid_in.value or "").strip(), no_future=True)
                 if err:
                     return ("", "", f"dateIdentified: {err}")
             else:

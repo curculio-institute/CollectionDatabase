@@ -309,6 +309,13 @@ def _apply_filters(session: Session, q, filters: list[dict], idx: dict[int, Taxo
             return TaxonDetermination.identified_by_id == pid if pid is not None else false()
         if kind == "collection":
             return CollectionObject.repository_id == int(key)
+        if kind == "catalog_numbers":
+            # An explicit, pre-resolved specimen set handed in from elsewhere in the
+            # app (e.g. the TaxonWorks sync tab's "examine these in Explore", #149
+            # follow-up) rather than something typed into the search bar — `key` is a
+            # tuple of catalog numbers, never a single scalar like every other kind
+            # here. Never offered by `search_facets`; only ever constructed in code.
+            return CollectionObject.catalog_number.in_(key)
         if kind == "disposition":
             col = CollectionObject.disposition_id
             # exclude also keeps specimens with NO disposition (they aren't "loaned" either).
@@ -383,6 +390,8 @@ def _apply_filters(session: Session, q, filters: list[dict], idx: dict[int, Taxo
                     if pid is not None else None)
         if kind == "collection":
             return CollectionObject.repository_id.is_distinct_from(int(key))
+        if kind == "catalog_numbers":
+            return CollectionObject.catalog_number.notin_(key)
         if kind == "disposition":
             return CollectionObject.disposition_id.is_distinct_from(int(key))
         if kind == "date":

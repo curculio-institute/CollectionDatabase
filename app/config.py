@@ -15,10 +15,40 @@ _CONFIG_PATH = _DATA_DIR / "config.json"
 
 @dataclass
 class AppConfig:
-    # TaxonWorks connection
+    # TaxonWorks connection. All three are stored EXACTLY as typed, empty included:
+    # a blank field means "not configured", never "keep the previous value" — a settings
+    # field the user cannot clear silently re-saves a stale server, which is how a token
+    # for one server ended up pointed at another (see taxonworks.TaxonWorksUnreachable).
     tw_base: str = "https://sfg.taxonworks.org/api/v1"
     tw_token: str = ""
     taxonpages_base: str = "https://catalog.curculionoidea.org"
+
+    # Host of the TaxonWorks instance that `taxon.taxonworksOtuID` values belong to (e.g.
+    # "sfg.taxonworks.org"). OTU ids are per-instance: the same integer denotes a different
+    # entity on another server, so an id is only meaningful while this matches tw_base's host.
+    # Empty = unknown provenance, which is treated as untrusted (#149, app/services/tw_sync.py).
+    tw_otu_instance: str = ""
+    # The TaxonWorks tab's optional taxon scope, remembered across restarts (#149).
+    # This is a reference to a DB row in a flat file, which CLAUDE.md otherwise forbids
+    # for *defaults* (person_defaults) — the reason there is referential integrity: a
+    # deleted or merged person would be silently recreated on the next save. Nothing is
+    # ever created from this one; it only narrows a query. The one real hazard is a
+    # dangling id after the taxon is deleted or merged away, which would silently scope
+    # the export to nothing — so the tab resolves it at build time and clears it, loudly,
+    # when it no longer names a taxon. A DB table for one nullable integer of UI state
+    # would be person_defaults-level ceremony for something nothing depends on.
+    tw_scope_taxon_id: int | None = None
+
+    @property
+    def taxonworks_enabled(self) -> bool:
+        """True when a project token is set — the gate for every TW-dependent surface.
+
+        A token is the credential that makes TW reachable at all, so the sync tab (#149)
+        is only built when one is present. A property, not a stored field, so it can never
+        drift out of sync with the token itself (dataclasses.asdict ignores properties, so
+        it is not persisted).
+        """
+        return bool(self.tw_token.strip() and self.tw_base.strip())
 
     # NOTE: the collection identity (collectionCode / institutionCode) is NOT stored here.
     # It is a property of the repositories vocab — the repository flagged is_default
@@ -63,10 +93,28 @@ class AppConfig:
     # person and lives in the DB (person_defaults.default_rights_holder_id), not here.
     default_license: str = ""
 
-    # Privacy: the generic string substituted for a confidential person's name in
-    # the DwC export (recordedBy / identifiedBy). The record is still exported; only
-    # the name is obscured. Confidential specimens/events are dropped entirely.
-    confidential_person_label: str = "Collector obscured (Privacy Policy)"
+    # ── Privacy gate on the TaxonWorks / DwC export (#149) ───────────────────────
+    # Concerns the collecting event's `recordedBy` ONLY. `identifiedBy` is never withheld
+    # or blanked: a determiner's name is a scientific attribution, not personal data the
+    # collection is asked to protect ("A person's name in identifiedBy is never
+    # problematic", #149).
+    #
+    # A withheld name is written as NO VALUE — never a placeholder string. A placeholder
+    # is a claim about the record ("collector obscured") that a downstream aggregator
+    # cannot distinguish from a real collector name; an empty field is simply absent.
+    # This supersedes the former `confidential_person_label`, which is why that setting
+    # is gone (it was only ever read by an export that did not exist yet).
+
+    # A `confidential` recordedBy is NEVER exported — the record is withheld entirely,
+    # unconditionally, with no setting to loosen it. That is the whole point of the flag:
+    # it is set on the rare person who must not be published, so it is not a preference.
+    #
+    # The ONE setting below governs only the undecided middle — a person who is neither
+    # confidential nor `consent_approved` (nobody has asked them yet):
+    #   "name_removed"   → export the record with that person's name removed (default —
+    #                      #149 Step 3.2 states redaction as the primary behaviour)
+    #   "consented_only" → export only data where the recordedBy person has consented
+    tw_export_nonconsent: str = "name_removed"
 
     # Printed-label borders, per label type. "black" → a thin solid cut-guide line
     # around each label; "none" → no border. Independent per type so the user can,
@@ -191,6 +239,20 @@ def get_config() -> AppConfig:
     global _instance
     if _instance is None:
         _instance = _load()
+    return _instance
+
+
+def reload_config() -> AppConfig:
+    """Re-read config.json from disk, replacing the cached instance.
+
+    `get_config()` caches for the whole process lifetime, and `save_config()` writes back
+    *every* field of that cached object — so a value changed on disk while the app runs
+    (a hand edit, or a second window) would both display stale in the settings dialog and
+    be silently reverted by the next Save. The dialog therefore reloads before it seeds its
+    fields, so what it shows — and what it writes back — is what the file actually holds.
+    """
+    global _instance
+    _instance = _load()
     return _instance
 
 

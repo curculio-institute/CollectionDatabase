@@ -78,6 +78,32 @@ def create_collection_object(
     return co
 
 
+def _reject_interval(date_identified: str | None) -> None:
+    """Refuse an ISO 8601 interval on `dateIdentified` — loudly, never trimmed.
+
+    An identification happens on a date, not over a span, and TaxonWorks refuses the
+    range outright: its DwC importer raises "Date range for taxon determination is not
+    supported." (TW @ 897f385, `dataset_record/darwin_core/occurrence.rb:1395-1397`).
+    A DB CHECK (`ck_td_date_identified_no_interval`, migration 0069) is the backstop;
+    this exists so every save path — the forms, Import & Assign, bulk import — fails
+    with a sentence the user can act on instead of an IntegrityError.
+
+    Silently keeping the start date was considered and rejected: the range was typed
+    deliberately, and quietly turning "identified some time in January–February" into
+    "identified on 4 January" invents a precision nobody asserted (§2). Refusing hands
+    the choice back to the person who knows.
+
+    Deliberately *not* applied to `collecting_event."dwc:eventDate"`: a collecting trip
+    really does span days and TaxonWorks accepts an interval there.
+    """
+    if date_identified and "/" in date_identified:
+        raise ValueError(
+            f"dateIdentified cannot be a date range ({date_identified!r}) — an "
+            f"identification is made on one date, and TaxonWorks rejects a range. "
+            f"Enter the single date it was determined."
+        )
+
+
 def create_determination(
     session: Session,
     *,
@@ -92,6 +118,7 @@ def create_determination(
     verbatim_identification: str | None = None,
     is_current: int = 1,
 ) -> TaxonDetermination:
+    _reject_interval(date_identified)
     td = TaxonDetermination(
         collection_object_id=collection_object_id,
         taxon_id=taxon_id,
@@ -276,6 +303,7 @@ def update_determination_metadata(
     d = session.get(TaxonDetermination, det_id)
     if d is None:
         raise ValueError(f"TaxonDetermination {det_id} not found")
+    _reject_interval(date_identified)
     d.sex                      = sex or None
     d.type_status              = type_status or None
     d.identified_by_id         = identified_by_id

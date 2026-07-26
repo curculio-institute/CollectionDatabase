@@ -515,7 +515,7 @@ erDiagram
       <tr><td><span class="badge badge-INTEGER">INTEGER</span></td><td class="col-local">taxon_id</td><td><span class="tag tag-FK">FK</span> → taxon (RESTRICT)</td></tr>
       <tr><td><span class="badge badge-TEXT">TEXT</span></td><td class="col-dwc"><a href="https://dwc.tdwg.org/list/#dwc_verbatimIdentification">dwc:verbatimIdentification</a></td><td>name as written on label</td></tr>
       <tr><td><span class="badge badge-TEXT">TEXT</span></td><td class="col-dwc"><a href="https://dwc.tdwg.org/list/#dwc_identifiedBy">dwc:identifiedBy</a></td><td></td></tr>
-      <tr><td><span class="badge badge-TEXT">TEXT</span></td><td class="col-dwc"><a href="https://dwc.tdwg.org/list/#dwc_dateIdentified">dwc:dateIdentified</a></td><td>ISO 8601</td></tr>
+      <tr><td><span class="badge badge-TEXT">TEXT</span></td><td class="col-dwc"><a href="https://dwc.tdwg.org/list/#dwc_dateIdentified">dwc:dateIdentified</a></td><td>ISO 8601 single date — <strong>no interval</strong> (migration 0069)</td></tr>
       <tr><td><span class="badge badge-TEXT">TEXT</span></td><td class="col-dwc"><a href="https://dwc.tdwg.org/list/#dwc_identificationQualifier">dwc:identificationQualifier</a></td><td>cf. / aff. / ?</td></tr>
       <tr><td><span class="badge badge-TEXT">TEXT</span></td><td class="col-dwc"><a href="https://dwc.tdwg.org/list/#dwc_identificationRemarks">dwc:identificationRemarks</a></td><td></td></tr>
       <tr><td><span class="badge badge-INTEGER">INTEGER</span></td><td class="col-local">is_current</td><td>CHECK 0/1; default 1. Partial UNIQUE index <code>uq_td_one_current_per_co</code> on <code>collection_object_id</code> WHERE <code>is_current = 1</code> — at most one current determination per specimen (migration 0046, #74); history rows (is_current=0) unconstrained</td></tr>
@@ -764,7 +764,8 @@ erDiagram
   <h2>STRICT typing</h2>
   <div class="desc">Core, label, and print-queue tables are declared SQLite <code>STRICT</code>,
     so column types are enforced at write time (no silent affinity coercion).
-    <strong>Exceptions:</strong> <code>person</code> and <code>person_defaults</code> are not STRICT.
+    <strong>Exceptions:</strong> <code>person</code> and <code>person_defaults</code> are not
+    STRICT — the latter is a tiny single-row settings table, not collection data.
     <br><em>Note:</em> migrations 0020/0021/0024–0027 recreated several tables via
     <code>batch_alter_table(recreate=…)</code> and dropped STRICT + CHECKs; migration 0029
     restores them. This page documents the intended (post-0029) schema.</div>
@@ -792,6 +793,7 @@ erDiagram
       <tr><td class="col-local">ck_td_is_current_bool</td><td class="col-local">taxon_determination</td><td><code>is_current</code> is 0 or 1</td></tr>
       <tr><td class="col-local">ck_td_identification_qualifier</td><td class="col-local">taxon_determination</td><td><code>identificationQualifier</code> is empty, or one of the closed open-nomenclature set (migration 0058)</td></tr>
       <tr><td class="col-local">ck_td_subject_exclusive_arc</td><td class="col-local">taxon_determination</td><td>exactly one of <code>collection_object_id</code> / <code>field_occurrence_id</code> is set (migration 0060) <span class="tag tag-ARC">ARC</span></td></tr>
+      <tr><td class="col-local">ck_td_date_identified_no_interval</td><td class="col-local">taxon_determination</td><td><code>dateIdentified</code> is empty or contains no <code>/</code> — an identification is made on one date, and TaxonWorks refuses a range (migration 0069). Note: <code>collecting_event.eventDate</code> <em>does</em> allow an interval</td></tr>
       <tr><td class="col-local">ck_fo_basis_of_record</td><td class="col-local">field_occurrence</td><td><code>basisOfRecord</code> ∈ {HumanObservation, MachineObservation} (migration 0059)</td></tr>
       <tr><td class="col-local">ck_fo_individual_count_non_negative</td><td class="col-local">field_occurrence</td><td><code>individualCount</code> ≥ 0</td></tr>
       <tr><td class="col-local">ck_fo_confidential</td><td class="col-local">field_occurrence</td><td><code>confidential</code> is 0 or 1</td></tr>

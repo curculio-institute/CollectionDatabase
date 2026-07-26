@@ -40,6 +40,46 @@ def _host() -> str:
     return urlsplit(_base()).netloc or _base()
 
 
+def is_configured() -> bool:
+    """True when a base URL *and* a project token are set (AppConfig.taxonworks_enabled)."""
+    return get_config().taxonworks_enabled
+
+
+def _require_configured() -> None:
+    """Refuse loudly when TW is unconfigured, instead of building a malformed request.
+
+    Both connection fields are clearable (an unset field means "not configured"), so an
+    empty base URL is a reachable state. Without this the request went out against a
+    relative URL and raised httpx.InvalidURL — not an HTTPError, so it escaped `_explain`
+    and surfaced as a raw traceback instead of a sentence naming the cause (§2).
+    """
+    cfg = get_config()
+    if not cfg.tw_base.strip():
+        raise TaxonWorksUnreachable(
+            "No TaxonWorks API base URL set — Settings → TaxonWorks connection."
+        )
+    if not cfg.tw_token.strip():
+        raise TaxonWorksUnreachable(
+            "No TaxonWorks project token set — Settings → TaxonWorks connection."
+        )
+
+
+def web_base() -> str:
+    """The TaxonWorks *web* root, derived from the API base by dropping its `/api/v1` tail.
+
+    The API base is what the user configures (it is what the client talks to), but a
+    deep link into the TW UI — e.g. the comprehensive specimen editor the sync report
+    links to (#149) — hangs off the web root. Derived rather than stored as a second
+    field: two URLs for one server drift apart, and the tail is a fixed part of the API
+    contract, so there is nothing to configure twice.
+    """
+    base = _base()
+    for tail in ("/api/v1", "/api"):
+        if base.endswith(tail):
+            return base[: -len(tail)]
+    return base
+
+
 def _explain(exc: Exception, host: str | None = None) -> TaxonWorksUnreachable:
     """Name the actual cause: a rejected token, a wrong URL, or an unreachable server."""
     host = host or _host()
@@ -75,6 +115,8 @@ async def check_connection(base: str | None = None, token: str | None = None) ->
     """
     base = (base or _base()).rstrip("/")
     token = token if token is not None else _token()
+    if not base:
+        raise TaxonWorksUnreachable("Enter an API base URL first.")
     host = urlsplit(base).netloc or base
     try:
         async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
@@ -92,6 +134,7 @@ async def search_taxon_names(term: str, limit: int = 20) -> list[dict]:
     """Autocomplete — returns list of {id, name, label, label_html, valid_taxon_name_id}."""
     if len(term.strip()) < 2:
         return []
+    _require_configured()
     try:
         async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
             r = await client.get(
@@ -106,6 +149,7 @@ async def search_taxon_names(term: str, limit: int = 20) -> list[dict]:
 
 async def fetch_taxon_name(tw_id: int) -> dict | None:
     """Full taxon_name record: name, rank, cached, cached_author_year, parent_id, …"""
+    _require_configured()
     async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
         r = await client.get(
             f"{_base()}/taxon_names/{tw_id}",
@@ -231,6 +275,7 @@ async def fetch_biological_relationships() -> list[dict]:
     Used by sync_biological_relationships() at session start.
     Verified endpoint: GET /api/v1/biological_relationships (no show endpoint).
     """
+    _require_configured()
     async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
         r = await client.get(
             f"{_base()}/biological_relationships",
@@ -240,9 +285,62 @@ async def fetch_biological_relationships() -> list[dict]:
         return r.json()
 
 
+async def fetch_taxon_names_exact(name: str, per: int = 50) -> list[dict]:
+    """Exact-match lookup against `cached` — the documented `name[]` + `name_exact` filter
+    (rdoc.taxonworks.org/Queries/TaxonName/Filter.html: "`name` (Array): Matches against
+    cached. See also name_exact"; name_exact=true -> exact match against `cached` or
+    `cached_original_combination`).
+
+    The **scalar** `name=` form is a different, undocumented usage that returns an
+    unfiltered dump (verified: `name=Otiorhynchus` returned 2257 unrelated rows) — never
+    substitute it for the array form (#149).
+    """
+    _require_configured()
+    try:
+        async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
+            r = await client.get(
+                f"{_base()}/taxon_names",
+                params={
+                    "name[]": name,
+                    "name_exact": "true",
+                    "per": per,
+                    "project_token": _token(),
+                },
+            )
+            r.raise_for_status()
+            return r.json()
+    except httpx.HTTPError as exc:
+        raise _explain(exc) from exc
+
+
+async def fetch_taxon_names_by_otu(otu_id: int, per: int = 50) -> list[dict]:
+    """The TaxonName(s) linked to an OTU id — `GET /taxon_names?otu_id[]=<id>`.
+
+    Documented in `taxonworks_api/docs/openapi/taxon_name.yaml` ("Return TaxonNames linked
+    to these OTU ids"). This answers the question an OTU id alone cannot: *on this server,
+    what does this id actually denote?* An OTU id is per-instance, so the same integer names
+    a different entity — or nothing at all — on another TaxonWorks, and a stored id must
+    therefore be verified against the name we expect rather than trusted (#149; see
+    `tw_sync`). Measured: every id captured on sfg.taxonworks.org returns zero rows against
+    sandbox.taxonworks.org.
+    """
+    _require_configured()
+    try:
+        async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
+            r = await client.get(
+                f"{_base()}/taxon_names",
+                params={"otu_id[]": otu_id, "per": per, "project_token": _token()},
+            )
+            r.raise_for_status()
+            return r.json()
+    except httpx.HTTPError as exc:
+        raise _explain(exc) from exc
+
+
 async def fetch_otu_id_for_taxon_name(taxon_name_id: int) -> int | None:
     """Return the OTU id associated with a taxon_name_id, or None if not found.
     Used to build TaxonPages deep-link URLs."""
+    _require_configured()
     async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
         r = await client.get(
             f"{_base()}/otus",
