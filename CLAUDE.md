@@ -1484,10 +1484,14 @@ arrow-key event, chip styling) is design.md's concern → "Digitize layout modes
 - **Multi-token search**: query is split on whitespace; each token must appear in the name.
   `"Sit lin"` matches `"Sitona lineatus"`.
 - **Both sections always shown** unless all TW results are already in the local DB (deduplication
-  filters them out, causing the TW section to be skipped entirely).
-- **TW deduplication**: before rendering the TW section, bare names from TW results are matched
-  against local `dwc:scientificName` via exact match or suffix (`endswith(" " + bare_name)`).
-  Names already present locally are removed from the TW list.
+  filters them out; the TW section then says so rather than rendering empty, #152).
+- **TW deduplication is on the full composed name, never the bare epithet (fixed #152).** The
+  autocomplete payload's `name` field is only the epithet (`"formosus"`, not `"Polydrusus
+  formosus"`) — matching on it hid *every* TaxonWorks name sharing that epithet whenever any
+  local species happened to end in it (`Entimus formosus` locally silently hid `Polydrusus
+  formosus` on TW). The widget now batch-fetches each result's full `taxon_names` record
+  (`detail_cache`, already needed for the valid-name label and 🌿 code) **before** filtering, and
+  dedupes on `cached` — the composed full name — against local `dwc:scientificName`.
 - **TW pick imports the clicked name** (synonym or valid) via `fetch_full_classification(r["id"])`.
   `get_or_create_from_tw_data` handles valid-name backfill: imports accepted name first, then
   the synonym with `accepted_name_usage_id` set. The determination `taxon_id` is the clicked

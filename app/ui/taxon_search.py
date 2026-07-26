@@ -559,43 +559,24 @@ def build_taxon_search(
                 ui.label(str(exc)).classes("tw-dropdown-empty")
             _show_dropdown()
             return
-        except Exception:
+        except Exception as exc:
             tw_sec.clear()
+            with tw_sec:
+                ui.label("TaxonWorks").classes("tw-section-label")
+                ui.label(f"TaxonWorks search failed: {exc}").classes("tw-dropdown-empty")
+            _show_dropdown()
             return
 
         tw_sec.clear()
         if not results:
             return
 
-        # Filter out names already in the local DB.
-        tw_bare_names = [r.get("name", "") for r in results if r.get("name")]
-        if tw_bare_names:
-            from app.models import Taxon as _Taxon
-            from sqlalchemy import or_
-
-            def _already_local(s) -> set[str]:
-                clauses = []
-                for n in tw_bare_names:
-                    clauses.append(_Taxon.scientific_name == n)
-                    clauses.append(_Taxon.scientific_name.endswith(" " + n))
-                matched = {
-                    row[0] for row in
-                    s.query(_Taxon.scientific_name).filter(or_(*clauses)).all()
-                }
-                found = set()
-                for n in tw_bare_names:
-                    if n in matched or any(sci.endswith(" " + n) for sci in matched):
-                        found.add(n)
-                return found
-
-            already_local = _with_session(_already_local)
-            results = [r for r in results if r.get("name", "") not in already_local]
-
-        if not results:
-            return
-
-        # Batch-fetch full taxon-name records for all results so we can get both
-        # the valid-name label (for synonyms) and the nomenclatural code (for 🌿).
+        # Batch-fetch full taxon-name records for all results so we can get the
+        # valid-name label (for synonyms), the nomenclatural code (for 🌿), and —
+        # load-bearing for the dedup below — the composed full name ("cached").
+        # The autocomplete payload's "name" field is only the bare epithet
+        # ("formosus", not "Polydrusus formosus"); fetch first so dedup never
+        # has to fall back to it (#152).
         all_ids = list({
             tid
             for r in results
@@ -611,6 +592,42 @@ def build_taxon_search(
                 except Exception:
                     return tw_id, {}
             detail_cache = dict(await asyncio.gather(*[_fetch_detail(i) for i in all_ids]))
+
+        # Filter out names already in the local DB — matched on the full
+        # composed name ("cached"), never the bare epithet. An epithet alone
+        # does not identify a species: with the old bare-name match, a local
+        # "Entimus formosus" silently hid every TaxonWorks "… formosus" result,
+        # including unrelated genera (#152).
+        total_before_dedup = len(results)
+        tw_full_names = {
+            r["id"]: detail_cache.get(r["id"], {}).get("cached", "") for r in results
+        }
+        candidate_names = {n for n in tw_full_names.values() if n}
+        if candidate_names:
+            from app.models import Taxon as _Taxon
+
+            def _already_local(s) -> set[str]:
+                return {
+                    row[0] for row in
+                    s.query(_Taxon.scientific_name)
+                    .filter(_Taxon.scientific_name.in_(candidate_names))
+                    .all()
+                }
+
+            already_local = _with_session(_already_local)
+            results = [
+                r for r in results if tw_full_names.get(r["id"]) not in already_local
+            ]
+
+        if not results:
+            if total_before_dedup:
+                with tw_sec:
+                    ui.label("TaxonWorks").classes("tw-section-label")
+                    ui.label("All matches are already in the local database.").classes(
+                        "tw-dropdown-empty"
+                    )
+                _show_dropdown()
+            return
 
         if nomenclatural_codes:
             allowed = {c.lower() for c in nomenclatural_codes}
