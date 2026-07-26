@@ -1254,6 +1254,42 @@ Services: `app/services/dwc_export.py` (eligibility + projection + writer) and
 staging class). The **line numbers in §5/§5b are stale for the pinned commit `897f385`**
 (§5b cites `associatedTaxa` at ~948; at 897f385 it is at **743**). Re-grep, don't trust them.
 
+### Eligibility has two independent grounds: privacy and certainty (decided 2026-07-26)
+
+`dwc_export.export_decision` is the single owner of "may this specimen leave the building",
+read by both the comparison and the writer. It withholds on **two unrelated grounds**, and
+`ExportDecision.privacy_reasons` keeps them apart:
+
+- **Privacy** — the three `confidential` flags + person consent (the table in "Confidential /
+  privacy flag"). Unchanged.
+- **Certainty of the current determination** — new. **A qualified identification is not
+  exported**, for *any* value in the closed set (`cf.` `aff.` `nr.` `agg.` `gr.` `?` `sp.`
+  `spp.` `indet.`): the qualifier **expresses doubt**, and the mirror is a published statement
+  of what this collection holds. **A determination above species rank is not exported either**
+  (species or below — a subspecies is *more* precise, not less), nor is a specimen with no
+  current identification. A rank the model cannot place is reported as *unplaceable*, never as
+  "not to species" — we never compared it.
+
+Both are absolute, with **no setting**, for the same reason rule 3 (a confidential collector)
+has none: the importer is CREATE-ONLY, so a record published too early can be neither
+corrected nor deleted through the API, while a record withheld today exports fine tomorrow.
+
+**TaxonWorks could not carry the qualifier anyway** — worth recording, because the API makes it
+look like it could. Its importer folds `identificationQualifier` into the **OTU's name**
+(`otu_names` → `otu_attributes[:name]`, `dataset_record/darwin_core/occurrence.rb:1573-1576` @
+`897f385`), so `cf.` arrives as an OTU literally named `"cf."` on the protonym — measured on our
+own sandbox upload, OTU 1707966, `name: "cf."` on *Dodecastichus geniculatus*. And its
+`dwc_occurrences` projection never emits the term back: no entry in
+`CollectionObject::DwcExtensions::DWC_OCCURRENCE_MAP`, no `dwc_identification_qualifier` in
+`Shared::Dwc::TaxonDeterminationExtensions`, though the column does exist in `db/schema.rb`.
+Hence `identificationQualifier` is **not** a `tw_compare._DIFF_FIELDS` entry — it could only
+ever report a difference, never agreement (the `occurrenceID` / `stateProvince` rule again).
+
+A **further constraint for any future `TW:` column work**: `occurrence.rb:74`'s
+`OTU_ID_INCOMPATIBLE_FIELDS` lists `identificationQualifier` alongside `scientificName`,
+`scientificNameAuthorship`, `typeStatus`, `nomenclaturalCode` and the classification terms — so
+a file carrying `TW:TaxonDetermination:otu_id` may carry none of them.
+
 ### The export is gated on a name pre-flight (decided)
 
 **Nothing is exported until every name it would carry is confirmed present on the currently
@@ -1338,7 +1374,8 @@ string wins when present) or that detail is lost.
 half-wrong row cannot be corrected via the API): `basisOfRecord` outside
 PreservedSpecimen/FossilSpecimen (:849), whitespace in `sex` (:892), an interval in
 `dateIdentified` (:1394 — unlike `eventDate`, which allows one), a non-integer
-`coordinateUncertaintyInMeters` (:1138), or no current determination. **`preparations` must
+`coordinateUncertaintyInMeters` (:1138), or no current determination (now also caught earlier,
+as an eligibility rule — this stays as the backstop). **`preparations` must
 match an existing TW `PreparationType` or TW errors the row** (:926) — unverifiable via API, so
 the distinct values used are listed for the user to confirm.
 

@@ -548,18 +548,28 @@ def build_tw_sync_tab(session_factory, refreshers: dict | None = None,
                         # no column for gets a badge: duplicates / withheld-but-on-TW
                         # are rare enough that a silent "0" column would be wasted
                         # space, so they surface here instead, only when non-zero.
-                        if result.duplicates or result.leaked or result.orphaned:
+                        # A privacy breach and a curation tidy-up are both "on TaxonWorks
+                        # but withheld here", and both are shown — but never under one
+                        # count, and never in one colour. Only the privacy half is red.
+                        leaked_privacy = [lk for lk in result.leaked if lk.privacy]
+                        leaked_curation = [lk for lk in result.leaked if not lk.privacy]
+                        if (result.duplicates or result.leaked or result.orphaned):
                             with ui.row().classes("gap-3 items-center flex-wrap"):
                                 if result.duplicates:
                                     ui.badge(
                                         f"{len(result.duplicates)} duplicate catalog "
                                         f"number(s) on TaxonWorks"
                                     ).props("color=negative")
-                                if result.leaked:
+                                if leaked_privacy:
                                     ui.badge(
-                                        f"{len(result.leaked)} on TaxonWorks but "
-                                        f"withheld locally"
+                                        f"{len(leaked_privacy)} on TaxonWorks but "
+                                        f"confidential here"
                                     ).props("color=negative")
+                                if leaked_curation:
+                                    ui.badge(
+                                        f"{len(leaked_curation)} on TaxonWorks but no "
+                                        f"longer eligible"
+                                    ).props("color=warning")
                                 if result.orphaned:
                                     ui.badge(
                                         f"{len(result.orphaned)} on TaxonWorks but "
@@ -626,12 +636,14 @@ def build_tw_sync_tab(session_factory, refreshers: dict | None = None,
                                             tw_compare.edit_url(tid), new_tab=True,
                                         ).classes("text-xs")
 
-                        if result.leaked:
-                            with ui.expansion(
-                                    f"On TaxonWorks but withheld locally "
-                                    f"({len(result.leaked)})") \
+                        def _leaked_section(rows, title: str, note: str) -> None:
+                            if not rows:
+                                return
+                            with ui.expansion(f"{title} ({len(rows)})") \
                                     .classes("w-full mt-2"):
-                                for lk in result.leaked:
+                                ui.label(note).classes("text-xs mb-1") \
+                                    .style("color:var(--tp-base-soft)")
+                                for lk in rows:
                                     ui.label(
                                         f"{lk.catalog_number} — {'; '.join(lk.reasons)}"
                                     ).classes("text-xs font-medium mt-1")
@@ -640,6 +652,20 @@ def build_tw_sync_tab(session_factory, refreshers: dict | None = None,
                                         tw_compare.edit_url(lk.tw_object_id),
                                         new_tab=True,
                                     ).classes("text-xs")
+
+                        _leaked_section(
+                            leaked_privacy, "On TaxonWorks but confidential here",
+                            "A confidential specimen, event or collector that the "
+                            "public mirror still carries. TaxonWorks' v1 API has no "
+                            "delete, so correcting this means editing it there.",
+                        )
+                        _leaked_section(
+                            leaked_curation, "On TaxonWorks but no longer eligible",
+                            "Uploaded earlier, but this collection would no longer "
+                            "export it — the identification is not certain enough "
+                            "(qualified, or not to species). Nothing is exposed; it is "
+                            "a curation tidy-up, done in TaxonWorks.",
+                        )
 
                         if result.on_tw_not_compared:
                             with ui.expansion(

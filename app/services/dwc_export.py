@@ -3,7 +3,9 @@
 Two things live here, and the split matters:
 
 * **`export_decision()`** — *may* this specimen leave the building, and with which fields
-  blanked. Pure policy, derived from the three `confidential` flags and person consent.
+  blanked. Pure policy, on two independent grounds: **privacy** (the three `confidential`
+  flags and person consent) and **certainty of the determination** (a qualifier expresses
+  doubt; below species is not a determination worth publishing).
 * **the occurrence projection** — *what* a specimen looks like as a DwC row.
 
 Both the TaxonWorks sync comparison and the emitted CSV read the same two functions, so a
@@ -43,14 +45,88 @@ class ExportDecision:
     blank_fields: tuple[str, ...] = ()
     # Why each blanked field was blanked, for the report ("recordedBy: has not consented").
     blank_notes: tuple[str, ...] = ()
+    # The subset of `reasons` that is privacy-driven (a confidential flag or a
+    # non-consenting collector), as opposed to curatorial (the determination is not
+    # certain enough to publish). Both withhold the record identically — the split
+    # exists because finding such a record ALREADY on TaxonWorks means two very
+    # different things: a privacy breach to correct now, or a record to tidy up.
+    privacy_reasons: tuple[str, ...] = ()
 
     @property
     def withheld(self) -> bool:
         return not self.eligible
 
+    @property
+    def withheld_for_privacy(self) -> bool:
+        return bool(self.privacy_reasons)
+
 
 def _recorded_by(event: CollectingEvent | None) -> Person | None:
     return event.recorded_by_person if event is not None else None
+
+
+# Ranks at or below species. Derived by indexing into `taxa.TAXON_RANKS` — the one
+# high→low ordering — rather than listing them, so ICN's infraspecific tiers (variety,
+# form, …) are covered and a rank added there later cannot be forgotten here.
+_SPECIES_RANK_INDEX = taxa.TAXON_RANKS.index("species")
+
+
+def _determination_reasons(co: CollectionObject) -> list[str]:
+    """Why this specimen's *current* identification is not publishable — empty if it is.
+
+    Two curatorial rules (decided 2026-07-26, #149), both about how sure the
+    determination is. The mirror is a published statement of what this collection holds,
+    and TaxonWorks' importer is CREATE-ONLY: a record published too early cannot be
+    corrected or deleted through the API, while a record withheld today exports fine
+    tomorrow. So doubt withholds.
+
+    1. **A qualifier expresses doubt**, and every value in the closed set says so —
+       `cf.` `aff.` `nr.` `agg.` `gr.` `?` `sp.` `spp.` `indet.` (app/vocab.py). None of
+       them is a definite identification.
+
+       TaxonWorks would not preserve the distinction anyway, which is worth recording
+       because it looks like it should: its importer appends `identificationQualifier`
+       to the OTU's *name* (`otu_names` → `otu_attributes[:name]`, TW @ 897f385
+       `dataset_record/darwin_core/occurrence.rb:1573-1576`), so `cf.` arrives as an OTU
+       literally named "cf." hanging on the protonym — verified on our own sandbox
+       upload, OTU 1707966, `name: "cf."` on *Dodecastichus geniculatus*. And its
+       `dwc_occurrences` projection never emits the term back at all: there is no
+       `identificationQualifier` entry in `CollectionObject::DwcExtensions::
+       DWC_OCCURRENCE_MAP` and no `dwc_identification_qualifier` method in
+       `Shared::Dwc::TaxonDeterminationExtensions`, though the column does exist in
+       `db/schema.rb`. So the doubt cannot survive the round trip in either direction.
+
+    2. **Below species is not a determination worth publishing** — a specimen sitting at
+       genus or tribe is work in progress. A rank the model does not know is treated the
+       same way: unpublishable, never assumed to be fine (§2 — a silent wrong value is
+       worse than a loud refusal).
+    """
+    det = _current_determination(co)
+    if det is None:
+        return ["no current identification"]
+
+    reasons: list[str] = []
+    qualifier = (det.identification_qualifier or "").strip()
+    if qualifier:
+        reasons.append(
+            f"identification is qualified ‘{qualifier}’ — expresses doubt"
+        )
+
+    tx = det.taxon
+    rank = (tx.taxon_rank or "").strip() if tx is not None else ""
+    name = (tx.scientific_name or "").strip() if tx is not None else ""
+    named = f" ({name})" if name else ""
+    if rank not in taxa.TAXON_RANKS:
+        # Not "too high" — *unplaceable*. Saying "not to species" would claim we had
+        # compared it to species, which we cannot do for a rank the ordering lacks.
+        reasons.append(
+            f"rank ‘{rank}’ is not one this catalogue knows{named} — cannot confirm "
+            f"a species-level identification"
+            if rank else f"the identification has no rank{named}"
+        )
+    elif taxa.TAXON_RANKS.index(rank) < _SPECIES_RANK_INDEX:
+        reasons.append(f"identified only to {rank}{named} — not to species")
+    return reasons
 
 
 def export_decision(
@@ -73,6 +149,11 @@ def export_decision(
     4. the recordedBy person is neither confidential
        nor consent_approved                           → recordedBy blanked, or withheld
        (`AppConfig.tw_export_nonconsent`)
+    5. the current identification carries a qualifier,
+       is below species rank, or is absent            → withheld (`_determination_reasons`)
+
+    Rule 5 is curatorial, not privacy — see `ExportDecision.privacy_reasons` for why the
+    two are told apart. Like rule 3 it has no setting: doubt is not exported.
 
     Rule 3 has **no setting**: a confidential collector is never exported, in any form.
     The flag exists to be obeyed, not weighed — so there is deliberately no configuration
@@ -109,10 +190,16 @@ def export_decision(
                 blank_fields.append("recordedBy")
                 blank_notes.append(f"recordedBy: {person.full_name} has not consented")
 
+    # Everything above is privacy; everything below is curatorial. Captured before the
+    # determination rules run so the two can be told apart in the report.
+    privacy_reasons = tuple(reasons)
+    reasons.extend(_determination_reasons(co))
+
     if reasons:
         # A withheld record has no fields to blank — drop them so the report cannot show
         # a redaction for a row that is never written.
-        return ExportDecision(eligible=False, reasons=tuple(reasons))
+        return ExportDecision(eligible=False, reasons=tuple(reasons),
+                              privacy_reasons=privacy_reasons)
     return ExportDecision(
         eligible=True,
         blank_fields=tuple(blank_fields),

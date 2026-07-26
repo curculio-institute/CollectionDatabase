@@ -102,11 +102,22 @@ _RETRY_BACKOFF = (0.5, 1.5)
 # not in dispute at all. Comparing it would flag a difference that carries no action
 # (there is nothing to fix — both sides describe the same place), the same reasoning that
 # already excludes occurrenceID/institutionCode.
+#
+# `identificationQualifier` is excluded for a third reason, stronger than either:
+# **TaxonWorks never emits it.** Its importer folds the value into the OTU's *name*
+# (TW @ 897f385, `dataset_record/darwin_core/occurrence.rb:1573-1576`) and its
+# dwc_occurrences projection has no entry for the term at all — no
+# `identificationQualifier` in `CollectionObject::DwcExtensions::DWC_OCCURRENCE_MAP`,
+# no `dwc_identification_qualifier` in `Shared::Dwc::TaxonDeterminationExtensions`,
+# though the column does exist in `db/schema.rb`. So the comparison always reads
+# TW=''; it could only ever report a difference, never agreement. (Since 2026-07-26 a
+# qualified determination is not exportable at all — `dwc_export._determination_reasons`
+# — so this field would now be unreachable as well as wrong.)
 _DIFF_FIELDS: tuple[str, ...] = (
     "basisOfRecord", "individualCount", "sex", "preparations", "typeStatus",
     "recordedBy", "eventDate", "verbatimEventDate", "country",
     "verbatimLocality", "scientificName", "scientificNameAuthorship", "taxonRank",
-    "identificationQualifier", "identifiedBy",
+    "identifiedBy",
 )
 
 
@@ -429,10 +440,18 @@ class DuplicateGroup:
 
 @dataclass(frozen=True)
 class LeakedRow:
-    """An eligible-to-be-withheld specimen (confidential) that TaxonWorks still has."""
+    """A specimen this collection would withhold, that TaxonWorks nonetheless has.
+
+    `privacy` separates the two causes, because they are not equally urgent and must not
+    be presented as if they were: a confidential specimen / event / collector on a public
+    mirror is a privacy breach to correct now, whereas an uncertain determination
+    (qualified, or above species) is a curation tidy-up. Both are withheld from every
+    future export identically; only the reporting differs.
+    """
     catalog_number: str
     tw_object_id: int
     reasons: tuple[str, ...]
+    privacy: bool = True
 
 
 @dataclass(frozen=True)
@@ -681,6 +700,7 @@ def compare_repository(
                     catalog_number=cat,
                     tw_object_id=tw_object_id,
                     reasons=decision.reasons,
+                    privacy=decision.withheld_for_privacy,
                 ))
 
         # Filed under a different namespace than this collection — the other half of a

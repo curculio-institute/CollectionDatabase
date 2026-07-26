@@ -17,6 +17,9 @@ The distinction is the whole point, and it is a data-safety one (CLAUDE.md §5c)
   counts as this one's orphan.
 """
 import app.services.specimens as spec_svc
+from app.models import Taxon
+from app.models.base import _utcnow
+from app.services.taxa import compose_scientific_name
 from app.services.tw_compare import build_catalog_index, compare_repository
 from tests.helpers import ensure_repo
 
@@ -46,6 +49,32 @@ def _index(*rows: tuple[str, int, str]):
     ])
 
 
+def _species(session):
+    """One shared, definite species determination target.
+
+    Every specimen here gets one, because since 2026-07-26 export eligibility also
+    requires a certain identification (`dwc_export._determination_reasons`) — without it
+    each fixture would be ineligible for a reason these tests are not about, and the
+    existence/orphan assertions would never be reached.
+    """
+    sp = session.query(Taxon).filter_by(scientific_name="Otiorhynchus crypticus").first()
+    if sp is not None:
+        return sp
+    genus = Taxon(name_element="Otiorhynchus", scientific_name="Otiorhynchus",
+                  taxon_rank="genus", nomenclatural_code="ICZN",
+                  created_at=_utcnow(), updated_at=_utcnow())
+    session.add(genus)
+    session.flush()
+    sp = Taxon(name_element="crypticus", scientific_name="crypticus",
+               taxon_rank="species", parent_name_usage_id=genus.id,
+               nomenclatural_code="ICZN", created_at=_utcnow(), updated_at=_utcnow())
+    session.add(sp)
+    session.flush()
+    sp.scientific_name = compose_scientific_name(session, sp)
+    session.flush()
+    return sp
+
+
 def _specimen(session, catalog_number: str, code: str = "JJPC", **kw):
     repo_id = ensure_repo(session, code)
     co = spec_svc.create_collection_object(
@@ -53,6 +82,12 @@ def _specimen(session, catalog_number: str, code: str = "JJPC", **kw):
         repository_id=repo_id, **kw,
     )
     session.flush()
+    spec_svc.create_determination(
+        session, collection_object_id=co.id, taxon_id=_species(session).id,
+        is_current=1,
+    )
+    session.flush()
+    session.refresh(co)
     return co
 
 
@@ -95,8 +130,11 @@ def test_on_the_index_and_matching_the_projection_is_synced(session):
     co = _specimen(session, "JJPC-00003", individual_count=1)
     result = compare_repository(
         session,
-        {"JJPC-00003": [_occurrence("JJPC-00003", 503, individualCount="1",
-                                    basisOfRecord=co.basis_of_record or "")]},
+        {"JJPC-00003": [_occurrence(
+            "JJPC-00003", 503, individualCount="1",
+            basisOfRecord=co.basis_of_record or "",
+            scientificName="Otiorhynchus crypticus", taxonRank="species",
+        )]},
         repository_id=_repo_id(session),
         index=_index(("JJPC-00003", 503, "JJPC")),
     )
