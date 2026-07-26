@@ -282,7 +282,7 @@ def build_tw_sync_tab(session_factory, refreshers: dict | None = None,
                 # Consent policy — read-only here (Settings owns it), but the eligible/
                 # not-eligible split right below depends on it, so it must be visible
                 # without a trip to Settings to find out which one is active. Only the
-                # active option is shown, in brackets — not both.
+                # active option is shown, not both.
                 _CONSENT_OPT_TEXT = {
                     "name_removed": "Export the record with their name removed",
                     "consented_only": "Do not export",
@@ -294,7 +294,7 @@ def build_tw_sync_tab(session_factory, refreshers: dict | None = None,
                     nonconsent = get_config().tw_export_nonconsent or "name_removed"
                     active = _CONSENT_OPT_TEXT.get(nonconsent, nonconsent)
                     consent_status_label.set_text(
-                        f"Collectors who did not explicitly consent: [{active}]"
+                        f"Collectors who did not explicitly consent: {active}"
                     )
 
                 _sync_consent_status()
