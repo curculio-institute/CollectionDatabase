@@ -62,8 +62,8 @@ import httpx
 from sqlalchemy.orm import Session
 
 from app.config import get_config
-from app.models import CollectionObject
-from app.services import dwc_export
+from app.models import CollectionObject, Taxon
+from app.services import dwc_export, taxa
 from app.services.taxonworks import TaxonWorksUnreachable, web_base
 
 _TIMEOUT = httpx.Timeout(25.0)
@@ -85,9 +85,18 @@ _RETRY_BACKOFF = (0.5, 1.5)
 # calls out "of particular interest are identifications and repositories" — scientificName
 # (+ authorship) is the identification; institutionCode is compared separately (below,
 # report-only) rather than as a diff field, for the same rewriting reason.
+#
+# `stateProvince` is deliberately excluded too (not merely case-folded, dropped outright):
+# TaxonWorks re-geocodes the coordinate on its own side and can render the admin name in
+# a different language than ours (`stateProvince` is English by policy — CLAUDE.md's
+# geography-vocab section) — measured on the sandbox project: "Hesse"/"Hessen",
+# "Bavaria"/"Bayern", "Western Greece"/"Dytiki Ellada" for specimens whose coordinate is
+# not in dispute at all. Comparing it would flag a difference that carries no action
+# (there is nothing to fix — both sides describe the same place), the same reasoning that
+# already excludes occurrenceID/institutionCode.
 _DIFF_FIELDS: tuple[str, ...] = (
     "basisOfRecord", "individualCount", "sex", "preparations", "typeStatus",
-    "recordedBy", "eventDate", "verbatimEventDate", "country", "stateProvince",
+    "recordedBy", "eventDate", "verbatimEventDate", "country",
     "verbatimLocality", "scientificName", "scientificNameAuthorship", "taxonRank",
     "identificationQualifier", "identifiedBy",
 )
@@ -241,15 +250,58 @@ def _diff_one(session: Session, co: CollectionObject, tw_row: dict) -> tuple[str
     the only thing that differs and the surrounding evidence points that way — removes the
     noise without hiding anything: no DwC field compared here is meaningfully
     case-sensitive (a place, a name, an enum word means the same thing regardless of case).
+
+    `scientificName` gets one further, targeted exception: if the specimen is determined
+    to a **synonym** locally (CLAUDE.md §2 — a determination may deliberately target a
+    synonym, and we freeze the name *as determined*, never silently resolving it), a TW
+    value matching the *accepted* name's composed name is also treated as a match, not a
+    divergence. Verified by reading TaxonWorks' own source
+    (`app/models/concerns/shared/dwc/taxon_determination_extensions.rb`):
+    ``target_taxon_name ||= current_valid_taxon_name`` — TaxonWorks' own outward
+    `scientificName` is *always* the current valid name, never the as-determined synonym,
+    regardless of what was actually typed into the identification. Measured on the sandbox
+    project: JJPC-00010 is determined "Entimus formosus" (a synonym; local
+    `taxon.accepted_name_usage_id` points at "Entimus sastrei") and TW's own comprehensive
+    editor still shows "Entimus formosus" as the identification — but its
+    `dwc_occurrences.scientificName` reports "Entimus sastrei". That is TW resolving the
+    name for its own API projection, not TW disagreeing with the identification, so it
+    must not read as "diverged".
     """
     local_row = dwc_export.occurrence_row(session, co)
+    taxon = _current_taxon(co)
     diffs: list[str] = []
     for field_name in _DIFF_FIELDS:
         local_val = (local_row.get(field_name) or "").strip()
         tw_val = str(tw_row.get(field_name) or "").strip()
-        if local_val.casefold() != tw_val.casefold():
-            diffs.append(f"{field_name}: local='{local_val}' vs TW='{tw_val}'")
+        if local_val.casefold() == tw_val.casefold():
+            continue
+        if (
+            field_name == "scientificName"
+            and taxon is not None
+            and taxon.accepted_name_usage_id is not None
+        ):
+            accepted = session.get(Taxon, taxon.accepted_name_usage_id)
+            if accepted is not None:
+                accepted_full = taxa.compose_full_name(session, accepted).strip()
+                if accepted_full.casefold() == tw_val.casefold():
+                    continue
+        diffs.append(f"{field_name}: local='{local_val}' vs TW='{tw_val}'")
     return tuple(diffs)
+
+
+def _current_taxon(co: CollectionObject) -> Taxon | None:
+    """The taxon of `co`'s current determination, or None.
+
+    Deliberately duplicates `dwc_export._current_determination`'s `is_current == 1` scan
+    and `tw_sync._current_taxon`'s identical duplication of it, rather than importing
+    either — both are private to modules this file must not modify (module docstring);
+    one dependency-free one-liner, copied three times, is the established convention here
+    (see `tw_sync.py`'s own comment making the same call).
+    """
+    for det in co.determinations:
+        if det.is_current == 1:
+            return det.taxon
+    return None
 
 
 def ineligible_specimens(

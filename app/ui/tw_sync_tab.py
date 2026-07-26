@@ -72,16 +72,15 @@ bulk action):
   network call at import/build time), and there is no `ui.timer` — nothing on this tab is
   a DB-backed select that can go stale.
 
-**Taxonomy scope (optional, remembered — Export step only).** The export can be restricted
-to one taxon and its descendants (e.g. "Curculionoidea only") — filtering is done here, in
-the UI, by restricting the `CollectionObject` query before it reaches `export_occurrences`/
-`taxa_to_export`. "Remembered for the next export" is a DB-backed single-row setting
-(`export_settings`, migration 0067; `app/services/export_settings.py`), the same reasoning
-CLAUDE.md gives for `person_defaults`: a taxon id is a reference into the DB, so it belongs
-in the DB, not `config.json` — that also gets the FK's `ON DELETE SET NULL` for free. The
-picker reuses the existing taxon-search widget (`taxon_search.py::build_taxon_search`,
-`sources=("local",)`) and the descendant expansion (`batch_ops.py::descendant_taxon_ids`) —
-both already built for Batch tools' identical need.
+**Taxonomy scope (optional, Export step only).** The export can be restricted to one taxon
+and its descendants (e.g. "Curculionoidea only") — filtering is done here, in the UI, by
+restricting the `CollectionObject` query before it reaches `export_occurrences`/
+`taxa_to_export`. Session-only (cleared on page reload) — a full DB-backed "remembered
+across restarts" setting was cut as disproportionate machinery for a UI convenience (a
+migration + table is `person_defaults`-level ceremony; this is not a load-bearing default
+anything else depends on). The picker reuses the existing taxon-search widget
+(`taxon_search.py::build_taxon_search`, `sources=("local",)`) and the descendant expansion
+(`batch_ops.py::descendant_taxon_ids`) — both already built for Batch tools' identical need.
 """
 from __future__ import annotations
 
@@ -95,10 +94,9 @@ import app.services.repositories as repo_svc
 import app.services.taxonworks as tw_svc
 import app.services.tw_compare as tw_compare
 from app.config import get_config
-from app.models import CollectingEvent, CollectionObject, Taxon, TaxonDetermination
-from app.services import dwc_export, export_settings, tw_sync
+from app.models import CollectingEvent, CollectionObject, TaxonDetermination
+from app.services import dwc_export, tw_sync
 from app.services.batch_ops import descendant_taxon_ids
-from app.services.taxa import format_scientific_name
 from app.ui.taxon_search import build_taxon_search
 
 _STEPS: tuple[tuple[str, str], ...] = (
@@ -123,21 +121,7 @@ def build_tw_sync_tab(session_factory, refreshers: dict | None = None) -> None:
         "compare": {}, "checking_repo": None,
     }
 
-    # The remembered taxonomy restriction (#149 follow-up) — read once at build time (a
-    # plain DB read, not network) so the tab opens already scoped the way the user left it
-    # last time, instead of silently defaulting back to "everything".
     with session_factory() as _s:
-        _scope_taxon_id = export_settings.get_taxon_scope_id(_s)
-        _scope_label = ""
-        if _scope_taxon_id is not None:
-            _scope_taxon = _s.get(Taxon, _scope_taxon_id)
-            if _scope_taxon is not None:
-                _scope_label = format_scientific_name(_scope_taxon)
-            else:
-                # FK is ON DELETE SET NULL, so this cannot actually dangle — kept as a
-                # belt-and-suspenders fallback rather than trusting the join blindly.
-                _scope_taxon_id = None
-
         _default_repo = repo_svc.get_default(_s)
         state["repo_id"] = _default_repo.id if _default_repo else None
         state["repo_code"] = _default_repo.collection_code if _default_repo else ""
@@ -362,14 +346,14 @@ def build_tw_sync_tab(session_factory, refreshers: dict | None = None) -> None:
                             .classes("text-sm font-semibold")
 
                         with ui.row().classes("gap-3 items-center flex-wrap mt-1"):
-                            ui.badge(f"{result.eligible_count} eligible") \
-                                .props("color=primary")
                             ui.badge(f"{result.ineligible_count} not eligible") \
                                 .props("color=grey")
-                            ui.badge(f"{result.synced_count} synced") \
-                                .props("color=positive")
+                            ui.badge(f"{result.eligible_count} eligible") \
+                                .props("color=primary")
                             ui.badge(f"{len(result.not_on_tw)} not yet uploaded") \
                                 .props("color=warning")
+                            ui.badge(f"{result.synced_count} on TaxonWorks") \
+                                .props("color=positive")
                             ui.badge(f"{len(result.diverged)} diverged") \
                                 .props("color=negative")
                             if result.duplicates:
@@ -603,10 +587,8 @@ def build_tw_sync_tab(session_factory, refreshers: dict | None = None) -> None:
                     )
 
                 # ── Scope (optional) — restrict to one taxon and its descendants ──
-                # Remembered across restarts (export_settings, migration 0067): read
-                # once at build time above, persisted below every time a check runs,
-                # so "the next export" (this session or a future one) keeps whatever
-                # was last checked.
+                # Session-only — starts empty on every page load (see module docstring
+                # for why this is not a DB-backed "remembered" setting).
                 ui.label("Restrict to a taxon (optional)").classes(
                     "text-sm font-semibold")
                 ui.label(
@@ -619,7 +601,6 @@ def build_tw_sync_tab(session_factory, refreshers: dict | None = None) -> None:
                         session_factory, sources=("local",),
                         placeholder="e.g. Curculionoidea — leave empty for the whole "
                                     "collection",
-                        initial_taxon_id=_scope_taxon_id, initial_label=_scope_label,
                     )
 
                 ui.separator().classes("my-3")
@@ -711,16 +692,6 @@ def build_tw_sync_tab(session_factory, refreshers: dict | None = None) -> None:
                         return
                     finally:
                         check_btn.props(remove="loading")
-
-                    # Persist the scope that was actually just checked, in its own
-                    # short write — kept out of the read session above, which stays
-                    # open across the `await` for `check_names`'s sake and should not
-                    # also carry a pending write across it. "Remembered for the next
-                    # export" covers clearing it too: scope_id is None when the field
-                    # was left empty or cleared before this check ran.
-                    with session_factory() as s:
-                        with s.begin():
-                            export_settings.set_taxon_scope_id(s, scope_id)
 
                     state["result"] = result
                     state["checks"] = checks
