@@ -42,6 +42,10 @@ plainly rather than reporting a false "0 differences".
   burst) — 39 real specimens completed in ~2.5–3s, verified. A duplicate catalogNumber on
   TW is still caught correctly: the exact filter returns *every* row sharing that string,
   not just one, so `len(rows) > 1` for one lookup is exactly #149 step 1.3's case.
+  The filter is nonetheless **re-verified on every response** (`_verify_filter_applied`)
+  instead of trusted once: §5c's "unknown params are silently ignored" hazard applies just
+  as much to a param that *stops* applying (a TW upgrade, a rename), and this module's own
+  history shows the question is easy to get wrong in either direction.
 
 Reuses `dwc_export.occurrence_row` for the local side of the diff — the identical
 projection a real export would write, so "diverged" can never disagree with what the
@@ -123,6 +127,38 @@ def _explain(exc: Exception) -> TaxonWorksUnreachable:
     return TaxonWorksUnreachable(f"Cannot reach {host} ({type(exc).__name__}).")
 
 
+def _verify_filter_applied(rows: object, catalog_number: str) -> list[dict]:
+    """Confirm the `catalogNumber=` filter actually applied; fail loudly if it did not.
+
+    CLAUDE.md §5c: TaxonWorks **silently ignores an unknown query param** and answers
+    with the unfiltered table, so a result set is never self-evidently filtered. This is
+    checked rather than trusted — and the check must *raise*, not quietly drop the
+    foreign rows, because "no rows" is the more dangerous reading of a broken filter:
+    the export deliberately excludes what TaxonWorks already holds, so a lookup that
+    wrongly finds nothing would re-upload those specimens into a CREATE-ONLY importer
+    and mint duplicates that cannot be deleted through the API. Same call
+    `tw_sync._exact_candidates` makes on an oversized result set: an unreliable lookup
+    is a lookup failure, never a finding.
+    """
+    if not isinstance(rows, list) or not all(isinstance(r, dict) for r in rows):
+        raise TaxonWorksUnreachable(
+            f"the lookup for {catalog_number!r} did not return a list of occurrence "
+            f"rows — treating it as a lookup failure rather than as a result."
+        )
+    foreign = sorted(
+        {str(row.get("catalogNumber") or "").strip() for row in rows} - {catalog_number}
+    )
+    if foreign:
+        shown = ", ".join(repr(f) for f in foreign[:3])
+        raise TaxonWorksUnreachable(
+            f"the lookup for {catalog_number!r} returned {len(rows)} row(s) carrying "
+            f"other catalog numbers ({shown}) — the catalogNumber filter did not "
+            f"apply. Treating this as a lookup failure: trusting it would either "
+            f"invent duplicates or re-upload specimens TaxonWorks already holds."
+        )
+    return rows
+
+
 async def _fetch_one_catalog_number(
     client: httpx.AsyncClient, token: str, catalog_number: str
 ) -> list[dict]:
@@ -142,7 +178,7 @@ async def _fetch_one_catalog_number(
                         "project_token": token},
             )
             r.raise_for_status()
-            return r.json()
+            return _verify_filter_applied(r.json(), catalog_number)
         except (httpx.TimeoutException, httpx.TransportError) as exc:
             last_exc = exc
         except httpx.HTTPStatusError as exc:
