@@ -26,7 +26,7 @@ from sqlalchemy.orm import Session
 
 from app.models import CollectionObject, Taxon, TaxonDetermination
 from app.models.base import _utcnow
-from app.services.taxa import format_scientific_name
+from app.services.taxa import format_scientific_name, expand_taxon_scope
 
 
 # ── data shapes ─────────────────────────────────────────────────────────────
@@ -61,24 +61,26 @@ def _taxon_index(session: Session) -> dict[int, Taxon]:
 
 
 def descendant_taxon_ids(session: Session, taxon_id: int) -> set[int]:
-    """``taxon_id`` plus every taxon under it in the parent-link tree.
+    """``taxon_id`` plus every taxon under it in the parent-link tree, plus the synonym
+    group of every taxon reached (#151).
 
-    Picking a species returns just it (+ its subspecies); picking a genus returns all
-    its species. Mirrors Explore's descendant expansion, computed from the parent links.
+    Picking a species returns just it (+ its subspecies) plus any synonyms of any of
+    those; picking a genus returns all its species, their synonyms, etc. Mirrors
+    Explore's descendant expansion (`taxa.expand_taxon_scope`), computed from the
+    parent links plus `accepted_name_usage_id`.
     """
     children: dict[int, list[int]] = defaultdict(list)
-    for tid, pid in session.query(Taxon.id, Taxon.parent_name_usage_id).all():
+    accepted_of: dict[int, int] = {}
+    syn_map: dict[int, list[int]] = defaultdict(list)
+    for tid, pid, aid in session.query(
+        Taxon.id, Taxon.parent_name_usage_id, Taxon.accepted_name_usage_id
+    ).all():
         if pid is not None:
             children[pid].append(tid)
-    out: set[int] = set()
-    stack = [taxon_id]
-    while stack:
-        x = stack.pop()
-        if x in out:
-            continue
-        out.add(x)
-        stack.extend(children[x])
-    return out
+        if aid is not None:
+            accepted_of[tid] = aid
+            syn_map[aid].append(tid)
+    return expand_taxon_scope(taxon_id, children, accepted_of, syn_map)
 
 
 def _current_taxon_label(co: CollectionObject, idx: dict[int, Taxon]) -> str:

@@ -952,7 +952,9 @@ of its accepted name (so *Curculio forticollis*, a synonym of *Otiorhynchus fort
 parented under *Curculio* and composes to "Curculio forticollis"). This is what makes name
 composition uniform for valid names and synonyms, and makes a status flip (synonym ↔ valid) a
 pure **one-field toggle with no name rewrite and no re-parenting**. The tree still groups
-synonyms under their accepted name via `acceptedNameUsageID`, so display is unaffected.
+synonyms under their accepted name via `acceptedNameUsageID` for *display* — but until #151
+(below), a specimen determined under a synonym was invisible to search/filter/count by the
+accepted name, and to the tree's own displayed specimen totals.
 
 One invariant remains, enforced by a loud `BEFORE` trigger (migration 0031) that `RAISE`s on
 any violating write — from raw SQL too — and re-declared on any future `taxon` rebuild (DB-1
@@ -973,6 +975,41 @@ own lineage), and `merge_taxa()` (below). A static test
 (`test_synonym_integrity.py::test_parent_and_accepted_writes_are_centralised`) fails if any
 code outside `taxa.py` assigns these columns directly. **No fallback defaults** — required
 links are inherited or the op fails loudly, never guessed.
+
+**Search and filtering are synonym-aware (#151, decided 2026-07-26).** A determination
+legitimately freezes the name as used (§2) — the person who identified a specimen as
+*Entimus formosus* may not agree with a later synonymisation with *Entimus sastrei*, and that
+name must never be silently rewritten. But the two rows are the **same OTU**, so filtering,
+searching, or counting by *either* name must retrieve/count specimens determined under
+**both** — a search is not a determination, and hiding one name's material behind the other
+is a silent wrong value (§2) by omission.
+
+- **The single shared primitive: `taxa.expand_taxon_scope(taxon_id, children, accepted_of,
+  syn_map)`.** `taxon_id` plus every descendant in the parent/child tree, **plus the synonym
+  group of every taxon reached** (`taxa.synonym_group_ids` — the accepted name + all its
+  synonyms, whichever of the two `taxon_id` itself is). A synonym is parented under its OWN
+  lineage (own genus, possibly a completely different genus than its accepted name's — the
+  *Curculio forticollis* / *Otiorhynchus fortis* example above), so it is **never** reached by
+  the parent/child walk alone, even when its accepted name is well inside the scope; each
+  node's OTU partners are pulled in explicitly as the walk proceeds, so a genus-level filter
+  also reaches a synonym filed in an unrelated genus.
+- **Three call sites, one primitive, no drift:** `explore.py::_descendant_ids` (the taxon facet behind `query_specimens` / `checklist` /
+  `events` / `counts`), `batch_ops.py::descendant_taxon_ids` (Batch tools' "every specimen of
+  a taxon"), and — for free, since it calls the same function — the TaxonWorks sync tab's
+  taxonomy-scope picker (`tw_sync_tab.py`, "Curculioidea only"). The **verbatim** id-scope
+  (`id_scope=("verbatim",)`, matching the frozen `verbatimIdentification` text) is extended
+  the same way but narrower: it matches against every name in the searched taxon's *own*
+  synonym group only, not the full descendant expansion — mirroring how that scope has always
+  searched one node's name, never its children's.
+- **The taxonomy tree's `spec_count` rolls up too** (`taxonomy.py::_build_node`): a synonym's
+  own row still shows its own count (how many specimens are literally determined under that
+  name), and the accepted node's total now *includes* it — so the number displayed in the tree
+  finally agrees with what filtering by that accepted name in Explore actually retrieves.
+- **What does NOT change:** the drawer-order checklist (`explore.py::checklist`) still groups
+  a synonym-determined specimen under **its own** taxonomic position, as its own species row —
+  that mirrors what is physically written on the determination label (the Käfersammlung
+  layout) and is a display decision, not a retrieval one. Only *retrieval/counting* is
+  synonym-aware; *grouping-by-literal-name-used* is unchanged and stays correct.
 
 **Merging duplicate names (de-duplication, NOT synonymisation — decided 2026-07-18).**
 `taxa.merge_taxa(session, keep_id, absorb_id)` (Taxonomy tab → "Merge names") folds two rows

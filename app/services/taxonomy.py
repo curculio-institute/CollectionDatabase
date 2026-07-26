@@ -196,6 +196,7 @@ def _build_node(
     ]
 
     syns = sorted(syn_map.get(taxon.id, []), key=format_scientific_name)
+    syn_spec_counts = {s.id: spec_counts.get(s.id, 0) for s in syns}
     syn_nodes = [
         {
             "id":    f"syn-{s.id}",
@@ -204,12 +205,15 @@ def _build_node(
             "auth":  s.scientific_name_authorship or "",
             "rank":  "synonym",
             "synonym": True,
+            "spec_count": syn_spec_counts[s.id],
         }
         for s in syns
     ]
 
-    # Aggregate counts bottom-up.
-    own_spec = spec_counts.get(taxon.id, 0)
+    # Aggregate counts bottom-up. A specimen determined under a synonym is the same
+    # OTU as this accepted name (#151) — its count rolls up here too, alongside the
+    # synonym's own row (above) so the name as literally recorded stays visible.
+    own_spec = spec_counts.get(taxon.id, 0) + sum(syn_spec_counts.values())
     total_spec = own_spec + sum(n.get("spec_count", 0) for n in child_nodes)
     total_spp = (
         (1 if taxon.taxon_rank == "species" else 0)

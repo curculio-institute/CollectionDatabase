@@ -535,3 +535,33 @@ def test_csv_has_header_and_rows(session):
     text = ex.to_csv(ex.query_specimens(session)).decode()
     assert text.splitlines()[0].startswith("id,catalogNumber")
     assert len(text.strip().splitlines()) == 1 + 3   # header + 3 specimens
+
+
+def test_taxon_filter_reaches_across_a_synonym_link(session):
+    """#151: filtering by an accepted name must also retrieve specimens determined
+    under its synonym, and vice versa — a determination legitimately freezes the name
+    as used, but the two names denote the same OTU. Uses a synonym parented under a
+    DIFFERENT genus (own-lineage model, CLAUDE.md §4), so the parent/child descendant
+    walk alone could never find it — only the synonym-group expansion can."""
+    from app.services.taxa import synonymize
+
+    g_acc = _taxon(session, "Entimus", "genus")
+    g_own = _taxon(session, "Curculio", "genus")   # unrelated genus
+    accepted = _taxon(session, "Entimus sastrei", "species", parent=g_acc)
+    syn = _taxon(session, "Entimus formosus", "species", parent=g_own)
+    synonymize(session, name_id=syn.id, accepted_id=accepted.id)
+    ev = ev_svc.create_collecting_event(session, country="Brazil", locality="X")
+    session.flush()
+    _specimen(session, accepted, ev, "A1")   # determined under the accepted name
+    _specimen(session, syn, ev, "A2")        # determined under the synonym
+
+    # Filtering by the accepted name retrieves BOTH.
+    flt = [{"kind": "taxon", "key": accepted.id}]
+    assert {r.catalog for r in ex.query_specimens(session, flt)} == {"A1", "A2"}
+    # Filtering by the synonym retrieves BOTH too (the other direction).
+    flt = [{"kind": "taxon", "key": syn.id}]
+    assert {r.catalog for r in ex.query_specimens(session, flt)} == {"A1", "A2"}
+    # And a genus-level filter on the ACCEPTED name's genus reaches the synonym even
+    # though it is filed under a completely different genus.
+    flt = [{"kind": "taxon", "key": g_acc.id}]
+    assert {r.catalog for r in ex.query_specimens(session, flt)} == {"A1", "A2"}

@@ -24,7 +24,10 @@ from app.models import (
     CollectionObject, CollectingEvent, TaxonDetermination, Taxon, Person,
     Country, StateProvince, County, Island, AdministrativeRegion, Repository,
 )
-from app.services.taxa import format_scientific_name, parse_scientific_name, TAXON_RANKS
+from app.services.taxa import (
+    format_scientific_name, parse_scientific_name, TAXON_RANKS,
+    expand_taxon_scope, synonym_group_ids,
+)
 from app.services.label_text import format_locality_label, format_place
 from app.services.biological import association_host as _assoc_host
 
@@ -159,15 +162,11 @@ def _taxon_index(session: Session) -> dict[int, Taxon]:
     return {t.id: t for t in session.query(Taxon).all()}
 
 
-def _descendant_ids(taxon_id: int, children: dict[int, list[int]]) -> set[int]:
-    out, stack = set(), [taxon_id]
-    while stack:
-        cur = stack.pop()
-        if cur in out:
-            continue
-        out.add(cur)
-        stack.extend(children.get(cur, ()))
-    return out
+def _descendant_ids(taxon_id: int, children: dict[int, list[int]],
+                     accepted_of: dict[int, int], syn_map: dict[int, list[int]]) -> set[int]:
+    """``taxon_id`` plus its descendants, plus the synonym group of every taxon reached
+    (#151) — see `taxa.expand_taxon_scope`, which this wraps."""
+    return expand_taxon_scope(taxon_id, children, accepted_of, syn_map)
 
 
 # ── specimen query ────────────────────────────────────────────────────────────
@@ -250,9 +249,14 @@ def _apply_filters(session: Session, q, filters: list[dict], idx: dict[int, Taxo
     same-kind case too, or "Carabidae AND Curculionidae" wrongly returns the union.)
     """
     children: dict[int, list[int]] = defaultdict(list)
+    accepted_of: dict[int, int] = {}
+    syn_map: dict[int, list[int]] = defaultdict(list)
     for t in idx.values():
         if t.parent_name_usage_id:
             children[t.parent_name_usage_id].append(t.id)
+        if t.accepted_name_usage_id:
+            accepted_of[t.id] = t.accepted_name_usage_id
+            syn_map[t.accepted_name_usage_id].append(t.id)
 
     def _rank_ids(*, in_species_group: bool):
         return [t.id for t in idx.values()
@@ -277,7 +281,7 @@ def _apply_filters(session: Session, q, filters: list[dict], idx: dict[int, Taxo
                 return TaxonDetermination.taxon_id.in_(_rank_ids(in_species_group=False))
             return None
         if kind == "taxon":
-            ids = _descendant_ids(int(key), children)
+            ids = _descendant_ids(int(key), children, accepted_of, syn_map)
             # Which determinations the taxon filter searches (#137): the CURRENT one
             # (default), ANY past determination, and/or the frozen verbatim text.
             conds = []
@@ -288,13 +292,16 @@ def _apply_filters(session: Session, q, filters: list[dict], idx: dict[int, Taxo
                 conds.append(exists().where(and_(
                     td.collection_object_id == CollectionObject.id, td.taxon_id.in_(ids))))
             if "verbatim" in id_scope:                # the frozen verbatimIdentification text
-                t = idx.get(int(key))
-                name = t.scientific_name if t else None
-                if name:
+                # Matched against every name in the picked taxon's OWN synonym group
+                # (#151) — not the full descendant expansion above, mirroring how this
+                # scope has always searched one node's name, never its children's.
+                names = [n for i in synonym_group_ids(int(key), accepted_of, syn_map)
+                         if (t := idx.get(i)) and (n := t.scientific_name)]
+                if names:
                     tdv = aliased(TaxonDetermination)
                     conds.append(exists().where(and_(
                         tdv.collection_object_id == CollectionObject.id,
-                        tdv.verbatim_identification.ilike(f"%{name}%"))))
+                        or_(*[tdv.verbatim_identification.ilike(f"%{n}%") for n in names]))))
             return or_(*conds) if conds else false()
         if kind in _GEO_FACETS:
             _model, attr = _GEO_FACETS[kind]
@@ -360,7 +367,7 @@ def _apply_filters(session: Session, q, filters: list[dict], idx: dict[int, Taxo
                 return TaxonDetermination.taxon_id.in_(_rank_ids(in_species_group=True))
             return None
         if kind == "taxon":
-            ids = _descendant_ids(int(key), children)
+            ids = _descendant_ids(int(key), children, accepted_of, syn_map)
             negs = []                              # NOT(current OR past OR verbatim)
             if "current" in id_scope:
                 col = TaxonDetermination.taxon_id
@@ -370,13 +377,13 @@ def _apply_filters(session: Session, q, filters: list[dict], idx: dict[int, Taxo
                 negs.append(~exists().where(and_(
                     td.collection_object_id == CollectionObject.id, td.taxon_id.in_(ids))))
             if "verbatim" in id_scope:
-                t = idx.get(int(key))
-                name = t.scientific_name if t else None
-                if name:
+                names = [n for i in synonym_group_ids(int(key), accepted_of, syn_map)
+                         if (t := idx.get(i)) and (n := t.scientific_name)]
+                if names:
                     tdv = aliased(TaxonDetermination)
                     negs.append(~exists().where(and_(
                         tdv.collection_object_id == CollectionObject.id,
-                        tdv.verbatim_identification.ilike(f"%{name}%"))))
+                        or_(*[tdv.verbatim_identification.ilike(f"%{n}%") for n in names]))))
             return and_(*negs) if negs else None
         if kind in _GEO_FACETS:
             _model, attr = _GEO_FACETS[kind]
