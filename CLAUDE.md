@@ -1322,6 +1322,17 @@ same integer denotes a different entity — or nothing — on another server.** 
 - A stored id is checked by asking TW *what it actually denotes here* —
   `GET /taxon_names?otu_id[]=<id>` — giving `confirmed` / `mismatch` / `absent`. Measured: all
   39 ids captured on `sfg.taxonworks.org` return **zero rows** against `sandbox.taxonworks.org`.
+  **Known limitation — `confirmed` does not survive a homonym (2026-07-26, deliberately not
+  fixed).** The check compares TW's `cached`, which is the bare name with **no authorship**, so
+  where two protonyms share a spelling it cannot tell which one the id denotes. Measured on
+  sandbox: `Otiorhynchini` exists twice (taxon_name 2094695 `Schoenherr, 1826`, 2743726
+  `Schönherr, 1826`); the stored id 1299727 resolves to the *Schoenherr* one while the local row
+  records *Schönherr*, and the check still says `confirmed`. Harmless while **no OTU id is
+  emitted anywhere** — the export has no such column — so this is left alone by decision.
+  **Fix it before emitting `TW:TaxonDetermination:otu_id`**, by comparing authorship too
+  (`authorship_matches`), and note that a bare `ö`/`oe` difference must stay an informational
+  note, never a `mismatch` — that transliteration difference is expected and already documented
+  above.
 - `tw_sync.reconcile_otu_ids` re-points them by name and is called **explicitly**, never as a
   side effect of checking.
 
