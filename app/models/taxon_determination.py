@@ -11,6 +11,14 @@ _QUAL_CHECK_SQL = (
     + ", ".join(f"'{q}'" for q in IDENTIFICATION_QUALIFIERS) + ")"
 )
 
+# No ISO 8601 interval on dateIdentified (migration 0069). A '/' is exactly what makes a
+# date an interval, and a SQLite CHECK cannot parse dates — the shape itself is validated
+# on the way in (dates.parse_dwc_date, specimens._reject_interval). This backstops the one
+# thing TaxonWorks cannot accept at all.
+_NO_INTERVAL_SQL = (
+    '"dwc:dateIdentified" IS NULL OR "dwc:dateIdentified" NOT LIKE \'%/%\''
+)
+
 if TYPE_CHECKING:
     from .person import Person
 
@@ -48,6 +56,11 @@ class TaxonDetermination(Base, TimestampMixin):
     __table_args__ = (
         CheckConstraint("is_current IN (0, 1)", name="ck_td_is_current_bool"),
         CheckConstraint(_QUAL_CHECK_SQL, name="ck_td_identification_qualifier"),
+        # An identification happens on a date, not over a span — and TaxonWorks refuses
+        # the range outright (occurrence.rb:1395-1397 @ 897f385: "Date range for taxon
+        # determination is not supported."). Migration 0069. Note the asymmetry:
+        # collecting_event."dwc:eventDate" *does* allow an interval, deliberately.
+        CheckConstraint(_NO_INTERVAL_SQL, name="ck_td_date_identified_no_interval"),
         # Subject exclusive arc: exactly one of collection_object / field_occurrence.
         CheckConstraint(
             "(collection_object_id IS NOT NULL AND field_occurrence_id IS NULL) OR "

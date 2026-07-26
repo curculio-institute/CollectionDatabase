@@ -63,8 +63,10 @@ def attach_date_validation(
       value replaced with ISO form; notification "Normalised: old → new".
     - Unparseable or constraint violated: field wiped, warning with format hint.
 
-    allow_interval=True for eventDate, dateIdentified and life-stage dates
-    (ISO 8601 intervals are valid DwC); False (default) for single-date-only fields.
+    allow_interval=True for eventDate and life-stage dates (a collecting trip really
+    does span days); False (default) everywhere else — notably **dateIdentified**, where
+    an identification is made on one date and TaxonWorks rejects a range outright
+    (migration 0069, ck_td_date_identified_no_interval).
     no_future=True rejects dates after today (use for dateIdentified).
     """
     hint = _FORMAT_HINT[allow_interval]

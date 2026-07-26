@@ -294,3 +294,18 @@ def test_geo_vocab_allows_same_name_with_different_codes(engine, table):
                 f"INSERT INTO {table} (name, iso_code, created_at, updated_at) "
                 "VALUES ('Limburg', NULL, '2026-01-01', '2026-01-01')"))
         trans.rollback()
+
+
+def test_date_identified_interval_check_present(engine):
+    """`ck_td_date_identified_no_interval` (migration 0069) must survive every future
+    rebuild of taxon_determination.
+
+    This is the DB-1 failure mode the suite exists for: the table has already been
+    rebuilt twice (0060's subject arc, 0069 itself), and each rebuild re-declares every
+    constraint by hand. Losing this one would silently re-admit a date range that
+    TaxonWorks refuses to import.
+    """
+    sql = _table_sql(engine, "taxon_determination")
+    assert "ck_td_date_identified_no_interval" in sql, (
+        "taxon_determination lost its dateIdentified interval CHECK"
+    )

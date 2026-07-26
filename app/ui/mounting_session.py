@@ -107,7 +107,7 @@ def build_mounting_session_section(
                     .classes("w-full mt-2")
                 )
                 append_year_pin(date_in)
-                attach_date_validation(date_in, no_future=True, allow_interval=True)
+                attach_date_validation(date_in, no_future=True)
 
                 with ui.row().classes("w-full flex-wrap gap-2 mt-2"):
                     sex_sel = ui.select(
@@ -146,11 +146,11 @@ def build_mounting_session_section(
                     # Normalise the date here (not only on the input's async blur),
                     # so a value typed-then-Apply'd before blur completes still lands
                     # as ISO in the DwC date column.
-                    # allow_interval must match the field's own validator (line ~110):
-                    # without it a range passed the input's check and was then refused at
-                    # Apply with "ranges are not allowed here". dateIdentified takes them.
+                    # Must match the field's own validator (line ~110): an
+                    # identification is made on one date, never a range — TaxonWorks
+                    # rejects a range outright (migration 0069).
                     date_norm, date_err = parse_dwc_date(
-                        date_in.value or "", allow_interval=True, no_future=True)
+                        date_in.value or "", no_future=True)
                     if date_err:
                         ui.notify(f"dateIdentified: {date_err}", type="warning")
                         return
