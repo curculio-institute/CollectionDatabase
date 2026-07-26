@@ -748,39 +748,54 @@ def build_tw_sync_tab(session_factory, refreshers: dict | None = None,
 
                 results = ui.column().classes("w-full mt-2")
 
+                def _scoped_cos(s, scope_id) -> list[CollectionObject]:
+                    """The working collection's specimens, restricted to the optional
+                    taxon scope. Re-run per session that needs the rows — the returned
+                    instances must never outlive `s` (see `_check_collection`).
+
+                    One collection at a time (required, not a convenience) —
+                    TaxonWorks' DwC-A import maps to a single Namespace per upload, so
+                    a file mixing rows from two collections has nowhere consistent to
+                    land.
+                    """
+                    q = (
+                        s.query(CollectionObject)
+                        .filter(CollectionObject.repository_id == state["repo_id"])
+                        .order_by(CollectionObject.catalog_number)
+                    )
+                    if scope_id is not None:
+                        # Every descendant (species under a genus, subspecies under a
+                        # species, …) counts as "in scope" — the same expansion Batch
+                        # tools uses for "all specimens of a taxon" (batch_ops.py).
+                        scope_ids = descendant_taxon_ids(s, scope_id)
+                        q = q.join(
+                            TaxonDetermination,
+                            (TaxonDetermination.collection_object_id
+                             == CollectionObject.id)
+                            & (TaxonDetermination.is_current == 1),
+                        ).filter(TaxonDetermination.taxon_id.in_(scope_ids))
+                    return q.all()
+
                 async def _check_collection() -> None:
                     if state["repo_id"] is None:
                         ui.notify("Pick a working collection first.", type="warning")
                         return
                     check_btn.props("loading")
                     check_status.set_text("Checking collection…")
+                    scope_id = scope_state.get("taxon_id")
                     try:
+                        # Only catalog numbers (plain strings) may leave this session.
+                        # The TaxonWorks lookup below runs with no session open, and
+                        # `export_occurrences` afterwards lazy-loads collecting_event /
+                        # determinations / repository off each specimen — which raises
+                        # DetachedInstanceError once the loading session has closed. So
+                        # the second pass re-runs the query in its own session instead
+                        # of carrying ORM rows across the await.
                         with session_factory() as s:
-                            scope_id = scope_state.get("taxon_id")
-                            # One collection at a time (required, not a convenience)
-                            # — TaxonWorks' DwC-A import maps to a single Namespace
-                            # per upload, so a file mixing rows from two collections
-                            # has nowhere consistent to land.
-                            q = (
-                                s.query(CollectionObject)
-                                .filter(CollectionObject.repository_id
-                                        == state["repo_id"])
-                                .order_by(CollectionObject.catalog_number)
-                            )
-                            if scope_id is not None:
-                                # Every descendant (species under a genus, subspecies
-                                # under a species, …) counts as "in scope" — the same
-                                # expansion Batch tools uses for "all specimens of a
-                                # taxon" (batch_ops.py).
-                                scope_ids = descendant_taxon_ids(s, scope_id)
-                                q = q.join(
-                                    TaxonDetermination,
-                                    (TaxonDetermination.collection_object_id
-                                     == CollectionObject.id)
-                                    & (TaxonDetermination.is_current == 1),
-                                ).filter(TaxonDetermination.taxon_id.in_(scope_ids))
-                            all_cos = q.all()
-                            catalog_numbers = [co.catalog_number for co in all_cos]
+                            catalog_numbers = [
+                                co.catalog_number for co in _scoped_cos(s, scope_id)
+                            ]
+                        total_n = len(catalog_numbers)
 
                         # #149 Step 3.1, verbatim: "Determine collectionObjects that
                         # are eligible for export (Step 1 point 2) AND not on
@@ -801,11 +816,11 @@ def build_tw_sync_tab(session_factory, refreshers: dict | None = None,
                         already_uploaded = {
                             cat for cat, rows in tw_by_cat.items() if rows
                         }
-                        cos = [co for co in all_cos
-                               if co.catalog_number not in already_uploaded]
-                        already_n = len(all_cos) - len(cos)
 
                         with session_factory() as s:
+                            cos = [co for co in _scoped_cos(s, scope_id)
+                                   if co.catalog_number not in already_uploaded]
+                            already_n = total_n - len(cos)
                             result = dwc_export.export_occurrences(s, cos)
                             taxa_list = tw_sync.taxa_to_export(s, cos)
                             check_status.set_text(
@@ -833,7 +848,7 @@ def build_tw_sync_tab(session_factory, refreshers: dict | None = None,
                         f" (scope: {scope_state.get('label') or 'whole collection'})"
                     )
                     check_status.set_text(
-                        f"Checked {len(all_cos)} specimen(s), {len(taxa_list)} "
+                        f"Checked {total_n} specimen(s), {len(taxa_list)} "
                         f"name(s){scope_note} — {already_n} already on "
                         f"TaxonWorks, excluded from the file."
                     )
