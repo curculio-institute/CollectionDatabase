@@ -46,8 +46,10 @@ tracker, not this file), `gh issue list`:
   index), duplicate catalogNumbers with their namespace, specimens on TW that are
   confidential locally (`leaked`), specimens on TW that this collection no longer holds
   (`orphaned` vs. `moved`), and field-level differences with a deep link per record.
-  **Still open:** media comparison (step 1.6 — declared as not compared, never claimed) and
-  Step 2 (re-run the comparison after the user has acted on it).
+  **Still open:** media comparison (step 1.6 — declared as not compared, never claimed).
+  **Step 2 "Recompare" needs no separate feature** (decided 2026-07-26): it is just running
+  Step 1 "Compare" again after the user has acted on its findings, which the built Compare tab
+  already supports on demand — there is nothing dynamic-per-user-action to build.
 
 (#41 — data safety: crash recovery + unsaved-changes guard — done; see §8 "Data safety".)
 
