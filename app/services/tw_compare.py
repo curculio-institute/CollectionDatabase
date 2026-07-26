@@ -65,8 +65,10 @@ from urllib.parse import urlsplit
 import httpx
 from sqlalchemy.orm import Session
 
+from collections.abc import Iterable
+
 from app.config import get_config
-from app.models import CollectionObject, Taxon
+from app.models import CollectionObject, Repository, Taxon
 from app.services import dwc_export, taxa
 from app.services.taxonworks import TaxonWorksUnreachable, web_base
 
@@ -230,6 +232,179 @@ async def fetch_tw_rows_for_catalog_numbers(
     return result
 
 
+# ── The catalog-number identity index (/identifiers) ────────────────────────────
+#
+# CLAUDE.md §5c: `/identifiers` is the identity source, NOT `dwc_occurrences` (whose
+# `catalogNumber` is populated on ~1/500 rows and which is a *generated, cached*
+# projection that can lag a fresh import — reading a lagging projection as "not on
+# TaxonWorks" would re-upload the specimen into a CREATE-ONLY importer).
+#
+# **Measured against sandbox.taxonworks.org 2026-07-26** (read-only GETs; the join key
+# was NOT what the obvious reading of the route suggests, so this is written down):
+# - TaxonWorks **splits** the catalog number across the namespace and the identifier.
+#   Our local `JJPC-00001` is stored as `identifier="00001"` under namespace 6057
+#   (`short_name="JJPC"`, `delimiter="-"`), and **`cached` = "JJPC-00001"** — the fully
+#   rendered form. So `cached` is the join key against `collection_object.catalog_number`;
+#   matching on `identifier` scored 0 overlap on all 39 specimens.
+#   Consequently `?identifier[]=JJPC-00001` returns **0 rows** while
+#   `?identifier[]=00001` returns 1 — the filter works, it just is not on the full form,
+#   and there is no `cached` filter. Hence: pull the index and match locally.
+# - `type=` and `identifier_object_type=` (scalar **and** `[]` form) both filter
+#   correctly. Whole project: 429,830 identifiers, 181 CatalogNumbers, of which 39 sit on
+#   CollectionObjects (140 on Containers, 2 on Images) — so the entire index is **one
+#   request**, replacing one lookup per local specimen.
+# - `extend[]=namespace` **does work on this index route** (embedding id/name/short_name/
+#   delimiter), contrary to §5c's general "extend is ignored on index routes" note.
+# - Totals come back in the `pagination-total` header.
+_CATALOG_NUMBER_TYPE = "Identifier::Local::CatalogNumber"
+_INDEX_PER_PAGE = 5000
+
+
+@dataclass(frozen=True)
+class TwCatalogEntry:
+    """One TaxonWorks CatalogNumber identifier bound to a CollectionObject."""
+    catalog_number: str          # `cached` — the rendered full form, our join key
+    identifier: str              # the bare part TW stores under the namespace
+    tw_object_id: int            # identifier_object_id == the TW collection_object_id
+    namespace_id: int | None
+    namespace_short_name: str    # "" when it could not be determined
+
+
+@dataclass(frozen=True)
+class CatalogIndex:
+    """Every catalog number TaxonWorks holds on a CollectionObject, by rendered form.
+
+    Existence is answered from here and **never scoped to a namespace**: a specimen
+    filed under some other namespace is still on TaxonWorks, and calling it absent would
+    re-upload it (identifier uniqueness is per namespace, so TW would accept the
+    duplicate without complaint). Namespace scoping belongs only to the *orphan*
+    question — see `compare_repository`.
+    """
+    entries: tuple[TwCatalogEntry, ...]
+    by_catalog_number: dict[str, tuple[TwCatalogEntry, ...]]
+
+    def has(self, catalog_number: str) -> bool:
+        return catalog_number in self.by_catalog_number
+
+    def get(self, catalog_number: str) -> tuple[TwCatalogEntry, ...]:
+        return self.by_catalog_number.get(catalog_number, ())
+
+
+def _namespace_short_name(row: dict) -> str:
+    """The namespace's short name, from `extend[]=namespace` when present.
+
+    Derived from `cached` otherwise rather than trusted: `cached` is short_name +
+    delimiter + identifier, so stripping the identifier leaves the prefix. (extend was
+    measured to work here, but a silently dropped param must degrade, not lie.)
+    """
+    ns = row.get("namespace")
+    if isinstance(ns, dict):
+        short = ns.get("short_name") or ns.get("verbatim_short_name") or ""
+        if short:
+            return str(short)
+    cached = str(row.get("cached") or "")
+    ident = str(row.get("identifier") or "")
+    if ident and cached.endswith(ident) and len(cached) > len(ident):
+        return cached[: len(cached) - len(ident)].strip().strip("-:").strip()
+    return ""
+
+
+def build_catalog_index(rows: Iterable[dict]) -> CatalogIndex:
+    """Reduce raw `/identifiers` rows to the index, filtering client-side.
+
+    The type/object-type filters are re-applied here instead of being trusted. That is
+    safe *for a whole-table pull* in a way it never is for a per-key existence probe: a
+    server filter that silently did not apply only costs bandwidth, and dropping rows
+    that genuinely are not CollectionObject catalog numbers cannot invent a wrong answer.
+    """
+    entries: list[TwCatalogEntry] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        if row.get("type") != _CATALOG_NUMBER_TYPE:
+            continue
+        if row.get("identifier_object_type") != "CollectionObject":
+            continue
+        cached = str(row.get("cached") or "").strip()
+        obj_id = row.get("identifier_object_id")
+        if not cached or not isinstance(obj_id, int):
+            continue
+        entries.append(TwCatalogEntry(
+            catalog_number=cached,
+            identifier=str(row.get("identifier") or "").strip(),
+            tw_object_id=obj_id,
+            namespace_id=row.get("namespace_id"),
+            namespace_short_name=_namespace_short_name(row),
+        ))
+    by_cat: dict[str, list[TwCatalogEntry]] = {}
+    for entry in entries:
+        by_cat.setdefault(entry.catalog_number, []).append(entry)
+    return CatalogIndex(
+        entries=tuple(entries),
+        by_catalog_number={k: tuple(v) for k, v in by_cat.items()},
+    )
+
+
+async def fetch_catalog_index(on_progress=None) -> CatalogIndex:
+    """Pull every CollectionObject catalog number TaxonWorks holds (all namespaces).
+
+    Paged until as many rows are collected as `pagination-total` promised — a short read
+    would understate what TaxonWorks has, and *understating* is the dangerous direction
+    (it reads as "not on TaxonWorks" and re-uploads), so it raises instead.
+    """
+    cfg = get_config()
+    if not cfg.tw_base.strip() or not cfg.tw_token.strip():
+        raise TaxonWorksUnreachable(
+            "TaxonWorks is not configured — Settings → TaxonWorks connection."
+        )
+    rows: list[dict] = []
+    total: int | None = None
+    page = 1
+    async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
+        while True:
+            try:
+                r = await client.get(
+                    f"{_base()}/identifiers",
+                    params={
+                        "type": _CATALOG_NUMBER_TYPE,
+                        "identifier_object_type": "CollectionObject",
+                        "extend[]": "namespace",
+                        "per": _INDEX_PER_PAGE,
+                        "page": page,
+                        "project_token": cfg.tw_token,
+                    },
+                )
+                r.raise_for_status()
+            except httpx.HTTPStatusError as exc:
+                raise _explain(exc) from exc
+            except (httpx.TimeoutException, httpx.TransportError) as exc:
+                raise _explain(exc) from exc
+            body = r.json()
+            if not isinstance(body, list):
+                raise TaxonWorksUnreachable(
+                    "the identifier index did not return a list of rows — treating it "
+                    "as a lookup failure rather than as an empty collection."
+                )
+            if total is None:
+                raw_total = r.headers.get("pagination-total") or r.headers.get("x-total")
+                total = int(raw_total) if raw_total and raw_total.isdigit() else None
+            rows.extend(body)
+            if on_progress is not None:
+                on_progress(len(rows), total if total is not None else len(rows))
+            if not body or (total is not None and len(rows) >= total):
+                break
+            if len(body) < _INDEX_PER_PAGE:
+                break
+            page += 1
+    if total is not None and len(rows) < total:
+        raise TaxonWorksUnreachable(
+            f"the identifier index returned {len(rows)} of {total} rows — an incomplete "
+            f"index would read as 'not on TaxonWorks' and re-upload those specimens, so "
+            f"this is treated as a lookup failure."
+        )
+    return build_catalog_index(rows)
+
+
 def edit_url(dwc_occurrence_object_id: int) -> str:
     """The comprehensive specimen editor deep link, exact schema from #149's own text:
     ``{web root}/tasks/accessions/comprehensive?collection_object_id={id}``."""
@@ -259,6 +434,38 @@ class LeakedRow:
 
 
 @dataclass(frozen=True)
+class OrphanRow:
+    """A catalog number TaxonWorks holds under OUR namespace that this collection lacks.
+
+    `local_collection` separates the two cases that are indistinguishable from
+    TaxonWorks' side: the specimen was **moved** to another local collection (a re-home
+    keeps `catalog_number` untouched and only re-points `repository_id`), or it is
+    **gone** from the local database entirely. Calling a move a deletion would be the
+    silent wrong value of CLAUDE.md §2, so the distinction is drawn from a DB-wide
+    catalog-number lookup, not from this collection's rows.
+    """
+    catalog_number: str
+    tw_object_id: int
+    namespace_short_name: str
+    local_collection: str | None      # None => not in the local database at all
+
+
+@dataclass(frozen=True)
+class CollectionMismatch:
+    """Held locally in this collection, but TaxonWorks files it under another namespace.
+
+    Usually the other half of a local re-home: `catalog_number` never changes, so the
+    specimen keeps the prefix of the collection it came from while TaxonWorks still has
+    it in the old namespace. Reported, never fixed — TW's v1 API has no update or delete
+    (CLAUDE.md §5), so this is a manual correction in the TaxonWorks UI.
+    """
+    catalog_number: str
+    tw_object_id: int
+    tw_namespace: str
+    local_collection: str
+
+
+@dataclass(frozen=True)
 class CompareResult:
     checked_count: int              # local specimens compared (eligible + ineligible)
     eligible_count: int
@@ -270,6 +477,17 @@ class CompareResult:
     diverged: tuple[DivergedRow, ...]
     duplicates: tuple[DuplicateGroup, ...]
     leaked: tuple[LeakedRow, ...]
+    # On TaxonWorks per the identifier index, but its dwc_occurrences projection has not
+    # caught up, so the fields could not be diffed. Deliberately NOT folded into
+    # `not_on_tw` (that would re-upload it) nor into `synced` (nothing was compared).
+    on_tw_not_compared: tuple[str, ...] = ()
+    moved: tuple[OrphanRow, ...] = ()
+    orphaned: tuple[OrphanRow, ...] = ()
+    collection_mismatch: tuple[CollectionMismatch, ...] = ()
+    # True when no `CatalogIndex` was supplied, so the "on TaxonWorks but not here"
+    # direction was never looked at. Declared for the same reason as
+    # `media_not_compared`: a report that silently omits a whole class reads as complete.
+    orphans_not_compared: bool = True
     media_not_compared: bool = True
 
     @property
@@ -383,36 +601,62 @@ def eligible_specimens(session: Session, *, repository_id: int) -> tuple[str, ..
 
 
 def compare_repository(
-    session: Session, tw_by_cat: dict[str, list[dict]], *, repository_id: int
+    session: Session, tw_by_cat: dict[str, list[dict]], *, repository_id: int,
+    index: CatalogIndex | None = None,
 ) -> CompareResult:
     """Pure computation, no I/O — `tw_by_cat` is the (already fetched)
-    `{catalog_number: [row, ...]}` map from `fetch_tw_rows_for_catalog_numbers`,
-    `session` supplies the local side. Split out from the fetch so this half is
-    trivially testable without a live server.
+    `{catalog_number: [row, ...]}` map from `fetch_tw_rows_for_catalog_numbers` supplying
+    the field values, `index` is `fetch_catalog_index`'s identity index, and `session`
+    supplies the local side. Split out from the fetches so this half is trivially
+    testable without a live server.
+
+    **Existence comes from `index`, the field diff from `tw_by_cat`** — two sources
+    because they answer different questions and only one of them is authoritative about
+    identity (CLAUDE.md §5c). Without an index the existence half falls back to
+    `tw_by_cat` and the orphan direction is not examined at all, which the result
+    declares via `orphans_not_compared`.
+
+    **The two scopes are deliberately different.** Existence ignores the namespace: a
+    specimen filed under someone else's namespace is still on TaxonWorks, and calling it
+    absent would re-upload it (per-namespace identifier uniqueness means TW accepts that
+    duplicate silently). The orphan sweep is scoped to *our* namespace: without that,
+    every other collection in the project would count as our orphan.
     """
     cos = (
         session.query(CollectionObject)
         .filter(CollectionObject.repository_id == repository_id)
         .all()
     )
+    repo = session.get(Repository, repository_id)
+    local_code = str((repo.collection_code if repo is not None else "") or "").strip()
 
     not_on_tw: list[str] = []
     synced: list[str] = []
+    on_tw_not_compared: list[str] = []
     diverged: list[DivergedRow] = []
     duplicates: list[DuplicateGroup] = []
     leaked: list[LeakedRow] = []
+    collection_mismatch: list[CollectionMismatch] = []
     eligible_n = 0
     ineligible_n = 0
+    local_cats_here = {co.catalog_number for co in cos}
 
     for co in cos:
         decision = dwc_export.export_decision(co)
         cat = co.catalog_number
         matches = tw_by_cat.get(cat, [])
+        entries = index.get(cat) if index is not None else ()
+        on_tw = index.has(cat) if index is not None else bool(matches)
 
         if decision.eligible:
             eligible_n += 1
-            if not matches:
+            if not on_tw:
                 not_on_tw.append(cat)
+            elif not matches:
+                # The identifier index says TaxonWorks has it, but its dwc_occurrences
+                # projection has not caught up (CLAUDE.md §5 — generated/cached, may lag
+                # a fresh import). Never "not_on_tw": that would re-upload it.
+                on_tw_not_compared.append(cat)
             else:
                 diffs = _diff_one(session, co, matches[0])
                 if diffs:
@@ -426,22 +670,51 @@ def compare_repository(
         else:
             ineligible_n += 1
             # #149 step 1.4 — confidential locally but TaxonWorks still has it.
-            if matches:
+            if on_tw:
+                tw_object_id = (
+                    matches[0]["dwc_occurrence_object_id"] if matches
+                    else entries[0].tw_object_id
+                )
                 leaked.append(LeakedRow(
                     catalog_number=cat,
-                    tw_object_id=matches[0]["dwc_occurrence_object_id"],
+                    tw_object_id=tw_object_id,
                     reasons=decision.reasons,
                 ))
 
-        # A duplicate is *every* row TaxonWorks returned for this exact catalogNumber —
-        # #149 step 1.3 ("specimen may be transferred from one repository to another"),
-        # reported with each row's own institutionCode, never silently picking one.
-        if len(matches) > 1:
+        # Filed under a different namespace than this collection — the other half of a
+        # local re-home (the catalog number never moves, only `repository_id` does).
+        if local_code:
+            for entry in entries:
+                if entry.namespace_short_name and entry.namespace_short_name != local_code:
+                    collection_mismatch.append(CollectionMismatch(
+                        catalog_number=cat,
+                        tw_object_id=entry.tw_object_id,
+                        tw_namespace=entry.namespace_short_name,
+                        local_collection=local_code,
+                    ))
+
+        # A duplicate is *every* record TaxonWorks holds for this catalog number — #149
+        # step 1.3 ("a specimen may be transferred from one repository to another"),
+        # reported with each one's own collection, never silently picking one. Taken from
+        # the identifier index when available: it is namespace-aware and authoritative,
+        # where dwc_occurrences is a projection that may not list the row at all.
+        if index is not None:
+            if len(entries) > 1:
+                duplicates.append(DuplicateGroup(
+                    catalog_number=cat,
+                    tw_object_ids=tuple(e.tw_object_id for e in entries),
+                    institution_codes=tuple(e.namespace_short_name for e in entries),
+                ))
+        elif len(matches) > 1:
             duplicates.append(DuplicateGroup(
                 catalog_number=cat,
                 tw_object_ids=tuple(m["dwc_occurrence_object_id"] for m in matches),
                 institution_codes=tuple(m.get("institutionCode") or "" for m in matches),
             ))
+
+    moved, orphaned = _orphans(
+        session, index, local_code=local_code, local_cats_here=local_cats_here
+    )
 
     return CompareResult(
         checked_count=len(cos),
@@ -452,4 +725,55 @@ def compare_repository(
         diverged=tuple(diverged),
         duplicates=tuple(duplicates),
         leaked=tuple(leaked),
+        on_tw_not_compared=tuple(on_tw_not_compared),
+        moved=moved,
+        orphaned=orphaned,
+        collection_mismatch=tuple(collection_mismatch),
+        orphans_not_compared=index is None or not local_code,
     )
+
+
+def _orphans(
+    session: Session, index: CatalogIndex | None, *,
+    local_code: str, local_cats_here: set[str],
+) -> tuple[tuple[OrphanRow, ...], tuple[OrphanRow, ...]]:
+    """Split what TaxonWorks holds under our namespace but this collection does not into
+    (moved, gone) — #149 step 1.4's other direction.
+
+    Needs `local_code` to know which namespace is ours; with none there is nothing to
+    scope by and the sweep is skipped rather than guessed (reporting every namespace's
+    records as our orphans would be worse than reporting none).
+    """
+    if index is None or not local_code:
+        return (), ()
+    candidates = [
+        e for e in index.entries
+        if e.namespace_short_name == local_code
+        and e.catalog_number not in local_cats_here
+    ]
+    if not candidates:
+        return (), ()
+    # One DB-wide lookup decides moved-vs-gone for all of them: a re-home leaves the
+    # catalog number intact, so finding it under another repository means it moved.
+    elsewhere: dict[str, str] = {}
+    cats = [e.catalog_number for e in candidates]
+    for chunk_start in range(0, len(cats), 500):        # keep the IN list well inside
+        chunk = cats[chunk_start:chunk_start + 500]     # SQLite's bound-parameter limit
+        for cat, code in (
+            session.query(CollectionObject.catalog_number, Repository.collection_code)
+            .join(Repository, CollectionObject.repository_id == Repository.id)
+            .filter(CollectionObject.catalog_number.in_(chunk))
+            .all()
+        ):
+            elsewhere[cat] = code
+    moved: list[OrphanRow] = []
+    gone: list[OrphanRow] = []
+    for entry in candidates:
+        row = OrphanRow(
+            catalog_number=entry.catalog_number,
+            tw_object_id=entry.tw_object_id,
+            namespace_short_name=entry.namespace_short_name,
+            local_collection=elsewhere.get(entry.catalog_number),
+        )
+        (moved if row.local_collection is not None else gone).append(row)
+    return tuple(moved), tuple(gone)

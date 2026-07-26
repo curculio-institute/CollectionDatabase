@@ -1301,7 +1301,18 @@ Parameters cross-checked three ways: the OpenAPI specs (the user's reference clo
 | `dwc_occurrence_object_id` = the TW `collection_object_id` | Feeds the deep link `{web_base}/tasks/accessions/comprehensive?collection_object_id=N`. `taxonworks.web_base()` derives the web root from the API base (never a second config field). |
 | `per=5000` is honored; totals in `pagination-total` headers | The whole occurrence set is ~5 requests. Most rows are `AssertedDistribution`/`MaterialCitation`; filter `dwc_occurrence_object_type=CollectionObject`. |
 | **No `/preparation_types`, `/namespaces`, `/repositories`, `/biocuration_classes`** (404) | We **cannot** pre-validate preparations or the namespace mapping — they become a pre-flight checklist the user satisfies in TW by hand. `/otus`, `/people`, `/images`, `/depictions` **do** exist. |
-| `extend=[…]` is ignored on index routes | Resolve related records with a second call. |
+| `extend=[…]` is ignored on index routes — **except `/identifiers`** (measured 2026-07-26: `extend[]=namespace` embeds id/name/short_name/delimiter on the index) | Resolve related records with a second call, but check first: the claim is per-route, not global. |
+
+**The `/identifiers` catalog-number index (probed 2026-07-26; the join key is not the obvious one).**
+The identity source §5c already prescribes, now measured in detail — **do not re-derive**:
+
+| fact | consequence |
+|---|---|
+| **TaxonWorks splits the catalog number.** Local `JJPC-00001` is stored as `identifier="00001"` under namespace 6057 (`short_name="JJPC"`, `delimiter="-"`), and **`cached` = `"JJPC-00001"`** | **`cached` is the join key** against `collection_object.catalog_number`. Matching on `identifier` scored **0 overlap on all 39 specimens**. Accordingly `?identifier[]=JJPC-00001` returns **0 rows** while `?identifier[]=00001` returns 1 — the filter works, it is just not on the full form, and there is **no `cached` filter**. So pull the index and match locally. |
+| `type=` and `identifier_object_type=` filter correctly in **both** scalar and `[]` form | The whole project: 429,830 identifiers → 181 CatalogNumbers → **39 on CollectionObjects** (140 Containers, 2 Images). The entire index is **one request**, replacing one lookup per local specimen. |
+| `namespace_short_name=` / `namespace_name=` / `namespace_id[]=` all filter (`namespace_short_name=JJPC` → 28 rows, all namespace 6057) | Namespace scoping needs **no** hand-populated `repository.taxonworks_collection_id` (which is NULL). Resolve which namespace is ours *in reverse* from a catalog number known to be uploaded — the OTU-id discipline, applied again. |
+| Existence and orphans need **different scopes** | Existence is namespace-**unscoped**: a specimen filed under another namespace is still on TW, and calling it absent re-uploads it (identifier uniqueness is *per namespace*, so TW accepts that duplicate silently). The orphan sweep **is** namespace-scoped, or every other collection in the project counts as our orphan. |
+| A **local re-home never changes `catalog_number`** (only `repository_id` moves) | So "on TW under our namespace, not held here" is ambiguous: moved or deleted. A **DB-wide** catalog-number lookup separates them (`tw_compare._orphans`); scoping that lookup to the working collection reports a move as a deletion. |
 
 ### The emitted file (decided)
 
