@@ -318,14 +318,34 @@ def otu_instance_state() -> tuple[str, str, bool]:
     return current_host, recorded_host, trusted
 
 
-def reconcile_otu_ids(session: Session, checks: Iterable[NameCheck]) -> int:
+@dataclass(frozen=True)
+class ReconcileResult:
+    """What `reconcile_otu_ids` did, and whether it could record the provenance.
+
+    `provenance_recorded` is False when at least one taxon still holds an OTU id this
+    run could not vouch for on the current instance (`unvouched`). The caller must say
+    so: without the stamp the ids stay correctly marked untrusted, and silently
+    reporting only `changed` would read as a clean sweep.
+    """
+    changed: int
+    unvouched: int
+    provenance_recorded: bool
+
+
+def reconcile_otu_ids(session: Session, checks: Iterable[NameCheck]) -> ReconcileResult:
     """Write the resolved OTU id for every `match` back onto `taxon.taxonworks_otu_id`,
-    then record this instance as the id's provenance. Returns the number of rows changed.
+    and record this instance as the ids' provenance **only if none is left unvouched**.
 
     Read-only `check_names` never calls this — reconciliation is an explicit, separate
     action. Runs in the caller's transaction: no commit here, the caller owns the session.
     """
+    checks = list(checks)
     changed = 0
+    # Taxa whose stored id is known to be right for the instance we are talking to:
+    # either re-pointed from a name match here, or verified in reverse (§4).
+    vouched: set[int] = {
+        c.taxon_id for c in checks if c.stored_otu_verdict == "confirmed"
+    }
     for check in checks:
         if check.status != "match" or check.otu_id is None:
             continue
@@ -335,11 +355,29 @@ def reconcile_otu_ids(session: Session, checks: Iterable[NameCheck]) -> int:
         if taxon.taxonworks_otu_id != check.otu_id:
             taxon.taxonworks_otu_id = check.otu_id
             changed += 1
+        vouched.add(check.taxon_id)
 
-    cfg = get_config()
-    cfg.tw_otu_instance = urlsplit(cfg.tw_base).netloc
-    save_config(cfg)
-    return changed
+    # The stamp is a claim about EVERY stored id in the database — it is what makes
+    # `otu_instance_state()` report them as trustworthy — not a note about this run. So
+    # it is set only when no taxon anywhere still carries an id from somewhere else: a
+    # name that came back missing/ambiguous/errored keeps the id it was given on another
+    # server, and stamping anyway would relabel a foreign id as this instance's, the
+    # exact confusion the field exists to prevent. The query is DB-wide for the same
+    # reason: `checks` covers only the names this export would carry, so a taxon outside
+    # that set (another collection, a narrowed taxon scope) is invisible to it.
+    unvouched = sum(
+        1 for (taxon_id,) in session.query(Taxon.id)
+        .filter(Taxon.taxonworks_otu_id.isnot(None))
+        .all()
+        if taxon_id not in vouched
+    )
+    if unvouched == 0:
+        cfg = get_config()
+        cfg.tw_otu_instance = urlsplit(cfg.tw_base).netloc
+        save_config(cfg)
+    return ReconcileResult(
+        changed=changed, unvouched=unvouched, provenance_recorded=unvouched == 0
+    )
 
 
 # ── Public entry points (§6) ─────────────────────────────────────────────────────

@@ -511,13 +511,25 @@ def build_tw_sync_tab(session_factory, refreshers: dict | None = None,
                     try:
                         with session_factory() as s:
                             with s.begin():
-                                n = tw_sync.reconcile_otu_ids(s, data["checks"])
+                                res = tw_sync.reconcile_otu_ids(s, data["checks"])
                     except Exception as exc:                    # noqa: BLE001
                         ui.notify(f"Failed: {exc}", type="negative", multi_line=True)
                         return
                     host_after = urlsplit(get_config().tw_base).netloc
-                    ui.notify(f"Re-pointed {n} OTU ids to {host_after}.",
-                              type="positive")
+                    if res.provenance_recorded:
+                        ui.notify(
+                            f"Re-pointed {res.changed} OTU id(s) — every stored id now "
+                            f"belongs to {host_after}.", type="positive")
+                    else:
+                        # Not a clean sweep: say which ids are still foreign, or the
+                        # count alone reads as "done" while the banner still says
+                        # untrusted (and it is right to).
+                        ui.notify(
+                            f"Re-pointed {res.changed} OTU id(s), but {res.unvouched} "
+                            f"taxon(s) still hold an id that could not be vouched for "
+                            f"on {host_after} — their names are not on this instance "
+                            f"yet. The stored ids stay marked untrusted until they are.",
+                            type="warning", multi_line=True, timeout=8000)
                     _render_compare_results(repo_id)
 
                 def _render_compare_results(repo_id: int) -> None:
