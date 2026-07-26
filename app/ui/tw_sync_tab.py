@@ -342,30 +342,24 @@ def build_tw_sync_tab(session_factory, refreshers: dict | None = None) -> None:
                     checks = data["checks"]
                     with compare_results:
                         ui.separator().classes("my-2")
-                        ui.label(f"Check results — {data['label']}") \
-                            .classes("text-sm font-semibold")
-
-                        with ui.row().classes("gap-3 items-center flex-wrap mt-1"):
-                            ui.badge(f"{result.ineligible_count} not eligible") \
-                                .props("color=grey")
-                            ui.badge(f"{result.eligible_count} eligible") \
-                                .props("color=primary")
-                            ui.badge(f"{len(result.not_on_tw)} not yet uploaded") \
-                                .props("color=warning")
-                            ui.badge(f"{result.synced_count} on TaxonWorks") \
-                                .props("color=positive")
-                            ui.badge(f"{len(result.diverged)} diverged") \
-                                .props("color=negative")
-                            if result.duplicates:
-                                ui.badge(
-                                    f"{len(result.duplicates)} duplicate catalog "
-                                    f"number(s) on TaxonWorks"
-                                ).props("color=negative")
-                            if result.leaked:
-                                ui.badge(
-                                    f"{len(result.leaked)} on TaxonWorks but "
-                                    f"withheld locally"
-                                ).props("color=negative")
+                        # The counts themselves already live in the report table above
+                        # (updated in place after this check) — repeating them here as
+                        # a second row of badges was redundant. Only what the table has
+                        # no column for gets a badge: duplicates / withheld-but-on-TW
+                        # are rare enough that a silent "0" column would be wasted
+                        # space, so they surface here instead, only when non-zero.
+                        if result.duplicates or result.leaked:
+                            with ui.row().classes("gap-3 items-center flex-wrap"):
+                                if result.duplicates:
+                                    ui.badge(
+                                        f"{len(result.duplicates)} duplicate catalog "
+                                        f"number(s) on TaxonWorks"
+                                    ).props("color=negative")
+                                if result.leaked:
+                                    ui.badge(
+                                        f"{len(result.leaked)} on TaxonWorks but "
+                                        f"withheld locally"
+                                    ).props("color=negative")
 
                         # OTU-id provenance — shown only here, contextually, as a fact
                         # about this check rather than a standing warning banner.
@@ -503,14 +497,20 @@ def build_tw_sync_tab(session_factory, refreshers: dict | None = None) -> None:
                     }
                     compare_status.set_text(f"Checked {row['collection']}.")
 
-                    for r in report_state["rows"]:
-                        if r["repo_id"] == repo_id:
-                            r["synced"] = cmp_result.synced_count
-                            r["diverged"] = len(cmp_result.diverged)
-                            r["not_uploaded"] = len(cmp_result.not_on_tw)
-                    if report_state["table"] is not None:
-                        report_state["table"].rows = report_state["rows"]
-                        report_state["table"].update()
+                    # Re-derive the whole report rather than patching individual
+                    # fields on the old row: `eligible`/`not_eligible`/the "why not
+                    # eligible" reasons all come from `export_decision`, which reads
+                    # `config.tw_export_nonconsent` (and the confidential flags)
+                    # fresh on every call — but the report table's *initial* numbers
+                    # are from page-build time (`_render_report()` runs once). A
+                    # config change made after that point only ever reached the
+                    # visible table by patching it back in somewhere; re-running the
+                    # same load-and-render this check already paid the query cost
+                    # for is simpler than hand-picking which fields to patch, and
+                    # cannot drift from it. (This was the actual bug behind
+                    # "changing the config isn't applied until restart" — restarting
+                    # just forces a fresh page load, which was never the real fix.)
+                    _render_report()
 
                     _render_compare_results(repo_id)
 
