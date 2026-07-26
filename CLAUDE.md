@@ -40,12 +40,14 @@ tracker, not this file), `gh issue list`:
 - [#39](https://github.com/curculio-institute/CollectionDatabase/issues/39) — Workflow: bulk-import the existing dataset (unlinked taxon names)
 - [#40](https://github.com/curculio-institute/CollectionDatabase/issues/40) — Collection map view + data analysis tools
 - [#149](https://github.com/curculio-institute/CollectionDatabase/issues/149) — Syncing with TaxonWorks.
-  **Step 3 (emit the export) + the name pre-flight are built** (§5c, `dwc_export.py` /
-  `tw_sync.py` / the TaxonWorks tab). **Still open: Step 1 "Compare"** — which specimens are
-  already on TW (identity = `catalogNumber`, via the `/identifiers` index), duplicate
-  catalogNumbers with their repository, specimens on TW that are confidential locally,
-  field-level differences with a deep link per record, and media comparison — plus Step 2
-  (re-run the comparison after the user has acted on it).
+  **Step 3 (emit the export) + the name pre-flight + Step 1 "Compare" are built** (§5c,
+  `dwc_export.py` / `tw_sync.py` / `tw_compare.py` / the TaxonWorks tab). Compare covers
+  which specimens are already on TW (identity = `catalogNumber` via the `/identifiers`
+  index), duplicate catalogNumbers with their namespace, specimens on TW that are
+  confidential locally (`leaked`), specimens on TW that this collection no longer holds
+  (`orphaned` vs. `moved`), and field-level differences with a deep link per record.
+  **Still open:** media comparison (step 1.6 — declared as not compared, never claimed) and
+  Step 2 (re-run the comparison after the user has acted on it).
 
 (#41 — data safety: crash recovery + unsaved-changes guard — done; see §8 "Data safety".)
 
@@ -1440,16 +1442,20 @@ Biological association UI: CRUD in DB, UI not yet built.
 - *DwC export:* ✅ **built** — `dwc_export.py` emits the occurrence **TSV** (not CSV: TW's flat
   upload defaults to tab), gated on the name pre-flight. See §5c for the whole contract; the
   eligibility/privacy policy is `export_decision`. No `TW:` columns are emitted yet.
-- *Sync diff:* ⬜ Step 1 of #149 — pull the `/identifiers` catalog-number index (**not**
-  `dwc_occurrences`, where `catalogNumber` is populated on 1/500 rows), diff on `catalogNumber`,
-  emit new-only. Snapshot SQLite before any run.
+- *Sync diff:* ✅ **built** — Step 1 of #149, `tw_compare.py` + the TaxonWorks tab's
+  Collections step. Existence is answered by the `/identifiers` catalog-number index (**not**
+  `dwc_occurrences`, where `catalogNumber` is populated on 1/500 rows and which lags a fresh
+  import); `dwc_occurrences` supplies only the field values, and only for catalog numbers the
+  index says are there. The two scopes differ on purpose: existence is namespace-**un**scoped
+  (a specimen under another namespace is still on TW, and per-namespace identifier uniqueness
+  means TW would accept the re-upload silently), the orphan sweep is namespace-scoped. The
+  Export step's "already uploaded" exclusion reads the same index, so the file can never
+  re-carry a specimen TW already holds.
 - *Validation script:* ⬜ required DwC fields, coordinate bounds, determination completeness.
   (Row-level validity for the export specifically is already enforced by `_validate_row`, which
   refuses rather than rewrites — §5c.)
 - *Habitat enrichment (GeoPandas):* ⬜ uncertainty-aware spatial join against a European
   habitat layer (EUNIS or CORINE; CRS likely EPSG:3035 / ETRS89-LAEA).
-- *Sync diff:* pull `/api/v1/dwc_occurrences`, diff on `catalogNumber`, emit new-only.
-  Snapshot SQLite before any run.
 
 ---
 
