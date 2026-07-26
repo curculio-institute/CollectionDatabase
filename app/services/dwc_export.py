@@ -290,7 +290,8 @@ def occurrence_row(
 
     # Deterministic on purpose: re-exporting the same specimen must produce the
     # same occurrenceID, or a re-import would create a second TW record. Left
-    # empty only when the triplet cannot be formed (repository not fully set up).
+    # empty when the triplet cannot be formed (repository not fully set up) —
+    # and `_validate_row` then refuses the row rather than writing it.
     if inst_code and coll_code:
         row["occurrenceID"] = f"{inst_code}:{coll_code}:{cat_num}"
     row["catalogNumber"] = cat_num
@@ -430,6 +431,29 @@ def _validate_row(row: dict[str, str]) -> list[RowProblem]:
             message=f"coordinateUncertaintyInMeters '{uncertainty}' is not a whole "
                     f"number of metres (TW requires a bare integer); fix the "
                     f"collecting event in Records before exporting.",
+        ))
+
+    # 7. occurrenceID is the deterministic DwC triplet institutionCode:collectionCode:
+    # catalogNumber, and it is the only thing stopping a re-export from minting a second
+    # TaxonWorks record for one specimen (TW keeps it as
+    # Identifier::Local::Import::Dwc). It comes out empty exactly when the repository is
+    # missing a code — `dwc:institutionCode` is nullable, so this is reachable, not
+    # theoretical. TW also needs the (institutionCode, collectionCode) pair to resolve
+    # the Namespace that binds the catalogNumber (occurrence.rb:497-509), so a row
+    # without it imports with no catalog number to diff against, and the next export
+    # uploads the specimen again.
+    if not row["occurrenceID"]:
+        missing = " and ".join(
+            name for name in ("institutionCode", "collectionCode") if not row[name]
+        )
+        problems.append(RowProblem(
+            catalog_number=cat_num,
+            column="occurrenceID",
+            message=f"occurrenceID cannot be formed because the collection has no "
+                    f"{missing or 'institutionCode/collectionCode'}; set it on the "
+                    f"collection in Controlled Vocabularies before exporting. Without "
+                    f"it TaxonWorks cannot resolve the catalog-number namespace, and a "
+                    f"later export would upload this specimen a second time.",
         ))
 
     # 5. No current determination (or its taxon) means no name at all.
