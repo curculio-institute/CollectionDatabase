@@ -2552,7 +2552,15 @@ def index():
         if get_config().taxonworks_enabled:
             with ui.tab_panel("twsync"):
                 with ui.column().classes("w-full max-w-5xl mx-auto px-4 pt-6 pb-16 gap-4"):
-                    build_tw_sync_tab(_sf, _refreshers)
+                    # Hand a subset of specimens (e.g. "Diverged" for one collection)
+                    # straight to Explore's own views — same "drill into another tab"
+                    # pattern as _explore_open_spec/_explore_open_event above, just in
+                    # the other direction (#149 follow-up).
+                    def _twsync_open_explore(groups):
+                        _explore_handle["open_groups"](groups)
+                        main_tabs.set_value("explore")
+
+                    build_tw_sync_tab(_sf, _refreshers, open_explore=_twsync_open_explore)
 
         # ================================================================
         # TAB: CONTROLLED VOCABULARIES
@@ -3071,9 +3079,11 @@ def index():
             # NEVER exported — that is not a preference, so it is deliberately absent
             # here (see AppConfig.tw_export_nonconsent). A withheld name is written as
             # no value at all, never a placeholder.
-            ui.label("Collectors who have not consented").classes("text-sm font-medium mt-3")
+            ui.label("TaxonWorks export: Manage privacy consent").classes("text-sm font-medium mt-3")
             ui.label(
-                "A person marked Confidential is never exported, whatever this says."
+                "If a person is marked \"confidential\", no specimen collected by "
+                "that person will be exported. Select the privacy level for persons "
+                "who have not explicitly consented to data sharing"
             ).classes("text-xs mb-1").style("color:var(--tp-base-soft)")
             nonconsent_sel = ui.select(
                 {
@@ -3868,6 +3878,10 @@ def index():
                 # form entry survives the settings change).
                 _step_idx[0] = 0
                 _apply_digitize_layout()
+                # Live-refresh the TaxonWorks tab's Collections report (eligible/not
+                # eligible split + the privacy-consent status line both read config)
+                # rather than leaving it showing whatever was true at page load.
+                _refreshers.get("twsync") and _refreshers["twsync"]()
                 settings_dialog.close()
                 ui.notify("Settings saved.", type="positive")
 

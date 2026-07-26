@@ -107,7 +107,14 @@ _STEPS: tuple[tuple[str, str], ...] = (
 _STEP_KEYS = [k for k, _ in _STEPS]
 
 
-def build_tw_sync_tab(session_factory, refreshers: dict | None = None) -> None:
+def build_tw_sync_tab(session_factory, refreshers: dict | None = None,
+                       open_explore=None) -> None:
+    """`open_explore(groups)` — hand a facet-group list (Explore's own `state["groups"]`
+    shape) to Explore and switch the app to it, exactly the `on_open_specimen`/
+    `on_open_event` "drill into another tab" pattern Explore itself already uses toward
+    Records, just in the other direction (#149 follow-up: "let me examine these in
+    Explore"). `None` when the caller hasn't wired it — every click site degrades to a
+    no-op rather than raising, so this file still renders standalone (e.g. in a test)."""
     refreshers = refreshers or {}
     # `result`/`checks` are the Export step's own local+name check (Step 3 of #149).
     # `compare` is per-collection: {repo_id: {"result": CompareResult, "checks": [...],
@@ -129,6 +136,21 @@ def build_tw_sync_tab(session_factory, refreshers: dict | None = None) -> None:
     def _repo_options(s) -> dict:
         return {r.id: f"{r.collection_code} — {r.collection_full_name}"
                 for r in repo_svc.list_repositories(s)}
+
+    def _open_catalog_numbers(catalog_numbers, label: str) -> None:
+        """The generic hand-off to Explore for "these specific specimens" — every
+        report-table cell below that isn't the whole-collection case goes through this
+        one function, so there is exactly one place that builds a `catalog_numbers`
+        facet group (app/services/explore.py)."""
+        if open_explore is None:
+            return
+        if not catalog_numbers:
+            ui.notify("Nothing to show — this is empty.", type="info")
+            return
+        open_explore([{"op": "and", "facets": [{
+            "kind": "catalog_numbers", "label": label,
+            "key": tuple(catalog_numbers), "tag": "TaxonWorks sync",
+        }]}])
 
     def _render_blocking_names(checks) -> None:
         """Shared by the Export step's pre-flight and the Collections step's per-collection
@@ -197,12 +219,88 @@ def build_tw_sync_tab(session_factory, refreshers: dict | None = None) -> None:
                 ui.label(f"Connected to {host}.").classes("text-sm") \
                     .style("color:var(--tp-base-soft)")
                 ui.label(
-                    "TaxonWorks allows only one namespace (institutionCode + "
-                    "collectionCode) per upload, so exporting always works on exactly "
-                    "one collection at a time. Check a collection below to compare it "
-                    "against TaxonWorks — checks run only when you ask, one collection "
-                    "at a time, to keep API load down."
+                    "TaxonWorks allows only one collection (namespace) per upload. "
+                    "Select a collection to work on:"
                 ).classes("text-sm").style("color:var(--tp-base-soft)")
+
+                # ── Working collection — first, not last: everything below (the
+                # report, a per-row Check, the Export step) is scoped by or acts on
+                # one collection, so picking it is the first decision, not something
+                # found at the bottom after already having looked at everything.
+                with ui.row().classes("items-center gap-2 mt-2"):
+                    wc_label = ui.label().classes("text-sm font-medium")
+                    wc_change_btn = ui.button("Change", icon="swap_horiz") \
+                        .props("flat dense no-caps size=sm")
+                wc_select = ui.select(
+                    options={}, label="Working collection (for the Export step)",
+                    with_input=True,
+                ).classes("w-full").style("display:none")
+
+                def _sync_wc_label() -> None:
+                    if state["repo_id"] is None:
+                        wc_label.set_text(
+                            "⚠ No default collection set — choose one below, or set "
+                            "one in Settings."
+                        )
+                        wc_select.style("display:block")
+                    else:
+                        wc_label.set_text(f"Working collection: {state['repo_code']}")
+
+                def _toggle_wc_change() -> None:
+                    state["wc_open"] = not state.get("wc_open", False)
+                    wc_select.style(
+                        "display:block" if state["wc_open"] else "display:none")
+                    if state["wc_open"]:
+                        with session_factory() as s:
+                            wc_select.set_options(_repo_options(s))
+
+                wc_change_btn.on_click(_toggle_wc_change)
+
+                def _on_wc_change(e) -> None:
+                    if not e.value:
+                        return
+                    with session_factory() as s:
+                        r = s.get(repo_svc.Repository, e.value)
+                    if r is None:
+                        return
+                    state["repo_id"] = r.id
+                    state["repo_code"] = r.collection_code
+                    # The previous check ran against a different collection — stale
+                    # results would let Download hand out a file that no longer
+                    # matches what is shown.
+                    state["result"] = None
+                    state["checks"] = None
+                    _sync_wc_label()
+                    wc_select.style("display:none")
+                    _render_results()
+                    _sync_download_enabled()
+                    _sync_card2_wc_line()
+
+                wc_select.on_value_change(_on_wc_change)
+                _sync_wc_label()
+
+                # Consent policy — read-only here (Settings owns it), but the eligible/
+                # not-eligible split right below depends on it, so it must be visible
+                # without a trip to Settings to find out which one is active.
+                _CONSENT_STATUS_TEXT = {
+                    "name_removed": "Export the record with their name removed",
+                    "consented_only": "Export only data where the collector has "
+                                       "consented",
+                }
+                consent_status_label = ui.label().classes("text-xs") \
+                    .style("color:var(--tp-base-soft)")
+
+                def _sync_consent_status() -> None:
+                    nonconsent = get_config().tw_export_nonconsent or "name_removed"
+                    consent_status_label.set_text(
+                        "Privacy consent policy: "
+                        + _CONSENT_STATUS_TEXT.get(nonconsent, nonconsent)
+                        + " (Settings → TaxonWorks export: Manage privacy consent)."
+                    )
+
+                _sync_consent_status()
+
+                ui.separator().classes("my-3")
 
                 report_col = ui.column().classes("w-full mt-2")
                 report_state: dict = {"rows": [], "reasons": {}, "table": None}
@@ -246,7 +344,74 @@ def build_tw_sync_tab(session_factory, refreshers: dict | None = None) -> None:
                     report_state["rows"] = rows
                     report_state["reasons"] = reasons_by_repo
 
+                # Every numeric column hands its specimens to Explore on click (#149
+                # follow-up — "let me examine these"), except "collection" (a label, not
+                # a count) and "actions" (its own Check button). One handler for all six:
+                # the column name IS the row dict's own key, so no per-column function.
+                _CLICKABLE_COLS = (
+                    "total", "not_eligible", "eligible", "not_uploaded", "synced",
+                    "diverged",
+                )
+
+                def _on_open_col(payload: dict) -> None:
+                    repo_id = payload.get("repo_id")
+                    col = payload.get("col")
+                    row = next(
+                        (r for r in report_state["rows"] if r["repo_id"] == repo_id),
+                        None)
+                    if row is None:
+                        return
+                    label = row["collection"]
+
+                    if col == "total":
+                        # The one column with an existing, exact-match Explore facet
+                        # already (every specimen in this repository) — no need to
+                        # resolve a catalog-number list for it.
+                        if open_explore is not None:
+                            open_explore([{"op": "and", "facets": [{
+                                "kind": "collection", "label": label,
+                                "key": repo_id, "tag": "Collection",
+                            }]}])
+                        return
+
+                    if col == "not_eligible":
+                        # Already resolved for the "Why some are not eligible"
+                        # expansion — reuse it rather than re-querying.
+                        cats = [cat for cat, _ in
+                                report_state["reasons"].get(repo_id, ())]
+                        _open_catalog_numbers(cats, f"{label} — not eligible")
+                        return
+
+                    if col == "eligible":
+                        with session_factory() as s:
+                            cats = tw_compare.eligible_specimens(
+                                s, repository_id=repo_id)
+                        _open_catalog_numbers(list(cats), f"{label} — eligible")
+                        return
+
+                    # The remaining three (not_uploaded / synced / diverged) only exist
+                    # once this collection's own Check has run — the table shows "Check
+                    # pending" for them until then, so there is nothing to hand to
+                    # Explore yet.
+                    data = state["compare"].get(repo_id)
+                    if data is None:
+                        ui.notify("Run Check for this collection first.",
+                                  type="warning")
+                        return
+                    result: tw_compare.CompareResult = data["result"]
+                    if col == "not_uploaded":
+                        _open_catalog_numbers(
+                            list(result.not_on_tw), f"{label} — not yet uploaded")
+                    elif col == "synced":
+                        _open_catalog_numbers(
+                            list(result.synced), f"{label} — matches TaxonWorks")
+                    elif col == "diverged":
+                        _open_catalog_numbers(
+                            [d.catalog_number for d in result.diverged],
+                            f"{label} — diverged")
+
                 def _render_report() -> None:
+                    _sync_consent_status()   # config may have changed since page load
                     report_col.clear()
                     with session_factory() as s:
                         _load_report(s)
@@ -270,7 +435,7 @@ def build_tw_sync_tab(session_factory, refreshers: dict | None = None) -> None:
                                  "field": "eligible", "align": "right"},
                                 {"name": "not_uploaded", "label": "Not yet uploaded",
                                  "field": "not_uploaded", "align": "right"},
-                                {"name": "synced", "label": "On TaxonWorks",
+                                {"name": "synced", "label": "Matches TaxonWorks",
                                  "field": "synced", "align": "right"},
                                 {"name": "diverged", "label": "Diverged",
                                  "field": "diverged", "align": "right"},
@@ -287,6 +452,18 @@ def build_tw_sync_tab(session_factory, refreshers: dict | None = None) -> None:
                             </q-td>
                         """)
                         table.on("check_repo", lambda e: _on_check_repo(e.args))
+                        for _col in _CLICKABLE_COLS:
+                            table.add_slot(f"body-cell-{_col}", f"""
+                                <q-td :props="props" class="text-right"
+                                    style="cursor:pointer"
+                                    @click="$parent.$emit('open_col',
+                                        {{repo_id: props.row.repo_id, col: '{_col}'}})">
+                                    <span style="text-decoration:underline dotted">
+                                        {{{{ props.row.{_col} }}}}
+                                    </span>
+                                </q-td>
+                            """)
+                        table.on("open_col", lambda e: _on_open_col(e.args))
                         report_state["table"] = table
 
                         reasons_by_repo = report_state["reasons"]
@@ -305,13 +482,24 @@ def build_tw_sync_tab(session_factory, refreshers: dict | None = None) -> None:
                                             .style("color:var(--tp-base-soft)")
 
                         ui.label(
-                            "Not yet uploaded / On TaxonWorks / Diverged show "
-                            "\"Check pending\" until that collection's own Check "
-                            "has run — one TaxonWorks lookup per local catalog "
-                            "number, a few seconds even for a large shared project."
+                            "Eligible = Not yet uploaded + Matches TaxonWorks + "
+                            "Diverged (each specimen is exactly one of the three — "
+                            "\"Diverged\" specimens are on TaxonWorks too, just with "
+                            "at least one field that differs)."
                         ).classes("text-xs mt-2").style("color:var(--tp-base-soft)")
+                        ui.label(
+                            "The three show \"Check pending\" until that collection's "
+                            "own Check has run — one TaxonWorks lookup per local "
+                            "catalog number, a few seconds even for a large shared "
+                            "project."
+                        ).classes("text-xs").style("color:var(--tp-base-soft)")
 
                 _render_report()
+                # So a Settings save (e.g. the privacy-consent policy) can push a live
+                # refresh here without the user needing to leave this tab first — the
+                # same cross-tab refresh mechanism the taxonomy tree / print queue /
+                # Explore already use (main.py's `_refreshers`), not a bespoke one.
+                refreshers["twsync"] = _render_report
 
                 compare_status = ui.label("").classes("text-sm mt-2") \
                     .style("color:var(--tp-base-soft)")
@@ -513,60 +701,6 @@ def build_tw_sync_tab(session_factory, refreshers: dict | None = None) -> None:
                     _render_report()
 
                     _render_compare_results(repo_id)
-
-                ui.separator().classes("my-3")
-
-                with ui.row().classes("items-center gap-2"):
-                    wc_label = ui.label().classes("text-sm font-medium")
-                    wc_change_btn = ui.button("Change", icon="swap_horiz") \
-                        .props("flat dense no-caps size=sm")
-                wc_select = ui.select(
-                    options={}, label="Working collection (for the Export step)",
-                    with_input=True,
-                ).classes("w-full").style("display:none")
-
-                def _sync_wc_label() -> None:
-                    if state["repo_id"] is None:
-                        wc_label.set_text(
-                            "⚠ No default collection set — choose one below, or set "
-                            "one in Settings."
-                        )
-                        wc_select.style("display:block")
-                    else:
-                        wc_label.set_text(f"Working collection: {state['repo_code']}")
-
-                def _toggle_wc_change() -> None:
-                    state["wc_open"] = not state.get("wc_open", False)
-                    wc_select.style(
-                        "display:block" if state["wc_open"] else "display:none")
-                    if state["wc_open"]:
-                        with session_factory() as s:
-                            wc_select.set_options(_repo_options(s))
-
-                wc_change_btn.on_click(_toggle_wc_change)
-
-                def _on_wc_change(e) -> None:
-                    if not e.value:
-                        return
-                    with session_factory() as s:
-                        r = s.get(repo_svc.Repository, e.value)
-                    if r is None:
-                        return
-                    state["repo_id"] = r.id
-                    state["repo_code"] = r.collection_code
-                    # The previous check ran against a different collection — stale
-                    # results would let Download hand out a file that no longer
-                    # matches what is shown.
-                    state["result"] = None
-                    state["checks"] = None
-                    _sync_wc_label()
-                    wc_select.style("display:none")
-                    _render_results()
-                    _sync_download_enabled()
-                    _sync_card2_wc_line()
-
-                wc_select.on_value_change(_on_wc_change)
-                _sync_wc_label()
 
         # ── Step 2 — Export to TaxonWorks (#149 "Step 3: Emit the export spreadsheet") ──
         with ui.tab_panel("export").classes("p-0"):

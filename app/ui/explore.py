@@ -932,6 +932,20 @@ def build_explore_panel(session_factory, *, on_open_specimen, on_open_event) -> 
         _render_groups()
         _refresh()
 
+    def _open_groups(groups):
+        """Replace the current search with an ad-hoc filter built elsewhere in the app
+        (e.g. the TaxonWorks sync tab's "examine these in Explore", #149 follow-up) and
+        switch to the flat specimen list — the most useful view for a just-handed-in
+        set someone wants to look through, unlike `_apply_favorite`'s default of
+        whatever view the favorite was saved under. Sets the view directly (not via
+        `_set_view`, which would refresh once against the about-to-be-replaced old
+        groups) and lets `_load_search`'s own refresh do the one real query.
+        """
+        state["view"] = "specimens"
+        for name, btn in _view_btns.items():
+            btn.props(f'{"" if name == "specimens" else "flat"}')
+        _load_search(groups)
+
     def _apply_favorite(fav_id):
         res = _with(lambda s: fav_svc.resolve_by_id(s, fav_id))
         if res is None:
@@ -1034,4 +1048,4 @@ def build_explore_panel(session_factory, *, on_open_specimen, on_open_event) -> 
     else:
         _refresh()
     _refresh_favorites()
-    return {"refresh": _refresh}
+    return {"refresh": _refresh, "open_groups": _open_groups}

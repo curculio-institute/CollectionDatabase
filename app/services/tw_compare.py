@@ -227,13 +227,18 @@ class CompareResult:
     checked_count: int              # local specimens compared (eligible + ineligible)
     eligible_count: int
     ineligible_count: int
-    synced_count: int                # eligible, on TW, AND no field differs — the
-                                      # "correctly synced" count the report table shows
+    synced: tuple[str, ...]         # eligible, on TW, AND no field differs — catalog
+                                     # numbers, so the Explore hand-off (#149 follow-up)
+                                     # has something to filter on, not just a count
     not_on_tw: tuple[str, ...]      # eligible locally, catalogNumber not found on TW
     diverged: tuple[DivergedRow, ...]
     duplicates: tuple[DuplicateGroup, ...]
     leaked: tuple[LeakedRow, ...]
     media_not_compared: bool = True
+
+    @property
+    def synced_count(self) -> int:
+        return len(self.synced)
 
 
 def _diff_one(session: Session, co: CollectionObject, tw_row: dict) -> tuple[str, ...]:
@@ -324,6 +329,23 @@ def ineligible_specimens(
     return tuple(out)
 
 
+def eligible_specimens(session: Session, *, repository_id: int) -> tuple[str, ...]:
+    """Local-only (no network) — catalog numbers of every specimen in `repository_id`
+    `export_decision` allows to export. The complement of `ineligible_specimens`, kept as
+    its own function (rather than deriving it from that one) because the two ask
+    different questions — "which, and why not" vs. "which" — and callers of this one
+    (the Collections report's Explore hand-off, #149 follow-up) only ever need the plain
+    catalog-number list."""
+    cos = (
+        session.query(CollectionObject)
+        .filter(CollectionObject.repository_id == repository_id)
+        .all()
+    )
+    return tuple(
+        co.catalog_number for co in cos if dwc_export.export_decision(co).eligible
+    )
+
+
 def compare_repository(
     session: Session, tw_by_cat: dict[str, list[dict]], *, repository_id: int
 ) -> CompareResult:
@@ -339,12 +361,12 @@ def compare_repository(
     )
 
     not_on_tw: list[str] = []
+    synced: list[str] = []
     diverged: list[DivergedRow] = []
     duplicates: list[DuplicateGroup] = []
     leaked: list[LeakedRow] = []
     eligible_n = 0
     ineligible_n = 0
-    synced_n = 0
 
     for co in cos:
         decision = dwc_export.export_decision(co)
@@ -364,7 +386,7 @@ def compare_repository(
                         field_diffs=diffs,
                     ))
                 else:
-                    synced_n += 1
+                    synced.append(cat)
         else:
             ineligible_n += 1
             # #149 step 1.4 — confidential locally but TaxonWorks still has it.
@@ -389,7 +411,7 @@ def compare_repository(
         checked_count=len(cos),
         eligible_count=eligible_n,
         ineligible_count=ineligible_n,
-        synced_count=synced_n,
+        synced=tuple(synced),
         not_on_tw=tuple(not_on_tw),
         diverged=tuple(diverged),
         duplicates=tuple(duplicates),
