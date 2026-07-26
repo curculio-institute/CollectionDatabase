@@ -28,6 +28,16 @@ class AppConfig:
     # entity on another server, so an id is only meaningful while this matches tw_base's host.
     # Empty = unknown provenance, which is treated as untrusted (#149, app/services/tw_sync.py).
     tw_otu_instance: str = ""
+    # The TaxonWorks tab's optional taxon scope, remembered across restarts (#149).
+    # This is a reference to a DB row in a flat file, which CLAUDE.md otherwise forbids
+    # for *defaults* (person_defaults) — the reason there is referential integrity: a
+    # deleted or merged person would be silently recreated on the next save. Nothing is
+    # ever created from this one; it only narrows a query. The one real hazard is a
+    # dangling id after the taxon is deleted or merged away, which would silently scope
+    # the export to nothing — so the tab resolves it at build time and clears it, loudly,
+    # when it no longer names a taxon. A DB table for one nullable integer of UI state
+    # would be person_defaults-level ceremony for something nothing depends on.
+    tw_scope_taxon_id: int | None = None
 
     @property
     def taxonworks_enabled(self) -> bool:

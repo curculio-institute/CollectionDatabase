@@ -93,9 +93,9 @@ from sqlalchemy.orm import selectinload
 import app.services.repositories as repo_svc
 import app.services.taxonworks as tw_svc
 import app.services.tw_compare as tw_compare
-from app.config import get_config
-from app.models import CollectingEvent, CollectionObject, TaxonDetermination
-from app.services import dwc_export, tw_sync
+from app.config import get_config, save_config
+from app.models import CollectingEvent, CollectionObject, Taxon, TaxonDetermination
+from app.services import dwc_export, taxa as taxa_svc, tw_sync
 from app.services.batch_ops import descendant_taxon_ids
 from app.ui.taxon_search import build_taxon_search
 
@@ -126,6 +126,10 @@ def build_tw_sync_tab(session_factory, refreshers: dict | None = None,
     state: dict = {
         "result": None, "checks": None, "repo_id": None, "repo_code": "",
         "compare": {}, "checking_repo": None,
+        # The last reconcile's `UnvouchedTaxon` rows — the names still holding an id
+        # this instance would not vouch for, kept so the list stays on screen and can
+        # be acted on, rather than vanishing with the toast that announced the count.
+        "unvouched": (),
     }
 
     with session_factory() as _s:
@@ -278,6 +282,71 @@ def build_tw_sync_tab(session_factory, refreshers: dict | None = None,
 
                 wc_select.on_value_change(_on_wc_change)
                 _sync_wc_label()
+
+                # ── Taxon scope (optional) — beside the working collection ──────────
+                # Both answer "what am I working on", so they belong together; it used
+                # to sit on the Export card, where it read as an export-time argument
+                # rather than a standing choice. Remembered across restarts in
+                # `AppConfig.tw_scope_taxon_id` (see the field's comment for why config
+                # rather than a table, and what the dangling-reference guard is for).
+                _scope_seed_id = get_config().tw_scope_taxon_id
+                _scope_seed_label = ""
+                _scope_was_stale = False
+                if _scope_seed_id is not None:
+                    with session_factory() as _s:
+                        _seed = _s.get(Taxon, _scope_seed_id)
+                        if _seed is None:
+                            # The remembered taxon is gone (deleted, or merged away).
+                            # Keeping it would silently scope every export to nothing —
+                            # the silent wrong value of §2 — so it is dropped and said.
+                            _scope_was_stale = True
+                            _scope_seed_id = None
+                            _cfg = get_config()
+                            _cfg.tw_scope_taxon_id = None
+                            save_config(_cfg)
+                        else:
+                            _scope_seed_label = taxa_svc.compose_scientific_name(
+                                _s, _seed)
+
+                ui.label("Restrict to a taxon (optional)").classes(
+                    "text-sm font-semibold mt-3")
+                ui.label(
+                    "Only specimens currently determined within this taxon (and its "
+                    "descendants) are exported — e.g. Curculionoidea only. Leave empty "
+                    "for the whole collection. Applies to the Export step; the "
+                    "collection report above always covers everything."
+                ).classes("text-xs").style("color:var(--tp-base-soft)")
+                if _scope_was_stale:
+                    ui.label(
+                        "The remembered taxon no longer exists and was cleared — "
+                        "every specimen in the collection is in scope again."
+                    ).classes("text-xs text-amber-700")
+
+                def _remember_scope(taxon_id: int | None) -> None:
+                    cfg = get_config()
+                    cfg.tw_scope_taxon_id = taxon_id
+                    save_config(cfg)
+                    _sync_scope_line()
+
+                with ui.row().classes("w-full items-center gap-2 mt-1"):
+                    scope_state = build_taxon_search(
+                        session_factory, sources=("local",),
+                        placeholder="e.g. Curculionoidea — leave empty for the whole "
+                                    "collection",
+                        initial_taxon_id=_scope_seed_id,
+                        initial_label=_scope_seed_label,
+                        on_select=_remember_scope,
+                    )
+
+                    def _clear_scope() -> None:
+                        # An explicit control, because the widget's own clear does not
+                        # fire `on_select` — without this the remembered value could be
+                        # emptied on screen while config.json still held it.
+                        scope_state["clear"]()
+                        _remember_scope(None)
+
+                    ui.button("Clear", icon="close", on_click=_clear_scope) \
+                        .props("flat dense no-caps size=sm")
 
                 # Consent policy — read-only here (Settings owns it), but the eligible/
                 # not-eligible split right below depends on it, so it must be visible
@@ -505,17 +574,49 @@ def build_tw_sync_tab(session_factory, refreshers: dict | None = None,
                     .style("color:var(--tp-base-soft)")
                 compare_results = ui.column().classes("w-full mt-1")
 
-                def _reconcile_for(repo_id: int) -> None:
+                async def _reconcile_for(repo_id: int) -> None:
+                    """Re-point every stored OTU id, not just this export's names.
+
+                    The scope is `taxa_with_stored_otu_ids` — the rows the provenance
+                    stamp actually makes a claim about — unioned with whatever this
+                    collection's compare already checked (those may hold no id yet and
+                    can earn one). Reusing the compare's checks alone could never reach
+                    the ancestor rows that carry most of the ids, so `unvouched` could
+                    never reach zero; see the service docstring.
+                    """
                     data = state["compare"].get(repo_id)
-                    if data is None or not data["checks"]:
-                        return
+                    compare_status.set_text("Reconciling OTU ids — checking names…")
                     try:
                         with session_factory() as s:
-                            with s.begin():
-                                res = tw_sync.reconcile_otu_ids(s, data["checks"])
+                            taxa_list = tw_sync.taxa_with_stored_otu_ids(s)
+                            seen = {t.id for t in taxa_list}
+                            for c in (data["checks"] if data else ()):
+                                if c.taxon_id not in seen:
+                                    extra = s.get(Taxon, c.taxon_id)
+                                    if extra is not None:
+                                        taxa_list.append(extra)
+                                        seen.add(c.taxon_id)
+                            if not taxa_list:
+                                ui.notify("No taxon carries a TaxonWorks OTU id yet.",
+                                          type="info")
+                                compare_status.set_text("")
+                                return
+                            # `check_names` needs the session live across its requests
+                            # (it composes each name from ORM attributes while they are
+                            # in flight) — the same note as the Export step's call.
+                            checks = await tw_sync.check_names(s, taxa_list)
+                            # Contrary evidence retracts the stamp before anything is
+                            # written, so a failure below cannot leave a false claim of
+                            # trust standing.
+                            tw_sync.invalidate_otu_provenance(checks)
+                            res = tw_sync.reconcile_otu_ids(s, checks)
+                            s.commit()
                     except Exception as exc:                    # noqa: BLE001
                         ui.notify(f"Failed: {exc}", type="negative", multi_line=True)
+                        compare_status.set_text("Reconcile failed.")
                         return
+                    compare_status.set_text("")
+                    state["unvouched"] = res.unvouched_rows
                     host_after = urlsplit(get_config().tw_base).netloc
                     if res.provenance_recorded:
                         ui.notify(
@@ -532,6 +633,104 @@ def build_tw_sync_tab(session_factory, refreshers: dict | None = None,
                             f"yet. The stored ids stay marked untrusted until they are.",
                             type="warning", multi_line=True, timeout=8000)
                     _render_compare_results(repo_id)
+
+                _REASON_TEXT = {
+                    "ambiguous": "TaxonWorks has several names with this spelling — "
+                                 "pick the right one, it cannot be guessed",
+                    "missing": "this name is not on TaxonWorks at all, so the stored "
+                               "id belongs to some other server",
+                    "rank_mismatch": "TaxonWorks has this spelling only at another rank",
+                    "error": "the lookup failed, so nothing could be confirmed",
+                    "not checked": "not covered by this run",
+                }
+
+                async def _apply_manual_otu(
+                    repo_id: int, taxon_id: int, taxon_name_id: int | None, label: str
+                ) -> None:
+                    """Store one OTU id chosen by hand — a picked candidate, or nothing.
+
+                    `taxon_name_id=None` clears the stored id. Clearing is a real fix,
+                    not a cop-out: when a name is not on this instance, an id captured
+                    on another server is a false claim about this one, and no id claims
+                    nothing (§2).
+                    """
+                    try:
+                        otu_id = None
+                        if taxon_name_id is not None:
+                            otu_id = await tw_svc.fetch_otu_id_for_taxon_name(
+                                taxon_name_id)
+                            if otu_id is None:
+                                ui.notify(
+                                    f"TaxonWorks has no OTU for {label} — nothing to "
+                                    f"store. Create the OTU there first.",
+                                    type="warning", multi_line=True, timeout=8000)
+                                return
+                        with session_factory() as s:
+                            tw_sync.set_stored_otu_id(s, taxon_id, otu_id)
+                            s.commit()
+                    except Exception as exc:                     # noqa: BLE001
+                        ui.notify(f"Failed: {exc}", type="negative", multi_line=True)
+                        return
+                    # Drop the row from the pending list; the stamp is deliberately NOT
+                    # granted here — only a full reconcile may make that DB-wide claim.
+                    state["unvouched"] = tuple(
+                        r for r in state["unvouched"] if r.taxon_id != taxon_id
+                    )
+                    ui.notify(
+                        f"Stored OTU id {otu_id} for {label}." if otu_id is not None
+                        else f"Cleared the stored OTU id for {label}.",
+                        type="positive")
+                    _render_compare_results(repo_id)
+
+                def _render_unvouched(repo_id: int) -> None:
+                    rows = state["unvouched"]
+                    if not rows:
+                        return
+                    with ui.expansion(
+                            f"Stored OTU ids that could not be vouched for "
+                            f"({len(rows)})").classes("w-full mt-2"):
+                        ui.label(
+                            "These names still carry an OTU id this server would not "
+                            "confirm, which is what keeps the ids marked untrusted. "
+                            "Fix each one here: pick the right name where TaxonWorks "
+                            "offers a choice, or clear the id when the name is not on "
+                            "this server."
+                        ).classes("text-xs mb-1").style("color:var(--tp-base-soft)")
+                        for row in rows:
+                            ui.label(
+                                f"{row.name}"
+                                f"{f' ({row.rank})' if row.rank else ''} — stores "
+                                f"{row.stored_otu_id}"
+                            ).classes("text-xs font-medium mt-2")
+                            ui.label(
+                                f"· {_REASON_TEXT.get(row.reason, row.reason)}"
+                            ).classes("text-xs").style("color:var(--tp-base-soft)")
+                            with ui.row().classes("items-center gap-2 flex-wrap"):
+                                for cand in row.candidates:
+                                    # Authorship is the homonym tiebreaker (§5c), so it
+                                    # is on the button — without it the two Otiorhynchini
+                                    # candidates are indistinguishable in the very
+                                    # control that picks between them.
+                                    caption = " ".join(x for x in (
+                                        cand.cached, cand.authorship or "") if x)
+                                    ui.button(
+                                        f"Use {caption}",
+                                        on_click=(
+                                            lambda _=None, t=row.taxon_id,
+                                            n=cand.taxon_name_id, l=caption:
+                                            _apply_manual_otu(repo_id, t, n, l)
+                                        ),
+                                    ).props("no-caps flat dense size=sm color=primary")
+                                ui.button(
+                                    "Clear stored id",
+                                    on_click=(
+                                        lambda _=None, t=row.taxon_id, l=row.name:
+                                        _apply_manual_otu(repo_id, t, None, l)
+                                    ),
+                                ).props("no-caps flat dense size=sm color=warning")
+                            for note in row.notes:
+                                ui.label(f"· {note}").classes("text-xs") \
+                                    .style("color:var(--tp-base-soft)")
 
                 def _render_compare_results(repo_id: int) -> None:
                     compare_results.clear()
@@ -581,20 +780,42 @@ def build_tw_sync_tab(session_factory, refreshers: dict | None = None,
                         current_host, recorded_host, trusted = \
                             tw_sync.otu_instance_state()
                         if not trusted:
+                            # Two distinct untrusted states, and saying "an unknown
+                            # instance" for both misdescribes the commoner one: no
+                            # provenance is recorded either because none was ever
+                            # established, or because evidence retracted it
+                            # (`invalidate_otu_provenance`). Neither is "unknown".
                             ui.label(
-                                f"⚠ OTU ids stored locally were captured on "
-                                f"{recorded_host or 'an unknown instance'}; this "
-                                f"server is {current_host} — a stored id may name a "
-                                f"different entity here."
+                                (f"⚠ OTU ids stored locally were captured on "
+                                 f"{recorded_host}; this server is {current_host} — a "
+                                 f"stored id may name a different entity here.")
+                                if recorded_host else
+                                (f"⚠ The stored OTU ids have no recorded provenance for "
+                                 f"{current_host}, so a stored id may name a different "
+                                 f"entity here — or nothing at all. Reconcile to "
+                                 f"establish it.")
                             ).classes("text-sm text-amber-700 mt-2")
+                        # Reconcile now computes its own scope (every taxon carrying an
+                        # id, DB-wide), so it no longer depends on this collection's
+                        # compare having produced names — gating it on `checks` would
+                        # disable the one action that repairs the ancestor rows.
+                        with session_factory() as _s:
+                            stored_n = len(tw_sync.taxa_with_stored_otu_ids(_s))
                         with ui.element("div").classes("inline-flex mt-1"):
                             rec_btn = ui.button(
                                 "Reconcile OTU ids by name", icon="sync") \
                                 .props("no-caps color=secondary")
-                            rec_btn.set_enabled(bool(checks))
-                            if not checks:
-                                ui.tooltip("No names were checked for this collection")
+                            rec_btn.set_enabled(bool(stored_n or checks))
+                            if stored_n:
+                                ui.tooltip(
+                                    f"Checks all {stored_n} taxon(s) that carry a "
+                                    f"TaxonWorks OTU id, not just this export's names"
+                                )
+                            elif not checks:
+                                ui.tooltip("No taxon carries a TaxonWorks OTU id yet")
                         rec_btn.on_click(lambda: _reconcile_for(repo_id))
+
+                        _render_unvouched(repo_id)
 
                         if result.not_on_tw:
                             with ui.expansion(
@@ -837,6 +1058,11 @@ def build_tw_sync_tab(session_factory, refreshers: dict | None = None,
                             # bounded by tw_sync's own concurrency limit, and no
                             # session is held across the TaxonWorks lookups above.
                             checks = await tw_sync.check_names(s, taxa_list)
+                        # Any stored id this instance does not recognise falsifies the
+                        # provenance stamp on the spot — the compare only checks the
+                        # export's own names, so this rarely fires here, but evidence
+                        # is evidence and it costs nothing to act on it.
+                        tw_sync.invalidate_otu_provenance(checks)
                     except tw_svc.TaxonWorksUnreachable as exc:
                         ui.notify(str(exc), type="negative", multi_line=True,
                                   timeout=8000)
@@ -886,22 +1112,23 @@ def build_tw_sync_tab(session_factory, refreshers: dict | None = None,
                              "before checking."
                     )
 
-                # ── Scope (optional) — restrict to one taxon and its descendants ──
-                # Session-only — starts empty on every page load (see module docstring
-                # for why this is not a DB-backed "remembered" setting).
-                ui.label("Restrict to a taxon (optional)").classes(
-                    "text-sm font-semibold")
-                ui.label(
-                    "Only specimens currently determined within this taxon (and its "
-                    "descendants) are checked and exported — e.g. Curculionoidea "
-                    "only. Leave empty to export the whole collection."
-                ).classes("text-xs").style("color:var(--tp-base-soft)")
-                with ui.row().classes("w-full items-start gap-2 mt-1"):
-                    scope_state = build_taxon_search(
-                        session_factory, sources=("local",),
-                        placeholder="e.g. Curculionoidea — leave empty for the whole "
-                                    "collection",
+                # The scope itself is chosen in step 1, beside the working collection.
+                # It is still shown here, read-only, because it silently decides what
+                # the download contains — a filter you cannot see from the card that
+                # applies it is exactly how a partial export gets mistaken for a full
+                # one.
+                card2_scope_line = ui.label().classes("text-sm mt-1") \
+                    .style("color:var(--tp-base-soft)")
+
+                def _sync_scope_line() -> None:
+                    label = (scope_state.get("label") or "").strip()
+                    card2_scope_line.set_text(
+                        f"Taxon scope: {label} (and its descendants) — set in step 1"
+                        if scope_state.get("taxon_id") and label
+                        else "Taxon scope: whole collection"
                     )
+
+                _sync_scope_line()
 
                 ui.separator().classes("my-3")
 

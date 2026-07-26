@@ -318,6 +318,76 @@ def otu_instance_state() -> tuple[str, str, bool]:
     return current_host, recorded_host, trusted
 
 
+def taxa_with_stored_otu_ids(session: Session) -> list[Taxon]:
+    """Every taxon carrying a `taxonworksOtuID` — the exact set the provenance stamp
+    makes a claim about, and therefore the set a reconcile has to cover.
+
+    Reconciliation used to run over `taxa_to_export`'s names: the current determinations
+    of *exportable* specimens. Those are the names the spreadsheet carries, but they are
+    not the rows that hold ids — a chain import stamps an id on every ancestor it walks
+    (`taxa._ensure_parent_rows`), so suborders, families, tribes and subgenera carry ids
+    while never appearing in any export. Measured on the live database: 39 rows hold an
+    id and only 11 of them are determination targets, so the old scope could not reach 28
+    of them *by construction* — `unvouched` could never fall to zero, the stamp could
+    never legitimately be earned again, and the tool offered no way out of a state it
+    reported.
+    """
+    return sorted(
+        session.query(Taxon).filter(Taxon.taxonworks_otu_id.isnot(None)).all(),
+        key=lambda t: taxa.compose_scientific_name(session, t),
+    )
+
+
+def invalidate_otu_provenance(checks: Iterable[NameCheck]) -> bool:
+    """Drop the provenance stamp if any check found a stored OTU id this instance does
+    not recognise. Returns True when the stamp was actually dropped.
+
+    **This only ever clears; it never sets.** The asymmetry is the whole design: the
+    stamp is a claim about *every* stored id in the database, so earning it requires the
+    DB-wide sweep in `reconcile_otu_ids`, while falsifying it takes a single
+    counterexample. A verdict of `absent` (the id denotes nothing here) or `mismatch`
+    (it denotes something else) is exactly that counterexample.
+
+    Without this, a stamp could outlive the evidence for it. That is not hypothetical:
+    an earlier `reconcile_otu_ids` recorded provenance after a *partial* reconcile (fixed
+    in 2a63a10), and the resulting false stamp sat in config.json claiming 39 ids
+    belonged to sandbox.taxonworks.org when 28 of them were sfg ids that resolve to
+    nothing there — with the tab's untrusted-ids warning suppressed precisely because the
+    stamp said everything was fine. Fixing the writer stopped new false stamps; it could
+    not retract one already written. This is what retracts it.
+    """
+    if not any(
+        c.stored_otu_verdict in ("absent", "mismatch") for c in checks
+    ):
+        return False
+    cfg = get_config()
+    if not cfg.tw_otu_instance:
+        return False
+    cfg.tw_otu_instance = ""
+    save_config(cfg)
+    return True
+
+
+@dataclass(frozen=True)
+class UnvouchedTaxon:
+    """A taxon still holding an OTU id this instance could not vouch for, and why.
+
+    A bare count is a dead end: it reports a problem and offers no way to act on it.
+    This carries what is needed to resolve one by hand — which name, what it stores now,
+    why the automatic match refused, and (for `ambiguous`, the case where a decision
+    genuinely exists) the candidates TaxonWorks offered. Choosing between homonyms is a
+    judgement only a person can make, which is precisely why `check_names` refuses to
+    guess it.
+    """
+    taxon_id: int
+    name: str
+    rank: str | None
+    stored_otu_id: int | None
+    reason: str                  # the NameCheck status, or "not checked"
+    notes: tuple[str, ...] = ()
+    candidates: tuple[TwCandidate, ...] = ()
+
+
 @dataclass(frozen=True)
 class ReconcileResult:
     """What `reconcile_otu_ids` did, and whether it could record the provenance.
@@ -325,11 +395,28 @@ class ReconcileResult:
     `provenance_recorded` is False when at least one taxon still holds an OTU id this
     run could not vouch for on the current instance (`unvouched`). The caller must say
     so: without the stamp the ids stay correctly marked untrusted, and silently
-    reporting only `changed` would read as a clean sweep.
+    reporting only `changed` would read as a clean sweep. `unvouched_rows` says *which*,
+    so the report can be acted on rather than merely believed.
     """
     changed: int
     unvouched: int
     provenance_recorded: bool
+    unvouched_rows: tuple[UnvouchedTaxon, ...] = ()
+
+
+def set_stored_otu_id(session: Session, taxon_id: int, otu_id: int | None) -> None:
+    """Set (or clear) one taxon's stored OTU id by hand — the manual escape hatch.
+
+    The single writer for a human decision, so there is one place to audit it. Clearing
+    is as legitimate an outcome as setting: when a name is genuinely not on this
+    instance, an id captured elsewhere is *worse* than no id — it is a false claim about
+    this server, where an empty column claims nothing (§2). Never stamps provenance;
+    that stays `reconcile_otu_ids`' DB-wide judgement, which this cannot substitute for.
+    """
+    taxon = session.get(Taxon, taxon_id)
+    if taxon is None:
+        raise ValueError(f"no taxon with id {taxon_id}")
+    taxon.taxonworks_otu_id = otu_id
 
 
 def reconcile_otu_ids(session: Session, checks: Iterable[NameCheck]) -> ReconcileResult:
@@ -365,18 +452,34 @@ def reconcile_otu_ids(session: Session, checks: Iterable[NameCheck]) -> Reconcil
     # exact confusion the field exists to prevent. The query is DB-wide for the same
     # reason: `checks` covers only the names this export would carry, so a taxon outside
     # that set (another collection, a narrowed taxon scope) is invisible to it.
-    unvouched = sum(
-        1 for (taxon_id,) in session.query(Taxon.id)
-        .filter(Taxon.taxonworks_otu_id.isnot(None))
-        .all()
-        if taxon_id not in vouched
-    )
+    by_taxon = {c.taxon_id: c for c in checks}
+    rows: list[UnvouchedTaxon] = []
+    for taxon in (
+        session.query(Taxon).filter(Taxon.taxonworks_otu_id.isnot(None)).all()
+    ):
+        if taxon.id in vouched:
+            continue
+        check = by_taxon.get(taxon.id)
+        rows.append(UnvouchedTaxon(
+            taxon_id=taxon.id,
+            name=taxa.compose_scientific_name(session, taxon),
+            rank=taxon.taxon_rank,
+            stored_otu_id=taxon.taxonworks_otu_id,
+            # A taxon outside `checks` was never asked about — say that, rather than
+            # implying TaxonWorks answered something about it.
+            reason=check.status if check is not None else "not checked",
+            notes=check.notes if check is not None else (),
+            candidates=check.candidates if check is not None else (),
+        ))
+    rows.sort(key=lambda r: r.name)
+    unvouched = len(rows)
     if unvouched == 0:
         cfg = get_config()
         cfg.tw_otu_instance = urlsplit(cfg.tw_base).netloc
         save_config(cfg)
     return ReconcileResult(
-        changed=changed, unvouched=unvouched, provenance_recorded=unvouched == 0
+        changed=changed, unvouched=unvouched, provenance_recorded=unvouched == 0,
+        unvouched_rows=tuple(rows),
     )
 
 
