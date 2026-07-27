@@ -90,6 +90,15 @@ def _explain(exc: Exception) -> TaxonWorksUnreachable:
 
 # ── TaxonWorks fetch (I/O) ──────────────────────────────────────────────────────
 
+def _read_total(r: httpx.Response, total: int | None) -> int | None:
+    """Read `pagination-total`/`x-total` once (the first page's value is authoritative;
+    later pages are not re-parsed) — shared by both paginated fetches below."""
+    if total is not None:
+        return total
+    raw_total = r.headers.get("pagination-total") or r.headers.get("x-total")
+    return int(raw_total) if raw_total and raw_total.isdigit() else None
+
+
 async def fetch_depictions_by_object(collection_object_ids: list[int]) -> dict[int, list[int]]:
     """TW collection_object_id -> [image_id, ...], one bulk paginated pull scoped to
     `depiction_object_type=CollectionObject` + our ids. Empty input never touches the
@@ -98,6 +107,8 @@ async def fetch_depictions_by_object(collection_object_ids: list[int]) -> dict[i
         return {}
     cfg = get_config()
     out: dict[int, list[int]] = {}
+    total: int | None = None
+    received = 0
     async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
         page = 1
         while True:
@@ -123,14 +134,28 @@ async def fetch_depictions_by_object(collection_object_ids: list[int]) -> dict[i
                     "the depictions endpoint did not return a list of rows — treating it "
                     "as a lookup failure rather than as 'no media'."
                 )
+            total = _read_total(r, total)
+            received += len(body)
             for row in body:
                 co_id = row.get("depiction_object_id")
                 image_id = row.get("image_id")
                 if isinstance(co_id, int) and isinstance(image_id, int):
                     out.setdefault(co_id, []).append(image_id)
+            if not body or (total is not None and received >= total):
+                break
             if len(body) < _PER_PAGE:
                 break
             page += 1
+    # #160 — a short final page is not proof of "last page": mirrors
+    # `tw_compare.fetch_catalog_index`'s pagination-total cross-check, since an
+    # incomplete read here understates what TaxonWorks has and reads as "not on
+    # TaxonWorks yet", the same dangerous direction that check exists to catch.
+    if total is not None and received < total:
+        raise TaxonWorksUnreachable(
+            f"the depictions endpoint returned {received} of {total} rows — an "
+            f"incomplete read would understate this collection's TaxonWorks media, so "
+            f"this is treated as a lookup failure rather than as 'no media'."
+        )
     return out
 
 
@@ -141,6 +166,8 @@ async def fetch_image_fingerprints(image_ids: list[int]) -> dict[int, str]:
         return {}
     cfg = get_config()
     out: dict[int, str] = {}
+    total: int | None = None
+    received = 0
     async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
         page = 1
         while True:
@@ -165,14 +192,24 @@ async def fetch_image_fingerprints(image_ids: list[int]) -> dict[int, str]:
                     "the images endpoint did not return a list of rows — treating it "
                     "as a lookup failure rather than as 'no fingerprint'."
                 )
+            total = _read_total(r, total)
+            received += len(body)
             for row in body:
                 iid = row.get("id")
                 fp = row.get("image_file_fingerprint")
                 if isinstance(iid, int) and fp:
                     out[iid] = str(fp)
+            if not body or (total is not None and received >= total):
+                break
             if len(body) < _PER_PAGE:
                 break
             page += 1
+    if total is not None and received < total:
+        raise TaxonWorksUnreachable(
+            f"the images endpoint returned {received} of {total} rows — an incomplete "
+            f"read would understate which local files are already on TaxonWorks, so "
+            f"this is treated as a lookup failure rather than as 'no fingerprint'."
+        )
     return out
 
 
