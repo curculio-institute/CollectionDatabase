@@ -188,6 +188,22 @@ def test_compare_media_specimen_with_no_local_media_is_not_a_gap(media_env):
     assert result.tw_only_count == 1              # but still counted, never silently dropped
 
 
+def test_compare_media_tw_only_dedupes_by_fingerprint_with_no_local_media(media_env):
+    """#158: two TaxonWorks Depictions sharing one fingerprint (e.g. a re-uploaded
+    duplicate) must count as 1 tw_only, the same as it would once any local media is
+    attached — not the raw, undeduplicated image count."""
+    session, _store = media_env
+    repo = ensure_repo(session, "JJPC")
+    co = _specimen(session, "JJPC-00001", repo)   # no local media at all
+
+    specimens = [("JJPC-00001", co.id, 501)]
+    depictions = {501: [9001, 9002]}               # two TW images...
+    fingerprints = {9001: "cafebabe" * 4, 9002: "cafebabe" * 4}   # ...same fingerprint
+    result = twm.compare_media(session, specimens, depictions, fingerprints)
+
+    assert result.tw_only_count == 1
+
+
 def test_stage_for_upload_copies_files_under_original_names(media_env, tmp_path):
     session, _store = media_env
     repo = ensure_repo(session, "JJPC")

@@ -274,7 +274,12 @@ def compare_media(
             if iid in fingerprints_by_image
         }
         if not attachments:
-            tw_only += len(depictions_by_object.get(tw_object_id, ()))
+            # #158 — count distinct resolved fingerprints, matching the branch below
+            # (`tw_fingerprints - local_fingerprints_seen`), not raw TW image ids: two
+            # Depictions sharing one fingerprint (e.g. a re-uploaded duplicate) must not
+            # count differently depending on whether the specimen happens to have any
+            # local media at all.
+            tw_only += len(tw_fingerprints)
             continue
         with_local += 1
         local_fingerprints_seen: set[str] = set()
