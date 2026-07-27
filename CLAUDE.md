@@ -40,13 +40,17 @@ tracker, not this file), `gh issue list`:
 - [#39](https://github.com/curculio-institute/CollectionDatabase/issues/39) — Workflow: bulk-import the existing dataset (unlinked taxon names)
 - [#40](https://github.com/curculio-institute/CollectionDatabase/issues/40) — Collection map view + data analysis tools
 - [#149](https://github.com/curculio-institute/CollectionDatabase/issues/149) — Syncing with TaxonWorks.
-  **Step 3 (emit the export) + the name pre-flight + Step 1 "Compare" are built** (§5c,
-  `dwc_export.py` / `tw_sync.py` / `tw_compare.py` / the TaxonWorks tab). Compare covers
-  which specimens are already on TW (identity = `catalogNumber` via the `/identifiers`
-  index), duplicate catalogNumbers with their namespace, specimens on TW that are
-  confidential locally (`leaked`), specimens on TW that this collection no longer holds
-  (`orphaned` vs. `moved`), and field-level differences with a deep link per record.
-  **Still open:** media comparison (step 1.6 — declared as not compared, never claimed).
+  **Step 3 (emit the export) + the name pre-flight + Step 1 "Compare", including media
+  (step 1.6), are built** (§5c, `dwc_export.py` / `tw_sync.py` / `tw_compare.py` /
+  `tw_media_compare.py` / the TaxonWorks tab). Compare covers which specimens are already
+  on TW (identity = `catalogNumber` via the `/identifiers` index), duplicate
+  catalogNumbers with their namespace, specimens on TW that are confidential locally
+  (`leaked`), specimens on TW that this collection no longer holds (`orphaned` vs.
+  `moved`), field-level differences with a deep link per record, and — since 2026-07-27 —
+  which locally-attached media files are missing from TaxonWorks' Depictions (matched by
+  MD5 fingerprint, migration 0070; diagnostic only, since TW has no import or create path
+  for media — the tab links to TW's own upload UI and stages the exact files locally for
+  drag-and-drop).
   **Step 2 "Recompare" needs no separate feature** (decided 2026-07-26): it is just running
   Step 1 "Compare" again after the user has acted on its findings, which the built Compare tab
   already supports on demand — there is nothing dynamic-per-user-action to build.
@@ -1564,6 +1568,14 @@ Biological association UI: CRUD in DB, UI not yet built.
   means TW would accept the re-upload silently), the orphan sweep is namespace-scoped. The
   Export step's "already uploaded" exclusion reads the same index, so the file can never
   re-carry a specimen TW already holds.
+- *Media compare (step 1.6):* ✅ **built** — `tw_media_compare.py`, reusing the same
+  `/identifiers` index the occurrence compare already fetched. Matches local
+  `media_attachment` files to TW `Depiction`/`Image` rows by MD5 (`media.md5_fingerprint`,
+  migration 0070 — TW's `image_file_fingerprint` is MD5 despite its OpenAPI doc claiming
+  SHA256; verified live against sandbox.taxonworks.org). Diagnostic only: TW's DwC importer
+  has no media path and there is no public API route to create an Image, so the tab can
+  only report local-only files with a deep link to TW's own upload UI and a "Prepare
+  files" button that stages them in a temp folder for drag-and-drop.
 - *Validation script:* ⬜ required DwC fields, coordinate bounds, determination completeness.
   (Row-level validity for the export specifically is already enforced by `_validate_row`, which
   refuses rather than rewrites — §5c.)

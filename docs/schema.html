@@ -289,6 +289,7 @@ erDiagram
     media {
         INTEGER id PK
         TEXT sha256 UK
+        TEXT md5_fingerprint "join key vs TW image_file_fingerprint"
         TEXT relative_path
         TEXT category
         TEXT format
@@ -601,12 +602,17 @@ erDiagram
   <div class="desc">One row per stored file. The bytes live content-addressed on disk
     (<code>data/media/&lt;xx&gt;/&lt;sha256&gt;.&lt;ext&gt;</code>); this row holds the checksum +
     metadata. <code>sha256</code> is UNIQUE (de-duplication). <code>category</code> is the
-    user-facing filter key. Descriptive fields follow Audubon Core. Migration 0035.</div>
+    user-facing filter key. Descriptive fields follow Audubon Core. Migration 0035.
+    <code>md5_fingerprint</code> (migration 0070, #149 step 1.6) is a cached second digest —
+    the join key against TaxonWorks' <code>Image.image_file_fingerprint</code> (MD5, verified
+    live despite TW's OpenAPI doc claiming SHA256); computed eagerly at store time for new
+    rows, lazily backfilled for pre-existing ones the first time a compare needs it.</div>
   <table>
     <thead><tr><th>Type</th><th>Column</th><th>Notes</th></tr></thead>
     <tbody>
       <tr><td><span class="badge badge-INTEGER">INTEGER</span></td><td class="col-local">id</td><td><span class="tag tag-PK">PK</span></td></tr>
       <tr><td><span class="badge badge-TEXT">TEXT</span></td><td class="col-local">sha256</td><td><span class="tag tag-UQ">UQ</span> NOT NULL</td></tr>
+      <tr><td><span class="badge badge-TEXT">TEXT</span></td><td class="col-local">md5_fingerprint</td><td>nullable — join key vs. TaxonWorks Image fingerprint</td></tr>
       <tr><td><span class="badge badge-TEXT">TEXT</span></td><td class="col-local">relative_path</td><td>NOT NULL</td></tr>
       <tr><td><span class="badge badge-TEXT">TEXT</span></td><td class="col-local">category</td><td>NOT NULL — {Image, Sound, Video, Document, Sequence, Other}</td></tr>
       <tr><td><span class="badge badge-TEXT">TEXT</span></td><td class="col-local">format</td><td>mime type</td></tr>

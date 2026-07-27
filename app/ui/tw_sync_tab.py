@@ -93,6 +93,7 @@ from sqlalchemy.orm import selectinload
 import app.services.repositories as repo_svc
 import app.services.taxonworks as tw_svc
 import app.services.tw_compare as tw_compare
+import app.services.tw_media_compare as tw_media_compare
 from app.config import get_config, save_config
 from app.models import CollectingEvent, CollectionObject, Taxon, TaxonDetermination
 from app.services import dwc_export, taxa as taxa_svc, tw_sync
@@ -191,6 +192,60 @@ def build_tw_sync_tab(session_factory, refreshers: dict | None = None,
                         f"{tw_svc.web_base()}/tasks/nomenclature/new_taxon_name",
                         new_tab=True,
                     ).classes("text-xs")
+
+    def _render_media_results(media_result) -> None:
+        """#149 step 1.6. Diagnostic only — TaxonWorks has no import path for media at
+        all (module docstring, `tw_media_compare.py`), so the only actions offered are
+        a deep link to TaxonWorks' own upload UI and staging the exact files locally so
+        drag-and-drop is fast; nothing here ever pushes bytes anywhere itself."""
+        if media_result is None:
+            ui.label("Associated media was not checked.").classes("text-xs mt-2") \
+                .style("color:var(--tp-base-soft)")
+            return
+        if not media_result.gaps and not media_result.tw_only_count:
+            ui.label(
+                f"Associated media: {media_result.matched_count} file(s) confirmed on "
+                f"TaxonWorks, nothing missing."
+            ).classes("text-xs mt-2").style("color:var(--tp-base-soft)")
+            return
+        with ui.column().classes("w-full gap-1 mt-2"):
+            if media_result.gaps:
+                n_files = sum(len(g.local_only) for g in media_result.gaps)
+                ui.label(
+                    f"Local media not yet on TaxonWorks ({n_files} file(s) across "
+                    f"{len(media_result.gaps)} specimen(s)) — TaxonWorks has no import "
+                    f"path for media, so this is uploaded by hand."
+                ).classes("text-xs font-semibold text-amber-700")
+                for gap in media_result.gaps:
+                    with ui.row().classes("items-center gap-2 flex-wrap"):
+                        names = ", ".join(
+                            m.original_filename or f"file {m.media_id}"
+                            for m in gap.local_only
+                        )
+                        ui.label(f"{gap.catalog_number}: {names}").classes("text-xs")
+                        ui.link("Open in TaxonWorks", gap.edit_url, new_tab=True) \
+                            .classes("text-xs")
+
+                        def _prepare(gap=gap) -> None:
+                            try:
+                                folder = tw_media_compare.stage_for_upload(gap)
+                            except OSError as exc:
+                                ui.notify(f"Could not stage the files: {exc}",
+                                         type="negative")
+                                return
+                            tw_media_compare.open_folder(folder)
+                            ui.notify(
+                                f"Files copied to {folder} — opening the folder so "
+                                f"you can drag them into TaxonWorks.",
+                                type="positive", multi_line=True,
+                            )
+                        ui.button("Prepare files", icon="folder_open",
+                                 on_click=_prepare).props("flat dense no-caps size=sm")
+            if media_result.tw_only_count:
+                ui.label(
+                    f"{media_result.tw_only_count} file(s) on TaxonWorks with no "
+                    f"local match — informational only, nothing to do here."
+                ).classes("text-xs mt-1").style("color:var(--tp-base-soft)")
 
     # ── Step navigation — one card visible at a time (NiceGUI tabs, see module docstring
     # for why this is not the Digitize `.tp-stepper-bar` chip bar) ─────────────────────
@@ -991,12 +1046,7 @@ def build_tw_sync_tab(session_factory, refreshers: dict | None = None,
                             ).classes("text-xs mt-2") \
                                 .style("color:var(--tp-base-soft)")
 
-                        ui.label(
-                            "Associated media is not compared — TaxonWorks' "
-                            "projection carries no key shared with our media_attachment "
-                            "rows to match on, so this check does not claim media is "
-                            "the same (#149 step 1.6, not yet built)."
-                        ).classes("text-xs mt-2").style("color:var(--tp-base-soft)")
+                        _render_media_results(data.get("media"))
 
                         _render_blocking_names(checks)
 
@@ -1063,6 +1113,17 @@ def build_tw_sync_tab(session_factory, refreshers: dict | None = None,
                         # export's own names, so this rarely fires here, but evidence
                         # is evidence and it costs nothing to act on it.
                         tw_sync.invalidate_otu_provenance(checks)
+
+                        # #149 step 1.6 — media. Reuses the SAME `index` already pulled
+                        # above (no second `/identifiers` request) and runs in the same
+                        # bulk shape as the occurrence compare: a couple of requests for
+                        # the whole collection, never one per specimen.
+                        compare_status.set_text(
+                            f"Checking {row['collection']} — comparing media…"
+                        )
+                        with session_factory() as s:
+                            media_result = await tw_media_compare.run_media_compare(
+                                s, repository_id=repo_id, index=index)
                     except tw_svc.TaxonWorksUnreachable as exc:
                         ui.notify(str(exc), type="negative", multi_line=True,
                                   timeout=8000)
@@ -1072,7 +1133,7 @@ def build_tw_sync_tab(session_factory, refreshers: dict | None = None,
                         state["checking_repo"] = None
 
                     state["compare"][repo_id] = {
-                        "result": cmp_result, "checks": checks,
+                        "result": cmp_result, "checks": checks, "media": media_result,
                         "label": row["collection"],
                     }
                     compare_status.set_text(f"Checked {row['collection']}.")

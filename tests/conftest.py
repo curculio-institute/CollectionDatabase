@@ -4,6 +4,8 @@ from sqlalchemy.orm import sessionmaker
 from alembic.config import Config
 from alembic.command import upgrade
 
+import app.config as config
+
 
 @pytest.fixture(scope="session")
 def engine(tmp_path_factory):
@@ -32,3 +34,13 @@ def session(engine):
     with SessionLocal() as sess:
         yield sess
         sess.rollback()
+
+
+@pytest.fixture
+def media_env(engine, tmp_path, monkeypatch):
+    """Point the media store at a temp dir and yield a session bound to the migrated DB.
+    Shared by every test module that stores/attaches media (#48, #149 step 1.6)."""
+    monkeypatch.setattr(config, "_instance", config.AppConfig(media_dir=str(tmp_path / "media")))
+    SessionLocal = sessionmaker(engine)
+    with SessionLocal() as s:
+        yield s, tmp_path / "media"

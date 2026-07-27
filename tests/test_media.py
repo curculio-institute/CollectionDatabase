@@ -1,21 +1,8 @@
 """Media store + repository: content-addressing, de-dup, integrity, attach/detach (#48)."""
 import importlib
 
-import pytest
-from sqlalchemy.orm import sessionmaker
-
-import app.config as config
 import app.services.media as media_svc
 from app.models import Media, MediaAttachment, CollectingEvent
-
-
-@pytest.fixture
-def media_env(engine, tmp_path, monkeypatch):
-    """Point the media store at a temp dir and yield a session bound to the migrated DB."""
-    monkeypatch.setattr(config, "_instance", config.AppConfig(media_dir=str(tmp_path / "media")))
-    SessionLocal = sessionmaker(engine)
-    with SessionLocal() as s:
-        yield s, tmp_path / "media"
 
 
 def test_detect_category():
@@ -39,6 +26,35 @@ def test_store_is_content_addressed_and_dedups(media_env):
     assert len(files) == 1
     assert media_svc.verify_integrity(m1["relative_path"], m1["sha256"]) is True
     assert media_svc.verify_integrity(m1["relative_path"], "0" * 64) is False
+
+
+def test_store_bytes_computes_md5_eagerly(media_env):
+    """#149 step 1.6: the join key against TaxonWorks' image_file_fingerprint (MD5,
+    verified live — see tw_media_compare.py) is computed alongside sha256 at store
+    time, not left for a later backfill."""
+    import hashlib
+    data = b">seq1\nACGT\n"
+    meta = media_svc.store_bytes(data, "a.fasta")
+    assert meta["md5_fingerprint"] == hashlib.md5(data).hexdigest()
+
+
+def test_ensure_md5_backfills_legacy_rows(media_env):
+    """A row stored before migration 0070 has md5_fingerprint=None; ensure_md5 computes
+    it from the on-disk bytes once and caches it on the row (the user's choice: cache,
+    not recompute on every compare)."""
+    import hashlib
+    s, _ = media_env
+    meta = media_svc.store_bytes(b"legacy bytes", "legacy.txt")
+    media, _created = media_svc._get_or_create_media(s, meta)
+    media.md5_fingerprint = None                  # simulate a pre-migration row
+    s.flush()
+
+    got = media_svc.ensure_md5(s, media)
+    assert got == hashlib.md5(b"legacy bytes").hexdigest()
+    assert media.md5_fingerprint == got            # cached on the row
+
+    # A second call must not recompute (nothing on disk changed, but prove idempotence).
+    assert media_svc.ensure_md5(s, media) == got
 
 
 def test_attach_list_and_delete_cleans_up(media_env):
