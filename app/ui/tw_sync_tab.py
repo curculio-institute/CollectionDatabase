@@ -84,6 +84,7 @@ anything else depends on). The picker reuses the existing taxon-search widget
 """
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime
 from urllib.parse import urlsplit
 
@@ -238,9 +239,15 @@ def build_tw_sync_tab(session_factory, refreshers: dict | None = None,
                         ui.link("Open in TaxonWorks", gap.edit_url, new_tab=True) \
                             .classes("text-xs")
 
-                        def _prepare(gap=gap) -> None:
+                        async def _prepare(gap=gap) -> None:
+                            # #164 — stage_for_upload() copies files with shutil.copy2,
+                            # real blocking disk I/O; off the event loop the same way
+                            # ensure_md5's disk reads were (#155), or a specimen with
+                            # several large media files freezes the UI for every
+                            # connected client while "Prepare files" runs.
                             try:
-                                folder, skipped = tw_media_compare.stage_for_upload(gap)
+                                folder, skipped = await asyncio.to_thread(
+                                    tw_media_compare.stage_for_upload, gap)
                             except OSError as exc:
                                 ui.notify(f"Could not stage the files: {exc}",
                                          type="negative")
