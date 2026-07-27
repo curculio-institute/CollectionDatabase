@@ -50,7 +50,7 @@ def _require_configured() -> None:
 
     Both connection fields are clearable (an unset field means "not configured"), so an
     empty base URL is a reachable state. Without this the request went out against a
-    relative URL and raised httpx.InvalidURL — not an HTTPError, so it escaped `_explain`
+    relative URL and raised httpx.InvalidURL — not an HTTPError, so it escaped `explain_tw_error`
     and surfaced as a raw traceback instead of a sentence naming the cause (§2).
     """
     cfg = get_config()
@@ -80,8 +80,12 @@ def web_base() -> str:
     return base
 
 
-def _explain(exc: Exception, host: str | None = None) -> TaxonWorksUnreachable:
-    """Name the actual cause: a rejected token, a wrong URL, or an unreachable server."""
+def explain_tw_error(exc: Exception, host: str | None = None) -> TaxonWorksUnreachable:
+    """Name the actual cause: a rejected token, a wrong URL, or an unreachable server.
+
+    The single, canonical version (#161) — `tw_compare.py` and `tw_media_compare.py`
+    import this rather than keeping their own copies, which had already drifted (missing
+    the 404 branch below) before the drift was noticed."""
     host = host or _host()
     if isinstance(exc, httpx.HTTPStatusError):
         code = exc.response.status_code
@@ -126,7 +130,7 @@ async def check_connection(base: str | None = None, token: str | None = None) ->
             )
             r.raise_for_status()
     except httpx.HTTPError as exc:
-        raise _explain(exc, host=host) from exc
+        raise explain_tw_error(exc, host=host) from exc
     return f"Connected to {host}."
 
 
@@ -144,7 +148,7 @@ async def search_taxon_names(term: str, limit: int = 20) -> list[dict]:
             r.raise_for_status()
             return r.json()[:limit]
     except httpx.HTTPError as exc:
-        raise _explain(exc) from exc
+        raise explain_tw_error(exc) from exc
 
 
 async def fetch_taxon_name(tw_id: int) -> dict | None:
@@ -310,7 +314,7 @@ async def fetch_taxon_names_exact(name: str, per: int = 50) -> list[dict]:
             r.raise_for_status()
             return r.json()
     except httpx.HTTPError as exc:
-        raise _explain(exc) from exc
+        raise explain_tw_error(exc) from exc
 
 
 async def fetch_taxon_names_by_otu(otu_id: int, per: int = 50) -> list[dict]:
@@ -334,7 +338,7 @@ async def fetch_taxon_names_by_otu(otu_id: int, per: int = 50) -> list[dict]:
             r.raise_for_status()
             return r.json()
     except httpx.HTTPError as exc:
-        raise _explain(exc) from exc
+        raise explain_tw_error(exc) from exc
 
 
 async def fetch_otu_id_for_taxon_name(taxon_name_id: int) -> int | None:

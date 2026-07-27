@@ -50,17 +50,17 @@ plainly rather than reporting a false "0 differences".
 Reuses `dwc_export.occurrence_row` for the local side of the diff — the identical
 projection a real export would write, so "diverged" can never disagree with what the
 spreadsheet actually contains. Does not import from `tw_sync.py` or modify either of
-those two files; the only private surface reused across a service boundary is
-`taxonworks.TaxonWorksUnreachable` (a public exception class, the designated contract for
-"could not reach/authenticate against TaxonWorks" — everything else here goes through
-`get_config()` and its own small `httpx` calls rather than reaching into that module's
-underscore-prefixed helpers).
+those two files; the only surface reused from `taxonworks.py` is its **public** names —
+`TaxonWorksUnreachable` (the designated exception contract for "could not reach/
+authenticate against TaxonWorks") and `explain_tw_error` (#161 — the single canonical
+error-message helper; a local copy had already drifted, missing a 404 branch the
+canonical one carries, before the drift was noticed) — never that module's
+underscore-prefixed helpers, which stay private to it.
 """
 from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
-from urllib.parse import urlsplit
 
 import httpx
 from sqlalchemy.orm import Session
@@ -70,7 +70,7 @@ from collections.abc import Iterable
 from app.config import get_config
 from app.models import CollectionObject, Repository, Taxon
 from app.services import dwc_export, taxa
-from app.services.taxonworks import TaxonWorksUnreachable, web_base
+from app.services.taxonworks import TaxonWorksUnreachable, explain_tw_error, web_base
 
 _TIMEOUT = httpx.Timeout(25.0)
 # A shared public server — bound concurrency so a check run never fires a burst of
@@ -123,23 +123,6 @@ _DIFF_FIELDS: tuple[str, ...] = (
 
 def _base() -> str:
     return get_config().tw_base.rstrip("/")
-
-
-def _explain(exc: Exception) -> TaxonWorksUnreachable:
-    """Same shape of message as `taxonworks._explain` (host/status/timeout), kept local
-    rather than importing that private helper — see module docstring."""
-    host = urlsplit(_base()).netloc or _base()
-    if isinstance(exc, httpx.HTTPStatusError):
-        code = exc.response.status_code
-        if code in (401, 403):
-            return TaxonWorksUnreachable(
-                f"{host} rejected the project token ({code}) — check Settings → "
-                f"TaxonWorks connection."
-            )
-        return TaxonWorksUnreachable(f"{host} answered {code}.")
-    if isinstance(exc, httpx.TimeoutException):
-        return TaxonWorksUnreachable(f"{host} did not answer in time.")
-    return TaxonWorksUnreachable(f"Cannot reach {host} ({type(exc).__name__}).")
 
 
 def _verify_filter_applied(rows: object, catalog_number: str) -> list[dict]:
@@ -200,10 +183,10 @@ async def _fetch_one_catalog_number(
             if exc.response.status_code in (429, 502, 503, 504):
                 last_exc = exc
             else:
-                raise _explain(exc) from exc
+                raise explain_tw_error(exc) from exc
         if attempt < _MAX_ATTEMPTS - 1:
             await asyncio.sleep(_RETRY_BACKOFF[min(attempt, len(_RETRY_BACKOFF) - 1)])
-    raise _explain(last_exc) from last_exc
+    raise explain_tw_error(last_exc) from last_exc
 
 
 async def fetch_tw_rows_for_catalog_numbers(
@@ -389,9 +372,9 @@ async def fetch_catalog_index(on_progress=None) -> CatalogIndex:
                 )
                 r.raise_for_status()
             except httpx.HTTPStatusError as exc:
-                raise _explain(exc) from exc
+                raise explain_tw_error(exc) from exc
             except (httpx.TimeoutException, httpx.TransportError) as exc:
-                raise _explain(exc) from exc
+                raise explain_tw_error(exc) from exc
             body = r.json()
             if not isinstance(body, list):
                 raise TaxonWorksUnreachable(

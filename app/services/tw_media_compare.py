@@ -52,7 +52,6 @@ import sys
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
-from urllib.parse import urlsplit
 
 import httpx
 from sqlalchemy.orm import Session
@@ -60,7 +59,7 @@ from sqlalchemy.orm import Session
 from app.config import get_config
 from app.models import CollectionObject
 from app.services import media as media_svc
-from app.services.taxonworks import TaxonWorksUnreachable
+from app.services.taxonworks import TaxonWorksUnreachable, explain_tw_error
 from app.services.tw_compare import CatalogIndex, edit_url
 
 _TIMEOUT = httpx.Timeout(25.0)
@@ -69,23 +68,6 @@ _PER_PAGE = 500
 
 def _base() -> str:
     return get_config().tw_base.rstrip("/")
-
-
-def _explain(exc: Exception) -> TaxonWorksUnreachable:
-    """Same shape as `tw_compare._explain` — kept local rather than importing that
-    module's private helper, matching its own stated discipline (module docstring)."""
-    host = urlsplit(_base()).netloc or _base()
-    if isinstance(exc, httpx.HTTPStatusError):
-        code = exc.response.status_code
-        if code in (401, 403):
-            return TaxonWorksUnreachable(
-                f"{host} rejected the project token ({code}) — check Settings → "
-                f"TaxonWorks connection."
-            )
-        return TaxonWorksUnreachable(f"{host} answered {code}.")
-    if isinstance(exc, httpx.TimeoutException):
-        return TaxonWorksUnreachable(f"{host} did not answer in time.")
-    return TaxonWorksUnreachable(f"Cannot reach {host} ({type(exc).__name__}).")
 
 
 # ── TaxonWorks fetch (I/O) ──────────────────────────────────────────────────────
@@ -125,9 +107,9 @@ async def fetch_depictions_by_object(collection_object_ids: list[int]) -> dict[i
                 )
                 r.raise_for_status()
             except httpx.HTTPStatusError as exc:
-                raise _explain(exc) from exc
+                raise explain_tw_error(exc) from exc
             except (httpx.TimeoutException, httpx.TransportError) as exc:
-                raise _explain(exc) from exc
+                raise explain_tw_error(exc) from exc
             body = r.json()
             if not isinstance(body, list):
                 raise TaxonWorksUnreachable(
@@ -183,9 +165,9 @@ async def fetch_image_fingerprints(image_ids: list[int]) -> dict[int, str]:
                 )
                 r.raise_for_status()
             except httpx.HTTPStatusError as exc:
-                raise _explain(exc) from exc
+                raise explain_tw_error(exc) from exc
             except (httpx.TimeoutException, httpx.TransportError) as exc:
-                raise _explain(exc) from exc
+                raise explain_tw_error(exc) from exc
             body = r.json()
             if not isinstance(body, list):
                 raise TaxonWorksUnreachable(
