@@ -57,8 +57,38 @@ def test_specimens_on_tw_scoped_to_repository_and_index(session):
     _specimen(session, "OTHER-00001", other)             # different collection
 
     idx = _index(("JJPC-00001", 501))
-    out = twm.specimens_on_tw(session, repository_id=repo, index=idx)
+    out, ambiguous = twm.specimens_on_tw(session, repository_id=repo, index=idx)
     assert out == [("JJPC-00001", co1.id, 501)]
+    assert ambiguous == ()
+
+
+def test_specimens_on_tw_excludes_ambiguous_catalog_numbers(session):
+    """#157: a catalog number the index reports under more than one TaxonWorks record
+    (a cross-namespace duplicate) must not be silently resolved to the first entry —
+    it is excluded from the compare and reported separately."""
+    repo = ensure_repo(session, "JJPC")
+    co1 = _specimen(session, "JJPC-00001", repo)
+    co2 = _specimen(session, "JJPC-00002", repo)
+
+    idx = build_catalog_index([
+        {
+            "type": _TYPE, "identifier_object_type": "CollectionObject",
+            "cached": "JJPC-00001", "identifier": "00001",
+            "identifier_object_id": obj_id, "namespace_id": ns,
+            "namespace": {"short_name": short},
+        }
+        for obj_id, ns, short in [(501, 1, "JJPC"), (999, 2, "OTHER")]
+    ] + [
+        {
+            "type": _TYPE, "identifier_object_type": "CollectionObject",
+            "cached": "JJPC-00002", "identifier": "00002",
+            "identifier_object_id": 502, "namespace_id": 1,
+            "namespace": {"short_name": "JJPC"},
+        },
+    ])
+    out, ambiguous = twm.specimens_on_tw(session, repository_id=repo, index=idx)
+    assert out == [("JJPC-00002", co2.id, 502)]
+    assert ambiguous == ("JJPC-00001",)
 
 
 def test_compare_media_matches_by_fingerprint(media_env):

@@ -205,27 +205,43 @@ class MediaCompareResult:
     tw_only_count: int                # TW depictions with no matching local fingerprint — informational
                                        # only: nothing to act on locally, reported so the class is
                                        # never silently omitted (CLAUDE.md §2)
+    ambiguous_catalog_numbers: tuple[str, ...] = ()
+        # #157 — catalog numbers the identifier index reports under MORE than one
+        # TaxonWorks record (a cross-namespace duplicate, `tw_compare.DuplicateGroup`'s
+        # own condition). Which one is "this" specimen's Depictions cannot be guessed —
+        # picking the wrong one would attach a false gap/match to an unrelated
+        # specimen's photograph — so these are excluded from the compare and reported
+        # here instead, never silently resolved to the first entry.
 
 
 def specimens_on_tw(
     session: Session, *, repository_id: int, index: CatalogIndex,
-) -> list[tuple[str, int, int]]:
+) -> tuple[list[tuple[str, int, int]], tuple[str, ...]]:
     """(catalog_number, collection_object_id, tw_object_id) for every LOCAL specimen in
     `repository_id` that the identifier index confirms TaxonWorks holds — independent of
     current export eligibility. A specimen uploaded before the certainty rule (CLAUDE.md
     §5c) existed can still carry TaxonWorks media worth knowing about, so this is not
-    gated by `dwc_export.export_decision` the way the occurrence compare is."""
+    gated by `dwc_export.export_decision` the way the occurrence compare is.
+
+    Returns `(specimens, ambiguous_catalog_numbers)` — a catalog number the index reports
+    under more than one TaxonWorks record (#157) is excluded from `specimens` rather than
+    guessed via `entries[0]`, and listed separately instead."""
     cos = (
         session.query(CollectionObject)
         .filter(CollectionObject.repository_id == repository_id)
         .all()
     )
     out: list[tuple[str, int, int]] = []
+    ambiguous: list[str] = []
     for co in cos:
         entries = index.get(co.catalog_number)
-        if entries:
-            out.append((co.catalog_number, co.id, entries[0].tw_object_id))
-    return out
+        if not entries:
+            continue
+        if len(entries) > 1:
+            ambiguous.append(co.catalog_number)
+            continue
+        out.append((co.catalog_number, co.id, entries[0].tw_object_id))
+    return out, tuple(ambiguous)
 
 
 def compare_media(
@@ -233,6 +249,8 @@ def compare_media(
     specimens: list[tuple[str, int, int]],
     depictions_by_object: dict[int, list[int]],
     fingerprints_by_image: dict[int, str],
+    *,
+    ambiguous_catalog_numbers: tuple[str, ...] = (),
 ) -> MediaCompareResult:
     """Pure computation, no I/O — mirrors `tw_compare.compare_repository`'s split so this
     half is trivially testable without a live server."""
@@ -288,6 +306,7 @@ def compare_media(
         matched_count=matched,
         gaps=tuple(gaps),
         tw_only_count=tw_only,
+        ambiguous_catalog_numbers=ambiguous_catalog_numbers,
     )
 
 
@@ -295,7 +314,8 @@ async def run_media_compare(
     session: Session, *, repository_id: int, index: CatalogIndex,
 ) -> MediaCompareResult:
     """I/O + computation together — the entrypoint the tab calls."""
-    specimens = specimens_on_tw(session, repository_id=repository_id, index=index)
+    specimens, ambiguous = specimens_on_tw(
+        session, repository_id=repository_id, index=index)
     tw_ids = [tw_object_id for _cat, _co_id, tw_object_id in specimens]
     depictions_by_object = await fetch_depictions_by_object(tw_ids)
     image_ids = sorted({iid for ids in depictions_by_object.values() for iid in ids})
@@ -305,7 +325,8 @@ async def run_media_compare(
     # event loop (#155) so a large backfill can't freeze the UI for every connected client;
     # safe because nothing else touches `session` concurrently while this awaits.
     return await asyncio.to_thread(
-        compare_media, session, specimens, depictions_by_object, fingerprints_by_image)
+        compare_media, session, specimens, depictions_by_object, fingerprints_by_image,
+        ambiguous_catalog_numbers=ambiguous)
 
 
 # ── staging for manual upload (drag-and-drop assist) ────────────────────────────────

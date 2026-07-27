@@ -202,13 +202,25 @@ def build_tw_sync_tab(session_factory, refreshers: dict | None = None,
             ui.label("Associated media was not checked.").classes("text-xs mt-2") \
                 .style("color:var(--tp-base-soft)")
             return
-        if not media_result.gaps and not media_result.tw_only_count:
+        if (not media_result.gaps and not media_result.tw_only_count
+                and not media_result.ambiguous_catalog_numbers):
             ui.label(
                 f"Associated media: {media_result.matched_count} file(s) confirmed on "
                 f"TaxonWorks, nothing missing."
             ).classes("text-xs mt-2").style("color:var(--tp-base-soft)")
             return
         with ui.column().classes("w-full gap-1 mt-2"):
+            if media_result.ambiguous_catalog_numbers:
+                # #157 — the identifier index reports these under more than one
+                # TaxonWorks record (a cross-namespace duplicate); which one is this
+                # specimen's Depictions cannot be guessed, so they were excluded from
+                # the media compare rather than silently attached to the wrong record.
+                ui.label(
+                    f"{len(media_result.ambiguous_catalog_numbers)} specimen(s) skipped "
+                    f"— duplicate catalog number on TaxonWorks (see the duplicates list "
+                    f"above), so media could not be matched unambiguously: "
+                    + ", ".join(media_result.ambiguous_catalog_numbers)
+                ).classes("text-xs font-semibold text-amber-700")
             if media_result.gaps:
                 n_files = sum(len(g.local_only) for g in media_result.gaps)
                 ui.label(
