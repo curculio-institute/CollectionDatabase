@@ -240,17 +240,32 @@ def build_tw_sync_tab(session_factory, refreshers: dict | None = None,
 
                         def _prepare(gap=gap) -> None:
                             try:
-                                folder = tw_media_compare.stage_for_upload(gap)
+                                folder, skipped = tw_media_compare.stage_for_upload(gap)
                             except OSError as exc:
                                 ui.notify(f"Could not stage the files: {exc}",
                                          type="negative")
                                 return
                             tw_media_compare.open_folder(folder)
-                            ui.notify(
-                                f"Files copied to {folder} — opening the folder so "
-                                f"you can drag them into TaxonWorks.",
-                                type="positive", multi_line=True,
-                            )
+                            if skipped:
+                                # #159 — a gap file whose on-disk bytes are missing is a
+                                # real integrity problem; never fold it into a success
+                                # notice (CLAUDE.md "never skip silently").
+                                names = ", ".join(
+                                    m.original_filename or f"file {m.media_id}"
+                                    for m in skipped
+                                )
+                                ui.notify(
+                                    f"Copied to {folder}, but {len(skipped)} file(s) "
+                                    f"could not be found on disk and were skipped: "
+                                    f"{names}",
+                                    type="warning", multi_line=True, timeout=8000,
+                                )
+                            else:
+                                ui.notify(
+                                    f"Files copied to {folder} — opening the folder so "
+                                    f"you can drag them into TaxonWorks.",
+                                    type="positive", multi_line=True,
+                                )
                         ui.button("Prepare files", icon="folder_open",
                                  on_click=_prepare).props("flat dense no-caps size=sm")
             if media_result.tw_only_count:

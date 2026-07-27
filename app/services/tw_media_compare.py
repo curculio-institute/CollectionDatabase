@@ -346,15 +346,21 @@ def _safe_filename(name: str | None, *, fallback: str) -> str:
     return cleaned or fallback
 
 
-def stage_for_upload(gap: SpecimenMediaGap) -> Path:
+def stage_for_upload(gap: SpecimenMediaGap) -> tuple[Path, tuple[LocalOnlyMedia, ...]]:
     """Copy `gap`'s local-only files into a fresh temp folder, named for drag-and-drop —
     never the canonical content-addressed store itself (that store's filenames are
     content hashes, not names a person would want to see in an upload dialog), and never
-    a move: the canonical copy is untouched. Caller opens the returned folder."""
+    a move: the canonical copy is untouched. Caller opens the returned folder.
+
+    Returns `(staging_dir, skipped)` — `skipped` names any file whose on-disk bytes were
+    missing (#159: moved/deleted/corrupted outside the app). That is a real on-disk
+    integrity problem, so the caller must report it rather than showing an unconditional
+    "files copied" success message — CLAUDE.md's "never skip silently"."""
     safe_cat = _safe_filename(gap.catalog_number, fallback="specimen") \
         .replace(" ", "_")
     staging = Path(tempfile.mkdtemp(prefix=f"tw_upload_{safe_cat}_"))
     seen_names: set[str] = set()
+    skipped: list[LocalOnlyMedia] = []
     for item in gap.local_only:
         src = media_svc.abs_path(item.relative_path)
         ext = src.suffix
@@ -368,7 +374,9 @@ def stage_for_upload(gap: SpecimenMediaGap) -> Path:
         seen_names.add(candidate)
         if src.is_file():
             shutil.copy2(src, staging / candidate)
-    return staging
+        else:
+            skipped.append(item)
+    return staging, tuple(skipped)
 
 
 def open_folder(path: Path) -> None:

@@ -216,14 +216,40 @@ def test_stage_for_upload_copies_files_under_original_names(media_env, tmp_path)
     result = twm.compare_media(session, specimens, {}, {})
     gap = result.gaps[0]
 
-    staged_dir = twm.stage_for_upload(gap)
+    staged_dir, skipped = twm.stage_for_upload(gap)
     try:
+        assert skipped == ()
         files = list(staged_dir.iterdir())
         assert len(files) == 1
         assert files[0].name == "weevil.jpg"
         assert files[0].read_bytes() == b"photo bytes"
         # the canonical store is untouched — this was a copy, not a move
         assert media_svc.abs_path(gap.local_only[0].relative_path).is_file()
+    finally:
+        import shutil
+        shutil.rmtree(staged_dir, ignore_errors=True)
+
+
+def test_stage_for_upload_reports_files_missing_on_disk(media_env):
+    """#159: a gap file whose bytes are gone from disk (moved/deleted outside the app)
+    must be reported as skipped, never silently omitted from the staged folder."""
+    session, _store = media_env
+    repo = ensure_repo(session, "JJPC")
+    co = _specimen(session, "JJPC-00001", repo)
+    media_svc.add_attachment(session, target_kind="collection_object", target_id=co.id,
+                             data=b"photo bytes", filename="weevil.jpg")
+    session.flush()
+
+    specimens = [("JJPC-00001", co.id, 501)]
+    result = twm.compare_media(session, specimens, {}, {})
+    gap = result.gaps[0]
+    media_svc.abs_path(gap.local_only[0].relative_path).unlink()   # simulate lost bytes
+
+    staged_dir, skipped = twm.stage_for_upload(gap)
+    try:
+        assert list(staged_dir.iterdir()) == []
+        assert len(skipped) == 1
+        assert skipped[0].original_filename == "weevil.jpg"
     finally:
         import shutil
         shutil.rmtree(staged_dir, ignore_errors=True)
