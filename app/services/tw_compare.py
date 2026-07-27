@@ -52,9 +52,11 @@ projection a real export would write, so "diverged" can never disagree with what
 spreadsheet actually contains. Does not import from `tw_sync.py` or modify either of
 those two files; the only surface reused from `taxonworks.py` is its **public** names —
 `TaxonWorksUnreachable` (the designated exception contract for "could not reach/
-authenticate against TaxonWorks") and `explain_tw_error` (#161 — the single canonical
+authenticate against TaxonWorks"), `explain_tw_error` (#161 — the single canonical
 error-message helper; a local copy had already drifted, missing a 404 branch the
-canonical one carries, before the drift was noticed) — never that module's
+canonical one carries, before the drift was noticed), and `PaginationTracker` (#167 — the
+pagination-total bookkeeping shared with `tw_media_compare.py`'s fetch functions, the
+same duplication-drift reasoning as `explain_tw_error`) — never that module's
 underscore-prefixed helpers, which stay private to it.
 """
 from __future__ import annotations
@@ -70,7 +72,9 @@ from collections.abc import Iterable
 from app.config import get_config
 from app.models import CollectionObject, Repository, Taxon
 from app.services import dwc_export, taxa
-from app.services.taxonworks import TaxonWorksUnreachable, explain_tw_error, web_base
+from app.services.taxonworks import (
+    PaginationTracker, TaxonWorksUnreachable, explain_tw_error, web_base,
+)
 
 _TIMEOUT = httpx.Timeout(25.0)
 # A shared public server — bound concurrency so a check run never fires a burst of
@@ -354,7 +358,10 @@ async def fetch_catalog_index(on_progress=None) -> CatalogIndex:
             "TaxonWorks is not configured — Settings → TaxonWorks connection."
         )
     rows: list[dict] = []
-    total: int | None = None
+    # #167 — shared bookkeeping with tw_media_compare's fetch functions; only the
+    # arithmetic moved, GET/retry stays exactly as before (this endpoint's own retry is
+    # `_fetch_one_catalog_number`'s job for the field-diff pull, not this identity pull).
+    tracker = PaginationTracker()
     page = 1
     async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
         while True:
@@ -381,22 +388,19 @@ async def fetch_catalog_index(on_progress=None) -> CatalogIndex:
                     "the identifier index did not return a list of rows — treating it "
                     "as a lookup failure rather than as an empty collection."
                 )
-            if total is None:
-                raw_total = r.headers.get("pagination-total") or r.headers.get("x-total")
-                total = int(raw_total) if raw_total and raw_total.isdigit() else None
+            tracker.record_page(r, body)
             rows.extend(body)
             if on_progress is not None:
-                on_progress(len(rows), total if total is not None else len(rows))
-            if not body or (total is not None and len(rows) >= total):
-                break
-            if len(body) < _INDEX_PER_PAGE:
+                on_progress(tracker.received,
+                            tracker.total if tracker.total is not None else tracker.received)
+            if tracker.is_complete(body, _INDEX_PER_PAGE):
                 break
             page += 1
-    if total is not None and len(rows) < total:
+    if tracker.total is not None and tracker.received < tracker.total:
         raise TaxonWorksUnreachable(
-            f"the identifier index returned {len(rows)} of {total} rows — an incomplete "
-            f"index would read as 'not on TaxonWorks' and re-upload those specimens, so "
-            f"this is treated as a lookup failure."
+            f"the identifier index returned {tracker.received} of {tracker.total} rows "
+            f"— an incomplete index would read as 'not on TaxonWorks' and re-upload "
+            f"those specimens, so this is treated as a lookup failure."
         )
     return build_catalog_index(rows)
 
