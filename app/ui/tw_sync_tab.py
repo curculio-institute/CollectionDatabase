@@ -222,18 +222,41 @@ def build_tw_sync_tab(session_factory, refreshers: dict | None = None,
                     f"above), so media could not be matched unambiguously: "
                     + ", ".join(media_result.ambiguous_catalog_numbers)
                 ).classes("text-xs font-semibold text-amber-700")
-            if media_result.gaps:
-                n_files = sum(len(g.local_only) for g in media_result.gaps)
+            # #165 — a file missing on disk (the store lost bytes outside the app) is a
+            # different problem than "not yet uploaded", and calls for different action
+            # (investigate the store, not drag-and-drop into TaxonWorks). Surfaced
+            # immediately here rather than only on-demand via "Prepare files" (#159).
+            missing_on_disk = [
+                (gap.catalog_number, m)
+                for gap in media_result.gaps for m in gap.local_only
+                if m.missing_on_disk
+            ]
+            if missing_on_disk:
+                names = ", ".join(
+                    f"{cat}: {m.original_filename or f'file {m.media_id}'}"
+                    for cat, m in missing_on_disk
+                )
+                ui.label(
+                    f"{len(missing_on_disk)} file(s) recorded but missing on disk — "
+                    f"the media store may have lost bytes outside the app: {names}"
+                ).classes("text-xs font-semibold text-red-700")
+            uploadable_gaps = [
+                (gap, tuple(m for m in gap.local_only if not m.missing_on_disk))
+                for gap in media_result.gaps
+            ]
+            uploadable_gaps = [(g, ms) for g, ms in uploadable_gaps if ms]
+            if uploadable_gaps:
+                n_files = sum(len(ms) for _g, ms in uploadable_gaps)
                 ui.label(
                     f"Local media not yet on TaxonWorks ({n_files} file(s) across "
-                    f"{len(media_result.gaps)} specimen(s)) — TaxonWorks has no import "
+                    f"{len(uploadable_gaps)} specimen(s)) — TaxonWorks has no import "
                     f"path for media, so this is uploaded by hand."
                 ).classes("text-xs font-semibold text-amber-700")
-                for gap in media_result.gaps:
+                for gap, local_only in uploadable_gaps:
                     with ui.row().classes("items-center gap-2 flex-wrap"):
                         names = ", ".join(
                             m.original_filename or f"file {m.media_id}"
-                            for m in gap.local_only
+                            for m in local_only
                         )
                         ui.label(f"{gap.catalog_number}: {names}").classes("text-xs")
                         ui.link("Open in TaxonWorks", gap.edit_url, new_tab=True) \

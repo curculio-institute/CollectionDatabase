@@ -130,6 +130,34 @@ def test_compare_media_reports_local_only_gap(media_env):
     assert gap.tw_object_id == 501
     assert len(gap.local_only) == 1
     assert gap.local_only[0].original_filename == "new_photo.jpg"
+    assert gap.local_only[0].missing_on_disk is False
+
+
+def test_compare_media_flags_files_missing_on_disk(media_env):
+    """#165: a file whose bytes are gone from disk (moved/deleted outside the app) must
+    be distinguishable from an ordinary 'not yet uploaded' gap — the two need
+    different remediation (fix the store vs. drag-and-drop upload).
+
+    Only a legacy row (md5_fingerprint not yet cached, #154) actually consults the
+    disk in ensure_md5 — a freshly-stored row's fingerprint is already cached at
+    store time, so it must be nulled out here to simulate a pre-migration-0070 row."""
+    session, _store = media_env
+    repo = ensure_repo(session, "JJPC")
+    co = _specimen(session, "JJPC-00001", repo)
+    media_svc.add_attachment(session, target_kind="collection_object", target_id=co.id,
+                             data=b"photo bytes", filename="weevil.jpg")
+    session.flush()
+    att = media_svc.list_attachments(
+        session, target_kind="collection_object", target_id=co.id)[0]
+    att.media.md5_fingerprint = None
+    session.flush()
+    media_svc.abs_path(att.media.relative_path).unlink()   # simulate lost bytes
+
+    specimens = [("JJPC-00001", co.id, 501)]
+    result = twm.compare_media(session, specimens, depictions_by_object={}, fingerprints_by_image={})
+
+    assert len(result.gaps) == 1
+    assert result.gaps[0].local_only[0].missing_on_disk is True
 
 
 def test_compare_media_ignores_non_image_categories(media_env):

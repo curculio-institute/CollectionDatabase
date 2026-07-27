@@ -219,6 +219,11 @@ class LocalOnlyMedia:
     original_filename: str | None
     category: str
     relative_path: str    # on-disk path under media_dir() — for stage_for_upload only
+    missing_on_disk: bool = False
+        # #165 — set when ensure_md5 found no file at relative_path. That is a store
+        # integrity problem (bytes lost outside the app), not an ordinary "not yet
+        # uploaded" gap, and must be distinguishable rather than reported identically —
+        # the two call for completely different remediation.
 
 
 @dataclass(frozen=True)
@@ -330,6 +335,7 @@ def compare_media(
                     original_filename=att.media.original_filename,
                     category=att.media.category,
                     relative_path=att.media.relative_path,
+                    missing_on_disk=(md5 is None),
                 ))
         tw_only += len(tw_fingerprints - local_fingerprints_seen)
         if missing:
