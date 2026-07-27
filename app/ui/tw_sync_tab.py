@@ -108,6 +108,46 @@ _STEPS: tuple[tuple[str, str], ...] = (
 )
 _STEP_KEYS = [k for k, _ in _STEPS]
 
+# ── Status icon vocabulary (design pass) ──────────────────────────────────────────
+# One Material icon per underlying FACT this tab can report about a specimen or
+# file — reused wherever that fact appears, so the same condition reads as the same
+# shape everywhere in the tab rather than being re-invented per section. Colour is
+# always one of the five Quasar names already in use throughout this file (house
+# style, module docstring) — no new colours or icons beyond this fixed set. Where a
+# fact has more than one severity (e.g. a duplicate catalog number is a hard
+# occurrence-level problem but only a soft exclusion for media, #157), the icon
+# stays the same and only the colour changes — the same discipline already applied
+# by hand to `leaked_privacy` vs. `leaked_curation` below.
+_ICON_SYNCED = "check_circle"        # matches TaxonWorks exactly
+_ICON_DIVERGED = "sync_problem"      # on TaxonWorks, at least one field differs
+_ICON_NOT_UPLOADED = "cloud_upload"  # eligible locally, not sent yet
+_ICON_DUPLICATE = "content_copy"     # one catalog number, more than one TW record
+_ICON_PRIVACY = "lock_open"          # should be withheld, TaxonWorks still has it
+_ICON_CURATION = "edit_note"         # no longer eligible, TaxonWorks still has it
+_ICON_ORPHANED = "link_off"          # on TaxonWorks, no local specimen carries it
+_ICON_MOVED = "swap_horiz"           # re-homed; TW and local namespace disagree
+_ICON_PENDING = "hourglass_empty"    # not yet checked, or a lagging TW projection
+_ICON_BROKEN_FILE = "broken_image"   # media row whose on-disk bytes are gone
+_ICON_REMOTE_ONLY = "cloud"          # exists on TaxonWorks, nothing to do locally
+
+
+def _status_badge(icon: str, color: str, text: str) -> None:
+    """Icon + `ui.badge`, the app's own badge convention (module docstring) with a
+    consistent icon prefix — one call site for every status badge in this tab, so
+    the icon+colour pairing for a given fact can never drift between sections."""
+    with ui.row().classes("items-center gap-1"):
+        ui.icon(icon).props(f"color={color} size=18px")
+        ui.badge(text).props(f"color={color}")
+
+
+def _status_line(icon: str, color: str, text: str, *, classes: str) -> None:
+    """Icon + `ui.label` — the sentence-length counterpart to `_status_badge`, for a
+    status too long to fit a Quasar badge (the media panel's report lines). The icon
+    stays anchored top-left while the label wraps."""
+    with ui.row().classes("items-start gap-1 flex-nowrap"):
+        ui.icon(icon).props(f"color={color} size=16px").classes("mt-0.5")
+        ui.label(text).classes(f"flex-1 {classes}")
+
 
 def build_tw_sync_tab(session_factory, refreshers: dict | None = None,
                        open_explore=None) -> None:
@@ -226,12 +266,17 @@ def build_tw_sync_tab(session_factory, refreshers: dict | None = None,
                 # TaxonWorks record (a cross-namespace duplicate); which one is this
                 # specimen's Depictions cannot be guessed, so they were excluded from
                 # the media compare rather than silently attached to the wrong record.
-                ui.label(
+                # Same icon as the occurrence compare's own "duplicate" badge above —
+                # same underlying fact — but warning, not negative: here it only means
+                # the specimen was skipped, not that identity itself is compromised.
+                _status_line(
+                    _ICON_DUPLICATE, "warning",
                     f"{len(media_result.ambiguous_catalog_numbers)} specimen(s) skipped "
                     f"— duplicate catalog number on TaxonWorks (see the duplicates list "
                     f"above), so media could not be matched unambiguously: "
-                    + ", ".join(media_result.ambiguous_catalog_numbers)
-                ).classes("text-xs font-semibold text-amber-700")
+                    + ", ".join(media_result.ambiguous_catalog_numbers),
+                    classes="text-xs font-semibold",
+                )
             # #165 — a file missing on disk (the store lost bytes outside the app) is a
             # different problem than "not yet uploaded", and calls for different action
             # (investigate the store, not drag-and-drop into TaxonWorks). Surfaced
@@ -246,10 +291,12 @@ def build_tw_sync_tab(session_factory, refreshers: dict | None = None,
                     f"{cat}: {m.original_filename or f'file {m.media_id}'}"
                     for cat, m in missing_on_disk
                 )
-                ui.label(
+                _status_line(
+                    _ICON_BROKEN_FILE, "negative",
                     f"{len(missing_on_disk)} file(s) recorded but missing on disk — "
-                    f"the media store may have lost bytes outside the app: {names}"
-                ).classes("text-xs font-semibold text-red-700")
+                    f"the media store may have lost bytes outside the app: {names}",
+                    classes="text-xs font-semibold",
+                )
             uploadable_gaps = [
                 (gap, tuple(m for m in gap.local_only if not m.missing_on_disk))
                 for gap in media_result.gaps
@@ -257,11 +304,15 @@ def build_tw_sync_tab(session_factory, refreshers: dict | None = None,
             uploadable_gaps = [(g, ms) for g, ms in uploadable_gaps if ms]
             if uploadable_gaps:
                 n_files = sum(len(ms) for _g, ms in uploadable_gaps)
-                ui.label(
+                # Same icon as "not yet uploaded" occurrences above — same underlying
+                # fact (local has it, TaxonWorks doesn't yet), just for media.
+                _status_line(
+                    _ICON_NOT_UPLOADED, "warning",
                     f"Local media not yet on TaxonWorks ({n_files} file(s) across "
                     f"{len(uploadable_gaps)} specimen(s)) — TaxonWorks has no import "
-                    f"path for media, so this is uploaded by hand."
-                ).classes("text-xs font-semibold text-amber-700")
+                    f"path for media, so this is uploaded by hand.",
+                    classes="text-xs font-semibold",
+                )
                 for gap, local_only in uploadable_gaps:
                     with ui.row().classes("items-center gap-2 flex-wrap"):
                         names = ", ".join(
@@ -309,10 +360,12 @@ def build_tw_sync_tab(session_factory, refreshers: dict | None = None,
                         ui.button("Prepare files", icon="folder_open",
                                  on_click=_prepare).props("flat dense no-caps size=sm")
             if media_result.tw_only_count:
-                ui.label(
-                    f"{media_result.tw_only_count} file(s) on TaxonWorks with no "
-                    f"local match — informational only, nothing to do here."
-                ).classes("text-xs mt-1").style("color:var(--tp-base-soft)")
+                with ui.row().classes("items-center gap-1 mt-1"):
+                    ui.icon(_ICON_REMOTE_ONLY).props("color=grey size=16px")
+                    ui.label(
+                        f"{media_result.tw_only_count} file(s) on TaxonWorks with no "
+                        f"local match — informational only, nothing to do here."
+                    ).classes("text-xs").style("color:var(--tp-base-soft)")
 
     # ── Step navigation — one card visible at a time (NiceGUI tabs, see module docstring
     # for why this is not the Digitize `.tp-stepper-bar` chip bar) ─────────────────────
@@ -512,9 +565,11 @@ def build_tw_sync_tab(session_factory, refreshers: dict | None = None,
                             1 for co in cos if dwc_export.export_decision(co).eligible)
                         # Already-checked collections keep their real numbers across a
                         # report refresh (e.g. after switching the working collection
-                        # below) instead of resetting to "Check pending".
+                        # below) instead of resetting to "Pending". Short on purpose
+                        # (design pass) — "Check pending" ×3 columns was most of why
+                        # this table needed a horizontal scrollbar.
                         cached = state["compare"].get(r.id)
-                        pending = "Check pending"
+                        pending = "Pending"
                         rows.append({
                             "repo_id": r.id,
                             "collection": f"{r.collection_code} — "
@@ -542,6 +597,13 @@ def build_tw_sync_tab(session_factory, refreshers: dict | None = None,
                     "total", "not_eligible", "eligible", "not_uploaded", "synced",
                     "diverged",
                 )
+                # icon + Quasar colour-when-nonzero for the three columns that report a
+                # compare outcome (module-level icon vocabulary).
+                _STATUS_COL_ICON = {
+                    "not_uploaded": (_ICON_NOT_UPLOADED, "primary"),
+                    "synced": (_ICON_SYNCED, "positive"),
+                    "diverged": (_ICON_DIVERGED, "negative"),
+                }
 
                 def _on_open_col(payload: dict) -> None:
                     repo_id = payload.get("repo_id")
@@ -617,15 +679,22 @@ def build_tw_sync_tab(session_factory, refreshers: dict | None = None,
                             columns=[
                                 {"name": "collection", "label": "Collection",
                                  "field": "collection", "align": "left"},
-                                {"name": "total", "label": "Collection objects (local)",
+                                # Short headers (design pass) — the long originals
+                                # ("Collection objects (local)", "Matches TaxonWorks")
+                                # were the main reason this table needed a horizontal
+                                # scrollbar even on a normal window; the "Eligible = …"
+                                # legend line below the table already spells the
+                                # columns out in full, so the header only needs to be
+                                # recognisable, not self-explanatory.
+                                {"name": "total", "label": "Total",
                                  "field": "total", "align": "right"},
                                 {"name": "not_eligible", "label": "Not eligible",
                                  "field": "not_eligible", "align": "right"},
                                 {"name": "eligible", "label": "Eligible",
                                  "field": "eligible", "align": "right"},
-                                {"name": "not_uploaded", "label": "Not yet uploaded",
+                                {"name": "not_uploaded", "label": "Not uploaded",
                                  "field": "not_uploaded", "align": "right"},
-                                {"name": "synced", "label": "Matches TaxonWorks",
+                                {"name": "synced", "label": "Synced",
                                  "field": "synced", "align": "right"},
                                 {"name": "diverged", "label": "Diverged",
                                  "field": "diverged", "align": "right"},
@@ -633,23 +702,43 @@ def build_tw_sync_tab(session_factory, refreshers: dict | None = None,
                                  "field": "actions", "align": "right"},
                             ],
                             rows=rows, row_key="repo_id",
-                        ).classes("w-full").props("flat dense")
+                        ).classes("w-full").props("flat dense wrap-cells")
                         table.add_slot("body-cell-actions", """
                             <q-td :props="props">
-                                <q-btn flat dense no-caps size="sm" icon="fact_check"
-                                    label="Check"
+                                <q-btn color="secondary" dense no-caps size="sm"
+                                    icon="fact_check" label="Check"
                                     @click="$parent.$emit('check_repo', props.row)" />
                             </q-td>
                         """)
                         table.on("check_repo", lambda e: _on_check_repo(e.args))
+                        # The three compare-derived columns carry a status icon (design
+                        # pass) — the same icon+colour this tab uses everywhere else for
+                        # the same fact (synced/diverged/not-uploaded). "Pending" (no
+                        # compare run yet) shows the neutral hourglass instead; a real
+                        # zero shows grey, a real nonzero shows the fact's colour.
+                        # `total`/`eligible`/`not_eligible` are plain counts, not a
+                        # compare outcome, so they stay unstyled.
                         for _col in _CLICKABLE_COLS:
+                            icon_html = ""
+                            if _col in _STATUS_COL_ICON:
+                                _icon, _color = _STATUS_COL_ICON[_col]
+                                icon_html = f"""
+                                    <q-icon v-if="props.row.{_col} === 'Pending'"
+                                        name="{_ICON_PENDING}" size="14px" color="grey" />
+                                    <q-icon v-else name="{_icon}" size="14px"
+                                        :color="props.row.{_col} > 0 ? '{_color}' : 'grey'" />
+                                """
                             table.add_slot(f"body-cell-{_col}", f"""
                                 <q-td :props="props" class="text-right"
                                     style="cursor:pointer"
                                     @click="$parent.$emit('open_col',
                                         {{repo_id: props.row.repo_id, col: '{_col}'}})">
-                                    <span style="text-decoration:underline dotted">
-                                        {{{{ props.row.{_col} }}}}
+                                    <span class="row items-center justify-end no-wrap"
+                                        style="gap:2px">
+                                        {icon_html}
+                                        <span style="text-decoration:underline dotted">
+                                            {{{{ props.row.{_col} }}}}
+                                        </span>
                                     </span>
                                 </q-td>
                             """)
@@ -678,7 +767,7 @@ def build_tw_sync_tab(session_factory, refreshers: dict | None = None,
                             "at least one field that differs)."
                         ).classes("text-xs mt-2").style("color:var(--tp-base-soft)")
                         ui.label(
-                            "The three show \"Check pending\" until that collection's "
+                            "The three show \"Pending\" until that collection's "
                             "own Check has run — one request for TaxonWorks' whole "
                             "catalog-number index, then one field lookup per specimen "
                             "it says is already there. A few seconds even for a large "
@@ -692,7 +781,7 @@ def build_tw_sync_tab(session_factory, refreshers: dict | None = None,
                 # Explore already use (main.py's `_refreshers`), not a bespoke one.
                 refreshers["twsync"] = _render_report
 
-                compare_status = ui.label("").classes("text-sm mt-2") \
+                compare_status = ui.label("").classes("text-sm mt-1") \
                     .style("color:var(--tp-base-soft)")
                 compare_results = ui.column().classes("w-full mt-1")
 
@@ -877,25 +966,29 @@ def build_tw_sync_tab(session_factory, refreshers: dict | None = None,
                         if (result.duplicates or result.leaked or result.orphaned):
                             with ui.row().classes("gap-3 items-center flex-wrap"):
                                 if result.duplicates:
-                                    ui.badge(
+                                    _status_badge(
+                                        _ICON_DUPLICATE, "negative",
                                         f"{len(result.duplicates)} duplicate catalog "
-                                        f"number(s) on TaxonWorks"
-                                    ).props("color=negative")
+                                        f"number(s) on TaxonWorks",
+                                    )
                                 if leaked_privacy:
-                                    ui.badge(
+                                    _status_badge(
+                                        _ICON_PRIVACY, "negative",
                                         f"{len(leaked_privacy)} on TaxonWorks but "
-                                        f"confidential here"
-                                    ).props("color=negative")
+                                        f"confidential here",
+                                    )
                                 if leaked_curation:
-                                    ui.badge(
+                                    _status_badge(
+                                        _ICON_CURATION, "warning",
                                         f"{len(leaked_curation)} on TaxonWorks but no "
-                                        f"longer eligible"
-                                    ).props("color=warning")
+                                        f"longer eligible",
+                                    )
                                 if result.orphaned:
-                                    ui.badge(
+                                    _status_badge(
+                                        _ICON_ORPHANED, "negative",
                                         f"{len(result.orphaned)} on TaxonWorks but "
-                                        f"not in the local database"
-                                    ).props("color=negative")
+                                        f"not in the local database",
+                                    )
 
                         # OTU-id provenance — shown only here, contextually, as a fact
                         # about this check rather than a standing warning banner.
@@ -941,13 +1034,15 @@ def build_tw_sync_tab(session_factory, refreshers: dict | None = None,
 
                         if result.not_on_tw:
                             with ui.expansion(
-                                    f"Not yet uploaded ({len(result.not_on_tw)})") \
+                                    f"Not yet uploaded ({len(result.not_on_tw)})",
+                                    icon=_ICON_NOT_UPLOADED) \
                                     .classes("w-full mt-2"):
                                 for cat in result.not_on_tw:
                                     ui.label(cat).classes("text-xs")
 
                         if result.diverged:
-                            with ui.expansion(f"Diverged ({len(result.diverged)})") \
+                            with ui.expansion(f"Diverged ({len(result.diverged)})",
+                                               icon=_ICON_DIVERGED) \
                                     .classes("w-full mt-2"):
                                 for d in result.diverged:
                                     ui.label(d.catalog_number).classes(
@@ -964,7 +1059,8 @@ def build_tw_sync_tab(session_factory, refreshers: dict | None = None,
                         if result.duplicates:
                             with ui.expansion(
                                     f"Duplicate catalog numbers on TaxonWorks "
-                                    f"({len(result.duplicates)})") \
+                                    f"({len(result.duplicates)})",
+                                    icon=_ICON_DUPLICATE) \
                                     .classes("w-full mt-2"):
                                 for dup in result.duplicates:
                                     ui.label(
@@ -979,10 +1075,10 @@ def build_tw_sync_tab(session_factory, refreshers: dict | None = None,
                                             tw_compare.edit_url(tid), new_tab=True,
                                         ).classes("text-xs")
 
-                        def _leaked_section(rows, title: str, note: str) -> None:
+                        def _leaked_section(rows, title: str, note: str, icon: str) -> None:
                             if not rows:
                                 return
-                            with ui.expansion(f"{title} ({len(rows)})") \
+                            with ui.expansion(f"{title} ({len(rows)})", icon=icon) \
                                     .classes("w-full mt-2"):
                                 ui.label(note).classes("text-xs mb-1") \
                                     .style("color:var(--tp-base-soft)")
@@ -1001,6 +1097,7 @@ def build_tw_sync_tab(session_factory, refreshers: dict | None = None,
                             "A confidential specimen, event or collector that the "
                             "public mirror still carries. TaxonWorks' v1 API has no "
                             "delete, so correcting this means editing it there.",
+                            icon=_ICON_PRIVACY,
                         )
                         _leaked_section(
                             leaked_curation, "On TaxonWorks but no longer eligible",
@@ -1008,12 +1105,14 @@ def build_tw_sync_tab(session_factory, refreshers: dict | None = None,
                             "export it — the identification is not certain enough "
                             "(qualified, or not to species). Nothing is exposed; it is "
                             "a curation tidy-up, done in TaxonWorks.",
+                            icon=_ICON_CURATION,
                         )
 
                         if result.on_tw_not_compared:
                             with ui.expansion(
                                     f"On TaxonWorks, fields not compared "
-                                    f"({len(result.on_tw_not_compared)})") \
+                                    f"({len(result.on_tw_not_compared)})",
+                                    icon=_ICON_PENDING) \
                                     .classes("w-full mt-2"):
                                 ui.label(
                                     "TaxonWorks holds these catalog numbers, but its "
@@ -1031,7 +1130,8 @@ def build_tw_sync_tab(session_factory, refreshers: dict | None = None,
                         if result.orphaned:
                             with ui.expansion(
                                     f"On TaxonWorks, not in the local database "
-                                    f"({len(result.orphaned)})") \
+                                    f"({len(result.orphaned)})",
+                                    icon=_ICON_ORPHANED) \
                                     .classes("w-full mt-2"):
                                 ui.label(
                                     "Filed on TaxonWorks under this collection's "
@@ -1055,7 +1155,8 @@ def build_tw_sync_tab(session_factory, refreshers: dict | None = None,
                         if result.moved:
                             with ui.expansion(
                                     f"Held in another local collection "
-                                    f"({len(result.moved)})") \
+                                    f"({len(result.moved)})",
+                                    icon=_ICON_MOVED) \
                                     .classes("w-full mt-2"):
                                 ui.label(
                                     "TaxonWorks files these under this collection's "
@@ -1081,7 +1182,8 @@ def build_tw_sync_tab(session_factory, refreshers: dict | None = None,
                         if result.collection_mismatch:
                             with ui.expansion(
                                     f"Filed under another TaxonWorks namespace "
-                                    f"({len(result.collection_mismatch)})") \
+                                    f"({len(result.collection_mismatch)})",
+                                    icon=_ICON_MOVED) \
                                     .classes("w-full mt-2"):
                                 ui.label(
                                     "Held here locally, but TaxonWorks has them under "
