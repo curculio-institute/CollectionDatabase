@@ -1124,6 +1124,11 @@ def build_tw_sync_tab(session_factory, refreshers: dict | None = None,
                         with session_factory() as s:
                             media_result = await tw_media_compare.run_media_compare(
                                 s, repository_id=repo_id, index=index)
+                            # `ensure_md5` backfills md5_fingerprint on legacy rows via
+                            # flush() only — without a commit here it is silently rolled
+                            # back on session close and every row re-hashes from disk on
+                            # the next Check (#154).
+                            s.commit()
                     except tw_svc.TaxonWorksUnreachable as exc:
                         ui.notify(str(exc), type="negative", multi_line=True,
                                   timeout=8000)
