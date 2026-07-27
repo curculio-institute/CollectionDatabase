@@ -84,6 +84,44 @@ def test_attach_list_and_delete_cleans_up(media_env):
     assert not media_svc.abs_path(rel).is_file()
 
 
+def test_list_attachments_for_many_batches_and_groups_correctly(media_env):
+    """#168: one query for several target ids, grouped per id — a target with no
+    attachments is simply absent (never an empty-list placeholder), and the result
+    matches what list_attachments would return per id, one at a time."""
+    s, _ = media_env
+    ev1 = CollectingEvent(locality="Germany")
+    ev2 = CollectingEvent(locality="Austria")
+    ev3 = CollectingEvent(locality="Poland")   # gets no media at all
+    s.add_all([ev1, ev2, ev3]); s.flush()
+
+    media_svc.add_attachment(s, target_kind="collecting_event", target_id=ev1.id,
+                             data=b"a", filename="a.jpg")
+    media_svc.add_attachment(s, target_kind="collecting_event", target_id=ev1.id,
+                             data=b"b", filename="b.jpg")
+    media_svc.add_attachment(s, target_kind="collecting_event", target_id=ev2.id,
+                             data=b"c", filename="c.jpg")
+    s.flush()
+
+    grouped = media_svc.list_attachments_for_many(
+        s, target_kind="collecting_event", target_ids=[ev1.id, ev2.id, ev3.id])
+
+    assert {a.media.original_filename for a in grouped[ev1.id]} == {"a.jpg", "b.jpg"}
+    assert [a.media.original_filename for a in grouped[ev2.id]] == ["c.jpg"]
+    assert ev3.id not in grouped
+
+    # Matches the per-id function, just batched.
+    for ev_id in (ev1.id, ev2.id):
+        one_at_a_time = media_svc.list_attachments(
+            s, target_kind="collecting_event", target_id=ev_id)
+        assert [a.id for a in grouped[ev_id]] == [a.id for a in one_at_a_time]
+
+
+def test_list_attachments_for_many_empty_ids_returns_empty_dict(media_env):
+    s, _ = media_env
+    assert media_svc.list_attachments_for_many(
+        s, target_kind="collecting_event", target_ids=[]) == {}
+
+
 def test_update_media_rights_holder_and_license(media_env):
     s, _ = media_env
     import app.services.person_defaults as pd_svc

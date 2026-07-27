@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import BinaryIO, Optional
 
 from sqlalchemy import select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
 from app.config import media_dir
 from app.models import Media, MediaAttachment
@@ -306,6 +306,30 @@ def list_attachments(session: Session, *, target_kind: str, target_id: int) -> l
     for r in rows:
         _ = r.media  # eager-touch inside the session so the UI can read it after detach
     return list(rows)
+
+
+def list_attachments_for_many(
+    session: Session, *, target_kind: str, target_ids: list[int]
+) -> dict[int, list[MediaAttachment]]:
+    """Batched form of `list_attachments` — one query for many target ids (#168, used by
+    `tw_media_compare.compare_media` so a whole-collection compare costs one query, not
+    one per specimen, matching the bulk shape already used for the TaxonWorks side).
+    Returns `{target_id: [attachment, ...]}`; a target id with no attachments is simply
+    absent (never an empty-list placeholder — the caller already treats a missing key and
+    an empty list the same way via `.get(id, ())`). Per-id ordering matches
+    `list_attachments` (primary first, then sort_order, then id)."""
+    if not target_ids:
+        return {}
+    col = getattr(MediaAttachment, TARGET_FK[target_kind])
+    rows = session.scalars(
+        select(MediaAttachment).where(col.in_(target_ids))
+        .options(selectinload(MediaAttachment.media))
+        .order_by(MediaAttachment.is_primary.desc(), MediaAttachment.sort_order, MediaAttachment.id)
+    ).all()
+    out: dict[int, list[MediaAttachment]] = {}
+    for r in rows:
+        out.setdefault(getattr(r, TARGET_FK[target_kind]), []).append(r)
+    return out
 
 
 def set_primary(session: Session, *, target_kind: str, target_id: int, attachment_id: int) -> None:

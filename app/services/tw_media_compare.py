@@ -273,14 +273,19 @@ def compare_media(
     matched = 0
     with_local = 0
     tw_only = 0
+    # #168 — one query for every specimen's attachments, not one per specimen: the same
+    # bulk discipline this module's own docstring calls out for the TaxonWorks side
+    # ("a couple of requests for the whole collection, never one per specimen").
+    attachments_by_co = media_svc.list_attachments_for_many(
+        session, target_kind="collection_object",
+        target_ids=[co_id for _cat, co_id, _tw in specimens],
+    )
     for catalog_number, co_id, tw_object_id in specimens:
         # TaxonWorks Depictions/Images can only ever be images (#156) — a Sound/Document/
         # Sequence/Video/Other attachment can never match a TW image fingerprint, so
         # comparing it would permanently report a "gap" TaxonWorks has no way to close.
         attachments = [
-            att for att in media_svc.list_attachments(
-                session, target_kind="collection_object", target_id=co_id
-            )
+            att for att in attachments_by_co.get(co_id, ())
             if att.media.category == "Image"
         ]
         tw_fingerprints = {
