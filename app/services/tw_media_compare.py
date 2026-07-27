@@ -241,9 +241,15 @@ def compare_media(
     with_local = 0
     tw_only = 0
     for catalog_number, co_id, tw_object_id in specimens:
-        attachments = media_svc.list_attachments(
-            session, target_kind="collection_object", target_id=co_id
-        )
+        # TaxonWorks Depictions/Images can only ever be images (#156) — a Sound/Document/
+        # Sequence/Video/Other attachment can never match a TW image fingerprint, so
+        # comparing it would permanently report a "gap" TaxonWorks has no way to close.
+        attachments = [
+            att for att in media_svc.list_attachments(
+                session, target_kind="collection_object", target_id=co_id
+            )
+            if att.media.category == "Image"
+        ]
         tw_fingerprints = {
             fingerprints_by_image[iid]
             for iid in depictions_by_object.get(tw_object_id, ())

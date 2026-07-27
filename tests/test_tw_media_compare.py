@@ -102,6 +102,27 @@ def test_compare_media_reports_local_only_gap(media_env):
     assert gap.local_only[0].original_filename == "new_photo.jpg"
 
 
+def test_compare_media_ignores_non_image_categories(media_env):
+    """#156: TaxonWorks Depictions/Images can only ever be images — a Sound/Document/
+    Sequence/Video/Other attachment can never match a TW image fingerprint, so it must
+    not be reported as a gap the user is told to drag into TaxonWorks."""
+    session, _store = media_env
+    repo = ensure_repo(session, "JJPC")
+    co = _specimen(session, "JJPC-00001", repo)
+    media_svc.add_attachment(session, target_kind="collection_object", target_id=co.id,
+                             data=b"%PDF-1.4 not an image", filename="notes.pdf")
+    session.flush()
+    assert media_svc.list_attachments(
+        session, target_kind="collection_object", target_id=co.id)[0].media.category \
+        == "Document"
+
+    specimens = [("JJPC-00001", co.id, 501)]
+    result = twm.compare_media(session, specimens, depictions_by_object={}, fingerprints_by_image={})
+
+    assert result.with_local_media_count == 0
+    assert result.gaps == ()
+
+
 def test_compare_media_tw_only_is_informational_not_a_gap(media_env):
     """TaxonWorks has a depiction with no local match at all — reported in the count,
     never presented as something to upload (there is nothing local to push)."""
