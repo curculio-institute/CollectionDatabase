@@ -1144,18 +1144,29 @@ def build_tw_sync_tab(session_factory, refreshers: dict | None = None,
                         # #149 step 1.6 — media. Reuses the SAME `index` already pulled
                         # above (no second `/identifiers` request) and runs in the same
                         # bulk shape as the occurrence compare: a couple of requests for
-                        # the whole collection, never one per specimen.
+                        # the whole collection, never one per specimen. Isolated in its
+                        # own try/except (#162) — a diagnostic-only sub-feature failing
+                        # must not discard the occurrence/name compare that already
+                        # succeeded at real cost (many TaxonWorks requests above).
                         compare_status.set_text(
                             f"Checking {row['collection']} — comparing media…"
                         )
-                        with session_factory() as s:
-                            media_result = await tw_media_compare.run_media_compare(
-                                s, repository_id=repo_id, index=index)
-                            # `ensure_md5` backfills md5_fingerprint on legacy rows via
-                            # flush() only — without a commit here it is silently rolled
-                            # back on session close and every row re-hashes from disk on
-                            # the next Check (#154).
-                            s.commit()
+                        media_result = None
+                        try:
+                            with session_factory() as s:
+                                media_result = await tw_media_compare.run_media_compare(
+                                    s, repository_id=repo_id, index=index)
+                                # `ensure_md5` backfills md5_fingerprint on legacy rows
+                                # via flush() only — without a commit here it is
+                                # silently rolled back on session close and every row
+                                # re-hashes from disk on the next Check (#154).
+                                s.commit()
+                        except tw_svc.TaxonWorksUnreachable as media_exc:
+                            ui.notify(
+                                f"Media comparison failed ({media_exc}) — the "
+                                f"occurrence and name results below are unaffected.",
+                                type="warning", multi_line=True, timeout=8000,
+                            )
                     except tw_svc.TaxonWorksUnreachable as exc:
                         ui.notify(str(exc), type="negative", multi_line=True,
                                   timeout=8000)
