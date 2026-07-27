@@ -64,6 +64,10 @@ from app.services.tw_compare import CatalogIndex, edit_url
 
 _TIMEOUT = httpx.Timeout(25.0)
 _PER_PAGE = 500
+# Same shared public server, same reasoning as tw_compare's identically-named constants
+# (module docstring there) — one convention, not two.
+_MAX_ATTEMPTS = 3
+_RETRY_BACKOFF = (0.5, 1.5)
 
 
 def _base() -> str:
@@ -81,6 +85,30 @@ def _read_total(r: httpx.Response, total: int | None) -> int | None:
     return int(raw_total) if raw_total and raw_total.isdigit() else None
 
 
+async def _get_page(client: httpx.AsyncClient, url: str, params: dict) -> httpx.Response:
+    """One page GET, retried on a transient failure (#163 — mirrors
+    `tw_compare._fetch_one_catalog_number`'s discipline). A rate-limit blip or a
+    502/503/504 on this shared public server must not be indistinguishable from a real
+    failure — that would kill an otherwise-successful media compare over a passing
+    hiccup."""
+    last_exc: Exception | None = None
+    for attempt in range(_MAX_ATTEMPTS):
+        try:
+            r = await client.get(url, params=params)
+            r.raise_for_status()
+            return r
+        except (httpx.TimeoutException, httpx.TransportError) as exc:
+            last_exc = exc
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code in (429, 502, 503, 504):
+                last_exc = exc
+            else:
+                raise explain_tw_error(exc) from exc
+        if attempt < _MAX_ATTEMPTS - 1:
+            await asyncio.sleep(_RETRY_BACKOFF[min(attempt, len(_RETRY_BACKOFF) - 1)])
+    raise explain_tw_error(last_exc) from last_exc
+
+
 async def fetch_depictions_by_object(collection_object_ids: list[int]) -> dict[int, list[int]]:
     """TW collection_object_id -> [image_id, ...], one bulk paginated pull scoped to
     `depiction_object_type=CollectionObject` + our ids. Empty input never touches the
@@ -94,22 +122,16 @@ async def fetch_depictions_by_object(collection_object_ids: list[int]) -> dict[i
     async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
         page = 1
         while True:
-            try:
-                r = await client.get(
-                    f"{_base()}/depictions",
-                    params={
-                        "depiction_object_type": "CollectionObject",
-                        "depiction_object_id[]": collection_object_ids,
-                        "per": _PER_PAGE,
-                        "page": page,
-                        "project_token": cfg.tw_token,
-                    },
-                )
-                r.raise_for_status()
-            except httpx.HTTPStatusError as exc:
-                raise explain_tw_error(exc) from exc
-            except (httpx.TimeoutException, httpx.TransportError) as exc:
-                raise explain_tw_error(exc) from exc
+            r = await _get_page(
+                client, f"{_base()}/depictions",
+                params={
+                    "depiction_object_type": "CollectionObject",
+                    "depiction_object_id[]": collection_object_ids,
+                    "per": _PER_PAGE,
+                    "page": page,
+                    "project_token": cfg.tw_token,
+                },
+            )
             body = r.json()
             if not isinstance(body, list):
                 raise TaxonWorksUnreachable(
@@ -153,21 +175,15 @@ async def fetch_image_fingerprints(image_ids: list[int]) -> dict[int, str]:
     async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
         page = 1
         while True:
-            try:
-                r = await client.get(
-                    f"{_base()}/images",
-                    params={
-                        "image_id[]": image_ids,
-                        "per": _PER_PAGE,
-                        "page": page,
-                        "project_token": cfg.tw_token,
-                    },
-                )
-                r.raise_for_status()
-            except httpx.HTTPStatusError as exc:
-                raise explain_tw_error(exc) from exc
-            except (httpx.TimeoutException, httpx.TransportError) as exc:
-                raise explain_tw_error(exc) from exc
+            r = await _get_page(
+                client, f"{_base()}/images",
+                params={
+                    "image_id[]": image_ids,
+                    "per": _PER_PAGE,
+                    "page": page,
+                    "project_token": cfg.tw_token,
+                },
+            )
             body = r.json()
             if not isinstance(body, list):
                 raise TaxonWorksUnreachable(
