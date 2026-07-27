@@ -203,6 +203,16 @@ def build_tw_sync_tab(session_factory, refreshers: dict | None = None,
             ui.label("Associated media was not checked.").classes("text-xs mt-2") \
                 .style("color:var(--tp-base-soft)")
             return
+        if media_result.checked_count == 0:
+            # #166 — distinct from "checked and found nothing missing": no specimen in
+            # this repository is confirmed on TaxonWorks yet, so there was nothing to
+            # compare media against at all. The two must not share one message, or
+            # "0 confirmed, nothing missing" reads as a positive result.
+            ui.label(
+                "No specimens in this collection are confirmed on TaxonWorks yet — "
+                "nothing to compare media against."
+            ).classes("text-xs mt-2").style("color:var(--tp-base-soft)")
+            return
         if (not media_result.gaps and not media_result.tw_only_count
                 and not media_result.ambiguous_catalog_numbers):
             ui.label(
