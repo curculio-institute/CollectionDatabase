@@ -6,6 +6,7 @@ The fetch functions (`fetch_depictions_by_object` / `fetch_image_fingerprints`) 
 verified by hand against the live sandbox (see the module docstring); nothing here
 re-tests the HTTP layer.
 """
+import asyncio
 import hashlib
 
 from sqlalchemy.orm import sessionmaker
@@ -159,3 +160,36 @@ def test_stage_for_upload_copies_files_under_original_names(media_env, tmp_path)
     finally:
         import shutil
         shutil.rmtree(staged_dir, ignore_errors=True)
+
+
+def test_run_media_compare_offloads_hashing_to_a_thread(media_env, monkeypatch):
+    """#155: `compare_media` (which reads files off disk via `ensure_md5`) must run off
+    the event loop. Runs the real `run_media_compare` coroutine end to end — including a
+    genuine `asyncio.to_thread` hop reusing the caller's ORM session from a worker thread
+    — with the network fetches monkeypatched out (no live TaxonWorks call)."""
+    session, _store = media_env
+    repo = ensure_repo(session, "JJPC")
+    co = _specimen(session, "JJPC-00001", repo)
+    data = b"same bytes"
+    media_svc.add_attachment(session, target_kind="collection_object", target_id=co.id,
+                             data=data, filename="photo.jpg")
+    session.flush()
+
+    idx = _index(("JJPC-00001", 501))
+
+    async def _fake_depictions(ids):
+        assert ids == [501]
+        return {501: [9001]}
+
+    async def _fake_fingerprints(ids):
+        assert ids == [9001]
+        return {9001: _md5(data)}
+
+    monkeypatch.setattr(twm, "fetch_depictions_by_object", _fake_depictions)
+    monkeypatch.setattr(twm, "fetch_image_fingerprints", _fake_fingerprints)
+
+    result = asyncio.run(
+        twm.run_media_compare(session, repository_id=repo, index=idx))
+
+    assert result.matched_count == 1
+    assert result.gaps == ()

@@ -44,6 +44,7 @@ as the ``/identifiers`` catalog index, not one request per specimen.
 """
 from __future__ import annotations
 
+import asyncio
 import re
 import shutil
 import subprocess
@@ -293,7 +294,12 @@ async def run_media_compare(
     depictions_by_object = await fetch_depictions_by_object(tw_ids)
     image_ids = sorted({iid for ids in depictions_by_object.values() for iid in ids})
     fingerprints_by_image = await fetch_image_fingerprints(image_ids)
-    return compare_media(session, specimens, depictions_by_object, fingerprints_by_image)
+    # `compare_media` calls `media_svc.ensure_md5`, which reads whole files off disk and
+    # hashes them for every legacy row — real blocking I/O, not a quick DB query. Off the
+    # event loop (#155) so a large backfill can't freeze the UI for every connected client;
+    # safe because nothing else touches `session` concurrently while this awaits.
+    return await asyncio.to_thread(
+        compare_media, session, specimens, depictions_by_object, fingerprints_by_image)
 
 
 # ── staging for manual upload (drag-and-drop assist) ────────────────────────────────
