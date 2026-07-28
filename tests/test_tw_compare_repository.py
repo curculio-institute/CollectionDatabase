@@ -20,7 +20,9 @@ import app.services.specimens as spec_svc
 from app.models import Taxon
 from app.models.base import _utcnow
 from app.services.taxa import compose_scientific_name
-from app.services.tw_compare import build_catalog_index, compare_repository
+from app.services.tw_compare import (
+    build_catalog_index, compare_repository, eligible_specimens, ineligible_specimens,
+)
 from tests.helpers import ensure_repo
 
 _TYPE = "Identifier::Local::CatalogNumber"
@@ -278,3 +280,157 @@ def test_a_confidential_specimen_absent_from_taxonworks_is_not_leaked(session):
     )
     assert result.leaked == ()
     assert result.ineligible_count == 1
+
+
+def test_scope_taxon_ids_restricts_which_local_specimens_are_counted(session):
+    """Design pass (live review): the optional taxon restriction the Export step
+    already applies must narrow this function's own specimen set too, so every count
+    it reports (not_on_tw included) matches "restricted to this taxon", not the whole
+    collection."""
+    in_scope = _specimen(session, "JJPC-00030")   # Otiorhynchus crypticus, via _species()
+    other_genus = Taxon(name_element="Curculio", scientific_name="Curculio",
+                         taxon_rank="genus", nomenclatural_code="ICZN",
+                         created_at=_utcnow(), updated_at=_utcnow())
+    session.add(other_genus)
+    session.flush()
+    other_species = Taxon(name_element="nucum", scientific_name="nucum",
+                           taxon_rank="species", parent_name_usage_id=other_genus.id,
+                           nomenclatural_code="ICZN", created_at=_utcnow(),
+                           updated_at=_utcnow())
+    session.add(other_species)
+    session.flush()
+    other_species.scientific_name = compose_scientific_name(session, other_species)
+    session.flush()
+    out_of_scope = spec_svc.create_collection_object(
+        session, collecting_event_id=None, catalog_number="JJPC-00031",
+        repository_id=_repo_id(session),
+    )
+    session.flush()
+    spec_svc.create_determination(
+        session, collection_object_id=out_of_scope.id, taxon_id=other_species.id,
+        is_current=1,
+    )
+    session.flush()
+
+    unscoped = compare_repository(
+        session, {}, repository_id=_repo_id(session), index=_index(),
+    )
+    assert set(unscoped.not_on_tw) == {"JJPC-00030", "JJPC-00031"}
+
+    in_scope_taxon_id = (
+        session.query(Taxon).filter_by(scientific_name="Otiorhynchus crypticus")
+        .first().id
+    )
+    scoped = compare_repository(
+        session, {}, repository_id=_repo_id(session), index=_index(),
+        scope_taxon_ids={in_scope_taxon_id},
+    )
+    assert scoped.not_on_tw == ("JJPC-00030",)
+
+
+def test_eligible_and_ineligible_specimens_respect_scope_taxon_ids(session):
+    """Code review fix: these two used to ignore `scope_taxon_ids` entirely, so a
+    taxon-restricted Collections report showed a scoped count next to an unscoped
+    detail list/Explore hand-off for the very same number — clicking either surfaced
+    specimens outside the taxon the box itself claimed to represent."""
+    in_scope_eligible = _specimen(session, "JJPC-00050")   # Otiorhynchus crypticus
+
+    in_scope_taxon_id = (
+        session.query(Taxon).filter_by(scientific_name="Otiorhynchus crypticus")
+        .first().id
+    )
+    repo_id = _repo_id(session)
+    in_scope_ineligible = spec_svc.create_collection_object(
+        session, collecting_event_id=None, catalog_number="JJPC-00051",
+        repository_id=repo_id,
+    )
+    session.flush()
+    spec_svc.create_determination(
+        session, collection_object_id=in_scope_ineligible.id,
+        taxon_id=in_scope_taxon_id, is_current=1,
+        identification_qualifier="cf.",   # expresses doubt -> ineligible
+    )
+
+    genus = Taxon(name_element="Curculio", scientific_name="Curculio",
+                  taxon_rank="genus", nomenclatural_code="ICZN",
+                  created_at=_utcnow(), updated_at=_utcnow())
+    session.add(genus)
+    session.flush()
+    other_species = Taxon(name_element="nucum", scientific_name="nucum",
+                           taxon_rank="species", parent_name_usage_id=genus.id,
+                           nomenclatural_code="ICZN", created_at=_utcnow(),
+                           updated_at=_utcnow())
+    session.add(other_species)
+    session.flush()
+    other_species.scientific_name = compose_scientific_name(session, other_species)
+    session.flush()
+    out_of_scope_eligible = spec_svc.create_collection_object(
+        session, collecting_event_id=None, catalog_number="JJPC-00052",
+        repository_id=repo_id,
+    )
+    session.flush()
+    spec_svc.create_determination(
+        session, collection_object_id=out_of_scope_eligible.id,
+        taxon_id=other_species.id, is_current=1,
+    )
+    session.flush()
+
+    assert set(eligible_specimens(session, repository_id=repo_id)) == \
+        {"JJPC-00050", "JJPC-00052"}
+    assert {cat for cat, _ in ineligible_specimens(session, repository_id=repo_id)} == \
+        {"JJPC-00051"}
+
+    scoped_eligible = eligible_specimens(
+        session, repository_id=repo_id, scope_taxon_ids={in_scope_taxon_id})
+    assert scoped_eligible == ("JJPC-00050",)
+
+    scoped_ineligible = ineligible_specimens(
+        session, repository_id=repo_id, scope_taxon_ids={in_scope_taxon_id})
+    assert [cat for cat, _ in scoped_ineligible] == ["JJPC-00051"]
+
+
+def test_scope_excluded_specimen_on_taxonworks_is_not_reported_as_moved(session):
+    """Live review bug: a specimen still held in THIS collection, on TaxonWorks under
+    our namespace, but outside the current taxon scope, was reported as `moved` —
+    "held in another local collection" — which was a false claim (elsewhere.get()
+    found it in *our own* repository, not a different one). It must land in
+    `excluded_by_scope` instead, and `moved` must stay reserved for a genuine
+    cross-repository re-home."""
+    genus = Taxon(name_element="Curculio", scientific_name="Curculio",
+                  taxon_rank="genus", nomenclatural_code="ICZN",
+                  created_at=_utcnow(), updated_at=_utcnow())
+    session.add(genus)
+    session.flush()
+    excluded_species = Taxon(name_element="nucum", scientific_name="nucum",
+                              taxon_rank="species", parent_name_usage_id=genus.id,
+                              nomenclatural_code="ICZN", created_at=_utcnow(),
+                              updated_at=_utcnow())
+    session.add(excluded_species)
+    session.flush()
+    excluded_species.scientific_name = compose_scientific_name(session, excluded_species)
+    session.flush()
+
+    repo_id = _repo_id(session)
+    co = spec_svc.create_collection_object(
+        session, collecting_event_id=None, catalog_number="JJPC-00040",
+        repository_id=repo_id,
+    )
+    session.flush()
+    spec_svc.create_determination(
+        session, collection_object_id=co.id, taxon_id=excluded_species.id,
+        is_current=1,
+    )
+    session.flush()
+
+    # Scope to the OTHER species (_species()) — "JJPC-00040" (Curculio nucum) falls
+    # outside it, exactly the exclusion scenario.
+    in_scope_taxon_id = _species(session).id
+    result = compare_repository(
+        session, {}, repository_id=repo_id,
+        index=_index(("JJPC-00040", 540, "JJPC")),
+        scope_taxon_ids={in_scope_taxon_id},
+    )
+    assert [(r.catalog_number, r.local_collection) for r in result.excluded_by_scope] \
+        == [("JJPC-00040", "JJPC")]
+    assert result.moved == ()
+    assert result.orphaned == ()

@@ -70,7 +70,7 @@ from sqlalchemy.orm import Session
 from collections.abc import Iterable
 
 from app.config import get_config
-from app.models import CollectionObject, Repository, Taxon
+from app.models import CollectionObject, Repository, Taxon, TaxonDetermination
 from app.services import dwc_export, taxa
 from app.services.taxonworks import (
     PaginationTracker, TaxonWorksUnreachable, explain_tw_error, web_base,
@@ -492,6 +492,14 @@ class CompareResult:
     moved: tuple[OrphanRow, ...] = ()
     orphaned: tuple[OrphanRow, ...] = ()
     collection_mismatch: tuple[CollectionMismatch, ...] = ()
+    # On TaxonWorks under our namespace, genuinely still held HERE (same repository),
+    # but excluded from `cos` — and so from every count above — by `scope_taxon_ids`
+    # (design pass, live review, bug fix). Only ever non-empty when a taxon scope is
+    # active: without one, every locally-held specimen is already in `cos`, so this
+    # case cannot arise. Distinguished from `moved` precisely so a same-collection,
+    # scope-excluded specimen is never reported as "held in another local collection"
+    # — a real, observed false claim before this field existed.
+    excluded_by_scope: tuple[OrphanRow, ...] = ()
     # True when no `CatalogIndex` was supplied, so the "on TaxonWorks but not here"
     # direction was never looked at. Declared for the same reason as
     # `media_not_compared`: a report that silently omits a whole class reads as complete.
@@ -571,18 +579,36 @@ def _current_taxon(co: CollectionObject) -> Taxon | None:
     return None
 
 
+def _scoped_repo_cos(
+    session: Session, *, repository_id: int, scope_taxon_ids: set[int] | None,
+):
+    """Shared by `ineligible_specimens`/`eligible_specimens` with `compare_repository`'s
+    own scoping join (code review fix — these two used to ignore `scope_taxon_ids`
+    entirely, so a taxon-restricted Collections report showed a scoped "Not eligible"
+    count next to an unscoped detail list/Explore hand-off for the very same number)."""
+    q = session.query(CollectionObject).filter(
+        CollectionObject.repository_id == repository_id)
+    if scope_taxon_ids is not None:
+        q = q.join(
+            TaxonDetermination,
+            (TaxonDetermination.collection_object_id == CollectionObject.id)
+            & (TaxonDetermination.is_current == 1),
+        ).filter(TaxonDetermination.taxon_id.in_(scope_taxon_ids))
+    return q.all()
+
+
 def ineligible_specimens(
-    session: Session, *, repository_id: int
+    session: Session, *, repository_id: int, scope_taxon_ids: set[int] | None = None,
 ) -> tuple[tuple[str, tuple[str, ...]], ...]:
     """Local-only (no network) — every specimen in `repository_id` that
     `export_decision` withholds, with its reasons. #149 step 1.2 computes this per
     specimen; this is the "which ones, and why" detail behind the Collections report's
-    bare not-eligible count (typically a confidential person in `recordedBy`)."""
-    cos = (
-        session.query(CollectionObject)
-        .filter(CollectionObject.repository_id == repository_id)
-        .all()
-    )
+    bare not-eligible count (typically a confidential person in `recordedBy`).
+
+    `scope_taxon_ids`, same as `compare_repository`'s: narrows to a taxon + its
+    descendants so this detail list agrees with a taxon-restricted report's count."""
+    cos = _scoped_repo_cos(
+        session, repository_id=repository_id, scope_taxon_ids=scope_taxon_ids)
     out: list[tuple[str, tuple[str, ...]]] = []
     for co in cos:
         decision = dwc_export.export_decision(co)
@@ -591,18 +617,19 @@ def ineligible_specimens(
     return tuple(out)
 
 
-def eligible_specimens(session: Session, *, repository_id: int) -> tuple[str, ...]:
+def eligible_specimens(
+    session: Session, *, repository_id: int, scope_taxon_ids: set[int] | None = None,
+) -> tuple[str, ...]:
     """Local-only (no network) — catalog numbers of every specimen in `repository_id`
     `export_decision` allows to export. The complement of `ineligible_specimens`, kept as
     its own function (rather than deriving it from that one) because the two ask
     different questions — "which, and why not" vs. "which" — and callers of this one
     (the Collections report's Explore hand-off, #149 follow-up) only ever need the plain
-    catalog-number list."""
-    cos = (
-        session.query(CollectionObject)
-        .filter(CollectionObject.repository_id == repository_id)
-        .all()
-    )
+    catalog-number list.
+
+    `scope_taxon_ids`: see `ineligible_specimens`."""
+    cos = _scoped_repo_cos(
+        session, repository_id=repository_id, scope_taxon_ids=scope_taxon_ids)
     return tuple(
         co.catalog_number for co in cos if dwc_export.export_decision(co).eligible
     )
@@ -610,7 +637,7 @@ def eligible_specimens(session: Session, *, repository_id: int) -> tuple[str, ..
 
 def compare_repository(
     session: Session, tw_by_cat: dict[str, list[dict]], *, repository_id: int,
-    index: CatalogIndex | None = None,
+    index: CatalogIndex | None = None, scope_taxon_ids: set[int] | None = None,
 ) -> CompareResult:
     """Pure computation, no I/O — `tw_by_cat` is the (already fetched)
     `{catalog_number: [row, ...]}` map from `fetch_tw_rows_for_catalog_numbers` supplying
@@ -629,12 +656,27 @@ def compare_repository(
     absent would re-upload it (per-namespace identifier uniqueness means TW accepts that
     duplicate silently). The orphan sweep is scoped to *our* namespace: without that,
     every other collection in the project would count as our orphan.
+
+    `scope_taxon_ids` (design pass, live review) is the same optional taxon restriction
+    the Export step already applies (its own descendant expansion, `batch_ops.py::
+    descendant_taxon_ids`) — narrows which LOCAL specimens are even considered, so
+    every count this function reports (`eligible_n`/`not_on_tw`/`synced`/`diverged`/…)
+    matches "restricted to this taxon", not the whole collection. That includes
+    `duplicates`/`leaked`/`collection_mismatch` — all three are appended inside the
+    `for co in cos` loop below, so they inherit the same taxon-scoped `cos`. Only
+    `_orphans`' three buckets (`moved`/`excluded_by_scope`/`orphaned`) stay unscoped: an
+    orphan has no local record to read a taxon off of, so there is nothing to restrict
+    it by.
     """
-    cos = (
-        session.query(CollectionObject)
-        .filter(CollectionObject.repository_id == repository_id)
-        .all()
-    )
+    cos_q = session.query(CollectionObject).filter(
+        CollectionObject.repository_id == repository_id)
+    if scope_taxon_ids is not None:
+        cos_q = cos_q.join(
+            TaxonDetermination,
+            (TaxonDetermination.collection_object_id == CollectionObject.id)
+            & (TaxonDetermination.is_current == 1),
+        ).filter(TaxonDetermination.taxon_id.in_(scope_taxon_ids))
+    cos = cos_q.all()
     repo = session.get(Repository, repository_id)
     local_code = str((repo.collection_code if repo is not None else "") or "").strip()
 
@@ -721,7 +763,7 @@ def compare_repository(
                 institution_codes=tuple(m.get("institutionCode") or "" for m in matches),
             ))
 
-    moved, orphaned = _orphans(
+    moved, excluded_by_scope, orphaned = _orphans(
         session, index, local_code=local_code, local_cats_here=local_cats_here
     )
 
@@ -736,6 +778,7 @@ def compare_repository(
         leaked=tuple(leaked),
         on_tw_not_compared=tuple(on_tw_not_compared),
         moved=moved,
+        excluded_by_scope=excluded_by_scope,
         orphaned=orphaned,
         collection_mismatch=tuple(collection_mismatch),
         orphans_not_compared=index is None or not local_code,
@@ -745,25 +788,35 @@ def compare_repository(
 def _orphans(
     session: Session, index: CatalogIndex | None, *,
     local_code: str, local_cats_here: set[str],
-) -> tuple[tuple[OrphanRow, ...], tuple[OrphanRow, ...]]:
-    """Split what TaxonWorks holds under our namespace but this collection does not into
-    (moved, gone) — #149 step 1.4's other direction.
+) -> tuple[tuple[OrphanRow, ...], tuple[OrphanRow, ...], tuple[OrphanRow, ...]]:
+    """Split what TaxonWorks holds under our namespace but `local_cats_here` does not
+    into (moved, excluded_by_scope, gone) — #149 step 1.4's other direction.
 
     Needs `local_code` to know which namespace is ours; with none there is nothing to
     scope by and the sweep is skipped rather than guessed (reporting every namespace's
     records as our orphans would be worse than reporting none).
+
+    A DB-wide catalog-number lookup (not scoped to this repository OR to any taxon
+    restriction `local_cats_here` may already reflect) resolves each candidate to
+    whichever repository actually holds it, if any:
+      - a **different** repository code than `local_code` → genuinely **moved** (a
+        re-home leaves the catalog number intact and only re-points repository_id);
+      - **`local_code` itself** → not moved at all — it is still held HERE, just
+        excluded from `local_cats_here` by a taxon scope the caller applied (live
+        review, bug fix: reporting this as "moved" was a real false claim — without a
+        scope, every locally-held specimen is already in `local_cats_here`, so this
+        case cannot arise any other way);
+      - not found at all → **gone** from the local database entirely.
     """
     if index is None or not local_code:
-        return (), ()
+        return (), (), ()
     candidates = [
         e for e in index.entries
         if e.namespace_short_name == local_code
         and e.catalog_number not in local_cats_here
     ]
     if not candidates:
-        return (), ()
-    # One DB-wide lookup decides moved-vs-gone for all of them: a re-home leaves the
-    # catalog number intact, so finding it under another repository means it moved.
+        return (), (), ()
     elsewhere: dict[str, str] = {}
     cats = [e.catalog_number for e in candidates]
     for chunk_start in range(0, len(cats), 500):        # keep the IN list well inside
@@ -776,6 +829,7 @@ def _orphans(
         ):
             elsewhere[cat] = code
     moved: list[OrphanRow] = []
+    excluded: list[OrphanRow] = []
     gone: list[OrphanRow] = []
     for entry in candidates:
         row = OrphanRow(
@@ -784,5 +838,10 @@ def _orphans(
             namespace_short_name=entry.namespace_short_name,
             local_collection=elsewhere.get(entry.catalog_number),
         )
-        (moved if row.local_collection is not None else gone).append(row)
-    return tuple(moved), tuple(gone)
+        if row.local_collection is None:
+            gone.append(row)
+        elif row.local_collection == local_code:
+            excluded.append(row)
+        else:
+            moved.append(row)
+    return tuple(moved), tuple(excluded), tuple(gone)

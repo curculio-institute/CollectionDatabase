@@ -72,19 +72,21 @@ bulk action):
   network call at import/build time), and there is no `ui.timer` — nothing on this tab is
   a DB-backed select that can go stale.
 
-**Taxonomy scope (optional, Export step only).** The export can be restricted to one taxon
-and its descendants (e.g. "Curculionoidea only") — filtering is done here, in the UI, by
+**Taxonomy scope (optional).** Specimens can be restricted to one taxon and its
+descendants (e.g. "Curculionoidea only") — filtering is done here, in the UI, by
 restricting the `CollectionObject` query before it reaches `export_occurrences`/
-`taxa_to_export`. Session-only (cleared on page reload) — a full DB-backed "remembered
-across restarts" setting was cut as disproportionate machinery for a UI convenience (a
-migration + table is `person_defaults`-level ceremony; this is not a load-bearing default
-anything else depends on). The picker reuses the existing taxon-search widget
-(`taxon_search.py::build_taxon_search`, `sources=("local",)`) and the descendant expansion
-(`batch_ops.py::descendant_taxon_ids`) — both already built for Batch tools' identical need.
+`taxa_to_export`, and (design pass, live review — previously Export-step-only, which read
+as a bug once the Collections diagram existed to disagree with it) `_load_report` /
+`_on_check_repo` / `tw_compare.compare_repository`'s own `scope_taxon_ids`. Remembered
+across restarts in `AppConfig.tw_scope_taxon_id` (CLAUDE.md's #149 section). The picker
+reuses the existing taxon-search widget (`taxon_search.py::build_taxon_search`,
+`sources=("local",)`) and the descendant expansion (`batch_ops.py::descendant_taxon_ids`)
+— both already built for Batch tools' identical need.
 """
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable
 from datetime import datetime
 from urllib.parse import urlsplit
 
@@ -149,6 +151,250 @@ def _status_line(icon: str, color: str, text: str, *, classes: str) -> None:
         ui.label(text).classes(f"flex-1 {classes}")
 
 
+# ── Collections flow diagram (design pass, 4th attempt) ────────────────────────────
+# A fixed-layout flowchart, not a Sankey: every box is the SAME size regardless of
+# its count (live review: sizes must not scale with the number — a specimen count
+# can climb very high, and a box sized to hold "Not uploaded 48213" legibly is not
+# the same size as one sized to hold "Diverged 2"). What varies between collections
+# is only which boxes exist (a zero-count category is omitted, never a zero-width
+# sliver) and the numbers printed in them — the shape is otherwise identical every
+# time, so returning collections stay recognisable at a glance rather than having to
+# be re-read from scratch. Straight connector lines carry the "flow":
+#
+#     Total -> {Not eligible, Eligible} -> {Not uploaded, Uploaded} -> {Synced, Diverged}
+#
+# (live review: there was room to split "how many were even sent" from "of those
+# sent, how many still match" instead of flattening both questions into one 3-way
+# list — matches `tw_compare.CompareResult`'s own shape more closely: `not_on_tw` is
+# a fundamentally different fact from `diverged`, which requires the row to be on
+# TaxonWorks first.) Boxes are `@click="$parent.$emit('open_col', ...)"` targets,
+# reusing the exact event the plain table already emits (`_on_open_col`) — every
+# LEAF box (not "Uploaded", a structural grouping node with no facet of its own)
+# opens exactly what the table's numeric columns used to. The click target and the
+# label are grouped in one `<g>` (`_flow_box`) — a `@click` on the rect alone left
+# the label unclickable, since the `<text>` painted on top of it intercepts the
+# pointer (verified live). This requires a real Vue-template compilation context (a
+# `q-td` slot) — a bare `ui.html()` snippet's `@click` is never compiled at all
+# (verified live: a plain `ui.element('div').add_slot(...)` silently drops the
+# directive); a one-row, headerless `ui.table` around this SVG gives it that context
+# cheaply, reusing the one mechanism already proven to work in this file.
+_FLOW_W, _FLOW_H = 660, 190
+_FLOW_BOX_W = 110
+_FLOW_BOX_H, _FLOW_GAP, _FLOW_GAP_X = 34, 8, 60
+_FLOW_C1_X = 8
+_FLOW_C2_X = _FLOW_C1_X + _FLOW_BOX_W + _FLOW_GAP_X
+_FLOW_C3_X = _FLOW_C2_X + _FLOW_BOX_W + _FLOW_GAP_X
+_FLOW_C4_X = _FLOW_C3_X + _FLOW_BOX_W + _FLOW_GAP_X
+_FLOW_CENTER_Y = _FLOW_H / 2
+# Fixed hex, not --tp-* vars: a flow segment must read the same saturated colour on
+# both a light and a dark page background (the vars flip meaning between themes),
+# unlike the icons/badges elsewhere which sit on a plain surface. `_FLOW_C_ELIGIBLE`
+# and `_FLOW_C_UPLOADED` are deliberately their OWN colours, never reused from a
+# child below them — reusing a child's colour for its parent read as if the two were
+# the same category. `_FLOW_C_NOT_UPLOADED` (live review) is amber-700, the exact hex
+# behind this file's own `text-amber-700` warning convention (§ module docstring) —
+# "not yet uploaded" is the one flow fact this tab already treats as a warning
+# elsewhere (the media panel's own "not yet on TaxonWorks" line). `_FLOW_C_UPLOADED`
+# is `--tp-secondary`'s light-mode hex (#0369a1) — the one flow colour that already
+# had a fixed meaning in this app, now correctly on the box it belongs to.
+_FLOW_C_TOTAL = "#52525b"
+_FLOW_C_NOT_ELIGIBLE = "#9ca3af"
+_FLOW_C_ELIGIBLE = "#0e7490"
+_FLOW_C_NOT_UPLOADED = "#b45309"
+_FLOW_C_UPLOADED = "#0369a1"
+_FLOW_C_SYNCED = "#16a34a"
+_FLOW_C_DIVERGED = "#dc2626"
+
+
+def _flow_stack(n: int, center_y: float) -> list[tuple[float, float]]:
+    """`n` fixed-height boxes, stacked with a fixed gap, centred as a group on
+    `center_y` — the box positions never depend on any count, only on how many
+    boxes are present (0..2 here). `center_y` is the PARENT box's own vertical
+    midpoint, not a fixed canvas centre (live review) — a column of two children
+    must straddle the exact height the connecting line branches from, which is only
+    the canvas centre for the first column; every later column's parent (e.g.
+    "Eligible") is itself off-centre whenever ITS OWN column has two boxes."""
+    if n <= 0:
+        return []
+    total_h = n * _FLOW_BOX_H + (n - 1) * _FLOW_GAP
+    y = center_y - total_h / 2
+    out = []
+    for _ in range(n):
+        out.append((y, y + _FLOW_BOX_H))
+        y += _FLOW_BOX_H + _FLOW_GAP
+    return out
+
+
+def _flow_box(x: float, y0: float, y1: float, w: float, fill: str, label: str, *,
+              text_color: str = "#fff", weight: int = 400,
+              repo_id: int | None = None, col: str | None = None,
+              tooltip: str = "Explore the subset", dashed_border: str = "") -> str:
+    """A box + its label, grouped in one `<g>` so the click target covers the whole
+    visible shape — a `@click` on the `<rect>` alone left the label unclickable,
+    since the `<text>` painted on top of it intercepts the pointer (verified live:
+    clicking the visible number inside a box did nothing until the two were grouped
+    under one handler). Clickable boxes get the `.flow-box` hover class (its rule is
+    injected once by `flow_diagram_svg`) and a native `<title>` tooltip — live review:
+    a box must visibly react to hover and say what a click does, and *only* a real
+    box may look hoverable (the table row itself has its own default hover highlight
+    from this app's global `.q-table tbody tr:hover` rule, which read as "the whole
+    background is clickable" until `_render_flow_rows` suppressed it for this table)."""
+    click, cls, title = "", "", ""
+    if repo_id is not None and col is not None:
+        click = (f' style="cursor:pointer" @click="$parent.$emit(\'open_col\', '
+                 f'{{repo_id: {repo_id}, col: \'{col}\'}})"')
+        cls = ' class="flow-box"'
+        title = f'<title>{tooltip}</title>'
+    border = (f' stroke="{dashed_border}" stroke-width="2" stroke-dasharray="5,3"'
+              if dashed_border else "")
+    rect = (f'<rect x="{x:.1f}" y="{y0:.1f}" width="{w:.1f}" height="{y1 - y0:.1f}" '
+            f'rx="4" fill="{fill}"{border}/>')
+    text = _flow_label(x + w / 2, (y0 + y1) / 2 + 4, label, color=text_color,
+                        weight=weight)
+    return f'<g{cls}{click}>{title}{rect}{text}</g>'
+
+
+def _flow_line(x0: float, y0: float, x1: float, y1: float, color: str) -> str:
+    return (f'<line x1="{x0:.1f}" y1="{y0:.1f}" x2="{x1:.1f}" y2="{y1:.1f}" '
+            f'stroke="{color}" stroke-width="3" stroke-linecap="round" opacity="0.55"/>')
+
+
+def _flow_label(x: float, y: float, text: str, *, size: int = 11, weight: int = 400,
+                anchor: str = "middle", color: str = "#fff") -> str:
+    return (f'<text x="{x:.1f}" y="{y:.1f}" font-size="{size}" font-weight="{weight}" '
+            f'text-anchor="{anchor}" fill="{color}" font-family="inherit" '
+            f'style="pointer-events:none">{text}</text>')
+
+
+def _flow_column(x: float, parent_box: tuple[float, float] | None, repo_id: int,
+                  items: list[tuple[int, str, str | None, str]]) -> tuple[list[str], dict]:
+    """Stack the non-zero `items` (count, colour, `open_col` name-or-None, label) at
+    `x`, connected by a line from `parent_box`'s vertical centre (skipped if there is
+    no parent, i.e. this is the first column). Returns the markup plus each item's
+    own `(y0, y1)` box, keyed by its `open_col` name, so the NEXT column can anchor
+    its own connector lines to a specific child rather than only ever to the parent."""
+    parts: list[str] = []
+    boxes: dict[str, tuple[float, float]] = {}
+    visible = [(n, c, col, lb) for n, c, col, lb in items if n > 0]
+    # Centre this column's stack on the PARENT box's own vertical midpoint (live
+    # review), not a fixed canvas centre — so the branch line always leaves the
+    # parent at its exact centre, with the (up to two) children straddling that
+    # height symmetrically. Only the first column (no parent) uses the canvas centre.
+    center_y = (parent_box[0] + parent_box[1]) / 2 if parent_box is not None \
+        else _FLOW_CENTER_Y
+    for (y0, y1), (n, color, col, label) in zip(_flow_stack(len(visible), center_y),
+                                                  visible):
+        text_color = "#1f2937" if color == _FLOW_C_NOT_ELIGIBLE else "#fff"
+        parts.append(_flow_box(x, y0, y1, _FLOW_BOX_W, color, f"{label} {n}",
+                                text_color=text_color,
+                                repo_id=repo_id if col else None, col=col))
+        if parent_box is not None:
+            p0, p1 = parent_box
+            parts.append(_flow_line(x - _FLOW_GAP_X, (p0 + p1) / 2, x, (y0 + y1) / 2,
+                                     color))
+        if col:
+            boxes[col] = (y0, y1)
+        elif label:
+            boxes[label] = (y0, y1)   # "Uploaded" — a structural node, no col
+    return parts, boxes
+
+
+def flow_diagram_svg(
+    repo_id: int, total: int, not_eligible: int, eligible: int,
+    not_uploaded: int, synced: int, diverged: int, *, pending: bool = False,
+) -> str:
+    """One collection's classification, as a fixed-layout flow diagram — box size
+    never encodes the count (design pass, live review):
+
+        Total -> {Not eligible, Eligible}
+        Eligible -> {Not uploaded, Uploaded}
+        Uploaded -> {Synced, Diverged}
+
+    "Uploaded" (synced + diverged) is a structural grouping node, not itself a
+    catalog-number facet the rest of the app knows how to list — it has no
+    `open_col` click target, unlike every leaf box, which all reuse the identical
+    facets the plain table's numeric columns already opened. `pending=True` (Check
+    not yet run) draws only the first split. Pure function of the inputs — no
+    NiceGUI/Vue involved beyond the literal markup, so it's testable and reviewable
+    on its own (`tests/test_tw_sync_flow_diagram.py`)."""
+    if total <= 0:
+        return f'<svg width="{_FLOW_W}" height="{_FLOW_H}" xmlns="http://www.w3.org/2000/svg"></svg>'
+
+    # The `.flow-box` hover rule lives in the page-level stylesheet injected by
+    # `build_tw_sync_tab` (its `ui.add_head_html(...)` call — an inline string, not a
+    # named constant), not here — a `<style>` tag embedded in
+    # this SVG string is silently stripped by Vue's runtime template compiler when the
+    # string is compiled as a `q-td` slot (verified live: the tag never reached the
+    # DOM at all), the same class of bug that made the label unclickable before boxes
+    # were grouped in one `<g>`. Only markup that is itself an element with real
+    # geometry survives that compilation step — CSS must be injected the other way.
+    total_box = (_FLOW_CENTER_Y - _FLOW_BOX_H / 2, _FLOW_CENTER_Y + _FLOW_BOX_H / 2)
+    specimen_word = "specimen" if total == 1 else "specimens"
+    parts = [_flow_box(
+        _FLOW_C1_X, *total_box, _FLOW_BOX_W, _FLOW_C_TOTAL,
+        f"Total {total} {specimen_word}", weight=600, repo_id=repo_id, col="total",
+    )]
+
+    p2, boxes2 = _flow_column(_FLOW_C2_X, total_box, repo_id, [
+        (not_eligible, _FLOW_C_NOT_ELIGIBLE, "not_eligible", "Not eligible"),
+        (eligible, _FLOW_C_ELIGIBLE, "eligible", "Eligible"),
+    ])
+    parts += p2
+    eligible_box = boxes2.get("eligible")
+
+    if pending:
+        # Anchor on the Eligible box, or — when every specimen here is ineligible
+        # (code review fix) — on Total instead, so the "Check now" box is always
+        # drawn. This is a pending row's ONLY check affordance: the header's
+        # Re-check button only appears once `pending` is false (`_render_flow_rows`),
+        # so an eligible-box-only anchor left an all-ineligible collection with no
+        # way at all to trigger its first Check from the flow view.
+        if eligible_box is not None:
+            y0, y1 = eligible_box
+            src_x = _FLOW_C2_X + _FLOW_BOX_W
+        else:
+            y0, y1 = total_box
+            src_x = _FLOW_C1_X + _FLOW_BOX_W
+        # The Check trigger lives in the placeholder box itself (live review) —
+        # clicking it emits `col: 'check'`, handled by `_render_flow_rows` calling
+        # `_on_check_repo` for this row instead of `_on_open_col`. A dashed border
+        # in the app's own action colour (`--tp-secondary`, the same blue every
+        # primary button in this tab uses) plus a play glyph — live review: the
+        # neutral grey fill alone didn't read as "click here", only as an inert
+        # placeholder.
+        parts.append(_flow_box(_FLOW_C3_X, y0, y1, _FLOW_BOX_W,
+                                "var(--tp-base-muted)", "▶ Check now",
+                                text_color="var(--tp-secondary)", weight=600,
+                                dashed_border="var(--tp-secondary)",
+                                repo_id=repo_id, col="check",
+                                tooltip="Check this collection against "
+                                        "TaxonWorks"))
+        parts.append(_flow_line(src_x, (y0 + y1) / 2,
+                                 _FLOW_C3_X, (y0 + y1) / 2, "var(--tp-base-muted)"))
+        return (f'<svg width="{_FLOW_W}" height="{_FLOW_H}" '
+                f'xmlns="http://www.w3.org/2000/svg">' + "".join(parts) + "</svg>")
+
+    uploaded = synced + diverged
+    p3, boxes3 = _flow_column(_FLOW_C3_X, eligible_box, repo_id, [
+        (not_uploaded, _FLOW_C_NOT_UPLOADED, "not_uploaded", "Not uploaded"),
+        (uploaded, _FLOW_C_UPLOADED, None, "Uploaded"),
+    ])
+    parts += p3
+    uploaded_box = boxes3.get("Uploaded")
+
+    # #4 (live review) — everything eligible already matches TaxonWorks: say so
+    # plainly rather than leaving the reader to notice an empty "Diverged" slot.
+    all_synced = uploaded > 0 and not_uploaded == 0 and diverged == 0
+    p4, _boxes4 = _flow_column(_FLOW_C4_X, uploaded_box, repo_id, [
+        (synced, _FLOW_C_SYNCED, "synced", "✓ Synced" if all_synced else "Synced"),
+        (diverged, _FLOW_C_DIVERGED, "diverged", "Diverged"),
+    ])
+    parts += p4
+
+    return (f'<svg width="{_FLOW_W}" height="{_FLOW_H}" xmlns="http://www.w3.org/2000/svg">'
+            + "".join(parts) + "</svg>")
+
+
 def build_tw_sync_tab(session_factory, refreshers: dict | None = None,
                        open_explore=None) -> None:
     """`open_explore(groups)` — hand a facet-group list (Explore's own `state["groups"]`
@@ -157,6 +403,25 @@ def build_tw_sync_tab(session_factory, refreshers: dict | None = None,
     Records, just in the other direction (#149 follow-up: "let me examine these in
     Explore"). `None` when the caller hasn't wired it — every click site degrades to a
     no-op rather than raising, so this file still renders standalone (e.g. in a test)."""
+    # Page-level, not embedded in the per-row SVG string (design pass, live review):
+    # a `<style>` tag placed *inside* `flow_diagram_svg`'s output is silently stripped
+    # when that string is compiled as a `q-td` slot's Vue template — verified live,
+    # the tag never reached the DOM at all, so a hover rule written there can never
+    # fire. Both flow-diagram style rules live here instead, where the row-hover-kill
+    # rule (below) was already proven to survive.
+    #   - `.tp-flow-table tbody tr:hover` cancels this app's global
+    #     `.q-table tbody tr:hover td` row-highlight (main.py) for the flow diagram's
+    #     own one-row tables specifically — without it, the whole SVG's blank
+    #     background looked hoverable/clickable, not just the actual boxes.
+    #   - `.flow-box:hover rect` is the one remaining hover affordance, and it only
+    #     ever covers a real `open_col` click target.
+    ui.add_head_html(
+        "<style>"
+        ".tp-flow-table tbody tr:hover td{background:transparent !important}"
+        ".flow-box{cursor:pointer}"
+        ".flow-box:hover rect{filter:brightness(1.15)}"
+        "</style>"
+    )
     refreshers = refreshers or {}
     # `result`/`checks` are the Export step's own local+name check (Step 3 of #149).
     # `compare` is per-collection: {repo_id: {"result": CompareResult, "checks": [...],
@@ -182,6 +447,58 @@ def build_tw_sync_tab(session_factory, refreshers: dict | None = None,
     def _repo_options(s) -> dict:
         return {r.id: f"{r.collection_code} — {r.collection_full_name}"
                 for r in repo_svc.list_repositories(s)}
+
+    def _scoped_cos(s, scope_id, *, repo_id: int | None = None,
+                     expanded_scope_ids: set[int] | None = None) \
+            -> list[CollectionObject]:
+        """One collection's specimens, restricted to the optional taxon scope.
+        Re-run per session that needs the rows — the returned instances must never
+        outlive `s` (see `_check_collection`). `repo_id` defaults to the Export
+        step's own working collection — the Collections step (design pass, live
+        review: the taxon restriction must apply there too, not only at export
+        time) passes each row's own `repo_id` instead, reusing this exact query
+        rather than a second copy of the join. Defined here, ahead of both the
+        Collections and Export step sections, because `_load_report` (Collections)
+        calls it synchronously during the initial page build — long before the
+        Export step section that used to own this function would even have run.
+
+        `expanded_scope_ids`: the descendant expansion, when the caller already
+        computed it (code review fix — `_load_report` loops over every repository
+        with the SAME `scope_id`; without this, `descendant_taxon_ids` re-walked
+        the same taxon tree once per collection for no reason). Left `None`
+        (the default) this computes it itself, exactly as before.
+
+        One collection at a time (required, not a convenience) — TaxonWorks'
+        DwC-A import maps to a single Namespace per upload, so a file mixing rows
+        from two collections has nowhere consistent to land.
+        """
+        q = (
+            s.query(CollectionObject)
+            # `export_decision` (called per row by `_load_report`/`ineligible_specimens`/
+            # `eligible_specimens`) reads `co.collecting_event.recorded_by_person` — without
+            # this eager-load every one of those calls is a fresh lazy-loaded round trip
+            # (code review fix: this option existed on the pre-scoping query this replaced
+            # and was silently dropped when the query moved here).
+            .options(
+                selectinload(CollectionObject.collecting_event)
+                .selectinload(CollectingEvent.recorded_by_person)
+            )
+            .filter(CollectionObject.repository_id ==
+                    (repo_id if repo_id is not None else state["repo_id"]))
+            .order_by(CollectionObject.catalog_number)
+        )
+        if scope_id is not None:
+            # Every descendant (species under a genus, subspecies under a
+            # species, …) counts as "in scope" — the same expansion Batch tools
+            # uses for "all specimens of a taxon" (batch_ops.py).
+            scope_ids = (expanded_scope_ids if expanded_scope_ids is not None
+                         else descendant_taxon_ids(s, scope_id))
+            q = q.join(
+                TaxonDetermination,
+                (TaxonDetermination.collection_object_id == CollectionObject.id)
+                & (TaxonDetermination.is_current == 1),
+            ).filter(TaxonDetermination.taxon_id.in_(scope_ids))
+        return q.all()
 
     def _open_catalog_numbers(catalog_numbers, label: str) -> None:
         """The generic hand-off to Explore for "these specific specimens" — every
@@ -392,7 +709,14 @@ def build_tw_sync_tab(session_factory, refreshers: dict | None = None,
         # ── Step 1 — Collections (per-collection #149 "Step 1: Compare") ───────────────
         with ui.tab_panel("collections").classes("p-0"):
             with ui.card().classes("w-full max-w-5xl mx-auto shadow-sm"):
-                ui.label("Collections").classes("section-label")
+                with ui.row().classes("w-full items-center justify-between"):
+                    ui.label("Collections").classes("section-label")
+                    # Inline with the title (design pass, live review) rather than its
+                    # own row below — saves vertical space; flow view is the default,
+                    # the switch is the escape hatch back to the plain table.
+                    flow_switch = ui.switch("Flow diagram", value=True) \
+                        .props("color=secondary dense") \
+                        .tooltip("Off shows the plain table")
                 cfg = get_config()
                 host = urlsplit(cfg.tw_base).netloc or "(not configured)"
                 ui.label(f"Connected to {host}.").classes("text-sm") \
@@ -487,9 +811,11 @@ def build_tw_sync_tab(session_factory, refreshers: dict | None = None,
                     "text-sm font-semibold mt-3")
                 ui.label(
                     "Only specimens currently determined within this taxon (and its "
-                    "descendants) are exported — e.g. Curculionoidea only. Leave empty "
-                    "for the whole collection. Applies to the Export step; the "
-                    "collection report above always covers everything."
+                    "descendants) are in scope — e.g. Curculionoidea only. Leave "
+                    "empty for the whole collection. Applies to both the export file "
+                    "and the Collections report above (design pass, live review: "
+                    "restricting to a taxon used to leave that report unscoped, which "
+                    "read as a bug once the two disagreed)."
                 ).classes("text-xs").style("color:var(--tp-base-soft)")
                 if _scope_was_stale:
                     ui.label(
@@ -502,6 +828,12 @@ def build_tw_sync_tab(session_factory, refreshers: dict | None = None,
                     cfg.tw_scope_taxon_id = taxon_id
                     save_config(cfg)
                     _sync_scope_line()
+                    # The Collections diagram/table reads this same config value
+                    # (`_load_report`'s `scope_id`) — without an explicit refresh here
+                    # it kept showing whatever subset was in scope at the last page
+                    # load or Check, including after the restriction was cleared back
+                    # to "the whole collection" (live review).
+                    _render_report()
 
                 with ui.row().classes("w-full items-center gap-2 mt-1"):
                     scope_state = build_taxon_search(
@@ -524,43 +856,52 @@ def build_tw_sync_tab(session_factory, refreshers: dict | None = None,
                         .props("flat dense no-caps size=sm")
 
                 # Consent policy — read-only here (Settings owns it), but the eligible/
-                # not-eligible split right below depends on it, so it must be visible
-                # without a trip to Settings to find out which one is active. Only the
-                # active option is shown, not both.
+                # not-eligible split depends on it, so it must be visible without a
+                # trip to Settings to find out which one is active. Only the active
+                # option is shown, not both. Rendered per-diagram, not once at the top
+                # of the card (design pass, live review: "most intuitive" beneath each
+                # collection's own title and diagram, where the number it explains
+                # actually lives) — `_consent_status_text()` is called fresh each
+                # render rather than kept live via a shared label, since the whole row
+                # is already rebuilt on every `_render_report()` refresh anyway.
                 _CONSENT_OPT_TEXT = {
                     "name_removed": "Export the record with their name removed",
                     "consented_only": "Do not export",
                 }
-                consent_status_label = ui.label().classes("text-xs") \
-                    .style("color:var(--tp-base-soft)")
 
-                def _sync_consent_status() -> None:
+                def _consent_status_text() -> str:
                     nonconsent = get_config().tw_export_nonconsent or "name_removed"
                     active = _CONSENT_OPT_TEXT.get(nonconsent, nonconsent)
-                    consent_status_label.set_text(
-                        f"Collectors who did not explicitly consent: {active}"
-                    )
-
-                _sync_consent_status()
+                    return f"Collectors who did not explicitly consent: {active}"
 
                 ui.separator().classes("my-3")
 
+                report_state: dict = {
+                    "rows": [], "reasons": {}, "table": None,
+                    "flow_view": True,
+                }
                 report_col = ui.column().classes("w-full mt-2")
-                report_state: dict = {"rows": [], "reasons": {}, "table": None}
 
                 def _load_report(s) -> None:
+                    # The optional taxon restriction applies here too now (design
+                    # pass, live review) — it used to be Export-step-only (the module
+                    # docstring's own prior claim), which read as a bug once the
+                    # Collections diagram existed to compare against: restricting the
+                    # export to Curculionoidea while this report still counted every
+                    # specimen made "Total" look wrong rather than merely unscoped.
+                    # `_scoped_cos` is the Export step's own query (below), reused
+                    # rather than a second copy of the taxon-descendant join.
+                    scope_id = get_config().tw_scope_taxon_id
+                    # Computed once (code review fix), not once per repository below —
+                    # every collection in this loop shares the same `scope_id`, so the
+                    # descendant-taxon walk it drives is the same set every time.
+                    scope_ids = (descendant_taxon_ids(s, scope_id)
+                                 if scope_id is not None else None)
                     rows: list[dict] = []
                     reasons_by_repo: dict[int, tuple] = {}
                     for r in repo_svc.list_repositories(s):
-                        cos = (
-                            s.query(CollectionObject)
-                            .options(
-                                selectinload(CollectionObject.collecting_event)
-                                .selectinload(CollectingEvent.recorded_by_person)
-                            )
-                            .filter(CollectionObject.repository_id == r.id)
-                            .all()
-                        )
+                        cos = _scoped_cos(s, scope_id, repo_id=r.id,
+                                          expanded_scope_ids=scope_ids)
                         eligible = sum(
                             1 for co in cos if dwc_export.export_decision(co).eligible)
                         # Already-checked collections keep their real numbers across a
@@ -585,7 +926,7 @@ def build_tw_sync_tab(session_factory, refreshers: dict | None = None,
                                              if cached else pending),
                         })
                         reasons_by_repo[r.id] = tw_compare.ineligible_specimens(
-                            s, repository_id=r.id)
+                            s, repository_id=r.id, scope_taxon_ids=scope_ids)
                     report_state["rows"] = rows
                     report_state["reasons"] = reasons_by_repo
 
@@ -616,14 +957,17 @@ def build_tw_sync_tab(session_factory, refreshers: dict | None = None,
                     label = row["collection"]
 
                     if col == "total":
-                        # The one column with an existing, exact-match Explore facet
-                        # already (every specimen in this repository) — no need to
-                        # resolve a catalog-number list for it.
-                        if open_explore is not None:
-                            open_explore([{"op": "and", "facets": [{
-                                "kind": "collection", "label": label,
-                                "key": repo_id, "tag": "Collection",
-                            }]}])
+                        # NOT the plain "every specimen in this repository" facet any
+                        # more (code review fix) — under an active taxon scope that
+                        # facet is the whole collection, disagreeing with the (scoped)
+                        # number on the box itself. `_scoped_cos` is the same query
+                        # `_load_report` used to compute that number, so the hand-off
+                        # and the count it came from can never disagree.
+                        scope_id = get_config().tw_scope_taxon_id
+                        with session_factory() as s:
+                            cats = [co.catalog_number for co in
+                                    _scoped_cos(s, scope_id, repo_id=repo_id)]
+                        _open_catalog_numbers(cats, label)
                         return
 
                     if col == "not_eligible":
@@ -635,9 +979,15 @@ def build_tw_sync_tab(session_factory, refreshers: dict | None = None,
                         return
 
                     if col == "eligible":
+                        # Scope-aware (code review fix — this used to ignore the taxon
+                        # restriction, so clicking "Eligible" under an active scope
+                        # opened every eligible specimen in the whole collection).
+                        scope_id = get_config().tw_scope_taxon_id
                         with session_factory() as s:
+                            scope_ids = (descendant_taxon_ids(s, scope_id)
+                                         if scope_id is not None else None)
                             cats = tw_compare.eligible_specimens(
-                                s, repository_id=repo_id)
+                                s, repository_id=repo_id, scope_taxon_ids=scope_ids)
                         _open_catalog_numbers(list(cats), f"{label} — eligible")
                         return
 
@@ -663,7 +1013,10 @@ def build_tw_sync_tab(session_factory, refreshers: dict | None = None,
                             f"{label} — diverged")
 
                 def _render_report() -> None:
-                    _sync_consent_status()   # config may have changed since page load
+                    # No explicit consent-status sync needed here any more — each
+                    # row's card calls `_consent_status_text()` fresh as part of
+                    # `_render_flow_rows`, and the whole `report_col` is rebuilt below
+                    # regardless, so a stale value can't linger either way.
                     report_col.clear()
                     with session_factory() as s:
                         _load_report(s)
@@ -675,104 +1028,189 @@ def build_tw_sync_tab(session_factory, refreshers: dict | None = None,
                                 "Vocabularies."
                             ).classes("text-sm").style("color:var(--tp-base-soft)")
                             return
-                        table = ui.table(
-                            columns=[
-                                {"name": "collection", "label": "Collection",
-                                 "field": "collection", "align": "left"},
-                                # Short headers (design pass) — the long originals
-                                # ("Collection objects (local)", "Matches TaxonWorks")
-                                # were the main reason this table needed a horizontal
-                                # scrollbar even on a normal window; the "Eligible = …"
-                                # legend line below the table already spells the
-                                # columns out in full, so the header only needs to be
-                                # recognisable, not self-explanatory.
-                                {"name": "total", "label": "Total",
-                                 "field": "total", "align": "right"},
-                                {"name": "not_eligible", "label": "Not eligible",
-                                 "field": "not_eligible", "align": "right"},
-                                {"name": "eligible", "label": "Eligible",
-                                 "field": "eligible", "align": "right"},
-                                {"name": "not_uploaded", "label": "Not uploaded",
-                                 "field": "not_uploaded", "align": "right"},
-                                {"name": "synced", "label": "Synced",
-                                 "field": "synced", "align": "right"},
-                                {"name": "diverged", "label": "Diverged",
-                                 "field": "diverged", "align": "right"},
-                                {"name": "actions", "label": "",
-                                 "field": "actions", "align": "right"},
-                            ],
-                            rows=rows, row_key="repo_id",
-                        ).classes("w-full").props("flat dense wrap-cells")
-                        table.add_slot("body-cell-actions", """
-                            <q-td :props="props">
-                                <q-btn color="secondary" dense no-caps size="sm"
-                                    icon="fact_check" label="Check"
-                                    @click="$parent.$emit('check_repo', props.row)" />
+                        if report_state["flow_view"]:
+                            _render_flow_rows(rows)
+                        else:
+                            _render_table(rows)
+                        _render_report_footer(rows)
+
+                def _render_table(rows: list[dict]) -> None:
+                    table = ui.table(
+                        columns=[
+                            {"name": "collection", "label": "Collection",
+                             "field": "collection", "align": "left"},
+                            # Short headers (design pass) — the long originals
+                            # ("Collection objects (local)", "Matches TaxonWorks")
+                            # were the main reason this table needed a horizontal
+                            # scrollbar even on a normal window; the "Eligible = …"
+                            # legend line below already spells the columns out in
+                            # full, so the header only needs to be recognisable, not
+                            # self-explanatory.
+                            {"name": "total", "label": "Total",
+                             "field": "total", "align": "right"},
+                            {"name": "not_eligible", "label": "Not eligible",
+                             "field": "not_eligible", "align": "right"},
+                            {"name": "eligible", "label": "Eligible",
+                             "field": "eligible", "align": "right"},
+                            {"name": "not_uploaded", "label": "Not uploaded",
+                             "field": "not_uploaded", "align": "right"},
+                            {"name": "synced", "label": "Synced",
+                             "field": "synced", "align": "right"},
+                            {"name": "diverged", "label": "Diverged",
+                             "field": "diverged", "align": "right"},
+                            {"name": "actions", "label": "",
+                             "field": "actions", "align": "right"},
+                        ],
+                        rows=rows, row_key="repo_id",
+                    ).classes("w-full").props("flat dense wrap-cells")
+                    table.add_slot("body-cell-actions", """
+                        <q-td :props="props">
+                            <q-btn color="secondary" dense no-caps size="sm"
+                                icon="fact_check" label="Check"
+                                @click="$parent.$emit('check_repo', props.row)" />
+                        </q-td>
+                    """)
+                    table.on("check_repo", lambda e: _on_check_repo(e.args))
+                    # The three compare-derived columns carry a status icon (design
+                    # pass) — the same icon+colour this tab uses everywhere else for
+                    # the same fact (synced/diverged/not-uploaded). "Pending" (no
+                    # compare run yet) shows the neutral hourglass instead; a real
+                    # zero shows grey, a real nonzero shows the fact's colour.
+                    # `total`/`eligible`/`not_eligible` are plain counts, not a
+                    # compare outcome, so they stay unstyled.
+                    for _col in _CLICKABLE_COLS:
+                        icon_html = ""
+                        if _col in _STATUS_COL_ICON:
+                            _icon, _color = _STATUS_COL_ICON[_col]
+                            icon_html = f"""
+                                <q-icon v-if="props.row.{_col} === 'Pending'"
+                                    name="{_ICON_PENDING}" size="14px" color="grey" />
+                                <q-icon v-else name="{_icon}" size="14px"
+                                    :color="props.row.{_col} > 0 ? '{_color}' : 'grey'" />
+                            """
+                        table.add_slot(f"body-cell-{_col}", f"""
+                            <q-td :props="props" class="text-right"
+                                style="cursor:pointer"
+                                @click="$parent.$emit('open_col',
+                                    {{repo_id: props.row.repo_id, col: '{_col}'}})">
+                                <span class="row items-center justify-end no-wrap"
+                                    style="gap:2px">
+                                    {icon_html}
+                                    <span style="text-decoration:underline dotted">
+                                        {{{{ props.row.{_col} }}}}
+                                    </span>
+                                </span>
                             </q-td>
                         """)
-                        table.on("check_repo", lambda e: _on_check_repo(e.args))
-                        # The three compare-derived columns carry a status icon (design
-                        # pass) — the same icon+colour this tab uses everywhere else for
-                        # the same fact (synced/diverged/not-uploaded). "Pending" (no
-                        # compare run yet) shows the neutral hourglass instead; a real
-                        # zero shows grey, a real nonzero shows the fact's colour.
-                        # `total`/`eligible`/`not_eligible` are plain counts, not a
-                        # compare outcome, so they stay unstyled.
-                        for _col in _CLICKABLE_COLS:
-                            icon_html = ""
-                            if _col in _STATUS_COL_ICON:
-                                _icon, _color = _STATUS_COL_ICON[_col]
-                                icon_html = f"""
-                                    <q-icon v-if="props.row.{_col} === 'Pending'"
-                                        name="{_ICON_PENDING}" size="14px" color="grey" />
-                                    <q-icon v-else name="{_icon}" size="14px"
-                                        :color="props.row.{_col} > 0 ? '{_color}' : 'grey'" />
-                                """
-                            table.add_slot(f"body-cell-{_col}", f"""
-                                <q-td :props="props" class="text-right"
-                                    style="cursor:pointer"
-                                    @click="$parent.$emit('open_col',
-                                        {{repo_id: props.row.repo_id, col: '{_col}'}})">
-                                    <span class="row items-center justify-end no-wrap"
-                                        style="gap:2px">
-                                        {icon_html}
-                                        <span style="text-decoration:underline dotted">
-                                            {{{{ props.row.{_col} }}}}
-                                        </span>
-                                    </span>
-                                </q-td>
-                            """)
-                        table.on("open_col", lambda e: _on_open_col(e.args))
-                        report_state["table"] = table
+                    table.on("open_col", lambda e: _on_open_col(e.args))
+                    report_state["table"] = table
 
-                        reasons_by_repo = report_state["reasons"]
-                        if any(reasons_by_repo.values()):
-                            with ui.expansion("Why some are not eligible") \
-                                    .classes("w-full mt-2"):
-                                for r in rows:
-                                    reasons = reasons_by_repo.get(r["repo_id"]) or ()
-                                    if not reasons:
-                                        continue
-                                    ui.label(r["collection"]).classes(
-                                        "text-xs font-medium mt-1")
-                                    for cat, why in reasons:
-                                        ui.label(f"{cat} — {'; '.join(why)}") \
-                                            .classes("text-xs") \
-                                            .style("color:var(--tp-base-soft)")
+                def _render_flow_rows(rows: list[dict]) -> None:
+                    """One flow diagram per collection — the Collection name stays (so
+                    the row is still identifiable); the six numeric columns are
+                    replaced by `flow_diagram_svg`'s picture of the same six numbers.
+                    `not_uploaded`/`synced`/`diverged` read "Pending" before that
+                    collection's own Check has run, and the Check trigger lives
+                    directly in the diagram's "Check pending" box (live review) rather
+                    than a separate button — a small icon-only Recheck button stays in
+                    the header only once a collection HAS been checked, since the
+                    diagram no longer has a pending box to click at that point.
 
-                        ui.label(
-                            "Eligible = Not yet uploaded + Matches TaxonWorks + "
-                            "Diverged (each specimen is exactly one of the three — "
-                            "\"Diverged\" specimens are on TaxonWorks too, just with "
-                            "at least one field that differs)."
-                        ).classes("text-xs mt-2").style("color:var(--tp-base-soft)")
-                        ui.label(
-                            "The three show \"Pending\" until that collection's "
-                            "own Check has run — one request for TaxonWorks' whole "
-                            "catalog-number index, then one field lookup per specimen "
-                            "it says is already there. A few seconds even for a large "
-                            "shared project."
-                        ).classes("text-xs").style("color:var(--tp-base-soft)")
+                    Each diagram is its own one-row, headerless `ui.table` — not a
+                    `ui.card` + `ui.html()` — because only a `q-td` slot actually
+                    compiles the `@click="$parent.$emit(...)"` directives baked into
+                    the SVG by `flow_diagram_svg`; a bare `ui.html()` snippet's clicks
+                    go nowhere (verified live). `.tp-flow-table` cancels this app's
+                    global `.q-table tbody tr:hover` row highlight (live review: it
+                    made the whole diagram's blank background look clickable, which
+                    was misleading — only `flow_diagram_svg`'s own `.flow-box` hover
+                    rule should suggest anything is clickable)."""
+                    for r in rows:
+                        pending = r["synced"] == "Pending"
+                        svg = flow_diagram_svg(
+                            r["repo_id"], r["total"], r["not_eligible"], r["eligible"],
+                            0 if pending else r["not_uploaded"],
+                            0 if pending else r["synced"],
+                            0 if pending else r["diverged"],
+                            pending=pending,
+                        )
+                        with ui.card().classes("w-full mb-2 shadow-none") \
+                                .props("bordered"):
+                            # Created before anything that references it (code review
+                            # fix): a `for` loop does not open a new Python scope, so
+                            # `row_status` is one variable in `_render_flow_rows` that
+                            # every iteration REBINDS — a closure that reads it by
+                            # name, not as a bound default argument, resolves it at
+                            # CLICK time, by which point the loop has finished and
+                            # every row's callback sees the LAST row's label (verified:
+                            # this was the actual live bug — clicking any non-last
+                            # collection's Check/Re-check wrote its status into the
+                            # last collection's card instead of its own). `row=r` below
+                            # already used the correct pattern; `row_status` now does
+                            # too, bound explicitly wherever it is used.
+                            row_status = ui.label("").classes(
+                                "text-sm font-semibold mt-1") \
+                                .style("color:var(--tp-secondary);order:99")
+
+                            with ui.row().classes("w-full items-center justify-between"):
+                                ui.label(r["collection"]).classes("text-sm font-medium")
+                                if not pending:
+                                    ui.button(icon="fact_check", color="secondary") \
+                                        .props("no-caps dense flat round size=sm") \
+                                        .tooltip("Re-check against TaxonWorks") \
+                                        .on_click(
+                                            lambda _=None, row=r, status=row_status:
+                                            _on_check_repo(row, status.set_text))
+                            diag = ui.table(
+                                columns=[{"name": "svg", "label": "",
+                                          "field": "svg", "align": "left"}],
+                                rows=[{"svg": ""}], row_key="svg",
+                            ).props("flat dense hide-header hide-bottom") \
+                                .classes("w-full mt-1 tp-flow-table")
+                            diag.add_slot("body-cell-svg", f'<q-td :props="props">{svg}</q-td>')
+                            # Beneath the title and the diagram (design pass, live
+                            # review: "most intuitive there") — this collection's
+                            # "Not eligible" count is exactly what this policy decides,
+                            # so it belongs right where that number is shown, not once
+                            # at the top of the whole card.
+                            ui.label(_consent_status_text()).classes("text-xs mt-1") \
+                                .style("color:var(--tp-base-soft)")
+
+                            def _on_flow_click(payload: dict, row=r, status=row_status):
+                                # `_on_check_repo` is async — its coroutine must be
+                                # RETURNED, not just called, or NiceGUI never awaits
+                                # it and the click silently does nothing.
+                                if payload.get("col") == "check":
+                                    return _on_check_repo(row, status.set_text)
+                                _on_open_col(payload)
+                                return None
+                            diag.on("open_col", lambda e: _on_flow_click(e.args))
+
+                def _render_report_footer(rows: list[dict]) -> None:
+                    # The "Eligible = …" formula and the "'Pending' means…" note that
+                    # used to sit here are gone (#170, live review, "debloating") — the
+                    # flow diagram now shows that breakdown directly instead of
+                    # spelling it out in prose underneath.
+                    reasons_by_repo = report_state["reasons"]
+                    if any(reasons_by_repo.values()):
+                        with ui.expansion("Why some are not eligible") \
+                                .classes("w-full mt-2"):
+                            for r in rows:
+                                reasons = reasons_by_repo.get(r["repo_id"]) or ()
+                                if not reasons:
+                                    continue
+                                ui.label(r["collection"]).classes(
+                                    "text-xs font-medium mt-1")
+                                for cat, why in reasons:
+                                    ui.label(f"{cat} — {'; '.join(why)}") \
+                                        .classes("text-xs") \
+                                        .style("color:var(--tp-base-soft)")
+
+                def _on_flow_switch(e) -> None:
+                    report_state["flow_view"] = e.value
+                    _render_report()
+
+                flow_switch.on_value_change(_on_flow_switch)
 
                 _render_report()
                 # So a Settings save (e.g. the privacy-consent policy) can push a live
@@ -1219,20 +1657,29 @@ def build_tw_sync_tab(session_factory, refreshers: dict | None = None,
 
                         _render_blocking_names(checks)
 
-                async def _on_check_repo(row: dict) -> None:
+                async def _on_check_repo(
+                    row: dict, status_setter: Callable[[str], None] | None = None,
+                ) -> None:
+                    # Flow view (live review) passes the row's OWN status label —
+                    # "Checking X…" should read as obviously attached to that specific
+                    # diagram, not as one shared line the user has to go find
+                    # elsewhere on the page. Falls back to the page-level
+                    # `compare_status` (the plain-table view has no per-row label).
+                    _status = status_setter or compare_status.set_text
                     if state["checking_repo"] is not None:
                         ui.notify("A check is already running.", type="warning")
                         return
                     repo_id = row["repo_id"]
                     state["checking_repo"] = repo_id
-                    compare_status.set_text(f"Checking {row['collection']}…")
+                    _status(f"Checking {row['collection']}…")
+                    # The optional taxon restriction applies to the compare too now
+                    # (design pass, live review) — matches `_load_report`'s own use of
+                    # `_scoped_cos`, so the diagram's post-Check numbers are scoped
+                    # exactly the same way as its pre-Check ones.
+                    scope_id = get_config().tw_scope_taxon_id
                     try:
                         with session_factory() as s:
-                            cos = (
-                                s.query(CollectionObject)
-                                .filter(CollectionObject.repository_id == repo_id)
-                                .all()
-                            )
+                            cos = _scoped_cos(s, scope_id, repo_id=repo_id)
                             taxa_list = tw_sync.taxa_to_export(s, cos)
                             catalog_numbers = [co.catalog_number for co in cos]
 
@@ -1247,7 +1694,7 @@ def build_tw_sync_tab(session_factory, refreshers: dict | None = None,
                         # asked only for the field values, and only about numbers the
                         # index already says are there.
                         def _on_index_progress(done: int, total: int) -> None:
-                            compare_status.set_text(
+                            _status(
                                 f"Checking {row['collection']} — reading TaxonWorks' "
                                 f"catalog-number index ({done} of {total})…"
                             )
@@ -1257,7 +1704,7 @@ def build_tw_sync_tab(session_factory, refreshers: dict | None = None,
                         present = [c for c in catalog_numbers if index.has(c)]
 
                         def _on_progress(done: int, total: int) -> None:
-                            compare_status.set_text(
+                            _status(
                                 f"Checking {row['collection']} — compared {done} "
                                 f"of {total} specimen(s) against TaxonWorks…"
                             )
@@ -1265,13 +1712,18 @@ def build_tw_sync_tab(session_factory, refreshers: dict | None = None,
                         tw_by_cat = await tw_compare.fetch_tw_rows_for_catalog_numbers(
                             present, on_progress=_on_progress)
 
-                        compare_status.set_text(
+                        _status(
                             f"Checking {row['collection']} — checking "
                             f"{len(taxa_list)} name(s) against TaxonWorks…"
                         )
                         with session_factory() as s:
+                            scope_taxon_ids = (
+                                descendant_taxon_ids(s, scope_id)
+                                if scope_id is not None else None
+                            )
                             cmp_result = tw_compare.compare_repository(
-                                s, tw_by_cat, repository_id=repo_id, index=index)
+                                s, tw_by_cat, repository_id=repo_id, index=index,
+                                scope_taxon_ids=scope_taxon_ids)
                             # `check_names` needs a live session for the whole call —
                             # see the Export step's identical note below; this is
                             # bounded by tw_sync's own concurrency limit, and no
@@ -1290,7 +1742,7 @@ def build_tw_sync_tab(session_factory, refreshers: dict | None = None,
                         # own try/except (#162) — a diagnostic-only sub-feature failing
                         # must not discard the occurrence/name compare that already
                         # succeeded at real cost (many TaxonWorks requests above).
-                        compare_status.set_text(
+                        _status(
                             f"Checking {row['collection']} — comparing media…"
                         )
                         media_result = None
@@ -1312,7 +1764,7 @@ def build_tw_sync_tab(session_factory, refreshers: dict | None = None,
                     except tw_svc.TaxonWorksUnreachable as exc:
                         ui.notify(str(exc), type="negative", multi_line=True,
                                   timeout=8000)
-                        compare_status.set_text("Check failed.")
+                        _status("Check failed.")
                         return
                     finally:
                         state["checking_repo"] = None
@@ -1321,7 +1773,7 @@ def build_tw_sync_tab(session_factory, refreshers: dict | None = None,
                         "result": cmp_result, "checks": checks, "media": media_result,
                         "label": row["collection"],
                     }
-                    compare_status.set_text(f"Checked {row['collection']}.")
+                    _status(f"Checked {row['collection']}.")
 
                     # Re-derive the whole report rather than patching individual
                     # fields on the old row: `eligible`/`not_eligible`/the "why not
@@ -1388,33 +1840,9 @@ def build_tw_sync_tab(session_factory, refreshers: dict | None = None,
 
                 results = ui.column().classes("w-full mt-2")
 
-                def _scoped_cos(s, scope_id) -> list[CollectionObject]:
-                    """The working collection's specimens, restricted to the optional
-                    taxon scope. Re-run per session that needs the rows — the returned
-                    instances must never outlive `s` (see `_check_collection`).
-
-                    One collection at a time (required, not a convenience) —
-                    TaxonWorks' DwC-A import maps to a single Namespace per upload, so
-                    a file mixing rows from two collections has nowhere consistent to
-                    land.
-                    """
-                    q = (
-                        s.query(CollectionObject)
-                        .filter(CollectionObject.repository_id == state["repo_id"])
-                        .order_by(CollectionObject.catalog_number)
-                    )
-                    if scope_id is not None:
-                        # Every descendant (species under a genus, subspecies under a
-                        # species, …) counts as "in scope" — the same expansion Batch
-                        # tools uses for "all specimens of a taxon" (batch_ops.py).
-                        scope_ids = descendant_taxon_ids(s, scope_id)
-                        q = q.join(
-                            TaxonDetermination,
-                            (TaxonDetermination.collection_object_id
-                             == CollectionObject.id)
-                            & (TaxonDetermination.is_current == 1),
-                        ).filter(TaxonDetermination.taxon_id.in_(scope_ids))
-                    return q.all()
+                # `_scoped_cos` is defined near the top of `build_tw_sync_tab`, not
+                # here — `_load_report` (Collections step) needs it synchronously
+                # during the initial page build, before this section has even run.
 
                 async def _check_collection() -> None:
                     if state["repo_id"] is None:
