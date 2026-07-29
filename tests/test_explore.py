@@ -92,6 +92,34 @@ def test_species_group_count_excludes_genus_level(session):
     assert c["species_group"] == 2                     # but only the two species
 
 
+def test_query_specimens_does_not_reload_the_determination_per_row(session):
+    """Code review fix (#170 follow-up): `query_specimens` already outer-joins the
+    current `TaxonDetermination` into `td` — `export_decision` must be given it
+    (`determination=td`), not re-derive it via a lazy load of `co.determinations` for
+    every single row.
+
+    Measured directly against this fixture (3 specimens, all with a current
+    determination): 9 SQL statements with the fix, 12 (exactly 3 extra — one per
+    specimen) with it reverted. The bound below sits between the two, so this test
+    fails on the regression and would need updating only if the query shape itself
+    legitimately changes — not merely if the specimen count in the fixture does."""
+    from sqlalchemy import event as sa_event
+
+    _fixture(session)   # 3 specimens, all with a current determination
+    counts = {"n": 0}
+
+    def _count(*_a, **_kw):
+        counts["n"] += 1
+
+    sa_event.listen(session.bind, "before_cursor_execute", _count)
+    try:
+        rows = ex.query_specimens(session)
+        assert len(rows) == 3
+        assert counts["n"] <= 10
+    finally:
+        sa_event.remove(session.bind, "before_cursor_execute", _count)
+
+
 def test_format_place_is_geographic_only(session):
     """#137: the place string is Country: state, municipality, locality — no coords,
     habitat, collector or date (those are shown separately in the summary)."""

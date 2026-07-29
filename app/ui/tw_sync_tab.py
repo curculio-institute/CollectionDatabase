@@ -178,7 +178,7 @@ def _status_line(icon: str, color: str, text: str, *, classes: str) -> None:
 # (verified live: a plain `ui.element('div').add_slot(...)` silently drops the
 # directive); a one-row, headerless `ui.table` around this SVG gives it that context
 # cheaply, reusing the one mechanism already proven to work in this file.
-_FLOW_W, _FLOW_H = 660, 190
+_FLOW_W, _FLOW_H = 660, 210
 _FLOW_BOX_W = 110
 _FLOW_BOX_H, _FLOW_GAP, _FLOW_GAP_X = 34, 8, 60
 _FLOW_C1_X = 8
@@ -186,6 +186,15 @@ _FLOW_C2_X = _FLOW_C1_X + _FLOW_BOX_W + _FLOW_GAP_X
 _FLOW_C3_X = _FLOW_C2_X + _FLOW_BOX_W + _FLOW_GAP_X
 _FLOW_C4_X = _FLOW_C3_X + _FLOW_BOX_W + _FLOW_GAP_X
 _FLOW_CENTER_Y = _FLOW_H / 2
+# The Not-eligible/Eligible split (C1->C2) is the one place TWO columns each grow their
+# OWN children (C3): Eligible's own 2-box subtree (Not uploaded/Uploaded) can extend up
+# to (_FLOW_BOX_H+_FLOW_GAP)/2 ≈ 21px past Eligible's own top edge, and — since #170's
+# "Leaked" box below hangs the same way off Not eligible — the two subtrees must never
+# be close enough to touch. The plain `_FLOW_GAP` (8px) used everywhere else leaves only
+# 8px between the parents themselves, nowhere near enough room; this split alone uses a
+# wider gap so both subtrees have clearance regardless of which one currently has a
+# child. Verified in `tests/test_tw_sync_flow_diagram.py` (rects never overlap).
+_FLOW_C2_GAP = 30
 # Fixed hex, not --tp-* vars: a flow segment must read the same saturated colour on
 # both a light and a dark page background (the vars flip meaning between themes),
 # unlike the icons/badges elsewhere which sit on a plain surface. `_FLOW_C_ELIGIBLE`
@@ -204,24 +213,33 @@ _FLOW_C_NOT_UPLOADED = "#b45309"
 _FLOW_C_UPLOADED = "#0369a1"
 _FLOW_C_SYNCED = "#16a34a"
 _FLOW_C_DIVERGED = "#dc2626"
+# Same red as Diverged, deliberately — both are "this needs attention now", and #170's
+# Leaked box (on TaxonWorks despite being confidential locally: an active privacy
+# breach) is if anything the more urgent of the two.
+_FLOW_C_LEAKED = "#dc2626"
 
 
-def _flow_stack(n: int, center_y: float) -> list[tuple[float, float]]:
+def _flow_stack(n: int, center_y: float, *, gap: float = _FLOW_GAP) \
+        -> list[tuple[float, float]]:
     """`n` fixed-height boxes, stacked with a fixed gap, centred as a group on
     `center_y` — the box positions never depend on any count, only on how many
     boxes are present (0..2 here). `center_y` is the PARENT box's own vertical
     midpoint, not a fixed canvas centre (live review) — a column of two children
     must straddle the exact height the connecting line branches from, which is only
     the canvas centre for the first column; every later column's parent (e.g.
-    "Eligible") is itself off-centre whenever ITS OWN column has two boxes."""
+    "Eligible") is itself off-centre whenever ITS OWN column has two boxes.
+
+    `gap` defaults to the module-wide `_FLOW_GAP` but is overridable — see
+    `_FLOW_C2_GAP`, the one split whose two branches each grow their own subtree and so
+    need more clearance between them than any other split in this tree."""
     if n <= 0:
         return []
-    total_h = n * _FLOW_BOX_H + (n - 1) * _FLOW_GAP
+    total_h = n * _FLOW_BOX_H + (n - 1) * gap
     y = center_y - total_h / 2
     out = []
     for _ in range(n):
         out.append((y, y + _FLOW_BOX_H))
-        y += _FLOW_BOX_H + _FLOW_GAP
+        y += _FLOW_BOX_H + gap
     return out
 
 
@@ -267,12 +285,15 @@ def _flow_label(x: float, y: float, text: str, *, size: int = 11, weight: int = 
 
 
 def _flow_column(x: float, parent_box: tuple[float, float] | None, repo_id: int,
-                  items: list[tuple[int, str, str | None, str]]) -> tuple[list[str], dict]:
+                  items: list[tuple[int, str, str | None, str]], *,
+                  gap: float = _FLOW_GAP) -> tuple[list[str], dict]:
     """Stack the non-zero `items` (count, colour, `open_col` name-or-None, label) at
     `x`, connected by a line from `parent_box`'s vertical centre (skipped if there is
     no parent, i.e. this is the first column). Returns the markup plus each item's
     own `(y0, y1)` box, keyed by its `open_col` name, so the NEXT column can anchor
-    its own connector lines to a specific child rather than only ever to the parent."""
+    its own connector lines to a specific child rather than only ever to the parent.
+
+    `gap` — see `_FLOW_C2_GAP`."""
     parts: list[str] = []
     boxes: dict[str, tuple[float, float]] = {}
     visible = [(n, c, col, lb) for n, c, col, lb in items if n > 0]
@@ -282,8 +303,8 @@ def _flow_column(x: float, parent_box: tuple[float, float] | None, repo_id: int,
     # height symmetrically. Only the first column (no parent) uses the canvas centre.
     center_y = (parent_box[0] + parent_box[1]) / 2 if parent_box is not None \
         else _FLOW_CENTER_Y
-    for (y0, y1), (n, color, col, label) in zip(_flow_stack(len(visible), center_y),
-                                                  visible):
+    for (y0, y1), (n, color, col, label) in zip(
+            _flow_stack(len(visible), center_y, gap=gap), visible):
         text_color = "#1f2937" if color == _FLOW_C_NOT_ELIGIBLE else "#fff"
         parts.append(_flow_box(x, y0, y1, _FLOW_BOX_W, color, f"{label} {n}",
                                 text_color=text_color,
@@ -302,11 +323,13 @@ def _flow_column(x: float, parent_box: tuple[float, float] | None, repo_id: int,
 def flow_diagram_svg(
     repo_id: int, total: int, not_eligible: int, eligible: int,
     not_uploaded: int, synced: int, diverged: int, *, pending: bool = False,
+    leaked: int = 0,
 ) -> str:
     """One collection's classification, as a fixed-layout flow diagram — box size
     never encodes the count (design pass, live review):
 
         Total -> {Not eligible, Eligible}
+        Not eligible -> {Leaked}
         Eligible -> {Not uploaded, Uploaded}
         Uploaded -> {Synced, Diverged}
 
@@ -316,7 +339,13 @@ def flow_diagram_svg(
     facets the plain table's numeric columns already opened. `pending=True` (Check
     not yet run) draws only the first split. Pure function of the inputs — no
     NiceGUI/Vue involved beyond the literal markup, so it's testable and reviewable
-    on its own (`tests/test_tw_sync_flow_diagram.py`)."""
+    on its own (`tests/test_tw_sync_flow_diagram.py`).
+
+    `leaked` (live review, #170 follow-up) is the confidential-but-already-on-
+    TaxonWorks subset of `not_eligible` (`CompareResult.leaked`, `.privacy` rows only)
+    — a live privacy breach, so it hangs its own single box off "Not eligible" rather
+    than living only in the page's separate issues list further down. Known only once
+    a Check has run (same as not_uploaded/synced/diverged), so it is 0 while pending."""
     if total <= 0:
         return f'<svg width="{_FLOW_W}" height="{_FLOW_H}" xmlns="http://www.w3.org/2000/svg"></svg>'
 
@@ -338,9 +367,10 @@ def flow_diagram_svg(
     p2, boxes2 = _flow_column(_FLOW_C2_X, total_box, repo_id, [
         (not_eligible, _FLOW_C_NOT_ELIGIBLE, "not_eligible", "Not eligible"),
         (eligible, _FLOW_C_ELIGIBLE, "eligible", "Eligible"),
-    ])
+    ], gap=_FLOW_C2_GAP)
     parts += p2
     eligible_box = boxes2.get("eligible")
+    not_eligible_box = boxes2.get("not_eligible")
 
     if pending:
         # Anchor on the Eligible box, or — when every specimen here is ineligible
@@ -373,6 +403,18 @@ def flow_diagram_svg(
                                  _FLOW_C3_X, (y0 + y1) / 2, "var(--tp-base-muted)"))
         return (f'<svg width="{_FLOW_W}" height="{_FLOW_H}" '
                 f'xmlns="http://www.w3.org/2000/svg">' + "".join(parts) + "</svg>")
+
+    # Leaked hangs off Not eligible, not Eligible — a leaked specimen IS one of the
+    # not-eligible ones (it withholds for the same reason any other does; it just
+    # happens to already be sitting on TaxonWorks from before that reason applied).
+    # Single-item column: no complementary "the rest" box, matching how this same
+    # figure has always been an alert (the page's own separate issues list, `_ICON_
+    # PRIVACY`), not a full partition of "Not eligible" into exhaustive categories.
+    if not_eligible_box is not None and leaked > 0:
+        p_leak, _boxes_leak = _flow_column(_FLOW_C3_X, not_eligible_box, repo_id, [
+            (leaked, _FLOW_C_LEAKED, "leaked", "Leaked"),
+        ])
+        parts += p_leak
 
     uploaded = synced + diverged
     p3, boxes3 = _flow_column(_FLOW_C3_X, eligible_box, repo_id, [
@@ -924,6 +966,14 @@ def build_tw_sync_tab(session_factory, refreshers: dict | None = None,
                                          if cached else pending),
                             "not_uploaded": (len(cached["result"].not_on_tw)
                                              if cached else pending),
+                            # #170 follow-up — a live privacy breach (confidential
+                            # locally, already on TaxonWorks), its own diagram box.
+                            # `leaked_privacy` excludes `leaked_curation` (on TW but
+                            # merely no longer eligible on curatorial grounds) — this
+                            # box is about confidentiality specifically, per the live
+                            # review request, not every reason a specimen can leak.
+                            "leaked": (len(cached["result"].leaked_privacy)
+                                       if cached else pending),
                         })
                         reasons_by_repo[r.id] = tw_compare.ineligible_specimens(
                             s, repository_id=r.id, scope_taxon_ids=scope_ids)
@@ -936,14 +986,15 @@ def build_tw_sync_tab(session_factory, refreshers: dict | None = None,
                 # the column name IS the row dict's own key, so no per-column function.
                 _CLICKABLE_COLS = (
                     "total", "not_eligible", "eligible", "not_uploaded", "synced",
-                    "diverged",
+                    "diverged", "leaked",
                 )
-                # icon + Quasar colour-when-nonzero for the three columns that report a
+                # icon + Quasar colour-when-nonzero for the four columns that report a
                 # compare outcome (module-level icon vocabulary).
                 _STATUS_COL_ICON = {
                     "not_uploaded": (_ICON_NOT_UPLOADED, "primary"),
                     "synced": (_ICON_SYNCED, "positive"),
                     "diverged": (_ICON_DIVERGED, "negative"),
+                    "leaked": (_ICON_PRIVACY, "negative"),
                 }
 
                 def _on_open_col(payload: dict) -> None:
@@ -991,10 +1042,10 @@ def build_tw_sync_tab(session_factory, refreshers: dict | None = None,
                         _open_catalog_numbers(list(cats), f"{label} — eligible")
                         return
 
-                    # The remaining three (not_uploaded / synced / diverged) only exist
-                    # once this collection's own Check has run — the table shows "Check
-                    # pending" for them until then, so there is nothing to hand to
-                    # Explore yet.
+                    # The remaining four (not_uploaded / synced / diverged / leaked)
+                    # only exist once this collection's own Check has run — the table
+                    # shows "Check pending" for them until then, so there is nothing to
+                    # hand to Explore yet.
                     data = state["compare"].get(repo_id)
                     if data is None:
                         ui.notify("Run Check for this collection first.",
@@ -1011,6 +1062,10 @@ def build_tw_sync_tab(session_factory, refreshers: dict | None = None,
                         _open_catalog_numbers(
                             [d.catalog_number for d in result.diverged],
                             f"{label} — diverged")
+                    elif col == "leaked":
+                        _open_catalog_numbers(
+                            [lk.catalog_number for lk in result.leaked_privacy],
+                            f"{label} — on TaxonWorks but confidential")
 
                 def _render_report() -> None:
                     # No explicit consent-status sync needed here any more — each
@@ -1032,7 +1087,15 @@ def build_tw_sync_tab(session_factory, refreshers: dict | None = None,
                             _render_flow_rows(rows)
                         else:
                             _render_table(rows)
-                        _render_report_footer(rows)
+                        # No "Why some are not eligible" list here any more (#170,
+                        # debloating): clicking a collection's "Not eligible" box (the
+                        # flow diagram) or column (the plain-table fallback) opens the
+                        # exact same catalog-number list in Explore, where each
+                        # specimen row now carries its own withheld-reason badges
+                        # (record_summary.py's `consent_badge_html`/
+                        # `identification_doubt_badge_html`) — one list, not two, and
+                        # the one in Explore can't grow unbounded the way an
+                        # always-expanded page-level list would for a big database.
 
                 def _render_table(rows: list[dict]) -> None:
                     table = ui.table(
@@ -1058,6 +1121,12 @@ def build_tw_sync_tab(session_factory, refreshers: dict | None = None,
                              "field": "synced", "align": "right"},
                             {"name": "diverged", "label": "Diverged",
                              "field": "diverged", "align": "right"},
+                            # #170 follow-up: the plain-table view is a fallback for
+                            # the flow diagram, not a lesser one — it must offer the
+                            # same visibility into a live privacy breach (a specimen
+                            # confidential here that TaxonWorks still holds).
+                            {"name": "leaked", "label": "Leaked",
+                             "field": "leaked", "align": "right"},
                             {"name": "actions", "label": "",
                              "field": "actions", "align": "right"},
                         ],
@@ -1133,6 +1202,7 @@ def build_tw_sync_tab(session_factory, refreshers: dict | None = None,
                             0 if pending else r["synced"],
                             0 if pending else r["diverged"],
                             pending=pending,
+                            leaked=0 if pending else r["leaked"],
                         )
                         with ui.card().classes("w-full mb-2 shadow-none") \
                                 .props("bordered"):
@@ -1185,26 +1255,6 @@ def build_tw_sync_tab(session_factory, refreshers: dict | None = None,
                                 _on_open_col(payload)
                                 return None
                             diag.on("open_col", lambda e: _on_flow_click(e.args))
-
-                def _render_report_footer(rows: list[dict]) -> None:
-                    # The "Eligible = …" formula and the "'Pending' means…" note that
-                    # used to sit here are gone (#170, live review, "debloating") — the
-                    # flow diagram now shows that breakdown directly instead of
-                    # spelling it out in prose underneath.
-                    reasons_by_repo = report_state["reasons"]
-                    if any(reasons_by_repo.values()):
-                        with ui.expansion("Why some are not eligible") \
-                                .classes("w-full mt-2"):
-                            for r in rows:
-                                reasons = reasons_by_repo.get(r["repo_id"]) or ()
-                                if not reasons:
-                                    continue
-                                ui.label(r["collection"]).classes(
-                                    "text-xs font-medium mt-1")
-                                for cat, why in reasons:
-                                    ui.label(f"{cat} — {'; '.join(why)}") \
-                                        .classes("text-xs") \
-                                        .style("color:var(--tp-base-soft)")
 
                 def _on_flow_switch(e) -> None:
                     report_state["flow_view"] = e.value
@@ -1399,8 +1449,8 @@ def build_tw_sync_tab(session_factory, refreshers: dict | None = None,
                         # A privacy breach and a curation tidy-up are both "on TaxonWorks
                         # but withheld here", and both are shown — but never under one
                         # count, and never in one colour. Only the privacy half is red.
-                        leaked_privacy = [lk for lk in result.leaked if lk.privacy]
-                        leaked_curation = [lk for lk in result.leaked if not lk.privacy]
+                        leaked_privacy = result.leaked_privacy
+                        leaked_curation = result.leaked_curation
                         if (result.duplicates or result.leaked or result.orphaned):
                             with ui.row().classes("gap-3 items-center flex-wrap"):
                                 if result.duplicates:
@@ -1524,6 +1574,16 @@ def build_tw_sync_tab(session_factory, refreshers: dict | None = None,
                                     ui.label(
                                         f"{lk.catalog_number} — {'; '.join(lk.reasons)}"
                                     ).classes("text-xs font-medium mt-1")
+                                    # What ELSE differs from what's on TaxonWorks (live
+                                    # review, #170 follow-up — "JJPC-00010 slipped
+                                    # through because the collector's name was added
+                                    # later"): the leak itself already says this record
+                                    # needs fixing there; showing the field diffs beside
+                                    # it means one trip to TaxonWorks covers both, not a
+                                    # second discovery pass through "Diverged" below.
+                                    for fd in lk.field_diffs:
+                                        ui.label(f"· {fd}").classes("text-xs") \
+                                            .style("color:var(--tp-base-soft)")
                                     ui.link(
                                         "Open in TaxonWorks",
                                         tw_compare.edit_url(lk.tw_object_id),

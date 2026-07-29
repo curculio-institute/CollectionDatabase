@@ -439,6 +439,15 @@ class LeakedRow:
     tw_object_id: int
     reasons: tuple[str, ...]
     privacy: bool = True
+    # Field-level diffs against what TaxonWorks actually holds — the same computation
+    # `diverged` runs for eligible specimens, run here too (live review: "JJPC-00010
+    # slipped through because the collector's name was added later" — the leak itself
+    # says the record needs fixing in TaxonWorks, but not what else in it might already
+    # be stale; surfacing both together is what makes the fix a single trip). Empty
+    # when TaxonWorks' `dwc_occurrences` projection has no row yet to diff against
+    # (the same lag `on_tw_not_compared` already accounts for) — never a claim that
+    # nothing differs.
+    field_diffs: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -509,6 +518,26 @@ class CompareResult:
     @property
     def synced_count(self) -> int:
         return len(self.synced)
+
+    @property
+    def leaked_privacy(self) -> tuple[LeakedRow, ...]:
+        """The confidentiality subset of `leaked` — on TaxonWorks despite being
+        withheld here for a PRIVACY reason, as opposed to `leaked_curation` (withheld
+        for curatorial reasons: a qualified/below-species determination). A live
+        privacy breach, is if anything the more urgent of the two.
+
+        Single source of truth (code review fix, #170 follow-up): `[lk for lk in
+        result.leaked if lk.privacy]` used to be re-written at three separate call
+        sites in `tw_sync_tab.py` (the flow diagram's Leaked count, its Explore
+        click-through, and the page's own issues list) — a future change to what
+        counts as a privacy leak needed all three updated by hand, and a missed one
+        would desync the diagram's count from the list Explore actually opens."""
+        return tuple(lk for lk in self.leaked if lk.privacy)
+
+    @property
+    def leaked_curation(self) -> tuple[LeakedRow, ...]:
+        """The complement of `leaked_privacy` — see its docstring."""
+        return tuple(lk for lk in self.leaked if not lk.privacy)
 
 
 def _diff_one(session: Session, co: CollectionObject, tw_row: dict) -> tuple[str, ...]:
@@ -725,11 +754,16 @@ def compare_repository(
                     matches[0]["dwc_occurrence_object_id"] if matches
                     else entries[0].tw_object_id
                 )
+                # Same diff `_diff_one` runs for an eligible/synced specimen (live
+                # review, #170 follow-up) — only possible when the projection has
+                # actually caught up (`matches`), same precondition as the eligible
+                # branch's own `elif not matches: on_tw_not_compared` a few lines up.
                 leaked.append(LeakedRow(
                     catalog_number=cat,
                     tw_object_id=tw_object_id,
                     reasons=decision.reasons,
                     privacy=decision.withheld_for_privacy,
+                    field_diffs=_diff_one(session, co, matches[0]) if matches else (),
                 ))
 
         # Filed under a different namespace than this collection — the other half of a

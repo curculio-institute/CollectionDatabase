@@ -165,6 +165,45 @@ def test_pending_with_zero_eligible_still_draws_a_check_box():
     assert "repo_id: 5, col: 'check'" in svg
 
 
+def test_leaked_is_omitted_when_zero():
+    svg = flow_diagram_svg(1, 40, 12, 28, 10, 16, 2, leaked=0)
+    assert "Leaked" not in svg
+
+
+def test_leaked_hangs_off_not_eligible_and_is_clickable():
+    svg = flow_diagram_svg(9, 40, 12, 28, 10, 16, 2, leaked=5)
+    assert _well_formed(svg)
+    assert "Leaked 5" in svg
+    assert "repo_id: 9, col: 'leaked'" in svg
+
+
+def test_leaked_is_zero_while_pending():
+    """Live review: only known once a Check has run, same as not_uploaded/synced/
+    diverged — must never show during the pending placeholder state."""
+    svg = flow_diagram_svg(1, 40, 12, 0, 0, 0, 0, pending=True, leaked=5)
+    assert "Leaked" not in svg
+
+
+def test_leaked_box_never_overlaps_any_other_box_in_its_column():
+    """The Not-eligible/Eligible split is the one place two branches each grow their
+    own subtree (Leaked under Not eligible, Not-uploaded/Uploaded under Eligible) —
+    verify their C3-column boxes never collide, in the worst case where every count
+    is nonzero and both subtrees are at their fullest."""
+    svg = flow_diagram_svg(1, 100, 30, 70, 20, 30, 20, leaked=10)
+    boxes = [
+        (float(x), float(y), float(w), float(h))
+        for x, y, w, h in re.findall(
+            r'<rect x="([\d.]+)" y="([\d.]+)" width="([\d.]+)" height="([\d.]+)"', svg)
+    ]
+    by_x: dict[float, list[tuple[float, float]]] = {}
+    for x, y, w, h in boxes:
+        by_x.setdefault(x, []).append((y, y + h))
+    for x, ranges in by_x.items():
+        ranges.sort()
+        for (a0, a1), (b0, b1) in zip(ranges, ranges[1:]):
+            assert a1 <= b0, f"boxes overlap at x={x}: ({a0},{a1}) vs ({b0},{b1})"
+
+
 def test_small_collection_no_negative_or_nan_dimensions():
     """Every count is 1 or less than a rounding pixel — the classic place a naive
     proportional-height calculation divides by a near-zero and produces garbage."""

@@ -137,6 +137,8 @@ def build_records_tab(session_factory, *, on_saved: callable | None = None) -> N
                     "html":  rs.specimen_html(rank=r.taxon_rank,
                                               confidential=r.confidential,
                                               event_confidential=r.event_confidential,
+                                              recorded_by_state=r.recorded_by_state,
+                                              determination_reasons=r.determination_reasons,
                                               **common),
                 })
             return out

@@ -282,6 +282,67 @@ def test_a_confidential_specimen_absent_from_taxonworks_is_not_leaked(session):
     assert result.ineligible_count == 1
 
 
+def test_a_leaked_specimen_also_reports_its_field_diffs(session):
+    """Live review: 'JJPC-00010 slipped through because the collector's name was added
+    later' — the leak already says the record needs fixing on TaxonWorks, but not
+    whether anything ELSE in it is also stale. `field_diffs` (the same computation
+    `diverged` runs for eligible specimens) must run for a leaked one too, so the
+    report shows both problems in one place instead of a second discovery pass."""
+    co = _specimen(session, "JJPC-00025", confidential=1, individual_count=1)
+    result = compare_repository(
+        session,
+        {"JJPC-00025": [_occurrence("JJPC-00025", 525, individualCount="9")]},
+        repository_id=_repo_id(session),
+        index=_index(("JJPC-00025", 525, "JJPC")),
+    )
+    assert [lk.catalog_number for lk in result.leaked] == ["JJPC-00025"]
+    assert any("individualCount" in fd for fd in result.leaked[0].field_diffs)
+
+
+def test_a_leaked_specimen_with_no_projection_row_reports_no_field_diffs(session):
+    """Same lag case `on_tw_not_compared` covers for eligible specimens — the index
+    says TaxonWorks has it, but `dwc_occurrences` hasn't caught up, so there is
+    nothing to diff against. Empty must mean 'not compared', never 'nothing differs'."""
+    _specimen(session, "JJPC-00026", confidential=1)
+    result = compare_repository(
+        session, {}, repository_id=_repo_id(session),
+        index=_index(("JJPC-00026", 526, "JJPC")),
+    )
+    assert [lk.catalog_number for lk in result.leaked] == ["JJPC-00026"]
+    assert result.leaked[0].field_diffs == ()
+
+
+def test_leaked_privacy_and_leaked_curation_partition_leaked(session):
+    """Code review fix (#170 follow-up): `CompareResult.leaked_privacy`/
+    `leaked_curation` are now the single source of truth `tw_sync_tab.py` reads
+    (replacing three separately hand-written `[lk for lk in result.leaked if
+    lk.privacy]` comprehensions) — they must actually partition `leaked` correctly,
+    every row exactly once, on either side."""
+    _specimen(session, "JJPC-00023", confidential=1)          # privacy
+    repo_id = _repo_id(session)
+    co = spec_svc.create_collection_object(
+        session, collecting_event_id=None, catalog_number="JJPC-00024",
+        repository_id=repo_id,
+    )
+    session.flush()
+    spec_svc.create_determination(
+        session, collection_object_id=co.id, taxon_id=_species(session).id,
+        is_current=1, identification_qualifier="cf.",              # curatorial
+    )
+    session.flush()
+
+    result = compare_repository(
+        session, {}, repository_id=repo_id,
+        index=_index(("JJPC-00023", 523, "JJPC"), ("JJPC-00024", 524, "JJPC")),
+    )
+    assert {lk.catalog_number for lk in result.leaked} == {"JJPC-00023", "JJPC-00024"}
+    assert [lk.catalog_number for lk in result.leaked_privacy] == ["JJPC-00023"]
+    assert [lk.catalog_number for lk in result.leaked_curation] == ["JJPC-00024"]
+    # A true partition: every leaked row on exactly one side, none on both, none lost.
+    assert (set(result.leaked_privacy) | set(result.leaked_curation)) == set(result.leaked)
+    assert not (set(result.leaked_privacy) & set(result.leaked_curation))
+
+
 def test_scope_taxon_ids_restricts_which_local_specimens_are_counted(session):
     """Design pass (live review): the optional taxon restriction the Export step
     already applies must narrow this function's own specimen set too, so every count

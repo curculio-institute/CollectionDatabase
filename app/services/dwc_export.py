@@ -51,6 +51,17 @@ class ExportDecision:
     # exists because finding such a record ALREADY on TaxonWorks means two very
     # different things: a privacy breach to correct now, or a record to tidy up.
     privacy_reasons: tuple[str, ...] = ()
+    # The recordedBy person's export handling, one of "" / "confidential" / "blocked" /
+    # "redacted" — the three sub-cases of rules 3–4 below, broken out as their own field
+    # (rather than left for a caller to re-derive by string-matching `reasons`/
+    # `blank_notes`) for #170's badge in `record_summary.py`: a specimen row needs to
+    # show a distinct icon+colour per state, not just "withheld: yes/no".
+    recorded_by_state: str = ""
+    # The identification-doubt subset of `reasons` (rule 5) — split out the same way and
+    # for the same reason: #170's badge names WHY the determination itself isn't
+    # publishable (qualified / below species / no current ID), which privacy_reasons
+    # cannot answer.
+    determination_reasons: tuple[str, ...] = ()
 
     @property
     def withheld(self) -> bool:
@@ -67,12 +78,27 @@ def _recorded_by(event: CollectingEvent | None) -> Person | None:
 
 # Ranks at or below species. Derived by indexing into `taxa.TAXON_RANKS` — the one
 # high→low ordering — rather than listing them, so ICN's infraspecific tiers (variety,
-# form, …) are covered and a rank added there later cannot be forgotten here.
+# form, …) are covered and a rank added later cannot be forgotten here.
 _SPECIES_RANK_INDEX = taxa.TAXON_RANKS.index("species")
 
+# "Not supplied" for `_determination_reasons`/`export_decision`'s `determination` param
+# — distinct from `None`, which is the legitimate "genuinely undetermined" value.
+_UNSET = object()
 
-def _determination_reasons(co: CollectionObject) -> list[str]:
+
+def _determination_reasons(co: CollectionObject, *, determination=_UNSET) -> list[str]:
     """Why this specimen's *current* identification is not publishable — empty if it is.
+
+    `determination`: the current `TaxonDetermination` (or `None` for genuinely
+    undetermined), when the caller already holds it (code review fix — `explore.py`'s
+    `query_specimens` already outer-joins it into `td`; without this, every row's
+    `export_decision` call re-derived it via `_current_determination`, a lazy load of
+    `co.determinations` per specimen — a real N+1 reproduced live: 20 specimens cost 21
+    extra queries). `None` is a legitimate value here (undetermined), so the "not
+    supplied at all" default is a distinct sentinel — a plain `None` default could not
+    tell "caller says undetermined" from "caller didn't say", and would silently fall
+    back to the lazy lookup for every undetermined specimen, the one case that most
+    needed the fix.
 
     Two curatorial rules (decided 2026-07-26, #149), both about how sure the
     determination is. The mirror is a published statement of what this collection holds,
@@ -101,7 +127,7 @@ def _determination_reasons(co: CollectionObject) -> list[str]:
        same way: unpublishable, never assumed to be fine (§2 — a silent wrong value is
        worse than a loud refusal).
     """
-    det = _current_determination(co)
+    det = determination if determination is not _UNSET else _current_determination(co)
     if det is None:
         return ["no current identification"]
 
@@ -133,11 +159,14 @@ def export_decision(
     co: CollectionObject,
     *,
     event: CollectingEvent | None = None,
+    determination=_UNSET,
 ) -> ExportDecision:
     """Decide whether `co` may be exported to TaxonWorks, and what must be blanked.
 
     `event` defaults to the specimen's own collecting event; pass it explicitly only to
-    avoid a lazy load when the caller already holds it.
+    avoid a lazy load when the caller already holds it. `determination` is the same idea
+    for the current `TaxonDetermination` (or `None` for genuinely undetermined) — see
+    `_determination_reasons` for why its default is a sentinel, not `None`.
 
     The rules, in the order the issue states them (#149 Step 1.2 / Step 3.2):
 
@@ -172,6 +201,7 @@ def export_decision(
     reasons: list[str] = []
     blank_fields: list[str] = []
     blank_notes: list[str] = []
+    recorded_by_state = ""
 
     if co.confidential:
         reasons.append("specimen is flagged confidential")
@@ -183,27 +213,36 @@ def export_decision(
         if person.confidential:
             # No setting here, by design — a confidential collector is never exported.
             reasons.append(f"recordedBy {person.full_name} is confidential")
+            recorded_by_state = "confidential"
         elif not person.consent_approved:
             if cfg.tw_export_nonconsent == "consented_only":
                 reasons.append(f"recordedBy {person.full_name} has not consented")
+                recorded_by_state = "blocked"
             else:                                    # "name_removed" — the default
                 blank_fields.append("recordedBy")
                 blank_notes.append(f"recordedBy: {person.full_name} has not consented")
+                recorded_by_state = "redacted"
 
     # Everything above is privacy; everything below is curatorial. Captured before the
     # determination rules run so the two can be told apart in the report.
     privacy_reasons = tuple(reasons)
-    reasons.extend(_determination_reasons(co))
+    determination_reasons = tuple(
+        _determination_reasons(co, determination=determination))
+    reasons.extend(determination_reasons)
 
     if reasons:
         # A withheld record has no fields to blank — drop them so the report cannot show
         # a redaction for a row that is never written.
         return ExportDecision(eligible=False, reasons=tuple(reasons),
-                              privacy_reasons=privacy_reasons)
+                              privacy_reasons=privacy_reasons,
+                              recorded_by_state=recorded_by_state,
+                              determination_reasons=determination_reasons)
     return ExportDecision(
         eligible=True,
         blank_fields=tuple(blank_fields),
         blank_notes=tuple(blank_notes),
+        recorded_by_state=recorded_by_state,
+        determination_reasons=determination_reasons,
     )
 
 

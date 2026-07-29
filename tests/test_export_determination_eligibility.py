@@ -18,7 +18,8 @@ so a tidy-up is never reported as a confidentiality breach.
 """
 import pytest
 
-from app.models import Taxon
+import app.config as config
+from app.models import CollectingEvent, Person, Taxon
 from app.models.base import _utcnow
 from app.services.dwc_export import export_decision
 from app.services.specimens import create_collection_object, create_determination
@@ -157,3 +158,133 @@ def test_both_causes_are_reported_together(session, species):
     assert len(decision.reasons) == 2
     assert decision.privacy_reasons == ("specimen is flagged confidential",)
     assert decision.withheld_for_privacy
+
+
+# ── recorded_by_state (#170: the record_summary person_off badge's three sub-states) ──
+
+def _specimen_with_recorder(session, catalog_number, taxon, *, confidential=False,
+                             consent_approved=False):
+    p = Person(full_name="J. Collector", created_at=_utcnow(), updated_at=_utcnow(),
+               confidential=int(confidential), consent_approved=int(consent_approved))
+    session.add(p)
+    session.flush()
+    ev = CollectingEvent(recorded_by_id=p.id, created_at=_utcnow(), updated_at=_utcnow())
+    session.add(ev)
+    session.flush()
+    co = create_collection_object(
+        session, collecting_event_id=ev.id, catalog_number=catalog_number,
+        repository_id=ensure_repo(session, "JJPC"),
+    )
+    session.flush()
+    create_determination(session, collection_object_id=co.id, taxon_id=taxon.id, is_current=1)
+    session.flush()
+    session.refresh(co)
+    return co
+
+
+def test_a_confidential_recorder_state_is_confidential(session, species):
+    sp, _ = species
+    co = _specimen_with_recorder(session, "JJPC-10010", sp, confidential=True)
+    decision = export_decision(co)
+    assert decision.recorded_by_state == "confidential"
+    assert not decision.eligible
+
+
+def test_an_unconsented_recorder_under_the_default_policy_is_redacted_not_withheld(
+    session, species, monkeypatch,
+):
+    """The exact case flagged in live review: NOT confidential, NOT consented — under the
+    default policy ("name_removed") this is NOT a withholding reason at all, only a
+    redaction, so the specimen stays eligible and carries the grey/informational badge."""
+    monkeypatch.setattr(config, "_instance", config.AppConfig(
+        media_dir="unused", tw_export_nonconsent="name_removed"))
+    sp, _ = species
+    co = _specimen_with_recorder(session, "JJPC-10011", sp,
+                                 confidential=False, consent_approved=False)
+    decision = export_decision(co)
+    assert decision.recorded_by_state == "redacted"
+    assert decision.eligible          # NOT withheld — only the name is blanked
+    assert decision.reasons == ()
+    assert decision.blank_fields == ("recordedBy",)
+
+
+def test_the_same_recorder_is_blocked_under_the_consented_only_policy(
+    session, species, monkeypatch,
+):
+    """Same person, same flags — only the CONFIGURED POLICY differs, and that alone flips
+    this from "exported, name redacted" to "withheld entirely"."""
+    monkeypatch.setattr(config, "_instance", config.AppConfig(
+        media_dir="unused", tw_export_nonconsent="consented_only"))
+    sp, _ = species
+    co = _specimen_with_recorder(session, "JJPC-10012", sp,
+                                 confidential=False, consent_approved=False)
+    decision = export_decision(co)
+    assert decision.recorded_by_state == "blocked"
+    assert not decision.eligible
+    assert decision.withheld_for_privacy
+
+
+def test_a_consenting_recorder_gets_no_state_at_all(session, species):
+    sp, _ = species
+    co = _specimen_with_recorder(session, "JJPC-10013", sp,
+                                 confidential=False, consent_approved=True)
+    decision = export_decision(co)
+    assert decision.recorded_by_state == ""
+    assert decision.eligible
+    assert decision.blank_fields == ()
+
+
+# ── determination=… (code review fix: avoid a lazy `co.determinations` load) ──────
+
+def test_a_caller_supplied_determination_is_used_instead_of_looked_up(session, species):
+    """`explore.py`'s query already outer-joins the current determination — passing it
+    in must be equivalent to the lookup, not just accepted and ignored."""
+    sp, _ = species
+    co = _specimen(session, "JJPC-10015", sp)
+    det = next(d for d in co.determinations if d.is_current == 1)
+    looked_up = export_decision(co)
+    supplied = export_decision(co, determination=det)
+    assert supplied == looked_up
+
+
+def test_none_means_genuinely_undetermined_not_unsupplied(session):
+    """The sentinel distinction this fix depends on: `determination=None` must be
+    treated as "no current identification", the same as an unsupplied lookup finding
+    none — NOT as "caller didn't say, fall back to the (N+1) lookup"."""
+    co = _specimen(session, "JJPC-10016")
+    assert export_decision(co, determination=None) == export_decision(co)
+    assert export_decision(co, determination=None).reasons == \
+        ("no current identification",)
+
+
+def test_supplying_the_determination_skips_the_co_determinations_lookup(
+    session, species, monkeypatch,
+):
+    """The actual regression, tested directly against the fix rather than against
+    SQLAlchemy internals: `_current_determination` (the function that lazily walks
+    `co.determinations`) must never be called at all when the caller already supplied
+    the determination."""
+    import app.services.dwc_export as dwc_export_module
+
+    sp, _ = species
+    co = _specimen(session, "JJPC-10017", sp)
+    det = next(d for d in co.determinations if d.is_current == 1)
+
+    def _boom(_co):
+        raise AssertionError("_current_determination was called despite being supplied")
+
+    monkeypatch.setattr(dwc_export_module, "_current_determination", _boom)
+    export_decision(co, determination=det)   # must not raise
+
+
+def test_determination_reasons_is_the_curatorial_subset_of_reasons(session, species):
+    """`determination_reasons` (#170's question-mark badge) must equal `reasons` minus
+    whatever `privacy_reasons` already accounts for — never double-counted, never dropped."""
+    _, genus = species
+    co = _specimen(session, "JJPC-10014", genus)
+    co.confidential = 1
+    session.flush()
+    decision = export_decision(co)
+    assert decision.determination_reasons == \
+        tuple(r for r in decision.reasons if r not in decision.privacy_reasons)
+    assert any("not to species" in r for r in decision.determination_reasons)

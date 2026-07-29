@@ -24,6 +24,7 @@ from app.models import (
     CollectionObject, CollectingEvent, TaxonDetermination, Taxon, Person,
     Country, StateProvince, County, Island, AdministrativeRegion, Repository,
 )
+from app.services import dwc_export
 from app.services.taxa import (
     format_scientific_name, parse_scientific_name, TAXON_RANKS,
     expand_taxon_scope, synonym_group_ids,
@@ -192,6 +193,11 @@ class SpecimenRow:
     # tooltip. See CLAUDE.md "Confidential / privacy flag".
     confidential: bool = False
     event_confidential: bool = False
+    # The other two grounds `export_decision` withholds a specimen on (#170), broken out
+    # onto the row the same way `confidential` is — see `record_summary.consent_badge_html`
+    # / `identification_doubt_badge_html`, the two badges these feed.
+    recorded_by_state: str = ""
+    determination_reasons: tuple[str, ...] = ()
     needs_attention: bool = False   # not determined to species (indet.)
     sex: str | None = None
     count: int = 1
@@ -495,6 +501,15 @@ def query_specimens(session: Session, filters: list[dict] | None = None,
         # associations/coords/habitat/date/collector, which the summary already shows
         # separately, so reusing it would duplicate them (and print "specimen #None").
         place = format_place(ev) if ev else ""
+        # Single source of truth (#170) — reusing `export_decision` here, rather than
+        # re-deriving "why not eligible" from `td`/`ev` locally, is the same discipline
+        # the TaxonWorks sync comparison itself follows (CLAUDE.md §5c module docstring):
+        # a specimen the badge calls withheld can never be one the sync tool disagrees on.
+        # `determination=td` (code review fix) passes the current determination this
+        # query already outer-joined — without it, `export_decision` re-derived it via
+        # a lazy load of `co.determinations` on every single row (confirmed N+1: 20
+        # specimens cost 21 extra queries).
+        decision = dwc_export.export_decision(co, event=ev, determination=td)
         rows.append(SpecimenRow(
             co_id=co.id,
             catalog=co.catalog_number,
@@ -507,6 +522,8 @@ def query_specimens(session: Session, filters: list[dict] | None = None,
             hosts=hosts,
             confidential=bool(co.confidential),
             event_confidential=bool(ev.confidential) if ev else False,
+            recorded_by_state=decision.recorded_by_state,
+            determination_reasons=decision.determination_reasons,
             needs_attention=(t is None or rank not in ("species", "subspecies", "variety", "form")),
             sex=(td.sex if td else None),
             count=co.individual_count,

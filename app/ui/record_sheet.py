@@ -26,6 +26,7 @@ import app.services.media as media_svc
 import app.services.external_ids as extid_svc
 import app.services.life_stage as ls_svc
 import app.services.print_queue as pq_svc
+from app.services import dwc_export
 from app.services.taxa import format_scientific_name
 from app.services.label_text import format_place
 
@@ -104,6 +105,13 @@ def build_specimen_sheet(session_factory, co_id: int, *, on_edit, on_open_event=
         cur = next((d for d in dets if d.is_current), None) or (dets[0] if dets else None)
         cur_t = cur.taxon if cur else None
 
+        # `determination=cur` reuses the current determination `get_determination_history`
+        # already fetched above — see explore.py's identical `determination=td` fix
+        # (#170 code review) for why this matters: without it, `export_decision` would
+        # lazily re-derive it via `co.determinations`. Only one specimen is ever built
+        # per `build_specimen_sheet` call, so this alone is not an N+1 the way the list
+        # surfaces were, but it's still a redundant query and the same discipline.
+        decision = dwc_export.export_decision(co, event=ev, determination=cur)
         ident = {
             "catalog": co.catalog_number,   # already carries its collection prefix (JJPC-00042)
             "collection": co.repository.collection_full_name if co.repository else "",
@@ -119,6 +127,8 @@ def build_specimen_sheet(session_factory, co_id: int, *, on_edit, on_open_event=
             "qualifier": cur.identification_qualifier if cur else None,
             "confidential": bool(co.confidential),
             "event_confidential": bool(ev.confidential) if ev else False,
+            "recorded_by_state": decision.recorded_by_state,
+            "determination_reasons": decision.determination_reasons,
         }
         curatorial = {
             "Preparation": co.preparation.name if co.preparation else None,
@@ -217,6 +227,9 @@ def _co_summary(session, co) -> dict:
     dets = sp_svc.get_determination_history(session, co.id)
     cur = next((d for d in dets if d.is_current), None) or (dets[0] if dets else None)
     t = cur.taxon if cur else None
+    # `determination=cur` — see `build_specimen_sheet`'s identical comment (#170 code
+    # review): avoids `export_decision` lazily re-deriving what `dets` already found.
+    decision = dwc_export.export_decision(co, event=co.collecting_event, determination=cur)
     return {
         "co_id": co.id,
         "catalog": co.catalog_number,
@@ -231,6 +244,8 @@ def _co_summary(session, co) -> dict:
         "date_identified": cur.date_identified if cur else None,
         "confidential": bool(co.confidential),
         "event_confidential": bool(co.collecting_event.confidential) if co.collecting_event else False,
+        "recorded_by_state": decision.recorded_by_state,
+        "determination_reasons": decision.determination_reasons,
     }
 
 
@@ -306,6 +321,8 @@ def _render_event(place, ev, detail, media, specimens, nearby, *,
                             date_identified=sp["date_identified"],
                             confidential=sp["confidential"],
                             event_confidential=sp["event_confidential"],
+                            recorded_by_state=sp["recorded_by_state"],
+                            determination_reasons=sp["determination_reasons"],
                         )).classes("ex-spec-row w-full")
                         if on_open_specimen:
                             row.on("click", lambda _, c=sp["co_id"]: on_open_specimen(c))
@@ -357,9 +374,11 @@ def _render_specimen(ident, curatorial, det_hist, assocs, life_stages, ext_ids, 
                 ui.html(f'<div class="rsheet-hero">{name} {bits} {qual} {typ}</div>')
                 det = rs._det_html(ident["identified_by"], ident["date_identified"])
                 lock = rs.lock_html(own=ident["confidential"], from_event=ident["event_confidential"])
+                consent = rs.consent_badge_html(ident["recorded_by_state"])
+                doubt = rs.identification_doubt_badge_html(ident["determination_reasons"])
                 ui.html(f'<span class="rs-cat">{_html.escape(ident["catalog"])}</span>'
                         f'  ·  <span class="rsheet-muted">{_html.escape(ident["collection"] or "")}</span>'
-                        f'  {det}  {lock}')
+                        f'  {det}  {lock}{consent}{doubt}')
             with ui.row().classes("items-center gap-2 shrink-0"):
                 ui.button("Edit", icon="edit", on_click=on_edit).props("no-caps unelevated")
                 if on_reprint:
