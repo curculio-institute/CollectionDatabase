@@ -159,7 +159,7 @@ def format_locality_label(
     """Build a single-string locality label from a CollectingEvent.
 
     Format: Country: stateProvince, Municipality, Locality, lat lon ±Xm,
-            Habitat, associated species, leg. A. Surname Date
+            Habitat, samplingProtocol, associated species, leg. A. Surname Date
 
     html=True  — HTML-escapes plain parts; wraps associated species in <em>.
     html=False — plain text; for dropdown previews and editable print fields.
@@ -202,6 +202,10 @@ def format_locality_label(
     _habitat = ev.habitat_obj.name if ev.habitat_obj else None
     if _habitat:
         parts.append(_e(_habitat))
+
+    _protocol = ev.sampling_protocol_obj.name if ev.sampling_protocol_obj else None
+    if _protocol:
+        parts.append(_e(_protocol))
 
     if associated_species:
         for sp in associated_species:

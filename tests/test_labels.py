@@ -13,7 +13,7 @@ from weasyprint.formatting_structure.boxes import LineBox
 
 from app.services.labels import (
     DeterminationLabel, DataLabel,
-    _det_line1, _det_name_html, _det_line3, _data_line2, _fits_one_line,
+    _det_line1, _det_name_html, _det_line3, _data_line1, _data_line2, _fits_one_line,
     _grouped_html,
     grouped_sheet, LabelGroup, SpecimenLabels,
 )
@@ -372,9 +372,14 @@ def test_locality_label_uses_the_comma_prefix():
 
 
 def test_data_label_line1_uses_the_comma_prefix():
-    from app.services.labels import _data_line1
     line = _data_line1(DataLabel(
         country="Greece", country_code="GR",
         state_province="Peloponnese Region", state_province_code="GR-J",
         locality="Tripoli"))
     assert line.startswith("GR, Peloponnese Region: Tripoli")
+
+
+def test_data_label_line1_includes_sampling_protocol():
+    line = _data_line1(DataLabel(locality="Tripoli", habitat="Heath",
+                                  sampling_protocol="Pitfall trap"))
+    assert "Heath, Pitfall trap" in line

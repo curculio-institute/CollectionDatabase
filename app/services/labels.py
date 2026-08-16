@@ -193,7 +193,7 @@ em {{ font-style: italic; }}
 # Data labels  (18 × 2.5 mm, 2 lines)
 # ---------------------------------------------------------------------------
 # Format matches original:
-#   Line 1:  Country, Region: Locality lat, lon, habitat
+#   Line 1:  Country, Region: Locality lat, lon, habitat, samplingProtocol
 #   Line 2:  leg. Collector  Date
 # The "Country, Region" prefix collapses ONE of the two to its ISO code when the pair is
 # too long for 18 mm ("Germany, BW" / "GR, Peloponnese Region") — never both, so the label
@@ -217,6 +217,7 @@ class DataLabel:
     event_date: Optional[str]               = None
     recorded_by: Optional[str]              = None
     habitat: Optional[str]                  = None
+    sampling_protocol: Optional[str]        = None
     associated_species: Optional[list[str]] = None
     # Print-only override typed in the queue (#37): when set, the label prints
     # this verbatim (one <div> per line) instead of the composed fields. Lets the
@@ -420,6 +421,9 @@ def _data_line1(lbl: DataLabel) -> str:
 
     if lbl.habitat:
         parts.append(_e(lbl.habitat))
+
+    if lbl.sampling_protocol:
+        parts.append(_e(lbl.sampling_protocol))
 
     if lbl.associated_species:
         for sp in lbl.associated_species:
