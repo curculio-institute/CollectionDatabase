@@ -38,6 +38,11 @@ import app.services.taxa as taxa_svc
 # flag is a normal curatorial state. Amber is also how closed-access padlocks are rendered.
 _LOCK_AMBER = "#b45309"
 _CONSENT_GREEN = "#15803d"
+# Red is reserved for the ONE state that is unconditional and has no setting — a confidential
+# collector is never exported, in any form (CLAUDE.md §5c rule 3). Every other withholding
+# reason in this file is amber ("restricted, not wrong"); this is the one exception, because
+# unlike the rest it cannot be resolved by a policy choice, only by the person's own flag.
+_PERSON_RED = "#dc2626"
 
 
 def confidential_reason(*, own: bool, from_event: bool) -> str:
@@ -62,6 +67,68 @@ def lock_html(*, own: bool = False, from_event: bool = False) -> str:
     # reaches it and skews the padlock glyph. An icon is not text and is never italic.
     return (f'<span class="material-icons rs-lock" style="color:{_LOCK_AMBER}" '
             f'title="{tip}">lock</span>')
+
+
+# (design pass, #170) — the sync tab's "Why some are not eligible" list is gone; the same
+# information now rides on the specimen row itself, wherever it's browsed (Explore first),
+# as two more badges beside the padlock. The padlock stays scoped to the specimen's/event's
+# OWN `confidential` flag; these two cover the other two grounds `export_decision` withholds
+# on (CLAUDE.md §5c: privacy — the recordedBy person's own state — and certainty — the
+# determination itself).
+_CONSENT_TOOLTIP = {
+    # Every one of the three states names its own consequence, in the same voice as
+    # `confidential_reason` above — the padlock's tooltip is a sentence, so these are too.
+    # The confidential case especially: it is the most severe of the three and had the
+    # least informative tooltip (a bare "Confidential", which never said what follows
+    # from it or that the collector, not the specimen, is the reason).
+    "confidential": ("Withheld from export: the collector (recordedBy) is flagged "
+                     "confidential, which withholds the whole record."),
+    "blocked": ("Withheld from export: the collector (recordedBy) has not consented, and "
+                "“Export only data where the collector has consented” is active."),
+    "redacted": "Will be exported with the collector’s name removed.",
+}
+_CONSENT_COLOR = {
+    "confidential": _PERSON_RED,
+    "blocked": _LOCK_AMBER,
+    "redacted": "var(--tp-base-soft)",   # informational, not a restriction — still exported
+}
+
+
+def consent_badge_html(state: str = "") -> str:
+    """The recordedBy person's export handling — `export_decision(...).recorded_by_state`,
+    one of "" / "confidential" / "blocked" / "redacted". A `person_off` glyph, not another
+    padlock (live review): the padlock already means "this specimen/event's own flag
+    withholds it"; this is about the COLLECTOR's state, a different question with its own
+    three-way answer, so it gets its own icon rather than overloading the lock with a third
+    colour.
+
+    An unrecognised `state` renders nothing, the same as `""` (code review fix — a bare
+    `if not state` guard let anything else through to a direct dict index, so one bad
+    value raised `KeyError` and took down every OTHER row's render with it, since
+    `_render_specimens`/`_render_events` build the whole results panel's HTML in one
+    loop). `state` is always sourced from `export_decision`'s own closed set in every
+    current caller, so this is a last-resort guard against a future caller passing
+    something else — a missing badge is a survivable display gap; an unhandled
+    exception killing unrelated specimens' rows is not."""
+    if state not in _CONSENT_TOOLTIP:
+        return ""
+    tip = _html.escape(_CONSENT_TOOLTIP[state])
+    return (f'<span class="material-icons rs-lock" style="color:{_CONSENT_COLOR[state]}" '
+            f'title="{tip}">person_off</span>')
+
+
+def identification_doubt_badge_html(reasons: tuple[str, ...] = ()) -> str:
+    """Why the CURRENT identification itself isn't publishable — `export_decision(...)
+    .determination_reasons` (qualified 'cf./aff./…', below species rank, or no current ID
+    at all). An orange question mark (live review): these are all forms of "the ID isn't
+    certain enough", so — like the padlock's own two sub-reasons — they collapse into ONE
+    badge whose tooltip lists whichever apply, rather than a separate icon per sub-reason."""
+    reasons = tuple(r for r in reasons if r)
+    if not reasons:
+        return ""
+    tip = _html.escape("Not eligible for TaxonWorks export: " + "; ".join(reasons))
+    return (f'<span class="material-icons rs-lock" style="color:{_LOCK_AMBER}" '
+            f'title="{tip}">question_mark</span>')
 
 
 def name_html(name: str, rank: str | None = None, authorship: str | None = None) -> str:
@@ -123,14 +190,24 @@ def specimen_html(
     date_identified: str | None = None,
     confidential: bool = False,
     event_confidential: bool = False,
+    recorded_by_state: str = "",
+    determination_reasons: tuple[str, ...] = (),
     undetermined_note: str = "— no identification —",
 ) -> str:
     """The two-line specimen row used by every browse surface.
 
-    Name line: catalog · name (+authorship) · sex/count · **det. Determiner Year** · lock.
-    Meta line: place · **collected from Host** · eventDate · leg. Collector. The
-    determination lives with the name (identity); the host sits between place and date on
-    the collection line."""
+    Name line: catalog · name (+authorship) · sex/count · **det. Determiner Year** · lock ·
+    person_off · question mark. Meta line: place · **collected from Host** · eventDate ·
+    leg. Collector. The determination lives with the name (identity); the host sits between
+    place and date on the collection line.
+
+    The three trailing badges are `export_decision`'s three independent grounds, in its own
+    rule order (CLAUDE.md §5c) — the padlock (rules 1–2, this record's own confidential
+    flag), `person_off` (rules 3–4, the recordedBy person's export state), and the question
+    mark (rule 5, the determination's own certainty). #170: this replaced the TaxonWorks
+    sync tab's "Why some are not eligible" list, which could get arbitrarily long — the same
+    information now travels with the specimen everywhere it's browsed instead of living in
+    one dedicated, unbounded list."""
     ident = name_html(name, rank, authorship) if name else \
         f'<span class="rs-none">{_html.escape(undetermined_note)}</span>'
     # Meta line — plain-text bits are escaped; the host bit is trusted HTML (italic name).
@@ -152,6 +229,8 @@ def specimen_html(
         f'{ident}{_bits(sex, count)}{_det_html(identified_by, date_identified)}'
         f'<span class="rs-spacer"></span>'
         f'{lock_html(own=confidential, from_event=event_confidential)}'
+        f'{consent_badge_html(recorded_by_state)}'
+        f'{identification_doubt_badge_html(determination_reasons)}'
         '</div>'
         # No event line at all when there is nothing to say — under an Explore event the
         # locality IS the event above, so a bare "—" would be noise.

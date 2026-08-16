@@ -9,6 +9,7 @@ from app.models import CollectionObject, Taxon, TaxonDetermination
 from app.models.disposition import Disposition
 from app.models.base import _utcnow
 import app.services.batch_ops as batch
+from app.services.taxa import synonymize
 from tests.helpers import ensure_repo
 
 
@@ -55,6 +56,23 @@ def test_fetch_by_taxon_includes_descendants(session, world):
     # Fetching the genus pulls its species' specimens, still scoped to HOME.
     got = batch.fetch_by_taxon(session, repository_id=world["home"], taxon_id=world["genus"].id)
     assert {m.catalog for m in got} == {"HOME-00001", "HOME-00002"}
+
+
+def test_fetch_by_taxon_reaches_across_a_synonym_link(session, world):
+    """#151: fetching by the accepted taxon must also pull in specimens determined
+    under its synonym (own-lineage: parented under an unrelated genus), and vice
+    versa — same OTU, same working set."""
+    accepted = world["sp"]                                   # Sitona oblongulus
+    other_genus = _taxon(session, "Curculio", "genus")
+    syn = _taxon(session, "Curculio oblongulus", "species", parent=other_genus)
+    synonymize(session, name_id=syn.id, accepted_id=accepted.id)
+    _specimen(session, world["home"], "HOME-00004", syn)
+
+    got = batch.fetch_by_taxon(session, repository_id=world["home"], taxon_id=accepted.id)
+    # HOME-00001/2 (accepted) + HOME-00004 (synonym) — HOME-00003 (Carabus) excluded.
+    assert {m.catalog for m in got} == {"HOME-00001", "HOME-00002", "HOME-00004"}
+    got_by_syn = batch.fetch_by_taxon(session, repository_id=world["home"], taxon_id=syn.id)
+    assert {m.catalog for m in got_by_syn} == {m.catalog for m in got}
 
 
 def test_match_catalog_numbers_classifies(session, world):

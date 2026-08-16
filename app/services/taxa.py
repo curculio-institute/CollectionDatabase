@@ -1345,6 +1345,49 @@ def make_accepted(session: Session, taxon_id: int) -> "Taxon":
     return t
 
 
+def synonym_group_ids(
+    taxon_id: int, accepted_of: dict[int, int], syn_map: dict[int, list[int]]
+) -> set[int]:
+    """Every taxon id denoting the same OTU as ``taxon_id``: the accepted name plus all
+    of its synonyms (#151) — usable whichever of the two ``taxon_id`` itself is, since
+    status lives only in ``accepted_name_usage_id`` (CLAUDE.md §4 "Synonym integrity").
+
+    ``accepted_of`` maps a synonym's id -> its accepted_name_usage_id (absent for an
+    accepted taxon); ``syn_map`` is its reverse, accepted id -> [synonym ids]. Callers
+    build both from whatever id/accepted_name_usage_id rows they already have loaded —
+    this function does no querying, so it is cheap to call per node of a tree walk.
+    """
+    accepted_id = accepted_of.get(taxon_id, taxon_id)
+    return {accepted_id} | set(syn_map.get(accepted_id, ()))
+
+
+def expand_taxon_scope(
+    taxon_id: int,
+    children: dict[int, list[int]],
+    accepted_of: dict[int, int],
+    syn_map: dict[int, list[int]],
+) -> set[int]:
+    """``taxon_id`` plus every descendant in the parent-link tree, plus the synonym
+    group of every taxon reached (#151) — the single walk shared by Explore, Batch
+    tools, and the TaxonWorks sync scope, everywhere "this taxon and everything under
+    it" is turned into a ``determination.taxon_id`` filter.
+
+    A synonym is parented under its OWN lineage (own genus), not its accepted name's —
+    own-lineage parenting (CLAUDE.md §4) — so it is never found by the parent/child walk
+    alone, even when the accepted name is in scope. Each node's OTU partners are pulled
+    in explicitly so a search for either name reaches specimens determined under both.
+    """
+    out, stack = set(), [taxon_id]
+    while stack:
+        cur = stack.pop()
+        if cur in out:
+            continue
+        out.add(cur)
+        stack.extend(children.get(cur, ()))
+        stack.extend(synonym_group_ids(cur, accepted_of, syn_map))
+    return out
+
+
 def _rank_requires_parent(rank: str | None) -> bool:
     """True for ranks whose composed name is built from an ancestor (subgenus and
     everything below genus). For these a missing parent collapses the name to a

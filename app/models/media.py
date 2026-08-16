@@ -23,6 +23,11 @@ class Media(Base, TimestampMixin):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     sha256: Mapped[str] = mapped_column(String, nullable=False, unique=True)
+    # MD5 of the same bytes — the join key against TaxonWorks' Image.image_file_fingerprint
+    # (#149 step 1.6; verified live to be MD5 despite TW's own OpenAPI doc claiming SHA256).
+    # A different algorithm from `sha256` (our de-dup key), so it can't be derived from it;
+    # cached here rather than recomputed per compare (`app/services/media.py::ensure_md5`).
+    md5_fingerprint: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     relative_path: Mapped[str] = mapped_column(String, nullable=False)
     category: Mapped[str] = mapped_column(String, nullable=False)
     format: Mapped[Optional[str]] = mapped_column(String, nullable=True)  # mime type

@@ -92,6 +92,34 @@ def test_species_group_count_excludes_genus_level(session):
     assert c["species_group"] == 2                     # but only the two species
 
 
+def test_query_specimens_does_not_reload_the_determination_per_row(session):
+    """Code review fix (#170 follow-up): `query_specimens` already outer-joins the
+    current `TaxonDetermination` into `td` — `export_decision` must be given it
+    (`determination=td`), not re-derive it via a lazy load of `co.determinations` for
+    every single row.
+
+    Measured directly against this fixture (3 specimens, all with a current
+    determination): 9 SQL statements with the fix, 12 (exactly 3 extra — one per
+    specimen) with it reverted. The bound below sits between the two, so this test
+    fails on the regression and would need updating only if the query shape itself
+    legitimately changes — not merely if the specimen count in the fixture does."""
+    from sqlalchemy import event as sa_event
+
+    _fixture(session)   # 3 specimens, all with a current determination
+    counts = {"n": 0}
+
+    def _count(*_a, **_kw):
+        counts["n"] += 1
+
+    sa_event.listen(session.bind, "before_cursor_execute", _count)
+    try:
+        rows = ex.query_specimens(session)
+        assert len(rows) == 3
+        assert counts["n"] <= 10
+    finally:
+        sa_event.remove(session.bind, "before_cursor_execute", _count)
+
+
 def test_format_place_is_geographic_only(session):
     """#137: the place string is Country: state, municipality, locality — no coords,
     habitat, collector or date (those are shown separately in the summary)."""
@@ -535,3 +563,33 @@ def test_csv_has_header_and_rows(session):
     text = ex.to_csv(ex.query_specimens(session)).decode()
     assert text.splitlines()[0].startswith("id,catalogNumber")
     assert len(text.strip().splitlines()) == 1 + 3   # header + 3 specimens
+
+
+def test_taxon_filter_reaches_across_a_synonym_link(session):
+    """#151: filtering by an accepted name must also retrieve specimens determined
+    under its synonym, and vice versa — a determination legitimately freezes the name
+    as used, but the two names denote the same OTU. Uses a synonym parented under a
+    DIFFERENT genus (own-lineage model, CLAUDE.md §4), so the parent/child descendant
+    walk alone could never find it — only the synonym-group expansion can."""
+    from app.services.taxa import synonymize
+
+    g_acc = _taxon(session, "Entimus", "genus")
+    g_own = _taxon(session, "Curculio", "genus")   # unrelated genus
+    accepted = _taxon(session, "Entimus sastrei", "species", parent=g_acc)
+    syn = _taxon(session, "Entimus formosus", "species", parent=g_own)
+    synonymize(session, name_id=syn.id, accepted_id=accepted.id)
+    ev = ev_svc.create_collecting_event(session, country="Brazil", locality="X")
+    session.flush()
+    _specimen(session, accepted, ev, "A1")   # determined under the accepted name
+    _specimen(session, syn, ev, "A2")        # determined under the synonym
+
+    # Filtering by the accepted name retrieves BOTH.
+    flt = [{"kind": "taxon", "key": accepted.id}]
+    assert {r.catalog for r in ex.query_specimens(session, flt)} == {"A1", "A2"}
+    # Filtering by the synonym retrieves BOTH too (the other direction).
+    flt = [{"kind": "taxon", "key": syn.id}]
+    assert {r.catalog for r in ex.query_specimens(session, flt)} == {"A1", "A2"}
+    # And a genus-level filter on the ACCEPTED name's genus reaches the synonym even
+    # though it is filed under a completely different genus.
+    flt = [{"kind": "taxon", "key": g_acc.id}]
+    assert {r.catalog for r in ex.query_specimens(session, flt)} == {"A1", "A2"}

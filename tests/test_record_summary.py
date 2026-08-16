@@ -79,6 +79,84 @@ class TestConfidentiality:
         assert ">lock<" in a and ">lock<" in b
 
 
+class TestConsentBadge:
+    """The recordedBy person's export handling (#170) — a `person_off` glyph, distinct from
+    the padlock, in one of three colours per `export_decision`'s three sub-states."""
+
+    def test_no_state_shows_no_icon(self):
+        assert rs.consent_badge_html() == ""
+        assert rs.consent_badge_html("") == ""
+        assert "person_off" not in rs.specimen_html(catalog="X", name="Curculio", rank="genus")
+
+    def test_confidential_is_red(self):
+        html = rs.consent_badge_html("confidential")
+        assert ">person_off<" in html
+        assert rs._PERSON_RED in html
+        # Names the collector as the reason and the whole-record consequence — not a bare
+        # "Confidential", which said neither (the most severe state had the least useful tip).
+        assert "the collector (recordedBy) is flagged confidential" in html
+        assert "withholds the whole record" in html
+
+    def test_blocked_is_amber(self):
+        html = rs.consent_badge_html("blocked")
+        assert ">person_off<" in html
+        assert rs._LOCK_AMBER in html
+        assert "has not consented" in html
+
+    def test_redacted_is_grey_and_not_phrased_as_withheld(self):
+        """Live review: this specimen IS still exported, just with the name removed — the
+        tooltip must not say "withheld", and the colour is informational, not a warning."""
+        html = rs.consent_badge_html("redacted")
+        assert ">person_off<" in html
+        assert "var(--tp-base-soft)" in html
+        assert "Will be exported with the collector’s name removed" in html
+        assert "Withheld" not in html
+
+    def test_it_reaches_the_specimen_row(self):
+        html = rs.specimen_html(catalog="X", name="Curculio", rank="genus",
+                                recorded_by_state="confidential")
+        assert ">person_off<" in html
+
+    def test_an_unrecognised_state_renders_nothing_rather_than_raising(self):
+        """Code review fix: every caller sources `state` from `export_decision`'s
+        closed set today, but `_render_specimens`/`_render_events` build a whole
+        results panel's worth of rows in one loop — an unhandled KeyError from one
+        bad value would take out every OTHER row's render with it. A missing badge
+        is the safe degradation; a page-killing exception is not."""
+        assert rs.consent_badge_html("something_new") == ""
+
+
+class TestIdentificationDoubtBadge:
+    """Why the CURRENT identification isn't publishable (#170) — an orange question mark,
+    tooltip listing whichever of the curatorial reasons apply."""
+
+    def test_no_reasons_shows_no_icon(self):
+        assert rs.identification_doubt_badge_html(()) == ""
+        assert "question_mark" not in rs.specimen_html(catalog="X", name="Curculio",
+                                                        rank="genus")
+
+    def test_one_reason_is_shown_in_the_tooltip(self):
+        html = rs.identification_doubt_badge_html(("identified only to genus — not to species",))
+        assert ">question_mark<" in html
+        assert rs._LOCK_AMBER in html
+        assert "identified only to genus" in html
+
+    def test_several_reasons_join_in_one_badge_not_several(self):
+        """Same convention as the padlock's own/from_event: multiple sub-reasons collapse into
+        ONE icon whose tooltip lists all of them, not one icon per reason."""
+        html = rs.identification_doubt_badge_html((
+            "identification is qualified 'cf.' — expresses doubt",
+            "identified only to genus — not to species",
+        ))
+        assert html.count("question_mark") == 1
+        assert "qualified" in html and "not to species" in html
+
+    def test_it_reaches_the_specimen_row(self):
+        html = rs.specimen_html(catalog="X", name="Curculio", rank="genus",
+                                determination_reasons=("no current identification",))
+        assert ">question_mark<" in html
+
+
 class TestThePlainTextTwin:
     """A q-select filters against the plain label and echoes it into its input — it cannot hold
     markup. It must still carry every searchable datum."""

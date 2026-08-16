@@ -475,6 +475,34 @@ def test_recent_specimens_returns_only_current_determination(session):
     assert matching[0].identified_by == "J. Doe"
 
 
+def test_recent_specimens_carries_export_eligibility_badge_state(session):
+    """Code review fix (#170) — this was the one browse surface (the Records specimen
+    picker, via `records_tab.py`) left showing the confidential padlock alone, missing
+    the two newer badges every other surface already carries. `recorded_by_state` and
+    `determination_reasons` must agree with `export_decision` itself, not be silently
+    empty here."""
+    t = _taxon(session)
+    collector = _person(session, "A. Confidential")
+    collector.confidential = 1
+    session.flush()
+    ce = create_collecting_event(
+        session, country="Germany", locality="Berchtesgaden",
+        event_date="2024-06-15", recorded_by_id=collector.id,
+    )
+    save_specimen_entry(
+        session, taxon_id=t.id, event_id=ce.id, event_fields={},
+        specimen_fields={"catalog_number": "X010",
+                         "repository_id": ensure_repo(session, "TEST")},
+        determination_fields={},
+    )
+    session.flush()
+
+    rows = recent_specimens(session, limit=10)
+    row = next(r for r in rows if r.catalog_number == "X010")
+    assert row.recorded_by_state == "confidential"
+    assert row.determination_reasons == ()
+
+
 # ---------------------------------------------------------------------------
 # finalize_specimen — shared create-time seam (assign code / queue / bio)
 # ---------------------------------------------------------------------------

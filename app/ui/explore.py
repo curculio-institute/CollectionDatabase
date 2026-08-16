@@ -659,6 +659,8 @@ def build_explore_panel(session_factory, *, on_open_specimen, on_open_event) -> 
                 date_identified=r.date_identified,
                 confidential=r.confidential,
                 event_confidential=r.event_confidential,
+                recorded_by_state=r.recorded_by_state,
+                determination_reasons=r.determination_reasons,
             )).classes("ex-spec-row w-full")
             row.on("click", lambda _, c=r.co_id: on_open_specimen(c))
 
@@ -690,6 +692,8 @@ def build_explore_panel(session_factory, *, on_open_specimen, on_open_event) -> 
                         locality="",                    # the event IS the locality here
                         confidential=lot.confidential,
                         event_confidential=lot.event_confidential,
+                        recorded_by_state=lot.recorded_by_state,
+                        determination_reasons=lot.determination_reasons,
                     ))
                     row.on("click", lambda _, c=lot.co_id: on_open_specimen(c))
 

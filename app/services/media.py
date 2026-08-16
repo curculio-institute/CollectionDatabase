@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import BinaryIO, Optional
 
 from sqlalchemy import select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
 from app.config import media_dir
 from app.models import Media, MediaAttachment
@@ -100,11 +100,16 @@ def probe_bytes(data: bytes, original_filename: str) -> dict:
     at all (#63). Idempotent-safe: the sha lets a later ``store_bytes`` dedupe as usual.
     """
     sha256 = hashlib.sha256(data).hexdigest()
+    # Computed alongside sha256 for free (the bytes are already in memory) — the join key
+    # against TaxonWorks' Image.image_file_fingerprint (#149 step 1.6). A different digest
+    # from our own de-dup key, so it can't be derived from sha256 later.
+    md5_fingerprint = hashlib.md5(data).hexdigest()
     ext = Path(original_filename).suffix
     mime, _ = mimetypes.guess_type(original_filename)
     width, height = _image_dimensions_from_bytes(data)
     return {
         "sha256": sha256,
+        "md5_fingerprint": md5_fingerprint,
         "byte_size": len(data),
         "format": mime,
         "category": detect_category(mime, ext),
@@ -163,6 +168,21 @@ def verify_integrity(relative_path: str, expected_sha256: str) -> bool:
     return hashlib.sha256(p.read_bytes()).hexdigest() == expected_sha256
 
 
+def ensure_md5(session: Session, media: Media) -> Optional[str]:
+    """Return ``media.md5_fingerprint``, computing and caching it first if a row
+    predates this column (#149 step 1.6). New rows already carry it from
+    ``store_bytes``; this is the lazy backfill for everything stored before that,
+    computed once per row on first need rather than in a separate migration pass."""
+    if media.md5_fingerprint is not None:
+        return media.md5_fingerprint
+    p = abs_path(media.relative_path)
+    if not p.is_file():
+        return None
+    media.md5_fingerprint = hashlib.md5(p.read_bytes()).hexdigest()
+    session.flush()
+    return media.md5_fingerprint
+
+
 def delete_stored_file(relative_path: str) -> None:
     """Remove the on-disk bytes for a media row. Call only after confirming no other
     media_attachment / media row references the same content (content may be shared)."""
@@ -190,6 +210,7 @@ def _get_or_create_media(session: Session, meta: dict) -> tuple[Media, bool]:
         return existing, False
     media = Media(
         sha256=meta["sha256"],
+        md5_fingerprint=meta.get("md5_fingerprint"),
         relative_path=meta["relative_path"],
         category=meta["category"],
         format=meta.get("format"),
@@ -285,6 +306,30 @@ def list_attachments(session: Session, *, target_kind: str, target_id: int) -> l
     for r in rows:
         _ = r.media  # eager-touch inside the session so the UI can read it after detach
     return list(rows)
+
+
+def list_attachments_for_many(
+    session: Session, *, target_kind: str, target_ids: list[int]
+) -> dict[int, list[MediaAttachment]]:
+    """Batched form of `list_attachments` — one query for many target ids (#168, used by
+    `tw_media_compare.compare_media` so a whole-collection compare costs one query, not
+    one per specimen, matching the bulk shape already used for the TaxonWorks side).
+    Returns `{target_id: [attachment, ...]}`; a target id with no attachments is simply
+    absent (never an empty-list placeholder — the caller already treats a missing key and
+    an empty list the same way via `.get(id, ())`). Per-id ordering matches
+    `list_attachments` (primary first, then sort_order, then id)."""
+    if not target_ids:
+        return {}
+    col = getattr(MediaAttachment, TARGET_FK[target_kind])
+    rows = session.scalars(
+        select(MediaAttachment).where(col.in_(target_ids))
+        .options(selectinload(MediaAttachment.media))
+        .order_by(MediaAttachment.is_primary.desc(), MediaAttachment.sort_order, MediaAttachment.id)
+    ).all()
+    out: dict[int, list[MediaAttachment]] = {}
+    for r in rows:
+        out.setdefault(getattr(r, TARGET_FK[target_kind]), []).append(r)
+    return out
 
 
 def set_primary(session: Session, *, target_kind: str, target_id: int, attachment_id: int) -> None:

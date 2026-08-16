@@ -1,21 +1,8 @@
 """Media store + repository: content-addressing, de-dup, integrity, attach/detach (#48)."""
 import importlib
 
-import pytest
-from sqlalchemy.orm import sessionmaker
-
-import app.config as config
 import app.services.media as media_svc
 from app.models import Media, MediaAttachment, CollectingEvent
-
-
-@pytest.fixture
-def media_env(engine, tmp_path, monkeypatch):
-    """Point the media store at a temp dir and yield a session bound to the migrated DB."""
-    monkeypatch.setattr(config, "_instance", config.AppConfig(media_dir=str(tmp_path / "media")))
-    SessionLocal = sessionmaker(engine)
-    with SessionLocal() as s:
-        yield s, tmp_path / "media"
 
 
 def test_detect_category():
@@ -39,6 +26,35 @@ def test_store_is_content_addressed_and_dedups(media_env):
     assert len(files) == 1
     assert media_svc.verify_integrity(m1["relative_path"], m1["sha256"]) is True
     assert media_svc.verify_integrity(m1["relative_path"], "0" * 64) is False
+
+
+def test_store_bytes_computes_md5_eagerly(media_env):
+    """#149 step 1.6: the join key against TaxonWorks' image_file_fingerprint (MD5,
+    verified live — see tw_media_compare.py) is computed alongside sha256 at store
+    time, not left for a later backfill."""
+    import hashlib
+    data = b">seq1\nACGT\n"
+    meta = media_svc.store_bytes(data, "a.fasta")
+    assert meta["md5_fingerprint"] == hashlib.md5(data).hexdigest()
+
+
+def test_ensure_md5_backfills_legacy_rows(media_env):
+    """A row stored before migration 0070 has md5_fingerprint=None; ensure_md5 computes
+    it from the on-disk bytes once and caches it on the row (the user's choice: cache,
+    not recompute on every compare)."""
+    import hashlib
+    s, _ = media_env
+    meta = media_svc.store_bytes(b"legacy bytes", "legacy.txt")
+    media, _created = media_svc._get_or_create_media(s, meta)
+    media.md5_fingerprint = None                  # simulate a pre-migration row
+    s.flush()
+
+    got = media_svc.ensure_md5(s, media)
+    assert got == hashlib.md5(b"legacy bytes").hexdigest()
+    assert media.md5_fingerprint == got            # cached on the row
+
+    # A second call must not recompute (nothing on disk changed, but prove idempotence).
+    assert media_svc.ensure_md5(s, media) == got
 
 
 def test_attach_list_and_delete_cleans_up(media_env):
@@ -66,6 +82,44 @@ def test_attach_list_and_delete_cleans_up(media_env):
     assert media_svc.abs_path(rel).is_file()      # still there — not yet committed
     media_svc.delete_stored_file(orphaned)
     assert not media_svc.abs_path(rel).is_file()
+
+
+def test_list_attachments_for_many_batches_and_groups_correctly(media_env):
+    """#168: one query for several target ids, grouped per id — a target with no
+    attachments is simply absent (never an empty-list placeholder), and the result
+    matches what list_attachments would return per id, one at a time."""
+    s, _ = media_env
+    ev1 = CollectingEvent(locality="Germany")
+    ev2 = CollectingEvent(locality="Austria")
+    ev3 = CollectingEvent(locality="Poland")   # gets no media at all
+    s.add_all([ev1, ev2, ev3]); s.flush()
+
+    media_svc.add_attachment(s, target_kind="collecting_event", target_id=ev1.id,
+                             data=b"a", filename="a.jpg")
+    media_svc.add_attachment(s, target_kind="collecting_event", target_id=ev1.id,
+                             data=b"b", filename="b.jpg")
+    media_svc.add_attachment(s, target_kind="collecting_event", target_id=ev2.id,
+                             data=b"c", filename="c.jpg")
+    s.flush()
+
+    grouped = media_svc.list_attachments_for_many(
+        s, target_kind="collecting_event", target_ids=[ev1.id, ev2.id, ev3.id])
+
+    assert {a.media.original_filename for a in grouped[ev1.id]} == {"a.jpg", "b.jpg"}
+    assert [a.media.original_filename for a in grouped[ev2.id]] == ["c.jpg"]
+    assert ev3.id not in grouped
+
+    # Matches the per-id function, just batched.
+    for ev_id in (ev1.id, ev2.id):
+        one_at_a_time = media_svc.list_attachments(
+            s, target_kind="collecting_event", target_id=ev_id)
+        assert [a.id for a in grouped[ev_id]] == [a.id for a in one_at_a_time]
+
+
+def test_list_attachments_for_many_empty_ids_returns_empty_dict(media_env):
+    s, _ = media_env
+    assert media_svc.list_attachments_for_many(
+        s, target_kind="collecting_event", target_ids=[]) == {}
 
 
 def test_update_media_rights_holder_and_license(media_env):

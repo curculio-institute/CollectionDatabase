@@ -171,6 +171,7 @@ def _co_to_data_label(
         event_date               = ev.event_date                      if ev else None,
         recorded_by              = ev.recorded_by_person.full_name if (ev and ev.recorded_by_person) else None,
         habitat                  = (ev.habitat_obj.name if ev and ev.habitat_obj else None),
+        sampling_protocol        = (ev.sampling_protocol_obj.name if ev and ev.sampling_protocol_obj else None),
         associated_species       = assoc_names or None,
     )
 

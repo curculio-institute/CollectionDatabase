@@ -40,14 +40,20 @@ tracker, not this file), `gh issue list`:
 - [#39](https://github.com/curculio-institute/CollectionDatabase/issues/39) — Workflow: bulk-import the existing dataset (unlinked taxon names)
 - [#40](https://github.com/curculio-institute/CollectionDatabase/issues/40) — Collection map view + data analysis tools
 - [#149](https://github.com/curculio-institute/CollectionDatabase/issues/149) — Syncing with TaxonWorks.
-  **Step 3 (emit the export) + the name pre-flight + Step 1 "Compare" are built** (§5c,
-  `dwc_export.py` / `tw_sync.py` / `tw_compare.py` / the TaxonWorks tab). Compare covers
-  which specimens are already on TW (identity = `catalogNumber` via the `/identifiers`
-  index), duplicate catalogNumbers with their namespace, specimens on TW that are
-  confidential locally (`leaked`), specimens on TW that this collection no longer holds
-  (`orphaned` vs. `moved`), and field-level differences with a deep link per record.
-  **Still open:** media comparison (step 1.6 — declared as not compared, never claimed) and
-  Step 2 (re-run the comparison after the user has acted on it).
+  **Step 3 (emit the export) + the name pre-flight + Step 1 "Compare", including media
+  (step 1.6), are built** (§5c, `dwc_export.py` / `tw_sync.py` / `tw_compare.py` /
+  `tw_media_compare.py` / the TaxonWorks tab). Compare covers which specimens are already
+  on TW (identity = `catalogNumber` via the `/identifiers` index), duplicate
+  catalogNumbers with their namespace, specimens on TW that are confidential locally
+  (`leaked`), specimens on TW that this collection no longer holds (`orphaned` vs.
+  `moved`), field-level differences with a deep link per record, and — since 2026-07-27 —
+  which locally-attached media files are missing from TaxonWorks' Depictions (matched by
+  MD5 fingerprint, migration 0070; diagnostic only, since TW has no import or create path
+  for media — the tab links to TW's own upload UI and stages the exact files locally for
+  drag-and-drop).
+  **Step 2 "Recompare" needs no separate feature** (decided 2026-07-26): it is just running
+  Step 1 "Compare" again after the user has acted on its findings, which the built Compare tab
+  already supports on demand — there is nothing dynamic-per-user-action to build.
 
 (#41 — data safety: crash recovery + unsaved-changes guard — done; see §8 "Data safety".)
 
@@ -952,7 +958,9 @@ of its accepted name (so *Curculio forticollis*, a synonym of *Otiorhynchus fort
 parented under *Curculio* and composes to "Curculio forticollis"). This is what makes name
 composition uniform for valid names and synonyms, and makes a status flip (synonym ↔ valid) a
 pure **one-field toggle with no name rewrite and no re-parenting**. The tree still groups
-synonyms under their accepted name via `acceptedNameUsageID`, so display is unaffected.
+synonyms under their accepted name via `acceptedNameUsageID` for *display* — but until #151
+(below), a specimen determined under a synonym was invisible to search/filter/count by the
+accepted name, and to the tree's own displayed specimen totals.
 
 One invariant remains, enforced by a loud `BEFORE` trigger (migration 0031) that `RAISE`s on
 any violating write — from raw SQL too — and re-declared on any future `taxon` rebuild (DB-1
@@ -973,6 +981,41 @@ own lineage), and `merge_taxa()` (below). A static test
 (`test_synonym_integrity.py::test_parent_and_accepted_writes_are_centralised`) fails if any
 code outside `taxa.py` assigns these columns directly. **No fallback defaults** — required
 links are inherited or the op fails loudly, never guessed.
+
+**Search and filtering are synonym-aware (#151, decided 2026-07-26).** A determination
+legitimately freezes the name as used (§2) — the person who identified a specimen as
+*Entimus formosus* may not agree with a later synonymisation with *Entimus sastrei*, and that
+name must never be silently rewritten. But the two rows are the **same OTU**, so filtering,
+searching, or counting by *either* name must retrieve/count specimens determined under
+**both** — a search is not a determination, and hiding one name's material behind the other
+is a silent wrong value (§2) by omission.
+
+- **The single shared primitive: `taxa.expand_taxon_scope(taxon_id, children, accepted_of,
+  syn_map)`.** `taxon_id` plus every descendant in the parent/child tree, **plus the synonym
+  group of every taxon reached** (`taxa.synonym_group_ids` — the accepted name + all its
+  synonyms, whichever of the two `taxon_id` itself is). A synonym is parented under its OWN
+  lineage (own genus, possibly a completely different genus than its accepted name's — the
+  *Curculio forticollis* / *Otiorhynchus fortis* example above), so it is **never** reached by
+  the parent/child walk alone, even when its accepted name is well inside the scope; each
+  node's OTU partners are pulled in explicitly as the walk proceeds, so a genus-level filter
+  also reaches a synonym filed in an unrelated genus.
+- **Three call sites, one primitive, no drift:** `explore.py::_descendant_ids` (the taxon facet behind `query_specimens` / `checklist` /
+  `events` / `counts`), `batch_ops.py::descendant_taxon_ids` (Batch tools' "every specimen of
+  a taxon"), and — for free, since it calls the same function — the TaxonWorks sync tab's
+  taxonomy-scope picker (`tw_sync_tab.py`, "Curculioidea only"). The **verbatim** id-scope
+  (`id_scope=("verbatim",)`, matching the frozen `verbatimIdentification` text) is extended
+  the same way but narrower: it matches against every name in the searched taxon's *own*
+  synonym group only, not the full descendant expansion — mirroring how that scope has always
+  searched one node's name, never its children's.
+- **The taxonomy tree's `spec_count` rolls up too** (`taxonomy.py::_build_node`): a synonym's
+  own row still shows its own count (how many specimens are literally determined under that
+  name), and the accepted node's total now *includes* it — so the number displayed in the tree
+  finally agrees with what filtering by that accepted name in Explore actually retrieves.
+- **What does NOT change:** the drawer-order checklist (`explore.py::checklist`) still groups
+  a synonym-determined specimen under **its own** taxonomic position, as its own species row —
+  that mirrors what is physically written on the determination label (the Käfersammlung
+  layout) and is a display decision, not a retrieval one. Only *retrieval/counting* is
+  synonym-aware; *grouping-by-literal-name-used* is unchanged and stays correct.
 
 **Merging duplicate names (de-duplication, NOT synonymisation — decided 2026-07-18).**
 `taxa.merge_taxa(session, keep_id, absorb_id)` (Taxonomy tab → "Merge names") folds two rows
@@ -1274,6 +1317,27 @@ Both are absolute, with **no setting**, for the same reason rule 3 (a confidenti
 has none: the importer is CREATE-ONLY, so a record published too early can be neither
 corrected nor deleted through the API, while a record withheld today exports fine tomorrow.
 
+**The reason travels with the specimen, not in a list of its own (decided 2026-07-29, #170).**
+Ineligibility is a property of a record, so it is shown **wherever that record is browsed** —
+three badges on the shared specimen row (`record_summary.py`), one per ground, in
+`export_decision`'s own rule order. The TaxonWorks tab accordingly has **no "Why some are not
+eligible" expansion**: clicking a collection's *Not eligible* box opens the identical
+catalog-number list in Explore, where every row carries its own reason. One list, not two —
+and a page-level list of every withheld record grows without bound on a real database, while
+the badges cost nothing per row. The badge vocabulary (glyphs, the three colours, the
+one-badge-per-*ground* rule) is design.md's → "Specimen-row export badges".
+
+**`export_decision` stays the single source for those badges** — a specimen the row calls
+withheld can never be one the sync tool disagrees on. So the surfaces that need to explain
+*which* ground applies read `ExportDecision.recorded_by_state` (`""` / `confidential` /
+`blocked` / `redacted`) and `.determination_reasons`, both added for this, rather than
+re-deriving either from `reasons` by string-matching. It takes the current
+`TaxonDetermination` as an optional parameter for the same reason it already takes `event`:
+the list surfaces have outer-joined it already, and without it each row lazily re-derived it
+(measured: 20 specimens, 21 extra queries). Its default is a **sentinel, not `None`** —
+`None` is the legitimate "genuinely undetermined" value, and a `None` default would silently
+fall back to the lazy lookup for exactly the specimens that most needed the fix.
+
 **TaxonWorks could not carry the qualifier anyway** — worth recording, because the API makes it
 look like it could. Its importer folds `identificationQualifier` into the **OTU's name**
 (`otu_names` → `otu_attributes[:name]`, `dataset_record/darwin_core/occurrence.rb:1573-1576` @
@@ -1525,6 +1589,14 @@ Biological association UI: CRUD in DB, UI not yet built.
   means TW would accept the re-upload silently), the orphan sweep is namespace-scoped. The
   Export step's "already uploaded" exclusion reads the same index, so the file can never
   re-carry a specimen TW already holds.
+- *Media compare (step 1.6):* ✅ **built** — `tw_media_compare.py`, reusing the same
+  `/identifiers` index the occurrence compare already fetched. Matches local
+  `media_attachment` files to TW `Depiction`/`Image` rows by MD5 (`media.md5_fingerprint`,
+  migration 0070 — TW's `image_file_fingerprint` is MD5 despite its OpenAPI doc claiming
+  SHA256; verified live against sandbox.taxonworks.org). Diagnostic only: TW's DwC importer
+  has no media path and there is no public API route to create an Image, so the tab can
+  only report local-only files with a deep link to TW's own upload UI and a "Prepare
+  files" button that stages them in a temp folder for drag-and-drop.
 - *Validation script:* ⬜ required DwC fields, coordinate bounds, determination completeness.
   (Row-level validity for the export specifically is already enforced by `_validate_row`, which
   refuses rather than rewrites — §5c.)

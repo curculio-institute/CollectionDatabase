@@ -24,7 +24,11 @@ from app.models import (
     CollectionObject, CollectingEvent, TaxonDetermination, Taxon, Person,
     Country, StateProvince, County, Island, AdministrativeRegion, Repository,
 )
-from app.services.taxa import format_scientific_name, parse_scientific_name, TAXON_RANKS
+from app.services import dwc_export
+from app.services.taxa import (
+    format_scientific_name, parse_scientific_name, TAXON_RANKS,
+    expand_taxon_scope, synonym_group_ids,
+)
 from app.services.label_text import format_locality_label, format_place
 from app.services.biological import association_host as _assoc_host
 
@@ -159,15 +163,11 @@ def _taxon_index(session: Session) -> dict[int, Taxon]:
     return {t.id: t for t in session.query(Taxon).all()}
 
 
-def _descendant_ids(taxon_id: int, children: dict[int, list[int]]) -> set[int]:
-    out, stack = set(), [taxon_id]
-    while stack:
-        cur = stack.pop()
-        if cur in out:
-            continue
-        out.add(cur)
-        stack.extend(children.get(cur, ()))
-    return out
+def _descendant_ids(taxon_id: int, children: dict[int, list[int]],
+                     accepted_of: dict[int, int], syn_map: dict[int, list[int]]) -> set[int]:
+    """``taxon_id`` plus its descendants, plus the synonym group of every taxon reached
+    (#151) — see `taxa.expand_taxon_scope`, which this wraps."""
+    return expand_taxon_scope(taxon_id, children, accepted_of, syn_map)
 
 
 # ── specimen query ────────────────────────────────────────────────────────────
@@ -193,6 +193,11 @@ class SpecimenRow:
     # tooltip. See CLAUDE.md "Confidential / privacy flag".
     confidential: bool = False
     event_confidential: bool = False
+    # The other two grounds `export_decision` withholds a specimen on (#170), broken out
+    # onto the row the same way `confidential` is — see `record_summary.consent_badge_html`
+    # / `identification_doubt_badge_html`, the two badges these feed.
+    recorded_by_state: str = ""
+    determination_reasons: tuple[str, ...] = ()
     needs_attention: bool = False   # not determined to species (indet.)
     sex: str | None = None
     count: int = 1
@@ -250,9 +255,14 @@ def _apply_filters(session: Session, q, filters: list[dict], idx: dict[int, Taxo
     same-kind case too, or "Carabidae AND Curculionidae" wrongly returns the union.)
     """
     children: dict[int, list[int]] = defaultdict(list)
+    accepted_of: dict[int, int] = {}
+    syn_map: dict[int, list[int]] = defaultdict(list)
     for t in idx.values():
         if t.parent_name_usage_id:
             children[t.parent_name_usage_id].append(t.id)
+        if t.accepted_name_usage_id:
+            accepted_of[t.id] = t.accepted_name_usage_id
+            syn_map[t.accepted_name_usage_id].append(t.id)
 
     def _rank_ids(*, in_species_group: bool):
         return [t.id for t in idx.values()
@@ -277,7 +287,7 @@ def _apply_filters(session: Session, q, filters: list[dict], idx: dict[int, Taxo
                 return TaxonDetermination.taxon_id.in_(_rank_ids(in_species_group=False))
             return None
         if kind == "taxon":
-            ids = _descendant_ids(int(key), children)
+            ids = _descendant_ids(int(key), children, accepted_of, syn_map)
             # Which determinations the taxon filter searches (#137): the CURRENT one
             # (default), ANY past determination, and/or the frozen verbatim text.
             conds = []
@@ -288,13 +298,16 @@ def _apply_filters(session: Session, q, filters: list[dict], idx: dict[int, Taxo
                 conds.append(exists().where(and_(
                     td.collection_object_id == CollectionObject.id, td.taxon_id.in_(ids))))
             if "verbatim" in id_scope:                # the frozen verbatimIdentification text
-                t = idx.get(int(key))
-                name = t.scientific_name if t else None
-                if name:
+                # Matched against every name in the picked taxon's OWN synonym group
+                # (#151) — not the full descendant expansion above, mirroring how this
+                # scope has always searched one node's name, never its children's.
+                names = [n for i in synonym_group_ids(int(key), accepted_of, syn_map)
+                         if (t := idx.get(i)) and (n := t.scientific_name)]
+                if names:
                     tdv = aliased(TaxonDetermination)
                     conds.append(exists().where(and_(
                         tdv.collection_object_id == CollectionObject.id,
-                        tdv.verbatim_identification.ilike(f"%{name}%"))))
+                        or_(*[tdv.verbatim_identification.ilike(f"%{n}%") for n in names]))))
             return or_(*conds) if conds else false()
         if kind in _GEO_FACETS:
             _model, attr = _GEO_FACETS[kind]
@@ -360,7 +373,7 @@ def _apply_filters(session: Session, q, filters: list[dict], idx: dict[int, Taxo
                 return TaxonDetermination.taxon_id.in_(_rank_ids(in_species_group=True))
             return None
         if kind == "taxon":
-            ids = _descendant_ids(int(key), children)
+            ids = _descendant_ids(int(key), children, accepted_of, syn_map)
             negs = []                              # NOT(current OR past OR verbatim)
             if "current" in id_scope:
                 col = TaxonDetermination.taxon_id
@@ -370,13 +383,13 @@ def _apply_filters(session: Session, q, filters: list[dict], idx: dict[int, Taxo
                 negs.append(~exists().where(and_(
                     td.collection_object_id == CollectionObject.id, td.taxon_id.in_(ids))))
             if "verbatim" in id_scope:
-                t = idx.get(int(key))
-                name = t.scientific_name if t else None
-                if name:
+                names = [n for i in synonym_group_ids(int(key), accepted_of, syn_map)
+                         if (t := idx.get(i)) and (n := t.scientific_name)]
+                if names:
                     tdv = aliased(TaxonDetermination)
                     negs.append(~exists().where(and_(
                         tdv.collection_object_id == CollectionObject.id,
-                        tdv.verbatim_identification.ilike(f"%{name}%"))))
+                        or_(*[tdv.verbatim_identification.ilike(f"%{n}%") for n in names]))))
             return and_(*negs) if negs else None
         if kind in _GEO_FACETS:
             _model, attr = _GEO_FACETS[kind]
@@ -488,6 +501,15 @@ def query_specimens(session: Session, filters: list[dict] | None = None,
         # associations/coords/habitat/date/collector, which the summary already shows
         # separately, so reusing it would duplicate them (and print "specimen #None").
         place = format_place(ev) if ev else ""
+        # Single source of truth (#170) — reusing `export_decision` here, rather than
+        # re-deriving "why not eligible" from `td`/`ev` locally, is the same discipline
+        # the TaxonWorks sync comparison itself follows (CLAUDE.md §5c module docstring):
+        # a specimen the badge calls withheld can never be one the sync tool disagrees on.
+        # `determination=td` (code review fix) passes the current determination this
+        # query already outer-joined — without it, `export_decision` re-derived it via
+        # a lazy load of `co.determinations` on every single row (confirmed N+1: 20
+        # specimens cost 21 extra queries).
+        decision = dwc_export.export_decision(co, event=ev, determination=td)
         rows.append(SpecimenRow(
             co_id=co.id,
             catalog=co.catalog_number,
@@ -500,6 +522,8 @@ def query_specimens(session: Session, filters: list[dict] | None = None,
             hosts=hosts,
             confidential=bool(co.confidential),
             event_confidential=bool(ev.confidential) if ev else False,
+            recorded_by_state=decision.recorded_by_state,
+            determination_reasons=decision.determination_reasons,
             needs_attention=(t is None or rank not in ("species", "subspecies", "variety", "form")),
             sex=(td.sex if td else None),
             count=co.individual_count,

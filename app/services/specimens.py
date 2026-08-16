@@ -13,6 +13,7 @@ from app.models import (
 )
 from app.models.base import _utcnow
 import app.services.biological as bio_svc
+from app.services import dwc_export
 from app.services.biological import (
     save_biological_association, save_association_as_field_occurrence)
 from app.services.events import create_collecting_event, get_or_create_exact_event
@@ -47,6 +48,14 @@ class RecentRow:
     recorded_by: str | None
     identified_by: str | None
     date_identified: str | None
+    # The other two grounds `export_decision` withholds a specimen on (#170 follow-up,
+    # code review fix — this picker used to be the only surface still missing them,
+    # showing the confidential padlock alone). See `record_summary.consent_badge_html`
+    # / `identification_doubt_badge_html`. Defaulted (must trail the dataclass's
+    # non-default fields above), not because either is ever legitimately omitted —
+    # `recent_specimens` always supplies both.
+    recorded_by_state: str = ""
+    determination_reasons: tuple = ()
 
 
 def create_collection_object(
@@ -430,8 +439,13 @@ def recent_specimens(session: Session, limit: int = 200) -> list[RecentRow]:
         .limit(limit)
         .all()
     )
-    return [
-        RecentRow(
+    out = []
+    for co, td, ce, t in rows:
+        # Single source of truth (#170), same discipline as explore.py's query_specimens
+        # — `determination=td` reuses the current determination this query already
+        # outer-joined, so `export_decision` never lazily re-derives it per row.
+        decision = dwc_export.export_decision(co, event=ce, determination=td)
+        out.append(RecentRow(
             collection_object_id=co.id,
             catalog_number=co.catalog_number,
             collection_code=co.repository.collection_code,
@@ -451,6 +465,7 @@ def recent_specimens(session: Session, limit: int = 200) -> list[RecentRow]:
             recorded_by=ce.recorded_by_person.full_name if (ce and ce.recorded_by_person) else None,
             identified_by=td.identified_by_person.full_name if (td and td.identified_by_person) else None,
             date_identified=(td.date_identified if td else None),
-        )
-        for co, td, ce, t in rows
-    ]
+            recorded_by_state=decision.recorded_by_state,
+            determination_reasons=decision.determination_reasons,
+        ))
+    return out

@@ -18,6 +18,7 @@ from app.models import Taxon
 from app.models.base import _utcnow
 from app.services.taxa import (
     synonymize, make_accepted, reparent, verify_taxon_consistency, update_taxon,
+    expand_taxon_scope, synonym_group_ids,
 )
 
 
@@ -320,3 +321,56 @@ def test_cross_genus_synonym_composes_to_own_name(session):
     # tree displays it under Otiorhynchus fortis via acceptedNameUsageID).
     assert compose_scientific_name(session, syn) == "Curculio forticollis"
     assert syn.accepted_name_usage_id == accepted.id
+
+
+# ---------------------------------------------------------------------------
+# expand_taxon_scope / synonym_group_ids (#151)
+# ---------------------------------------------------------------------------
+
+def _scope_maps(session):
+    """Build the (children, accepted_of, syn_map) triple the way Explore/Batch
+    tools/tw_sync_tab do, from every taxon row currently in the session."""
+    children, accepted_of, syn_map = {}, {}, {}
+    for t in session.query(Taxon).all():
+        if t.parent_name_usage_id:
+            children.setdefault(t.parent_name_usage_id, []).append(t.id)
+        if t.accepted_name_usage_id:
+            accepted_of[t.id] = t.accepted_name_usage_id
+            syn_map.setdefault(t.accepted_name_usage_id, []).append(t.id)
+    return children, accepted_of, syn_map
+
+
+def test_expand_taxon_scope_reaches_cross_genus_synonym(session):
+    """#151: a synonym parented under a DIFFERENT genus than its accepted name (the
+    own-lineage model) must still be reached when scoping by either name — the
+    parent/child walk alone can never find it, since it isn't a descendant."""
+    g_acc = mk(session, "Otiorhynchus", rank="genus")
+    g_own = mk(session, "Curculio", rank="genus")
+    accepted = mk(session, "Otiorhynchus fortis", parent=g_acc)
+    syn = mk(session, "Curculio forticollis", parent=g_own)
+    synonymize(session, name_id=syn.id, accepted_id=accepted.id)
+
+    children, accepted_of, syn_map = _scope_maps(session)
+
+    # Scoping by the accepted name reaches the synonym, even though it sits in a
+    # completely unrelated genus.
+    assert syn.id in expand_taxon_scope(accepted.id, children, accepted_of, syn_map)
+    # And the reverse: scoping by the synonym reaches the accepted name.
+    assert accepted.id in expand_taxon_scope(syn.id, children, accepted_of, syn_map)
+    # Scoping by the accepted name's OWN genus also reaches the synonym (a genus-level
+    # filter must retrieve every specimen of that OTU, wherever a synonym is filed).
+    assert syn.id in expand_taxon_scope(g_acc.id, children, accepted_of, syn_map)
+    # But it must NOT pull in unrelated species under the synonym's own genus — only
+    # the synonym itself, not its genus-mates.
+    other_in_g_own = mk(session, "Curculio unrelated", parent=g_own)
+    assert other_in_g_own.id not in expand_taxon_scope(
+        accepted.id, children, accepted_of, syn_map)
+
+
+def test_synonym_group_ids_both_directions(session):
+    accepted = mk(session, "Entimus sastrei")
+    syn = mk(session, "Entimus formosus")
+    synonymize(session, name_id=syn.id, accepted_id=accepted.id)
+    _children, accepted_of, syn_map = _scope_maps(session)
+    assert synonym_group_ids(accepted.id, accepted_of, syn_map) == {accepted.id, syn.id}
+    assert synonym_group_ids(syn.id, accepted_of, syn_map) == {accepted.id, syn.id}

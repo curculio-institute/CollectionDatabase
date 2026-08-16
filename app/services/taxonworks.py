@@ -50,7 +50,7 @@ def _require_configured() -> None:
 
     Both connection fields are clearable (an unset field means "not configured"), so an
     empty base URL is a reachable state. Without this the request went out against a
-    relative URL and raised httpx.InvalidURL — not an HTTPError, so it escaped `_explain`
+    relative URL and raised httpx.InvalidURL — not an HTTPError, so it escaped `explain_tw_error`
     and surfaced as a raw traceback instead of a sentence naming the cause (§2).
     """
     cfg = get_config()
@@ -80,8 +80,12 @@ def web_base() -> str:
     return base
 
 
-def _explain(exc: Exception, host: str | None = None) -> TaxonWorksUnreachable:
-    """Name the actual cause: a rejected token, a wrong URL, or an unreachable server."""
+def explain_tw_error(exc: Exception, host: str | None = None) -> TaxonWorksUnreachable:
+    """Name the actual cause: a rejected token, a wrong URL, or an unreachable server.
+
+    The single, canonical version (#161) — `tw_compare.py` and `tw_media_compare.py`
+    import this rather than keeping their own copies, which had already drifted (missing
+    the 404 branch below) before the drift was noticed."""
     host = host or _host()
     if isinstance(exc, httpx.HTTPStatusError):
         code = exc.response.status_code
@@ -98,6 +102,48 @@ def _explain(exc: Exception, host: str | None = None) -> TaxonWorksUnreachable:
     if isinstance(exc, httpx.TimeoutException):
         return TaxonWorksUnreachable(f"{host} did not answer in time.")
     return TaxonWorksUnreachable(f"Cannot reach {host} ({type(exc).__name__}).")
+
+
+class PaginationTracker:
+    """Bookkeeping for a paginated TaxonWorks index endpoint (#167) — reads
+    `pagination-total`/`x-total` once, counts rows received, and decides whether the
+    pull is done. Shared by `tw_compare.fetch_catalog_index` and
+    `tw_media_compare`'s two fetch functions, which had each reimplemented this
+    independently; the bookkeeping is the exact piece that matters, since a bug in it
+    silently reintroduces the "short read reads as absent, re-uploads" hazard (CLAUDE.md
+    §5c) all three exist to prevent. Deliberately does not own the GET/retry mechanics
+    (those differ per caller) — only the arithmetic.
+    """
+
+    def __init__(self) -> None:
+        self.total: int | None = None
+        self.received = 0
+
+    def record_page(self, response: httpx.Response, body: list) -> None:
+        """Call once per page, after confirming `body` is a list."""
+        if self.total is None:
+            raw = response.headers.get("pagination-total") or response.headers.get("x-total")
+            self.total = int(raw) if raw and raw.isdigit() else None
+        self.received += len(body)
+
+    def is_complete(self, body: list, per_page: int) -> bool:
+        """True once `body` proves there is nothing left to page: an empty page, the
+        promised total reached, or (lacking a total) a short page."""
+        if not body:
+            return True
+        if self.total is not None and self.received >= self.total:
+            return True
+        return len(body) < per_page
+
+    def check_complete(self, *, what: str) -> None:
+        """Raise if `pagination-total` promised more rows than were ever received — a
+        short read must never be trusted as "that's everything" (CLAUDE.md §5c)."""
+        if self.total is not None and self.received < self.total:
+            raise TaxonWorksUnreachable(
+                f"{what} returned {self.received} of {self.total} rows — an incomplete "
+                f"read would understate what TaxonWorks has, so this is treated as a "
+                f"lookup failure rather than as an empty result."
+            )
 
 
 def taxonpages_url(otu_id: int) -> str:
@@ -126,7 +172,7 @@ async def check_connection(base: str | None = None, token: str | None = None) ->
             )
             r.raise_for_status()
     except httpx.HTTPError as exc:
-        raise _explain(exc, host=host) from exc
+        raise explain_tw_error(exc, host=host) from exc
     return f"Connected to {host}."
 
 
@@ -144,7 +190,7 @@ async def search_taxon_names(term: str, limit: int = 20) -> list[dict]:
             r.raise_for_status()
             return r.json()[:limit]
     except httpx.HTTPError as exc:
-        raise _explain(exc) from exc
+        raise explain_tw_error(exc) from exc
 
 
 async def fetch_taxon_name(tw_id: int) -> dict | None:
@@ -310,7 +356,7 @@ async def fetch_taxon_names_exact(name: str, per: int = 50) -> list[dict]:
             r.raise_for_status()
             return r.json()
     except httpx.HTTPError as exc:
-        raise _explain(exc) from exc
+        raise explain_tw_error(exc) from exc
 
 
 async def fetch_taxon_names_by_otu(otu_id: int, per: int = 50) -> list[dict]:
@@ -334,7 +380,7 @@ async def fetch_taxon_names_by_otu(otu_id: int, per: int = 50) -> list[dict]:
             r.raise_for_status()
             return r.json()
     except httpx.HTTPError as exc:
-        raise _explain(exc) from exc
+        raise explain_tw_error(exc) from exc
 
 
 async def fetch_otu_id_for_taxon_name(taxon_name_id: int) -> int | None:

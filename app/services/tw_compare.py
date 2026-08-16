@@ -50,17 +50,19 @@ plainly rather than reporting a false "0 differences".
 Reuses `dwc_export.occurrence_row` for the local side of the diff — the identical
 projection a real export would write, so "diverged" can never disagree with what the
 spreadsheet actually contains. Does not import from `tw_sync.py` or modify either of
-those two files; the only private surface reused across a service boundary is
-`taxonworks.TaxonWorksUnreachable` (a public exception class, the designated contract for
-"could not reach/authenticate against TaxonWorks" — everything else here goes through
-`get_config()` and its own small `httpx` calls rather than reaching into that module's
-underscore-prefixed helpers).
+those two files; the only surface reused from `taxonworks.py` is its **public** names —
+`TaxonWorksUnreachable` (the designated exception contract for "could not reach/
+authenticate against TaxonWorks"), `explain_tw_error` (#161 — the single canonical
+error-message helper; a local copy had already drifted, missing a 404 branch the
+canonical one carries, before the drift was noticed), and `PaginationTracker` (#167 — the
+pagination-total bookkeeping shared with `tw_media_compare.py`'s fetch functions, the
+same duplication-drift reasoning as `explain_tw_error`) — never that module's
+underscore-prefixed helpers, which stay private to it.
 """
 from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
-from urllib.parse import urlsplit
 
 import httpx
 from sqlalchemy.orm import Session
@@ -68,9 +70,11 @@ from sqlalchemy.orm import Session
 from collections.abc import Iterable
 
 from app.config import get_config
-from app.models import CollectionObject, Repository, Taxon
+from app.models import CollectionObject, Repository, Taxon, TaxonDetermination
 from app.services import dwc_export, taxa
-from app.services.taxonworks import TaxonWorksUnreachable, web_base
+from app.services.taxonworks import (
+    PaginationTracker, TaxonWorksUnreachable, explain_tw_error, web_base,
+)
 
 _TIMEOUT = httpx.Timeout(25.0)
 # A shared public server — bound concurrency so a check run never fires a burst of
@@ -123,23 +127,6 @@ _DIFF_FIELDS: tuple[str, ...] = (
 
 def _base() -> str:
     return get_config().tw_base.rstrip("/")
-
-
-def _explain(exc: Exception) -> TaxonWorksUnreachable:
-    """Same shape of message as `taxonworks._explain` (host/status/timeout), kept local
-    rather than importing that private helper — see module docstring."""
-    host = urlsplit(_base()).netloc or _base()
-    if isinstance(exc, httpx.HTTPStatusError):
-        code = exc.response.status_code
-        if code in (401, 403):
-            return TaxonWorksUnreachable(
-                f"{host} rejected the project token ({code}) — check Settings → "
-                f"TaxonWorks connection."
-            )
-        return TaxonWorksUnreachable(f"{host} answered {code}.")
-    if isinstance(exc, httpx.TimeoutException):
-        return TaxonWorksUnreachable(f"{host} did not answer in time.")
-    return TaxonWorksUnreachable(f"Cannot reach {host} ({type(exc).__name__}).")
 
 
 def _verify_filter_applied(rows: object, catalog_number: str) -> list[dict]:
@@ -200,10 +187,10 @@ async def _fetch_one_catalog_number(
             if exc.response.status_code in (429, 502, 503, 504):
                 last_exc = exc
             else:
-                raise _explain(exc) from exc
+                raise explain_tw_error(exc) from exc
         if attempt < _MAX_ATTEMPTS - 1:
             await asyncio.sleep(_RETRY_BACKOFF[min(attempt, len(_RETRY_BACKOFF) - 1)])
-    raise _explain(last_exc) from last_exc
+    raise explain_tw_error(last_exc) from last_exc
 
 
 async def fetch_tw_rows_for_catalog_numbers(
@@ -371,7 +358,10 @@ async def fetch_catalog_index(on_progress=None) -> CatalogIndex:
             "TaxonWorks is not configured — Settings → TaxonWorks connection."
         )
     rows: list[dict] = []
-    total: int | None = None
+    # #167 — shared bookkeeping with tw_media_compare's fetch functions; only the
+    # arithmetic moved, GET/retry stays exactly as before (this endpoint's own retry is
+    # `_fetch_one_catalog_number`'s job for the field-diff pull, not this identity pull).
+    tracker = PaginationTracker()
     page = 1
     async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
         while True:
@@ -389,31 +379,28 @@ async def fetch_catalog_index(on_progress=None) -> CatalogIndex:
                 )
                 r.raise_for_status()
             except httpx.HTTPStatusError as exc:
-                raise _explain(exc) from exc
+                raise explain_tw_error(exc) from exc
             except (httpx.TimeoutException, httpx.TransportError) as exc:
-                raise _explain(exc) from exc
+                raise explain_tw_error(exc) from exc
             body = r.json()
             if not isinstance(body, list):
                 raise TaxonWorksUnreachable(
                     "the identifier index did not return a list of rows — treating it "
                     "as a lookup failure rather than as an empty collection."
                 )
-            if total is None:
-                raw_total = r.headers.get("pagination-total") or r.headers.get("x-total")
-                total = int(raw_total) if raw_total and raw_total.isdigit() else None
+            tracker.record_page(r, body)
             rows.extend(body)
             if on_progress is not None:
-                on_progress(len(rows), total if total is not None else len(rows))
-            if not body or (total is not None and len(rows) >= total):
-                break
-            if len(body) < _INDEX_PER_PAGE:
+                on_progress(tracker.received,
+                            tracker.total if tracker.total is not None else tracker.received)
+            if tracker.is_complete(body, _INDEX_PER_PAGE):
                 break
             page += 1
-    if total is not None and len(rows) < total:
+    if tracker.total is not None and tracker.received < tracker.total:
         raise TaxonWorksUnreachable(
-            f"the identifier index returned {len(rows)} of {total} rows — an incomplete "
-            f"index would read as 'not on TaxonWorks' and re-upload those specimens, so "
-            f"this is treated as a lookup failure."
+            f"the identifier index returned {tracker.received} of {tracker.total} rows "
+            f"— an incomplete index would read as 'not on TaxonWorks' and re-upload "
+            f"those specimens, so this is treated as a lookup failure."
         )
     return build_catalog_index(rows)
 
@@ -452,6 +439,15 @@ class LeakedRow:
     tw_object_id: int
     reasons: tuple[str, ...]
     privacy: bool = True
+    # Field-level diffs against what TaxonWorks actually holds — the same computation
+    # `diverged` runs for eligible specimens, run here too (live review: "JJPC-00010
+    # slipped through because the collector's name was added later" — the leak itself
+    # says the record needs fixing in TaxonWorks, but not what else in it might already
+    # be stale; surfacing both together is what makes the fix a single trip). Empty
+    # when TaxonWorks' `dwc_occurrences` projection has no row yet to diff against
+    # (the same lag `on_tw_not_compared` already accounts for) — never a claim that
+    # nothing differs.
+    field_diffs: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -505,6 +501,14 @@ class CompareResult:
     moved: tuple[OrphanRow, ...] = ()
     orphaned: tuple[OrphanRow, ...] = ()
     collection_mismatch: tuple[CollectionMismatch, ...] = ()
+    # On TaxonWorks under our namespace, genuinely still held HERE (same repository),
+    # but excluded from `cos` — and so from every count above — by `scope_taxon_ids`
+    # (design pass, live review, bug fix). Only ever non-empty when a taxon scope is
+    # active: without one, every locally-held specimen is already in `cos`, so this
+    # case cannot arise. Distinguished from `moved` precisely so a same-collection,
+    # scope-excluded specimen is never reported as "held in another local collection"
+    # — a real, observed false claim before this field existed.
+    excluded_by_scope: tuple[OrphanRow, ...] = ()
     # True when no `CatalogIndex` was supplied, so the "on TaxonWorks but not here"
     # direction was never looked at. Declared for the same reason as
     # `media_not_compared`: a report that silently omits a whole class reads as complete.
@@ -514,6 +518,26 @@ class CompareResult:
     @property
     def synced_count(self) -> int:
         return len(self.synced)
+
+    @property
+    def leaked_privacy(self) -> tuple[LeakedRow, ...]:
+        """The confidentiality subset of `leaked` — on TaxonWorks despite being
+        withheld here for a PRIVACY reason, as opposed to `leaked_curation` (withheld
+        for curatorial reasons: a qualified/below-species determination). A live
+        privacy breach, is if anything the more urgent of the two.
+
+        Single source of truth (code review fix, #170 follow-up): `[lk for lk in
+        result.leaked if lk.privacy]` used to be re-written at three separate call
+        sites in `tw_sync_tab.py` (the flow diagram's Leaked count, its Explore
+        click-through, and the page's own issues list) — a future change to what
+        counts as a privacy leak needed all three updated by hand, and a missed one
+        would desync the diagram's count from the list Explore actually opens."""
+        return tuple(lk for lk in self.leaked if lk.privacy)
+
+    @property
+    def leaked_curation(self) -> tuple[LeakedRow, ...]:
+        """The complement of `leaked_privacy` — see its docstring."""
+        return tuple(lk for lk in self.leaked if not lk.privacy)
 
 
 def _diff_one(session: Session, co: CollectionObject, tw_row: dict) -> tuple[str, ...]:
@@ -584,18 +608,36 @@ def _current_taxon(co: CollectionObject) -> Taxon | None:
     return None
 
 
+def _scoped_repo_cos(
+    session: Session, *, repository_id: int, scope_taxon_ids: set[int] | None,
+):
+    """Shared by `ineligible_specimens`/`eligible_specimens` with `compare_repository`'s
+    own scoping join (code review fix — these two used to ignore `scope_taxon_ids`
+    entirely, so a taxon-restricted Collections report showed a scoped "Not eligible"
+    count next to an unscoped detail list/Explore hand-off for the very same number)."""
+    q = session.query(CollectionObject).filter(
+        CollectionObject.repository_id == repository_id)
+    if scope_taxon_ids is not None:
+        q = q.join(
+            TaxonDetermination,
+            (TaxonDetermination.collection_object_id == CollectionObject.id)
+            & (TaxonDetermination.is_current == 1),
+        ).filter(TaxonDetermination.taxon_id.in_(scope_taxon_ids))
+    return q.all()
+
+
 def ineligible_specimens(
-    session: Session, *, repository_id: int
+    session: Session, *, repository_id: int, scope_taxon_ids: set[int] | None = None,
 ) -> tuple[tuple[str, tuple[str, ...]], ...]:
     """Local-only (no network) — every specimen in `repository_id` that
     `export_decision` withholds, with its reasons. #149 step 1.2 computes this per
     specimen; this is the "which ones, and why" detail behind the Collections report's
-    bare not-eligible count (typically a confidential person in `recordedBy`)."""
-    cos = (
-        session.query(CollectionObject)
-        .filter(CollectionObject.repository_id == repository_id)
-        .all()
-    )
+    bare not-eligible count (typically a confidential person in `recordedBy`).
+
+    `scope_taxon_ids`, same as `compare_repository`'s: narrows to a taxon + its
+    descendants so this detail list agrees with a taxon-restricted report's count."""
+    cos = _scoped_repo_cos(
+        session, repository_id=repository_id, scope_taxon_ids=scope_taxon_ids)
     out: list[tuple[str, tuple[str, ...]]] = []
     for co in cos:
         decision = dwc_export.export_decision(co)
@@ -604,18 +646,19 @@ def ineligible_specimens(
     return tuple(out)
 
 
-def eligible_specimens(session: Session, *, repository_id: int) -> tuple[str, ...]:
+def eligible_specimens(
+    session: Session, *, repository_id: int, scope_taxon_ids: set[int] | None = None,
+) -> tuple[str, ...]:
     """Local-only (no network) — catalog numbers of every specimen in `repository_id`
     `export_decision` allows to export. The complement of `ineligible_specimens`, kept as
     its own function (rather than deriving it from that one) because the two ask
     different questions — "which, and why not" vs. "which" — and callers of this one
     (the Collections report's Explore hand-off, #149 follow-up) only ever need the plain
-    catalog-number list."""
-    cos = (
-        session.query(CollectionObject)
-        .filter(CollectionObject.repository_id == repository_id)
-        .all()
-    )
+    catalog-number list.
+
+    `scope_taxon_ids`: see `ineligible_specimens`."""
+    cos = _scoped_repo_cos(
+        session, repository_id=repository_id, scope_taxon_ids=scope_taxon_ids)
     return tuple(
         co.catalog_number for co in cos if dwc_export.export_decision(co).eligible
     )
@@ -623,7 +666,7 @@ def eligible_specimens(session: Session, *, repository_id: int) -> tuple[str, ..
 
 def compare_repository(
     session: Session, tw_by_cat: dict[str, list[dict]], *, repository_id: int,
-    index: CatalogIndex | None = None,
+    index: CatalogIndex | None = None, scope_taxon_ids: set[int] | None = None,
 ) -> CompareResult:
     """Pure computation, no I/O — `tw_by_cat` is the (already fetched)
     `{catalog_number: [row, ...]}` map from `fetch_tw_rows_for_catalog_numbers` supplying
@@ -642,12 +685,27 @@ def compare_repository(
     absent would re-upload it (per-namespace identifier uniqueness means TW accepts that
     duplicate silently). The orphan sweep is scoped to *our* namespace: without that,
     every other collection in the project would count as our orphan.
+
+    `scope_taxon_ids` (design pass, live review) is the same optional taxon restriction
+    the Export step already applies (its own descendant expansion, `batch_ops.py::
+    descendant_taxon_ids`) — narrows which LOCAL specimens are even considered, so
+    every count this function reports (`eligible_n`/`not_on_tw`/`synced`/`diverged`/…)
+    matches "restricted to this taxon", not the whole collection. That includes
+    `duplicates`/`leaked`/`collection_mismatch` — all three are appended inside the
+    `for co in cos` loop below, so they inherit the same taxon-scoped `cos`. Only
+    `_orphans`' three buckets (`moved`/`excluded_by_scope`/`orphaned`) stay unscoped: an
+    orphan has no local record to read a taxon off of, so there is nothing to restrict
+    it by.
     """
-    cos = (
-        session.query(CollectionObject)
-        .filter(CollectionObject.repository_id == repository_id)
-        .all()
-    )
+    cos_q = session.query(CollectionObject).filter(
+        CollectionObject.repository_id == repository_id)
+    if scope_taxon_ids is not None:
+        cos_q = cos_q.join(
+            TaxonDetermination,
+            (TaxonDetermination.collection_object_id == CollectionObject.id)
+            & (TaxonDetermination.is_current == 1),
+        ).filter(TaxonDetermination.taxon_id.in_(scope_taxon_ids))
+    cos = cos_q.all()
     repo = session.get(Repository, repository_id)
     local_code = str((repo.collection_code if repo is not None else "") or "").strip()
 
@@ -696,11 +754,16 @@ def compare_repository(
                     matches[0]["dwc_occurrence_object_id"] if matches
                     else entries[0].tw_object_id
                 )
+                # Same diff `_diff_one` runs for an eligible/synced specimen (live
+                # review, #170 follow-up) — only possible when the projection has
+                # actually caught up (`matches`), same precondition as the eligible
+                # branch's own `elif not matches: on_tw_not_compared` a few lines up.
                 leaked.append(LeakedRow(
                     catalog_number=cat,
                     tw_object_id=tw_object_id,
                     reasons=decision.reasons,
                     privacy=decision.withheld_for_privacy,
+                    field_diffs=_diff_one(session, co, matches[0]) if matches else (),
                 ))
 
         # Filed under a different namespace than this collection — the other half of a
@@ -734,7 +797,7 @@ def compare_repository(
                 institution_codes=tuple(m.get("institutionCode") or "" for m in matches),
             ))
 
-    moved, orphaned = _orphans(
+    moved, excluded_by_scope, orphaned = _orphans(
         session, index, local_code=local_code, local_cats_here=local_cats_here
     )
 
@@ -749,6 +812,7 @@ def compare_repository(
         leaked=tuple(leaked),
         on_tw_not_compared=tuple(on_tw_not_compared),
         moved=moved,
+        excluded_by_scope=excluded_by_scope,
         orphaned=orphaned,
         collection_mismatch=tuple(collection_mismatch),
         orphans_not_compared=index is None or not local_code,
@@ -758,25 +822,35 @@ def compare_repository(
 def _orphans(
     session: Session, index: CatalogIndex | None, *,
     local_code: str, local_cats_here: set[str],
-) -> tuple[tuple[OrphanRow, ...], tuple[OrphanRow, ...]]:
-    """Split what TaxonWorks holds under our namespace but this collection does not into
-    (moved, gone) — #149 step 1.4's other direction.
+) -> tuple[tuple[OrphanRow, ...], tuple[OrphanRow, ...], tuple[OrphanRow, ...]]:
+    """Split what TaxonWorks holds under our namespace but `local_cats_here` does not
+    into (moved, excluded_by_scope, gone) — #149 step 1.4's other direction.
 
     Needs `local_code` to know which namespace is ours; with none there is nothing to
     scope by and the sweep is skipped rather than guessed (reporting every namespace's
     records as our orphans would be worse than reporting none).
+
+    A DB-wide catalog-number lookup (not scoped to this repository OR to any taxon
+    restriction `local_cats_here` may already reflect) resolves each candidate to
+    whichever repository actually holds it, if any:
+      - a **different** repository code than `local_code` → genuinely **moved** (a
+        re-home leaves the catalog number intact and only re-points repository_id);
+      - **`local_code` itself** → not moved at all — it is still held HERE, just
+        excluded from `local_cats_here` by a taxon scope the caller applied (live
+        review, bug fix: reporting this as "moved" was a real false claim — without a
+        scope, every locally-held specimen is already in `local_cats_here`, so this
+        case cannot arise any other way);
+      - not found at all → **gone** from the local database entirely.
     """
     if index is None or not local_code:
-        return (), ()
+        return (), (), ()
     candidates = [
         e for e in index.entries
         if e.namespace_short_name == local_code
         and e.catalog_number not in local_cats_here
     ]
     if not candidates:
-        return (), ()
-    # One DB-wide lookup decides moved-vs-gone for all of them: a re-home leaves the
-    # catalog number intact, so finding it under another repository means it moved.
+        return (), (), ()
     elsewhere: dict[str, str] = {}
     cats = [e.catalog_number for e in candidates]
     for chunk_start in range(0, len(cats), 500):        # keep the IN list well inside
@@ -789,6 +863,7 @@ def _orphans(
         ):
             elsewhere[cat] = code
     moved: list[OrphanRow] = []
+    excluded: list[OrphanRow] = []
     gone: list[OrphanRow] = []
     for entry in candidates:
         row = OrphanRow(
@@ -797,5 +872,10 @@ def _orphans(
             namespace_short_name=entry.namespace_short_name,
             local_collection=elsewhere.get(entry.catalog_number),
         )
-        (moved if row.local_collection is not None else gone).append(row)
-    return tuple(moved), tuple(gone)
+        if row.local_collection is None:
+            gone.append(row)
+        elif row.local_collection == local_code:
+            excluded.append(row)
+        else:
+            moved.append(row)
+    return tuple(moved), tuple(excluded), tuple(gone)

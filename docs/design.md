@@ -343,6 +343,38 @@ event (see §6).  When selected it stays in the field as-is (`"✚ add <text>"`)
 that the person is a pending new entry.  `get_value()` and `commit()` strip the prefix at
 save time.
 
+### Specimen-row export badges (`record_summary.py`, #170)
+
+The shared specimen row (`rs.specimen_html`, used by Explore, Records, the record sheets
+and the event sheet's specimen list) ends its name line with up to **three** trailing
+badges. They are the three independent grounds `dwc_export.export_decision` withholds a
+specimen on, rendered **in its own rule order** — see CLAUDE.md §5c for the policy, which
+is what these render; this table is only the visual vocabulary.
+
+| glyph | source field | states + colour |
+|---|---|---|
+| `lock` | `confidential` / `event_confidential` | amber `#b45309` — this record's own flag (rules 1–2) |
+| `person_off` | `ExportDecision.recorded_by_state` | `confidential` **red `#dc2626`**; `blocked` amber; `redacted` `var(--tp-base-soft)` (rules 3–4) |
+| `question_mark` | `ExportDecision.determination_reasons` | amber — the determination's own certainty (rule 5) |
+
+Three rules govern the set, and they are what keep it from growing into a row of icons:
+
+- **One badge per *ground*, never per sub-reason.** A badge whose ground has several
+  sub-reasons collapses them into one glyph and lists them all in its tooltip — the
+  padlock has always done this for own-vs-event confidentiality, and the question mark
+  does the same for "qualified", "not to species", and "no current identification".
+- **Red is reserved for the one state no setting can resolve** — a confidential collector
+  is never exported in any form. Everything else withholding is amber ("restricted, not
+  wrong"), and the still-exported `redacted` state is grey: it is informational, so its
+  tooltip must not read as a withholding ("exported with the collector's name removed").
+- **Every tooltip is a sentence naming its own consequence**, in `confidential_reason`'s
+  voice. A bare noun ("Confidential") does not say what follows from it or which party it
+  is about.
+
+An unrecognised `recorded_by_state` renders **nothing** rather than raising: the browse
+surfaces build a whole results panel's rows in one loop, so one bad value taking down every
+other row's render is a far worse failure than a missing badge.
+
 ### Digitize layout modes (normal / single-card)
 
 The Digitize tab has two layouts, chosen in Settings (`AppConfig.digitize_layout`,
@@ -1122,3 +1154,44 @@ ISO code, and only this widget renders one. Shared means shared; widget-specific
 
 The dropdown lists `vocab.entries()` (one item per DB row), never `options()` — the latter is a
 `{name: name}` dict, and `Limburg` (BE-VLI) / `Limburg` (NL-LI) would collapse to one entry.
+
+---
+
+## TaxonWorks tab — the classification flow diagram
+
+Each collection's compare result is drawn as a fixed-layout SVG flow diagram
+(`tw_sync_tab.flow_diagram_svg`), with the plain `ui.table` kept as a switchable fallback:
+
+```
+Total ─┬─ Not eligible ── Leaked
+       └─ Eligible ─┬─ Not uploaded
+                    └─ Uploaded ─┬─ Synced
+                                 └─ Diverged
+```
+
+- **Box size never encodes the count.** Every box is `_FLOW_BOX_H` tall whatever its number;
+  only the label carries the value. A proportional diagram would render a single leaked
+  specimen — the most urgent thing on the page — as an invisible sliver.
+- **Fixed hex, not `--tp-*` vars.** A segment must read as the same saturated colour on a
+  light and a dark page background; the theme vars flip meaning between the two. This is the
+  exception to the usual rule, and it applies only to the diagram — the icons and badges
+  around it sit on a plain surface and use the vars normally.
+- **Red means "needs attention now"**: `Diverged` and `Leaked` share it. Everything else is
+  its own hue with no severity ordering implied.
+- **A column of children straddles its own parent's midpoint**, not the canvas centre — only
+  the first column may use the centre, since every later parent is itself off-centre whenever
+  *its* column holds two boxes.
+- **`_FLOW_C2_GAP` is wider than `_FLOW_GAP` for the Not-eligible/Eligible split alone.** It
+  is the one split where *both* branches grow their own subtree, so the default 8 px would
+  let the two subtrees touch. Guarded by `tests/test_tw_sync_flow_diagram.py`, which asserts
+  no two rects ever overlap.
+- **Every box is a click-through** to the same catalog-number list in Explore that the plain
+  table's numeric column opens. The table is a *fallback, not a lesser view*: a state added to
+  the diagram gets a column too (this is why `Leaked` has both).
+- `pending=True` (no Check run yet) draws only the first split — the later counts are not
+  merely zero, they are unknown, and drawing them as 0 would be a claim.
+
+Pure function of its inputs: no NiceGUI or Vue beyond the literal markup, so it is testable
+on its own. Note the Vue-directive constraint that shapes how it is mounted — `ui.element`
+silently drops the `add_slot` directive, so the SVG rides inside a one-row headerless
+`ui.table` (the one mechanism verified to work here).
