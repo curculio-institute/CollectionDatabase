@@ -578,9 +578,23 @@ def index():
         var b = banner();
         window._tpDirty = dirty.size > 0;
         if(dirty.size === 0){ b.style.display = 'none'; return; }
-        b.textContent = '\\u26A0  Unsaved changes in: ' + Array.from(dirty).join(', ');
+        // #172: each scope name is its own clickable span (text-only, several may be
+        // listed) so the user can jump straight to the tab that holds the unsaved edit.
+        var esc = function(s){
+          var d = document.createElement('div'); d.textContent = s; return d.innerHTML;
+        };
+        var links = Array.from(dirty).map(function(l){
+          return '<span class="tp-banner-nav" data-label="' + esc(l)
+            + '" style="text-decoration:underline;cursor:pointer;">' + esc(l) + '</span>';
+        });
+        b.innerHTML = '\\u26A0  Unsaved changes in: ' + links.join(', ');
         b.style.display = 'block';
       }
+      document.addEventListener('click', function(e){
+        var el = e.target.closest && e.target.closest('.tp-banner-nav');
+        if(!el) return;
+        emitEvent('tp_banner_nav', el.getAttribute('data-label'));
+      });
       // tpClearDirty(label) clears one area; tpClearDirty() clears all.
       window.tpClearDirty = function(label){
         if(label){ dirty.delete(label); } else { dirty.clear(); }
@@ -3020,6 +3034,20 @@ def index():
                 refresh_queue()
 
     main_tabs.on_value_change(_on_tab_change)
+
+    # #172: clicking a scope name in the unsaved-changes banner jumps to that tab.
+    # Import & Assign additionally needs the Import tab's own sub-tab switched.
+    _banner_scope_tabs = {"Specimen Digitization": "digitize", "Records": "records"}
+
+    def _on_banner_nav(e):
+        label = e.args
+        if label == "Import & Assign":
+            main_tabs.set_value("import")
+            _import_sub.set_value("assign")
+        elif label in _banner_scope_tabs:
+            main_tabs.set_value(_banner_scope_tabs[label])
+
+    ui.on("tp_banner_nav", _on_banner_nav)
 
     # ── Settings dialog content ───────────────────────────────────────────
     # Filled here so bio_codes (defined earlier in index()) is in scope.
