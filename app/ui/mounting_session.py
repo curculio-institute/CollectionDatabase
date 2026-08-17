@@ -357,10 +357,24 @@ def build_mounting_session_section(
             ui.notify(err, type="negative")
             return
         # Soft completeness confirm (#173) — checked on every save, including a
-        # reused event, same as the standard Digitize path.
-        if not await confirm_incomplete_event(
-            collect_event_fields(), recorded_by=bool(recorded_by_getter())
-        ):
+        # reused event, same as the standard Digitize path. Its own try/except so an
+        # error here reports like any other save failure instead of escaping unhandled.
+        try:
+            proceed = await confirm_incomplete_event(
+                collect_event_fields(), recorded_by=bool(recorded_by_getter())
+            )
+        except Exception as exc:
+            ui.notify(f"Save failed: {exc}", type="negative")
+            return
+        if not proceed:
+            return
+        # The confirm dialog is modal, but re-validate anyway rather than trust
+        # that — the save loop below reads the live `rows` list, and _validate()'s
+        # per-row determination check ran before the await; a row added while the
+        # dialog was open would otherwise reach the save loop with det=None.
+        err = _validate()
+        if err:
+            ui.notify(err, type="negative")
             return
         try:
             with session_factory() as s:

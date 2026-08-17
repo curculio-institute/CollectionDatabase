@@ -8,7 +8,9 @@ from app.services.taxa import (
     format_scientific_name, search_taxa, TaxonOption,
     parse_scientific_name, rank_from_parse, build_manual_taxon_prefill,
 )
-from app.services.events import format_event_summary, search_collecting_events, create_collecting_event
+from app.services.events import (
+    format_event_summary, search_collecting_events, create_collecting_event, recent_events,
+)
 from app.services.specimens import (
     save_specimen_entry, recent_specimens, update_collection_object,
     finalize_specimen,
@@ -320,6 +322,41 @@ def test_search_events_reorders_on_update(session):
 
     results = search_collecting_events(session, "")
     assert results[0].id == e1.id
+
+
+def test_recent_events_reorders_on_update(session):
+    """Same fix as search_collecting_events, for the richer row (#145/#176's
+    'recently updated events' list) — order is by updated_at, not id."""
+    e1 = _event(session)
+    _event(session, country="Austria")
+    session.flush()
+
+    e1.updated_at = _utcnow()
+    session.flush()
+
+    rows = recent_events(session, limit=10)
+    assert rows[0].id == e1.id
+
+
+def test_recent_events_carries_confidential_and_specimen_count(session):
+    """recent_events must surface confidential + n_specimens — EventOption/
+    search_collecting_events deliberately don't (no per-row count query for a
+    500-row dropdown), but the recent-list UI renders through rs.event_html,
+    which needs both to show the padlock and the count badge."""
+    ce = _event(session)
+    ce.confidential = 1
+    t = _taxon(session)
+    save_specimen_entry(
+        session, taxon_id=t.id, event_id=ce.id, event_fields={},
+        specimen_fields={"catalog_number": "R001", "repository_id": ensure_repo(session, "TEST")},
+        determination_fields={},
+    )
+    session.flush()
+
+    rows = recent_events(session, limit=10)
+    row = next(r for r in rows if r.id == ce.id)
+    assert row.confidential is True
+    assert row.n_specimens == 1
 
 
 # ---------------------------------------------------------------------------

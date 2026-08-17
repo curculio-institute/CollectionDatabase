@@ -221,7 +221,11 @@ def build_records_tab(session_factory, *, on_saved: callable | None = None) -> N
 
         def _apply_event_opts() -> None:
             opts = _event_opts()
-            if opts == _ev_opts_cache:
+            # Order-sensitive: plain dict `==` ignores insertion order, so an event
+            # reordered to the top by an edit that doesn't change its summary text
+            # (e.g. only county or elevation, neither shown by format_locality_label)
+            # would compare "unchanged" and never actually resurface (#145).
+            if list(opts.items()) == list(_ev_opts_cache.items()):
                 return                      # unchanged → keep the user's typed event filter
             _ev_opts_cache.clear(); _ev_opts_cache.update(opts)
             ev_select.set_options(opts)
@@ -244,13 +248,20 @@ def build_records_tab(session_factory, *, on_saved: callable | None = None) -> N
     def _render_recent_list() -> None:
         """Shown when nothing is selected (#145/#176): a clickable list of the 10
         most-recently-updated records in the active mode, so the user can jump back to
-        something they just touched without searching. Reuses the option caches the
-        search dropdowns already keep refreshed — no extra query."""
+        something they just touched without searching.
+
+        Specimens reuse `_rows_cache` (the search dropdown's own option cache — no
+        extra query). Events fetch fresh via `ev_svc.recent_events` instead of reading
+        `_ev_opts_cache`: that cache only holds `{id: summary}`, missing the
+        confidentiality flag and specimen count `rs.event_html` needs, and its
+        change-detection is a plain dict `==` — order-insensitive, so a reorder with
+        an unchanged summary (e.g. only `county` or elevation edited, neither of
+        which `format_locality_label` shows) would leave it silently stale."""
         if _mode["kind"] == "specimen":
             rows = _rows_cache[:_RECENT_LIMIT]
             title = "Recently updated specimens"
         else:
-            rows = list(_ev_opts_cache.items())[:_RECENT_LIMIT]
+            rows = _with_session(lambda s: ev_svc.recent_events(s, limit=_RECENT_LIMIT))
             title = "Recently updated events"
         with ui.card().classes("w-full shadow-sm"):
             ui.label(title).classes("section-label")
@@ -266,11 +277,15 @@ def build_records_tab(session_factory, *, on_saved: callable | None = None) -> N
                         ).on("click", lambda co_id=r["value"]: _open_specimen(co_id)):
                             ui.html(r["html"]).classes("flex-1")
                 else:
-                    for ev_id, summary in rows:
-                        ui.label(summary).classes(
-                            "tp-recent-row w-full px-2 py-1 rounded cursor-pointer "
-                            "hover:bg-slate-50 dark:hover:bg-white/5"
-                        ).on("click", lambda e_id=ev_id: _open_event(e_id))
+                    for r in rows:
+                        with ui.row().classes(
+                            "tp-recent-row w-full items-start gap-2 px-2 py-1 rounded "
+                            "cursor-pointer hover:bg-slate-50 dark:hover:bg-white/5"
+                        ).on("click", lambda ev_id=r.id: _open_event(ev_id)):
+                            ui.html(rs.event_html(
+                                summary=r.summary, n_specimens=r.n_specimens,
+                                confidential=r.confidential,
+                            )).classes("flex-1")
 
     def _clear_detail():
         detail.clear()

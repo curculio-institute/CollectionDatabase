@@ -159,6 +159,41 @@ def search_collecting_events(
     return [EventOption(id=e.id, summary=format_event_summary(e)) for e in q]
 
 
+@dataclass(frozen=True)
+class RecentEventRow:
+    id: int
+    summary: str
+    confidential: bool
+    n_specimens: int
+
+
+def recent_events(session: Session, limit: int = 10) -> list[RecentEventRow]:
+    """Latest `limit` events by updated_at, with confidentiality + specimen count —
+    richer than EventOption (whose plain-text search dropdown has no use for either
+    and would pay a per-row count query for up to 1000 rows for nothing). For the
+    Records "recently updated events" list (#145/#176), rendered through the same
+    rs.event_html the rest of the app uses, so a confidential event still shows its
+    padlock here."""
+    from app.models import CollectionObject as _CO
+    from sqlalchemy import func
+
+    rows = (
+        session.query(CollectingEvent, func.count(_CO.id))
+        .outerjoin(_CO, _CO.collecting_event_id == CollectingEvent.id)
+        .group_by(CollectingEvent.id)
+        .order_by(CollectingEvent.updated_at.desc(), CollectingEvent.id.desc())
+        .limit(limit)
+        .all()
+    )
+    return [
+        RecentEventRow(
+            id=ev.id, summary=format_event_summary(ev),
+            confidential=bool(ev.confidential), n_specimens=n,
+        )
+        for ev, n in rows
+    ]
+
+
 def get_event(session: Session, event_id: int) -> CollectingEvent | None:
     return session.get(CollectingEvent, event_id)
 

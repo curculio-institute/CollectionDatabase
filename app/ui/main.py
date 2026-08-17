@@ -1772,9 +1772,18 @@ def index():
                     # Soft completeness confirm (#173) — coordinates / municipality /
                     # date / recordedBy are never schema-required, so this only asks;
                     # it never blocks. Checked on every save, including a reused event.
-                    if not await confirm_incomplete_event(
-                        ce["collect_fields"](), recorded_by=bool(ce["recby_get"]())
-                    ):
+                    # Its own try/except: it runs before the save's try block below,
+                    # so an error here (e.g. a client disconnect mid-dialog) would
+                    # otherwise escape unhandled instead of reporting like any other
+                    # save failure.
+                    try:
+                        proceed = await confirm_incomplete_event(
+                            ce["collect_fields"](), recorded_by=bool(ce["recby_get"]())
+                        )
+                    except Exception as exc:
+                        ui.notify(f"Save failed: {exc}", type="negative")
+                        return
+                    if not proceed:
                         return
                     try:
                         active = _active_spec[0]

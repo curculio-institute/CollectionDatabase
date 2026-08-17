@@ -875,15 +875,30 @@ def build_import_assign_tab(session_factory, refreshers: dict, on_saved=None) ->
             row  = state["selected"]
             code = cat_num.value
             # Soft completeness confirm (#173), same check as every other save path.
-            # Computed fresh from the row (pure, no DB) — the transaction below
-            # recomputes it again rather than reusing this, so there's nothing to
-            # keep in sync.
+            # Computed once here (pure, no DB) and reused by the transaction below —
+            # row_to_event_fields/_ui_dates were already being called a second time
+            # for the save itself; no need for a third.
             _pre_ev = dwc_svc.row_to_event_fields(row)
-            _iso_ed_pre, _, _ = _ui_dates()
-            if not await confirm_incomplete_event(
-                {**_pre_ev, "event_date": _iso_ed_pre},
-                recorded_by=bool((_pre_ev.get("recorded_by") or "").strip()),
-            ):
+            _iso_ed_pre, _iso_di_pre, _ = _ui_dates()
+            # Its own try/except so an error here reports like any other save
+            # failure instead of escaping unhandled.
+            try:
+                proceed = await confirm_incomplete_event(
+                    {**_pre_ev, "event_date": _iso_ed_pre},
+                    recorded_by=bool((_pre_ev.get("recorded_by") or "").strip()),
+                )
+            except Exception as exc:
+                ui.notify(f"Save failed: {exc}", type="negative")
+                return
+            if not proceed:
+                return
+            # The confirm dialog is modal, but re-check identity anyway rather than
+            # trust that — `row`/`code` were captured above, while the save below
+            # still reads state["taxon_id"] live; if the row selection changed while
+            # the dialog was open, silently mixing the old row with a new taxon_id
+            # is exactly the "silent wrong value" CLAUDE.md §2 refuses to allow.
+            if state["selected"] is not row:
+                ui.notify("Selection changed — please try again.", type="warning")
                 return
             try:
                 with session_factory() as session:
@@ -907,7 +922,10 @@ def build_import_assign_tab(session_factory, refreshers: dict, on_saved=None) ->
                         # habitat + samplingProtocol are controlled vocabularies:
                         # resolve the parsed text → FK ids (get_or_create), like the
                         # event form's commit does for the interactive tabs.
-                        event_fields = dwc_svc.row_to_event_fields(row)
+                        # dict() copies _pre_ev (computed above, before the confirm
+                        # dialog) rather than re-parsing the row a second time — the
+                        # .pop() calls below mutate it, so a fresh copy is needed.
+                        event_fields = dict(_pre_ev)
                         _hab = (event_fields.pop("habitat", None) or "").strip()
                         _samp = (event_fields.pop("sampling_protocol", None) or "").strip()
                         event_fields["habitat_id"] = (
@@ -923,9 +941,11 @@ def build_import_assign_tab(session_factory, refreshers: dict, on_saved=None) ->
                             if _rec else None)
                         # Dates as the fields hold them — the ⚡-parsed eventDate and the
                         # identification year (_ui_dates; _validate already refused a bad
-                        # one). The verbatim is never overwritten: it is the auditable
-                        # original a DD.MM misread would have to be checked against (#1).
-                        _iso_ed, _iso_di, _ = _ui_dates()
+                        # one), reused from before the confirm dialog rather than
+                        # re-parsed. The verbatim is never overwritten: it is the
+                        # auditable original a DD.MM misread would have to be checked
+                        # against (#1).
+                        _iso_ed, _iso_di = _iso_ed_pre, _iso_di_pre
                         event_fields["event_date"] = _iso_ed
                         _raw_ed = (row.get("eventDate") or "").strip()
                         if _raw_ed and _raw_ed != _iso_ed and not event_fields["verbatim_event_date"]:
