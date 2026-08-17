@@ -40,3 +40,36 @@ def validate_event_fields(fields: dict) -> str | None:
             return "coordinateUncertainty must be a number."
 
     return None
+
+
+# Fields #173 calls out as expected on every collecting event. None of these are
+# schema-required (a real historical specimen may legitimately lack coordinates), so
+# this is a SOFT completeness check — unlike validate_event_fields above, a caller
+# shows the result as a "Save anyway?" confirmation, never a hard block.
+MISSING_FIELD_LABELS = ("Coordinates", "Municipality", "Date", "Recorded by")
+
+
+def missing_event_fields(fields: dict, *, recorded_by: bool) -> list[str]:
+    """Return the labels (a subset of MISSING_FIELD_LABELS) of fields left empty on
+    *fields* (a collecting-event field dict, as built by ``_collect_fields`` /
+    ``_collect_event_fields`` / ``dwc_import.row_to_event_fields``).
+
+    *recorded_by* is passed separately (a plain presence flag) because recordedBy is
+    never itself in that dict — every save path resolves it to a person id inside its
+    own transaction, so callers pass whatever they already have (a typed name, an
+    already-resolved id) rather than this function re-deriving it.
+
+    Coordinates count as present only when BOTH latitude and longitude are set — a
+    lone one is not a usable point.
+    """
+    missing = []
+    lat, lon = fields.get("decimal_latitude"), fields.get("decimal_longitude")
+    if not (lat not in (None, "") and lon not in (None, "")):
+        missing.append("Coordinates")
+    if not (fields.get("municipality") or "").strip():
+        missing.append("Municipality")
+    if not (fields.get("event_date") or "").strip():
+        missing.append("Date")
+    if not recorded_by:
+        missing.append("Recorded by")
+    return missing

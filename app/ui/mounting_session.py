@@ -23,6 +23,7 @@ import app.services.print_queue as pq_svc
 import app.services.repositories as repo_svc
 from app.services.dates import parse_dwc_date
 from app.services.validation import validate_event_fields
+from app.ui.event_completeness import confirm_incomplete_event
 import app.services.person_defaults as pd_svc
 from app.ui.date_input import attach_date_validation, append_year_pin
 from app.ui.person_field import build_person_field
@@ -61,6 +62,10 @@ def build_mounting_session_section(
     event_id_getter=lambda: None,  # () -> int | None: the selected/reused event,
                                    # so mounting links to it instead of creating a
                                    # duplicate (None → create one for the session)
+    recorded_by_getter=lambda: None,  # () -> str | None: the shared event form's
+                                       # typed recordedBy, for the #173 completeness
+                                       # confirm (recordedBy isn't in collect_event_fields
+                                       # — it's resolved to an id only inside commit_event)
 ) -> dict:
     """Render the Mounting Session specimen UI. Returns {"wipe": callable}."""
 
@@ -346,10 +351,16 @@ def build_mounting_session_section(
 
     # ── save ────────────────────────────────────────────────────────────────
 
-    def _do_save() -> None:
+    async def _do_save() -> None:
         err = _validate()
         if err:
             ui.notify(err, type="negative")
+            return
+        # Soft completeness confirm (#173) — checked on every save, including a
+        # reused event, same as the standard Digitize path.
+        if not await confirm_incomplete_event(
+            collect_event_fields(), recorded_by=bool(recorded_by_getter())
+        ):
             return
         try:
             with session_factory() as s:

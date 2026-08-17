@@ -38,6 +38,7 @@ import app.services.datasets as ds_svc
 from app.services.biological import get_relationship_options
 from app.config import get_config
 from app.ui.date_input import attach_date_validation
+from app.ui.event_completeness import confirm_incomplete_event
 from app.ui.taxon_search import build_taxon_search, _render_tw_label
 from app.ui.taxon_editor import open_new_taxon_dialog
 from app.ui.choice_field import build_choice_field
@@ -866,13 +867,24 @@ def build_import_assign_tab(session_factory, refreshers: dict, on_saved=None) ->
                     return "coordinateUncertainty must be a number."
             return None
 
-        def _on_assign():
+        async def _on_assign():
             err = _validate()
             if err:
                 ui.notify(err, type="negative")
                 return
             row  = state["selected"]
             code = cat_num.value
+            # Soft completeness confirm (#173), same check as every other save path.
+            # Computed fresh from the row (pure, no DB) — the transaction below
+            # recomputes it again rather than reusing this, so there's nothing to
+            # keep in sync.
+            _pre_ev = dwc_svc.row_to_event_fields(row)
+            _iso_ed_pre, _, _ = _ui_dates()
+            if not await confirm_incomplete_event(
+                {**_pre_ev, "event_date": _iso_ed_pre},
+                recorded_by=bool((_pre_ev.get("recorded_by") or "").strip()),
+            ):
+                return
             try:
                 with session_factory() as session:
                     with session.begin():

@@ -62,6 +62,7 @@ import app.ui.record_summary as _record_summary
 from app.ui.media_panel import build_media_button
 from app.ui.external_id_panel import build_external_id_button
 from app.ui.life_stage_panel import build_life_stage_button
+from app.ui.event_completeness import confirm_incomplete_event
 import app.services.media as media_svc
 import app.services.external_ids as extid_svc
 import app.services.life_stage as lifestage_svc
@@ -1581,6 +1582,7 @@ def index():
                         bio_state=bio_state,
                         on_saved=lambda: _ms_on_saved(),
                         event_id_getter=lambda: state["event_id"],
+                        recorded_by_getter=lambda: ce["recby_get"](),
                     )
                 ms_section.set_visibility(False)
 
@@ -1762,10 +1764,17 @@ def index():
                                for a in bio_state["associations"])
                     )
 
-                def _on_save():
+                async def _on_save():
                     err = _validate()
                     if err:
                         ui.notify(err, type="negative")
+                        return
+                    # Soft completeness confirm (#173) — coordinates / municipality /
+                    # date / recordedBy are never schema-required, so this only asks;
+                    # it never blocks. Checked on every save, including a reused event.
+                    if not await confirm_incomplete_event(
+                        ce["collect_fields"](), recorded_by=bool(ce["recby_get"]())
+                    ):
                         return
                     try:
                         active = _active_spec[0]
