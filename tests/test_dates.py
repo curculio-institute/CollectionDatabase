@@ -81,6 +81,17 @@ def test_month_name_unknown():     bad("10. Foobar 2026")
 def test_month_name_validates_day():bad("31. Juni 2026")  # June has 30 days
 
 
+# ── Month-DAY-year, the US/iNaturalist order (#174) ────────────────────────────
+
+def test_month_day_year_comma():   ok("Aug 11, 2026",     "2026-08-11")
+def test_month_day_year_no_comma():ok("Aug 11 2026",      "2026-08-11")
+def test_month_day_year_full():    ok("August 11, 2026",  "2026-08-11")
+def test_month_day_year_de():      ok("Juni 10, 2026",    "2026-06-10")
+def test_month_day_year_case():    ok("AUG 11, 2026",     "2026-08-11")
+def test_month_day_year_unknown(): bad("Foobar 11, 2026")
+def test_month_day_year_validates_day(): bad("Jun 31, 2026")  # June has 30 days
+
+
 # ── Roman-numeral months (entomological label convention) ─────────────────────
 
 def test_roman_full():             ok("10.IV.2020",   "2020-04-10")

@@ -3,7 +3,9 @@
 Accepted, all normalised to ISO 8601 (YYYY, YYYY-MM, or YYYY-MM-DD):
     ISO         : YYYY, YYYY-MM, YYYY-MM-DD
     European    : DD.MM.YYYY, MM.YYYY            (dot-separated; NOT US MM/DD)
-    Spelled     : "10. Juni 2026", "June 2026"  (English + German month names, #95)
+    Spelled     : "10. Juni 2026", "June 2026"  (English + German month names, day-first, #95)
+    US/spelled  : "Aug 11, 2026", "August 11 2026" (month-first, comma optional; the
+                  iNaturalist copy-paste format, #174)
     Roman month : "10.IV.2020", "IV.2020"       (I–XII, the entomological convention)
 
 Intervals (ISO 8601 `<date>/<date>`) are accepted when allow_interval=True — eventDate,
@@ -51,22 +53,40 @@ _MONTH_NAME_DATE = re.compile(
     r'^(?:(\d{1,2})[.\s]+)?([A-Za-zäöüÄÖÜ]+)\.?[.\s]+(\d{4})$'
 )
 
+# `MonthName DD, YYYY` — the US order, day AFTER the month name, comma optional: "Aug 11,
+# 2026", "August 11 2026" (#174, the format iNaturalist shows on an observation page, so a
+# copy-paste needs it accepted). Distinct from `_MONTH_NAME_DATE` above (day-before-month)
+# by requiring the month word FIRST — the two never both match the same string.
+_MONTH_DAY_YEAR = re.compile(
+    r'^([A-Za-zäöüÄÖÜ]+)\.?\s+(\d{1,2}),?\s+(\d{4})$'
+)
+
 
 def _normalise_month_name(raw: str) -> str:
     """Rewrite a spelled-out month into the numeric form the parser already handles.
 
-    "10. Juni 2026" -> "10.6.2026" (then DD.MM.YYYY), "Juni 2026" -> "6.2026" (then MM.YYYY).
-    Returns *raw* unchanged when there is no month name or the word is not a known month, so
-    the caller's existing branches (and their error messages) still apply.
+    "10. Juni 2026" -> "10.6.2026" (then DD.MM.YYYY), "Juni 2026" -> "6.2026" (then MM.YYYY),
+    "Aug 11, 2026" -> "11.8.2026" (then DD.MM.YYYY). Returns *raw* unchanged when there is no
+    month name or the word is not a known month, so the caller's existing branches (and their
+    error messages) still apply.
     """
     m = _MONTH_NAME_DATE.match(raw)
-    if not m:
-        return raw
-    day, word, year = m.group(1), m.group(2).lower(), m.group(3)
-    num = _MONTHS.get(word)
-    if num is None:
-        return raw
-    return f"{day}.{num}.{year}" if day else f"{num}.{year}"
+    if m:
+        day, word, year = m.group(1), m.group(2).lower(), m.group(3)
+        num = _MONTHS.get(word)
+        if num is None:
+            return raw
+        return f"{day}.{num}.{year}" if day else f"{num}.{year}"
+
+    m = _MONTH_DAY_YEAR.match(raw)
+    if m:
+        word, day, year = m.group(1).lower(), m.group(2), m.group(3)
+        num = _MONTHS.get(word)
+        if num is None:
+            return raw
+        return f"{day}.{num}.{year}"
+
+    return raw
 
 
 def _check_future(normalised: str) -> str | None:
