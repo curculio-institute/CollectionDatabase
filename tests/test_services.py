@@ -308,6 +308,20 @@ def test_search_events_empty_query_returns_recent_first(session):
     assert results[0].id == e2.id   # most recent first
 
 
+def test_search_events_reorders_on_update(session):
+    """Editing an older event resurfaces it at the top (#145): order is by
+    updated_at, not creation order/id."""
+    e1 = _event(session)
+    _event(session, country="Austria")
+    session.flush()
+
+    e1.updated_at = _utcnow()   # touch the older event after the newer one exists
+    session.flush()
+
+    results = search_collecting_events(session, "")
+    assert results[0].id == e1.id
+
+
 # ---------------------------------------------------------------------------
 # save_specimen_entry + recent_specimens
 # ---------------------------------------------------------------------------
@@ -439,6 +453,31 @@ def test_recent_specimens_newest_first(session):
     rows = recent_specimens(session, limit=10)
     assert rows[0].catalog_number == "003"
     assert rows[-1].catalog_number == "001"
+
+
+def test_recent_specimens_reorders_on_update(session):
+    """Editing an older specimen resurfaces it at the top (#145): order is by
+    updated_at, not creation order/id."""
+    t = _taxon(session)
+    ce = _event(session)
+
+    co1 = save_specimen_entry(
+        session, taxon_id=t.id, event_id=ce.id, event_fields={},
+        specimen_fields={"catalog_number": "101", "repository_id": ensure_repo(session, "TEST")},
+        determination_fields={},
+    )
+    save_specimen_entry(
+        session, taxon_id=t.id, event_id=ce.id, event_fields={},
+        specimen_fields={"catalog_number": "102", "repository_id": ensure_repo(session, "TEST")},
+        determination_fields={},
+    )
+    session.flush()
+
+    co1.updated_at = _utcnow()   # touch the older specimen after the newer one exists
+    session.flush()
+
+    rows = recent_specimens(session, limit=10)
+    assert rows[0].catalog_number == "101"
 
 
 def test_recent_specimens_returns_only_current_determination(session):

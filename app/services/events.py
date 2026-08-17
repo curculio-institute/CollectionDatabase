@@ -129,7 +129,8 @@ def search_collecting_events(
     session: Session, query: str, limit: int = 1000
 ) -> list[EventOption]:
     """Search across all text-bearing locality/date/collector fields.
-    Empty query returns most-recent `limit` events."""
+    Empty query returns most-recently-updated `limit` events (#145) — an edited event
+    resurfaces, not just a freshly created one; ties broken by id."""
     q = session.query(CollectingEvent)
     if query.strip():
         pat = f"%{query.strip()}%"
@@ -154,7 +155,7 @@ def search_collecting_events(
                 | Island.name.ilike(pat)
             )
         )
-    q = q.order_by(CollectingEvent.id.desc()).limit(limit)
+    q = q.order_by(CollectingEvent.updated_at.desc(), CollectingEvent.id.desc()).limit(limit)
     return [EventOption(id=e.id, summary=format_event_summary(e)) for e in q]
 
 

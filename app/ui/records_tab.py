@@ -238,10 +238,45 @@ def build_records_tab(session_factory, *, on_saved: callable | None = None) -> N
     # picker / reverse-geocode in the collecting-event form) and clears the moment
     # the form matches what was loaded again. `fn` is None when nothing is loaded.
     _dirty = {"fn": None}
+    _mode = {"kind": "specimen"}
+    _RECENT_LIMIT = 10
+
+    def _render_recent_list() -> None:
+        """Shown when nothing is selected (#145/#176): a clickable list of the 10
+        most-recently-updated records in the active mode, so the user can jump back to
+        something they just touched without searching. Reuses the option caches the
+        search dropdowns already keep refreshed — no extra query."""
+        if _mode["kind"] == "specimen":
+            rows = _rows_cache[:_RECENT_LIMIT]
+            title = "Recently updated specimens"
+        else:
+            rows = list(_ev_opts_cache.items())[:_RECENT_LIMIT]
+            title = "Recently updated events"
+        with ui.card().classes("w-full shadow-sm"):
+            ui.label(title).classes("section-label")
+            if not rows:
+                ui.label("Nothing yet.").classes("text-caption text-grey")
+                return
+            with ui.column().classes("w-full gap-0"):
+                if _mode["kind"] == "specimen":
+                    for r in rows:
+                        with ui.row().classes(
+                            "tp-recent-row w-full items-start gap-2 px-2 py-1 rounded "
+                            "cursor-pointer hover:bg-slate-50 dark:hover:bg-white/5"
+                        ).on("click", lambda co_id=r["value"]: _open_specimen(co_id)):
+                            ui.html(r["html"]).classes("flex-1")
+                else:
+                    for ev_id, summary in rows:
+                        ui.label(summary).classes(
+                            "tp-recent-row w-full px-2 py-1 rounded cursor-pointer "
+                            "hover:bg-slate-50 dark:hover:bg-white/5"
+                        ).on("click", lambda e_id=ev_id: _open_event(e_id))
 
     def _clear_detail():
         detail.clear()
         _dirty["fn"] = None
+        with detail:
+            _render_recent_list()
 
     # ── Mode toggle ──────────────────────────────────────────────────────────
     def _set_mode_specimen():
@@ -252,6 +287,7 @@ def build_records_tab(session_factory, *, on_saved: callable | None = None) -> N
         mode_ev_btn.props(add="flat", remove="color=secondary")
         spec_select.style(remove="display:none")
         ev_select.style(add="display:none")
+        _mode["kind"] = "specimen"
         _clear_detail()
         spec_select.value = None
 
@@ -260,6 +296,7 @@ def build_records_tab(session_factory, *, on_saved: callable | None = None) -> N
         mode_ev_btn.props(add="color=secondary", remove="flat")
         spec_select.style(add="display:none")
         ev_select.style(remove="display:none")
+        _mode["kind"] = "event"
         _clear_detail()
         ev_select.value = None
 
@@ -979,6 +1016,10 @@ def build_records_tab(session_factory, *, on_saved: callable | None = None) -> N
 
     def _has_content() -> bool:
         return bool(_dirty["fn"]) and _dirty["fn"]()
+
+    # Nothing is selected on first render either (#145/#176) — show the recent list
+    # immediately rather than a blank detail area.
+    _clear_detail()
 
     return {"open_specimen": _open_specimen, "open_event": _open_event,
             "has_content": _has_content}

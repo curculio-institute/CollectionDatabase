@@ -422,7 +422,13 @@ def get_determination_history(session: Session, co_id: int) -> list[TaxonDetermi
 
 
 def recent_specimens(session: Session, limit: int = 200) -> list[RecentRow]:
-    """Latest `limit` specimens with their current determination and event."""
+    """Latest `limit` specimens with their current determination and event.
+
+    Ordered by `updated_at` (most-recently-touched first), not creation (#145) — so a
+    specimen the user just edited resurfaces at the top of both the search dropdown's
+    default order and the Records "recently updated" list (#176), not just one freshly
+    created. `id.desc()` breaks ties among equal timestamps, keeping the order stable.
+    """
     rows = (
         session.query(CollectionObject, TaxonDetermination, CollectingEvent, Taxon)
         .options(joinedload(CollectionObject.repository))
@@ -435,7 +441,7 @@ def recent_specimens(session: Session, limit: int = 200) -> list[RecentRow]:
         )
         .outerjoin(CollectingEvent, CollectingEvent.id == CollectionObject.collecting_event_id)
         .outerjoin(Taxon, Taxon.id == TaxonDetermination.taxon_id)
-        .order_by(CollectionObject.id.desc())
+        .order_by(CollectionObject.updated_at.desc(), CollectionObject.id.desc())
         .limit(limit)
         .all()
     )
