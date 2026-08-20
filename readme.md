@@ -43,10 +43,9 @@ Search taxon names, import them with synonymy status, authorship and their paren
 - Notifications about errors, fading by themselves unless you hover with mouse cursor above them
 
 ## Planned features:
-- Export to Darwin Core and upload to TaxonWorks, then compare both datasets regularly via the API. This is the main goal and is not built yet.
-- Map view of the collection, and tools to analyse the data
-- Bulk-import of the existing spreadsheet dataset
-- Enrich collecting events with a habitat classification, by intersecting the coordinates with a habitat map
+- Map view of the collection, and tools to analyse the data (currently outsourced to QGIS)
+- Bulk-import for collections that have unique identifiers
+- Enrich collecting events with a habitat classification, by intersecting the coordinates with a habitat map. More metadata, e.g. plant lists for localities etc etc
 
 ## How to get it running
 ### Linux
