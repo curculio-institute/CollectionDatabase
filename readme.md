@@ -11,7 +11,7 @@ Search taxon names, import them with synonymy status, authorship and their paren
 - For plants also from [weevil project on TaxonWorks](https://catalog.curculionoidea.org) (compatibility, more taxonomic ranks possible) or the [World Checklist of Vascular Plants](https://powo.science.kew.org/about-wcvp), whose archive is downloaded once from within the app and then searched offline.
 #### Unique Identifiers
 - unique identifiers for collection objects
-    - streamlined workflow to print and assign unique identifiers
+    - streamlined workflow to assign unique identifiers for collections (such as my own) which have been digitized without unique identifiers
 #### Georeferencing
 - georeference using the point-radius method, by drawing a circle on a map.
 - Based on the coordinates: Automatic retrieval of country, province, region, county and municipality via the [Overpass API](https://overpass-api.de/), which returns the administrative areas that actually contain the point, and of the locality via the [Photon Geocoding API](https://photon.komoot.io/), which finds named features near it.
