@@ -48,6 +48,7 @@ Search taxon names, import them with synonymy status, authorship and their paren
 - Enrich collecting events with a habitat classification, by intersecting the coordinates with a habitat map. More metadata, e.g. plant lists for localities etc etc
 
 ## How to get it running
+Tested primarily on Linux, some testing also on Windows (Windows-specific bugs possible). Not tested on Mac yet.
 ### Linux
 On Linux, having python and conda installed should be sufficient for a start to move forward:
 
