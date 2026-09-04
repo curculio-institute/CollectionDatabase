@@ -2,8 +2,9 @@
 
 A determination freezes dwc:verbatimIdentification (the composed FULL name at save
 time — bare name plus authorship, qualifier-free); the open-nomenclature qualifier
-lives separately and is placed right after the genus-group by _place_qualifier() (the
-private building block of render_full_name). Re-classifying the taxon later must NOT
+lives separately and is placed by _place_qualifier() (the private building block of
+render_full_name) in two groups — cf./aff./nr./? prefix the whole name, sp./spp./
+indet./agg./gr. suffix it. Re-classifying the taxon later must NOT
 change a saved determination's rendered name, but the specimen stays findable via the
 live taxon_id.
 """
@@ -40,14 +41,22 @@ def test_split_genus_group(name, expected):
 
 
 @pytest.mark.parametrize("name, qual, expected", [
-    ("Otiorhynchus forticollis", "cf.", "Otiorhynchus cf. forticollis"),
-    ("Otiorhynchus (Nihus) forticollis", "aff.", "Otiorhynchus (Nihus) aff. forticollis"),
-    ("Otiorhynchus", "sp.", "Otiorhynchus sp."),               # genus row → empty rest
+    # doubt group → prefix the WHOLE name
+    ("Otiorhynchus forticollis", "cf.", "cf. Otiorhynchus forticollis"),
+    ("Otiorhynchus (Nihus) forticollis", "aff.", "aff. Otiorhynchus (Nihus) forticollis"),
+    ("Otiorhynchus forticollis", "nr.", "nr. Otiorhynchus forticollis"),
+    ("Otiorhynchus forticollis", "?", "? Otiorhynchus forticollis"),
+    ("Otiorhynchus", "cf.", "cf. Otiorhynchus"),               # genus row
+    ("Achillea millefolium alpina", "cf.", "cf. Achillea millefolium alpina"),
+    # scope group → suffix the name
+    ("Otiorhynchus", "sp.", "Otiorhynchus sp."),               # genus row → "<genus> sp."
     ("Otiorhynchus (Nihus)", "sp.", "Otiorhynchus (Nihus) sp."),
+    ("Rubus fruticosus", "agg.", "Rubus fruticosus agg."),
+    ("Curculionidae", "indet.", "Curculionidae indet."),
+    ("Bembidion", "spp.", "Bembidion spp."),
+    # no / blank qualifier → unchanged
     ("Otiorhynchus forticollis", None, "Otiorhynchus forticollis"),
     ("Otiorhynchus forticollis", "", "Otiorhynchus forticollis"),
-    ("Otiorhynchus", "cf.", "Otiorhynchus cf."),               # rare: rest empty
-    ("Achillea millefolium alpina", "cf.", "Achillea cf. millefolium alpina"),
 ])
 def test_place_qualifier(name, qual, expected):
     assert _place_qualifier(name, qual) == expected
@@ -61,9 +70,9 @@ def test_place_qualifier(name, qual, expected):
     # species: genus group italic, author roman
     ("Otiorhynchus armadillo", None, "(Rossi, 1792)", "species",
      "<i>Otiorhynchus armadillo</i> (Rossi, 1792)"),
-    # qualifier after the genus group, roman
+    # doubt qualifier prefixes the whole name, roman
     ("Otiorhynchus forticollis", "cf.", "(Stierlin, 1861)", "species",
-     "<i>Otiorhynchus</i> cf. <i>forticollis</i> (Stierlin, 1861)"),
+     "cf. <i>Otiorhynchus forticollis</i> (Stierlin, 1861)"),
     # genus-only "sp." determination
     ("Otiorhynchus", "sp.", "Germar, 1822", "genus",
      "<i>Otiorhynchus</i> sp. Germar, 1822"),
@@ -80,7 +89,7 @@ def test_render_full_name_frozen_splits_authorship_out():
     back so the author is roman and only the name is italic."""
     frozen = "Otiorhynchus armadillo (Rossi, 1792)"
     assert render_full_name_frozen(frozen, qualifier="cf.", taxon_rank="species") \
-        == "<i>Otiorhynchus</i> cf. <i>armadillo</i> (Rossi, 1792)"
+        == "cf. <i>Otiorhynchus armadillo</i> (Rossi, 1792)"
 
 
 # ---------------------------------------------------------------------------
@@ -153,7 +162,7 @@ def test_determination_freezes_name_against_reclassification(session):
     )
     assert det.verbatim_identification == "Otiorhynchus forticollis"
     assert _place_qualifier(det.verbatim_identification, det.identification_qualifier) \
-        == "Otiorhynchus cf. forticollis"
+        == "cf. Otiorhynchus forticollis"
 
     # Re-home the species to another genus: the live taxon name changes …
     reparent(session, taxon_id=sp.id, new_parent_id=other.id)
@@ -162,7 +171,7 @@ def test_determination_freezes_name_against_reclassification(session):
     # … but the saved determination's frozen verbatim is untouched …
     assert det.verbatim_identification == "Otiorhynchus forticollis"
     assert _place_qualifier(det.verbatim_identification, det.identification_qualifier) \
-        == "Otiorhynchus cf. forticollis"
+        == "cf. Otiorhynchus forticollis"
     # … and the specimen is still findable via the live concept (taxon_id).
     assert det.taxon_id == sp.id
 
@@ -217,7 +226,7 @@ def test_correcting_the_taxon_refreezes_the_verbatim_name(session):
     assert det.date_identified == "2024-06-01"
     assert det.identification_qualifier == "cf."
     assert _place_qualifier(det.verbatim_identification, det.identification_qualifier) \
-        == "Otiorhynchus cf. crypticus"
+        == "cf. Otiorhynchus crypticus"
 
 
 def test_correcting_the_taxon_never_leaves_the_row_contradicting_itself(session):

@@ -236,6 +236,7 @@ def _co_summary(session, co) -> dict:
         "name": (t.scientific_name or "") if t else "",
         "rank": t.taxon_rank if t else None,
         "authorship": t.scientific_name_authorship if t else None,
+        "qualifier": cur.identification_qualifier if cur else None,
         "hosts": [h for a in co.subject_associations if (h := bio_svc.association_host(session, a))],
         "sex": cur.sex if cur else None,
         "count": co.individual_count,
@@ -316,7 +317,8 @@ def _render_event(place, ev, detail, media, specimens, nearby, *,
                     for sp in specimens:
                         row = ui.html(rs.specimen_html(
                             catalog=sp["catalog"], name=sp["name"], rank=sp["rank"],
-                            authorship=sp["authorship"], hosts=sp["hosts"], sex=sp["sex"],
+                            authorship=sp["authorship"], qualifier=sp["qualifier"],
+                            hosts=sp["hosts"], sex=sp["sex"],
                             count=sp["count"], locality="", identified_by=sp["identified_by"],
                             date_identified=sp["date_identified"],
                             confidential=sp["confidential"],
@@ -364,14 +366,16 @@ def _render_specimen(ident, curatorial, det_hist, assocs, life_stages, ext_ids, 
     with ui.card().classes("w-full shadow-sm"):
         with ui.row().classes("items-start gap-3 w-full no-wrap"):
             with ui.column().classes("flex-1 min-w-0 gap-1"):
-                name = (rs.name_html(ident["name"], ident["rank"], ident["authorship"])
+                # The open-nomenclature qualifier is rendered INTO the name (two-group rule
+                # in taxa._place_qualifier), not as a separate trailing chip — one convention
+                # everywhere a determination is shown (CLAUDE.md §2).
+                name = (rs.name_html(ident["name"], ident["rank"], ident["authorship"],
+                                     ident["qualifier"])
                         if ident["name"] else '<span class="rs-none">— no identification —</span>')
                 bits = rs._bits(ident["sex"], ident["count"])
-                qual = f'<span class="rsheet-muted">{_html.escape(ident["qualifier"])}</span>' \
-                    if ident["qualifier"] else ""
                 typ = f'<span class="rsheet-type">{_html.escape(ident["type_status"])}</span>' \
                     if ident["type_status"] else ""
-                ui.html(f'<div class="rsheet-hero">{name} {bits} {qual} {typ}</div>')
+                ui.html(f'<div class="rsheet-hero">{name} {bits} {typ}</div>')
                 det = rs._det_html(ident["identified_by"], ident["date_identified"])
                 lock = rs.lock_html(own=ident["confidential"], from_event=ident["event_confidential"])
                 consent = rs.consent_badge_html(ident["recorded_by_state"])
@@ -444,15 +448,15 @@ def _grid(fields: dict) -> None:
 
 def _det_block(dets) -> None:
     for d in dets:
-        name = rs.name_html(d["name"], d["rank"], d["authorship"]) if d["name"] else "—"
-        q = f' <span class="rsheet-muted">{_html.escape(d["qualifier"])}</span>' if d["qualifier"] else ""
+        name = rs.name_html(d["name"], d["rank"], d["authorship"], d["qualifier"]) \
+            if d["name"] else "—"
         ty = f' <span class="rsheet-type">{_html.escape(d["type_status"])}</span>' if d["type_status"] else ""
         cur = ' <span class="rs-badge">current</span>' if d["current"] else ""
         meta = "  ·  ".join(x for x in (
             f'det. {d["by"]}' if d["by"] else "", d["date"] or "") if x)
         meta_html = f'<div class="rsheet-muted">{_html.escape(meta)}</div>' if meta else ""
         cls = "rsheet-det cur" if d["current"] else "rsheet-det"
-        ui.html(f'<div class="{cls}">{name}{q}{ty}{cur}{meta_html}</div>')
+        ui.html(f'<div class="{cls}">{name}{ty}{cur}{meta_html}</div>')
 
 
 def _ecology_block(assocs, life_stages, ext_ids) -> None:

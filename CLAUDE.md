@@ -348,10 +348,14 @@ local-master with no automated push.
 - **One name renderer — `taxa.render_full_name` (decided).** *Every* surface that shows a
   scientific name goes through the single owner of the convention: only the genus group and
   below is italic (a family/tribe/order is roman), the **authorship is roman**, and — for a
-  determination — the qualifier is placed **right after the genus-group**, roman, by one rule
-  (`Otiorhynchus cf. forticollis`, `Otiorhynchus (Nihus) aff. forticollis`, `Otiorhynchus sp.`
-  — a genus-row determination → empty rest; no per-qualifier logic, no `sp.` special case).
-  It renders the *name* only — the determiner/date belong to the *identification*, not the
+  determination — the qualifier is placed by **two groups** (`_PREFIX_QUALIFIERS` in
+  `taxa.py`), roman: the *doubt* qualifiers `cf.` / `aff.` / `nr.` / `?` **prefix the whole
+  name** (`cf. Otiorhynchus (Nihus) forticollis` — not `Otiorhynchus cf. forticollis`, which
+  would wrongly imply the genus is certain and only the species tentative, a distinction the
+  model does not carry); the *scope* qualifiers `sp.` / `spp.` / `indet.` / `agg.` / `gr.`
+  **suffix the name** by universal convention (`Otiorhynchus sp.`, `Rubus fruticosus agg.`,
+  `Curculionidae indet.`). The set is closed (no user-added values), so the two groups are
+  exhaustive. It renders the *name* only — the determiner/date belong to the *identification*, not the
   name. Adapters: **`render_full_name_of(taxon, …)`** (from a `Taxon` row) and
   **`render_full_name_frozen(verbatim, …)`** (splits the authorship back out of a frozen
   `verbatimIdentification` so it renders roman). `scientific_name_html` and the qualifier

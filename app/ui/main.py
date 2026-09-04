@@ -63,6 +63,7 @@ from app.ui.media_panel import build_media_button
 from app.ui.external_id_panel import build_external_id_button
 from app.ui.life_stage_panel import build_life_stage_button
 from app.ui.event_completeness import confirm_incomplete_event
+from app.ui.confirm_dialog import confirm as confirm_dialog
 import app.services.media as media_svc
 import app.services.external_ids as extid_svc
 import app.services.life_stage as lifestage_svc
@@ -877,32 +878,11 @@ def index():
       /* tighten tree row spacing for dense checklist feel */
       .q-tree > .q-tree__node { padding-top:0; padding-bottom:0; }
       .q-tree .q-tree__node-header { padding:2px 4px; min-height:0; }
-      /* ── recent-specimens list (Digitize) — label-style, fully visible ─ */
+      /* ── recent-specimens list (Digitize) — the shared record-summary row
+         (record_summary.specimen_html); only the separators are local ─ */
       .rc-list  { display:flex; flex-direction:column; }
-      .rc-row   { padding:5px 2px; border-bottom:1px solid var(--tp-base-border); }
-      .rc-row:last-child { border-bottom:none; }
-      .rc-main  { display:flex; align-items:baseline; flex-wrap:wrap; gap:7px; }
-      .rc-cat   { font-family:monospace; font-size:.8rem; font-weight:700;
-                  color:var(--tp-secondary); }
-      /* Records specimen picker — a two-line option row: catalog + name (+ count/sex),
-         then the collecting event beneath it. Several specimens share a name; only the
-         event tells them apart, so the picker must show it. */
-      .rc-opt      { padding:1px 0; }
-      .rc-opt-top  { display:flex; align-items:baseline; gap:7px; flex-wrap:wrap; }
-      .rc-opt-sub  { font-size:.74rem; color:var(--tp-base-soft); margin-top:1px; }
-      .rc-cat      { font-family:ui-monospace,monospace; font-size:.78rem; font-weight:600;
-                     color:var(--tp-secondary); }
-      .rc-badge    { font-size:.7rem; padding:0 5px; border-radius:8px;
-                     background:var(--tp-base-border); color:var(--tp-base-soft); }
-      .rc-none     { font-style:italic; color:var(--tp-base-soft); }
-      .rc-opt i    { font-style:italic; }
-      .rc-sp    { font-style:italic; font-size:.92rem; }
-      .rc-auth  { font-size:.76rem; color:var(--tp-base-soft); }
-      .rc-indet { font-size:.92rem; color:var(--tp-base-soft); font-style:italic; }
-      .rc-chip  { font-size:.68rem; font-weight:600; padding:0 6px; border-radius:10px;
-                  background:var(--tp-base-muted); color:var(--tp-base-lighter); }
-      .rc-meta  { font-size:.78rem; color:var(--tp-base-soft); margin-top:1px; }
-      .rc-sep   { opacity:.5; padding:0 2px; }
+      .rc-list > .rs-row { padding:5px 2px; border-bottom:1px solid var(--tp-base-border); }
+      .rc-list > .rs-row:last-child { border-bottom:none; }
       .rc-empty { font-size:.82rem; color:var(--tp-base-soft); padding:8px 2px; }
       /* scrollbar */
       ::-webkit-scrollbar       { width:5px; height:5px; }
@@ -1045,18 +1025,12 @@ def index():
                 return
             hc = _mode_state["has_content"]
             if hc and hc():
-                with ui.dialog() as dlg, ui.card():
-                    ui.label("Discard unsaved data?").classes("text-lg font-medium")
-                    ui.label(
-                        "Switching mode clears the current form. Anything you have "
-                        "entered and not saved will be lost."
-                    ).classes("text-sm").style("color:var(--tp-base-soft)")
-                    with ui.row().classes("w-full justify-end gap-2 mt-2"):
-                        ui.button("Cancel", on_click=lambda: dlg.submit(False)).props("flat")
-                        ui.button("Discard & switch", on_click=lambda: dlg.submit(True)) \
-                            .props("color=negative")
-                proceed = await dlg
-                dlg.delete()   # per-action dialog — delete to avoid a timer leak
+                proceed = await confirm_dialog(
+                    title="Discard unsaved data?",
+                    body="Switching mode clears the current form. Anything you have "
+                         "entered and not saved will be lost.",
+                    action_label="Discard & switch",
+                )
                 if not proceed:
                     return
             _set_mode(val)
@@ -1186,8 +1160,10 @@ def index():
                 )
 
             # Recent specimens are shown as a compact, fully-visible list (the old
-            # 10-column table truncated everything) — last 8, label-style: catalog +
-            # italic name on top, locality/date/leg/det beneath. Confirmation of what
+            # 10-column table truncated everything) — last 8, rendered through the SAME
+            # shared record-summary row every other browse surface uses (Records picker,
+            # Explore): catalog + name (qualifier + italics by rank) on top,
+            # place/host/date/leg/det beneath, plus the export badges. Confirmation of what
             # was just saved, not a data grid (browsing/search lives in Records/Explore).
             _RECENT_LIMIT = 8
 
@@ -1195,37 +1171,30 @@ def index():
                 rows = _with_session(lambda s: svc.recent_specimens(s, limit=_RECENT_LIMIT))
                 if not rows:
                     return '<div class="rc-empty">No specimens yet.</div>'
-                items: list[str] = []
-                for r in rows:
-                    cat = _html.escape(
-                        id_svc.format_catalog_display(r.collection_code, r.catalog_number))
-                    if r.scientific_name:
-                        name = f'<span class="rc-sp">{_html.escape(r.scientific_name)}</span>'
-                        if r.authorship:
-                            name += f' <span class="rc-auth">{_html.escape(r.authorship)}</span>'
-                    else:
-                        name = '<span class="rc-indet">indet.</span>'
-                    chips = ""
-                    if r.sex:
-                        chips += f'<span class="rc-chip">{_html.escape(r.sex)}</span>'
-                    if r.individual_count and r.individual_count > 1:
-                        chips += f'<span class="rc-chip">×{r.individual_count}</span>'
-                    # secondary line: place · date · leg. · det.  (skip empties)
-                    place = ", ".join(p for p in (r.locality, r.country) if p)
-                    bits = [b for b in (
-                        _html.escape(place) if place else "",
-                        _html.escape(r.event_date) if r.event_date else "",
-                        f"leg. {_html.escape(r.recorded_by)}" if r.recorded_by else "",
-                        f"det. {_html.escape(r.identified_by)}" if r.identified_by else "",
-                    ) if b]
-                    meta = '<span class="rc-sep">·</span>'.join(bits)
-                    items.append(
-                        '<div class="rc-row">'
-                        f'<div class="rc-main"><span class="rc-cat">{cat}</span>{name}{chips}</div>'
-                        + (f'<div class="rc-meta">{meta}</div>' if meta else "")
-                        + '</div>'
+                cards = [
+                    _record_summary.specimen_html(
+                        catalog=id_svc.format_catalog_display(
+                            r.collection_code, r.catalog_number),
+                        name=r.scientific_name or "",
+                        rank=r.taxon_rank,
+                        authorship=r.authorship,
+                        qualifier=r.identification_qualifier,
+                        hosts=r.hosts,
+                        sex=r.sex,
+                        count=r.individual_count,
+                        locality=r.place,
+                        event_date=r.event_date,
+                        recorded_by=r.recorded_by,
+                        identified_by=r.identified_by,
+                        date_identified=r.date_identified,
+                        confidential=r.confidential,
+                        event_confidential=r.event_confidential,
+                        recorded_by_state=r.recorded_by_state,
+                        determination_reasons=r.determination_reasons,
                     )
-                return f'<div class="rc-list">{"".join(items)}</div>'
+                    for r in rows
+                ]
+                return f'<div class="rc-list">{"".join(cards)}</div>'
 
             # max-w is set by _apply_digitize_layout (max-w-7xl normal /
             # max-w-4xl single-card); never hard-coded here.

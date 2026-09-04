@@ -251,8 +251,9 @@ def build_identification_list(
     def _render_row(idx: int, d: dict) -> None:
         # One renderer owns italics/authorship/qualifier — taxa.render_full_name (via
         # _local_item_html). Pass the bare name, its authorship, and the qualifier apart;
-        # the name is italic by rank, the author roman, the qualifier roman after the
-        # genus group ("Otiorhynchus cf. forticollis (Stierlin, 1861)").
+        # the name is italic by rank, the author roman, and the qualifier roman by the
+        # two-group rule — cf./aff./nr./? prefix the whole name ("cf. Otiorhynchus
+        # forticollis (Stierlin, 1861)"), sp./spp./indet./agg./gr. suffix it.
         chip_html = _local_item_html(
             d.get("taxon_name") or d["taxon_label"],
             is_synonym=d["is_synonym"],
@@ -264,8 +265,8 @@ def build_identification_list(
             accepted_authorship=d.get("accepted_authorship"),
         )
         sex_sym = _SEX_SYMBOL.get((d.get("sex") or "").lower())
-        # The qualifier is rendered inline in the determination name (after the
-        # genus-group), so it is intentionally not repeated in the meta line.
+        # The qualifier is rendered inline in the determination name (prefixed or
+        # suffixed per its group), so it is intentionally not repeated in the meta line.
         meta_parts = [
             p for p in [
                 d.get("type_status"),

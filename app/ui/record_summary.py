@@ -131,27 +131,33 @@ def identification_doubt_badge_html(reasons: tuple[str, ...] = ()) -> str:
             f'title="{tip}">question_mark</span>')
 
 
-def name_html(name: str, rank: str | None = None, authorship: str | None = None) -> str:
-    """A scientific name: italic only for the genus group and below, authorship roman.
+def name_html(name: str, rank: str | None = None, authorship: str | None = None,
+              qualifier: str | None = None) -> str:
+    """A scientific name: italic only for the genus group and below, authorship roman,
+    and — when a determination supplies one — its open-nomenclature qualifier placed by
+    the two-group rule (cf./aff./nr./? prefix the whole name, the rest suffix it).
 
     Thin pass-through to the single renderer, :func:`taxa.render_full_name`."""
-    return taxa_svc.render_full_name(name, authorship=authorship, taxon_rank=rank)
+    return taxa_svc.render_full_name(name, authorship=authorship, taxon_rank=rank,
+                                     qualifier=qualifier)
 
 
 def hosts_html(hosts) -> str:
     """"collected from <i>Quercus robur</i>" — the associations, on the identity line.
 
-    Each host is ``(relationship, name, rank)``. The RELATIONSHIP is what the association means:
-    without it a plant name beside a beetle says nothing about how they met. Several
-    associations collapse to the first + a count — the summary stays one line.
+    Each host is ``(relationship, name, rank[, qualifier])``. The RELATIONSHIP is what the
+    association means: without it a plant name beside a beetle says nothing about how they
+    met. The optional 4th element is the host determination's open-nomenclature qualifier
+    (present when the host is recorded as a field occurrence). Several associations collapse
+    to the first + a count — the summary stays one line.
     """
     hosts = [h for h in (hosts or []) if h and len(h) >= 2 and h[1]]
     if not hosts:
         return ""
-    rel, name, rank = (list(hosts[0]) + [None])[:3]
+    rel, name, rank, qual = (list(hosts[0]) + [None, None, None])[:4]
     verb = _html.escape(rel) if rel else "on"
     more = f' <span class="rs-more">+{len(hosts) - 1}</span>' if len(hosts) > 1 else ""
-    return f'<span class="rs-host">{verb} {name_html(name, rank)}{more}</span>'
+    return f'<span class="rs-host">{verb} {name_html(name, rank, qualifier=qual)}{more}</span>'
 
 
 def _bits(sex: str | None, count: int | None) -> str:
@@ -180,6 +186,7 @@ def specimen_html(
     name: str,
     rank: str | None = None,
     authorship: str | None = None,
+    qualifier: str | None = None,
     hosts=None,
     sex: str | None = None,
     count: int | None = None,
@@ -208,7 +215,7 @@ def specimen_html(
     sync tab's "Why some are not eligible" list, which could get arbitrarily long — the same
     information now travels with the specimen everywhere it's browsed instead of living in
     one dedicated, unbounded list."""
-    ident = name_html(name, rank, authorship) if name else \
+    ident = name_html(name, rank, authorship, qualifier) if name else \
         f'<span class="rs-none">{_html.escape(undetermined_note)}</span>'
     # Meta line — plain-text bits are escaped; the host bit is trusted HTML (italic name).
     meta: list[str] = []
@@ -240,19 +247,24 @@ def specimen_html(
 
 
 def specimen_plain(
-    *, catalog: str, name: str, authorship: str | None = None, hosts=None,
+    *, catalog: str, name: str, authorship: str | None = None,
+    qualifier: str | None = None, hosts=None,
     sex: str | None = None, count: int | None = None, locality: str = "",
     event_date: str | None = None, recorded_by: str | None = None,
     identified_by: str | None = None, **_ignored,
 ) -> str:
     """The same content as PLAIN text — what a q-select filters against and echoes into its
     input once selected (it cannot hold markup). Carries every searchable datum, so the search
-    box is a search over all of them and not just the name."""
-    host = ", ".join(f"{h[0]} {h[1]}".strip() for h in (hosts or [])
+    box is a search over all of them and not just the name. The open-nomenclature qualifier
+    is placed into the name the same way the rich row renders it."""
+    def _hname(h) -> str:
+        q = h[3] if len(h) >= 4 else None
+        return taxa_svc.compose_name_with_qualifier(h[1], q)
+    host = ", ".join(f"{h[0]} {_hname(h)}".strip() for h in (hosts or [])
                      if h and len(h) >= 2 and h[1])
     parts = [
         catalog or "",
-        f"{name} {authorship or ''}".strip() or "—",
+        f"{taxa_svc.compose_name_with_qualifier(name, qualifier)} {authorship or ''}".strip() or "—",
         f"{count}×" if (count or 1) > 1 else "",
         sex or "",
         host,

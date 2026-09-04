@@ -35,8 +35,9 @@ class RecentRow:
     scientific_name: str       # composed name, WITHOUT authorship
     authorship: str | None     # kept separate so callers can style it (upright)
     taxon_rank: str | None     # italics are a function of rank — see taxa.scientific_name_html
-    # (relationship, name, rank) per biological association — "collected from Quercus robur".
-    hosts: list                # list[tuple[str, str, str | None]]
+    # (relationship, name, rank, qualifier) per biological association — "collected from
+    # Quercus robur"; qualifier is the host determination's open-nomenclature qualifier.
+    hosts: list                # list[tuple[str, str, str | None, str | None]]
     confidential: bool         # this specimen is withheld from export
     event_confidential: bool   # …or inherits it from a confidential event (withholds them all)
     sex: str | None
@@ -48,6 +49,7 @@ class RecentRow:
     recorded_by: str | None
     identified_by: str | None
     date_identified: str | None
+    identification_qualifier: str | None = None   # open-nomenclature qualifier of the current det.
     # The other two grounds `export_decision` withholds a specimen on (#170 follow-up,
     # code review fix — this picker used to be the only surface still missing them,
     # showing the confidential padlock alone). See `record_summary.consent_badge_html`
@@ -471,6 +473,7 @@ def recent_specimens(session: Session, limit: int = 200) -> list[RecentRow]:
             recorded_by=ce.recorded_by_person.full_name if (ce and ce.recorded_by_person) else None,
             identified_by=td.identified_by_person.full_name if (td and td.identified_by_person) else None,
             date_identified=(td.date_identified if td else None),
+            identification_qualifier=(td.identification_qualifier if td else None),
             recorded_by_state=decision.recorded_by_state,
             determination_reasons=decision.determination_reasons,
         ))

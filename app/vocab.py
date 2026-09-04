@@ -44,8 +44,9 @@ LIFE_STAGE_OPTIONS = ["adult", "larva", "pupa", "egg", ""]
 #   spp.   several/multiple species
 #   indet. indeterminate — cannot be determined further
 # "" (blank) = a definite identification, stored as NULL. cf. is first (fast one-key add);
-# the blank stays last per the UI convention. render_full_name inserts the value verbatim
-# after the genus-group, so this list is the ONLY place the semantics live.
+# the blank stays last per the UI convention. render_full_name places the value by two
+# groups (taxa._place_qualifier): cf./aff./nr./? prefix the whole name, the rest suffix it.
+# This list is still the ONLY place the qualifier semantics live.
 IDENTIFICATION_QUALIFIER_OPTIONS = [
     "cf.", "aff.", "nr.", "agg.", "gr.", "?", "sp.", "spp.", "indet.", "",
 ]

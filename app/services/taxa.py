@@ -142,10 +142,18 @@ def format_scientific_name(taxon: Taxon) -> str:
 # A determination freezes dwc:verbatimIdentification = the composed full name at save
 # time — bare name PLUS authorship (compose_full_name), qualifier-free; the open-
 # nomenclature qualifier (cf./aff./sp./…) lives separately in dwc:identificationQualifier.
-# Display goes through render_full_name (the single renderer): the qualifier always sits
-# right after the genus-group — so there is no per-qualifier logic and no `sp.` special
-# case (an "sp." determination simply points at a genus row, whose composed name is the
-# bare genus, leaving an empty rest).
+# Display goes through render_full_name (the single renderer), which places the qualifier
+# by TWO groups (decided 2026-08-30 — the user cannot add qualifiers, the set is closed):
+#
+#   * the "doubt" qualifiers — cf. aff. nr. ? — PREFIX the whole name
+#     ("cf. Otiorhynchus armadillo"). They express doubt about the identification as a
+#     whole; putting the qualifier between genus and epithet ("Otiorhynchus cf. armadillo")
+#     would suggest the genus is certain and only the species tentative — a distinction the
+#     model does not carry.
+#   * the "scope" qualifiers — sp. spp. indet. agg. gr. — SUFFIX the name, by universal
+#     convention ("Otiorhynchus sp.", "Rubus fruticosus agg.", "Curculionidae indet."), and
+#     carry no such ambiguity. A genus-row "sp." determination composes to the bare genus,
+#     so this is just "<genus> sp.".
 
 def split_genus_group(name: str) -> tuple[str, str]:
     """Split a composed bare name into ``(genus_group, rest)`` where genus_group
@@ -238,20 +246,50 @@ def scientific_name_html(
     return f"{out} {_esc(auth)}" if auth else out
 
 
+# The "doubt" qualifiers — prefixed to the WHOLE name ("cf. Otiorhynchus armadillo").
+# Everything else in the closed set (sp. spp. indet. agg. gr.) is suffixed. See the
+# two-group note above the section header for why.
+_PREFIX_QUALIFIERS = frozenset({"cf.", "aff.", "nr.", "?"})
+
+
+def qualifier_is_prefix(qualifier: str | None) -> bool:
+    """True for a 'doubt' qualifier (cf./aff./nr./?) that prefixes the whole name;
+    False for a 'scope' qualifier (sp./spp./indet./agg./gr.) that suffixes it, and for
+    a blank/None qualifier. The one place the label renderer and the HTML renderer agree
+    on which side the qualifier goes."""
+    return (qualifier or "").strip() in _PREFIX_QUALIFIERS
+
+
 def _place_qualifier(name: str, qualifier: str | None = None) -> str:
-    """Insert an open-nomenclature qualifier right after the genus-group of a bare
-    composed name: ``Otiorhynchus cf. forticollis``, ``Otiorhynchus (Nihus) aff.
-    forticollis``, ``Otiorhynchus sp.`` (genus row → empty rest), ``Otiorhynchus
-    cf.`` (rare, no rest). Empty parts are dropped; no per-qualifier special-casing.
+    """Place an open-nomenclature qualifier on a bare composed name, by two groups:
+
+      * ``cf. aff. nr. ?``  → PREFIX: ``cf. Otiorhynchus forticollis``,
+        ``aff. Otiorhynchus (Nihus) forticollis``, ``cf. Otiorhynchus`` (genus row).
+      * ``sp. spp. indet. agg. gr.`` → SUFFIX: ``Otiorhynchus sp.``,
+        ``Rubus fruticosus agg.``, ``Curculionidae indet.``.
+
+    An empty/blank qualifier returns the name unchanged.
 
     Private building block of :func:`render_full_name` — render names through that,
     not this. (A qualifier expresses the *identification*'s uncertainty; placing it is
     a rendering step, so it is deliberately not called "render_identification" — an
     identification also carries the identifiedBy/date, which a name never does.)
     """
-    genus_group, rest = split_genus_group(name or "")
-    parts = [p for p in (genus_group, (qualifier or "").strip(), rest) if p]
-    return " ".join(parts)
+    q = (qualifier or "").strip()
+    name = (name or "").strip()
+    if not q:
+        return name
+    if q in _PREFIX_QUALIFIERS:
+        return f"{q} {name}".strip()
+    return f"{name} {q}".strip()
+
+
+def compose_name_with_qualifier(name: str, qualifier: str | None = None) -> str:
+    """The bare composed name with its open-nomenclature qualifier placed — PLAIN text,
+    no italics and no authorship. For plain-text surfaces (a q-select's filter label);
+    HTML surfaces call :func:`render_full_name`. Two-group placement, same as everywhere
+    else (:func:`_place_qualifier`)."""
+    return _place_qualifier(name, qualifier)
 
 
 def render_full_name(
@@ -267,7 +305,9 @@ def render_full_name(
       * only the genus group and below is italic (a family/tribe/order stays roman);
       * the authorship is roman — ``<i>Otiorhynchus armadillo</i> (Rossi, 1792)``;
       * an open-nomenclature qualifier (cf./aff./sp./…), when a determination supplies
-        one, sits right after the genus group and stays roman.
+        one, stays roman and is placed by the two-group rule — cf./aff./nr./? prefix the
+        whole name ("cf. Otiorhynchus armadillo"), sp./spp./indet./agg./gr. suffix it
+        ("Otiorhynchus sp.", "Rubus fruticosus agg.").
 
     It renders the NAME only. The determiner and date belong to the *identification*,
     not the name, and are never part of this string. ``name`` is the bare composed

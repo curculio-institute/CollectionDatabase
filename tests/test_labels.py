@@ -13,8 +13,8 @@ from weasyprint.formatting_structure.boxes import LineBox
 
 from app.services.labels import (
     DeterminationLabel, DataLabel,
-    _det_line1, _det_name_html, _det_line3, _data_line1, _data_line2, _fits_one_line,
-    _grouped_html,
+    _det_line1, _det_line2, _det_name_html, _det_line3, _data_line1, _data_line2,
+    _fits_one_line, _grouped_html,
     grouped_sheet, LabelGroup, SpecimenLabels,
 )
 
@@ -133,6 +133,42 @@ def test_subgenus_on_same_line_as_genus():
     # genus + subgenus share the first line block (before the genus -> epithet break)
     first_block = h.split("</div>")[0]
     assert "Otiorhynchus" in first_block and "Dorymerus" in first_block
+
+
+# --------------------------------------------------------------------------
+# Open-nomenclature qualifier — two-group placement, same rule as on screen
+# (taxa.qualifier_is_prefix): cf./aff./nr./? prefix the whole name; the rest suffix it.
+# --------------------------------------------------------------------------
+
+def test_doubt_qualifier_prefixes_the_genus_line():
+    lbl = DeterminationLabel(genus="Otiorhynchus", specific_epithet="armadillo",
+                             authorship="(Rossi, 1792)", qualifier="cf.")
+    l1, l2 = _det_line1(lbl), _det_line2(lbl)
+    assert l1.startswith("cf. ")
+    assert "cf." not in l2                      # not repeated on the epithet line
+    assert "Otiorhynchus" in l1 and "armadillo" in l2
+
+
+def test_scope_qualifier_with_epithet_follows_the_epithet():
+    lbl = DeterminationLabel(genus="Rubus", specific_epithet="fruticosus", qualifier="agg.")
+    l1, l2 = _det_line1(lbl), _det_line2(lbl)
+    assert "agg." not in l1
+    assert l2.replace("<strong><em>", "").replace("</em></strong>", "").strip() \
+        == "fruticosus agg."
+
+
+def test_scope_qualifier_on_a_genus_level_determination_rides_on_line_1():
+    lbl = DeterminationLabel(genus="Otiorhynchus", qualifier="sp.")
+    l1, l2 = _det_line1(lbl), _det_line2(lbl)
+    assert l1.endswith(" sp.")
+    assert l2 == ""
+
+
+def test_qualifier_flows_into_the_one_line_fallback():
+    lbl = DeterminationLabel(genus="Otiorhynchus", specific_epithet="armadillo",
+                             authorship="(Rossi, 1792)", qualifier="cf.")
+    h = _det_name_html(lbl)
+    assert "cf." in h and "Otiorhynchus" in h and "armadillo" in h
 
 
 # --------------------------------------------------------------------------

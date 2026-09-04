@@ -67,8 +67,9 @@ def _local_item_html(
 ) -> str:
     """One local result / determination chip. The name is rendered by the single owner of the
     convention, `taxa.render_full_name` — only the genus group and below is italic, the
-    authorship is roman, and an open-nomenclature `qualifier` (for a determination) sits after
-    the genus group. `name` is the bare composed name; authorship/qualifier are passed apart.
+    authorship is roman, and an open-nomenclature `qualifier` (for a determination) is placed
+    by the two-group rule (cf./aff./nr./? prefix the whole name, the rest suffix it). `name`
+    is the bare composed name; authorship/qualifier are passed apart.
     """
     prefix = "🌿 " if nomenclatural_code == "ICN" else ""
     n = prefix + svc_taxa.render_full_name(

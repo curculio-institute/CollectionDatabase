@@ -22,6 +22,24 @@ class TestIdentityLine:
         html = rs.specimen_html(catalog="X", name="")
         assert "no identification" in html
 
+    def test_a_doubt_qualifier_prefixes_the_whole_name(self):
+        """cf./aff./nr./? go BEFORE the full name — "Genus cf. species" would wrongly
+        imply the genus is certain and only the species tentative."""
+        html = rs.specimen_html(catalog="X", name="Otiorhynchus armadillo", rank="species",
+                                authorship="(Rossi, 1792)", qualifier="cf.")
+        assert "cf. <i>Otiorhynchus armadillo</i> (Rossi, 1792)" in html
+
+    def test_a_scope_qualifier_suffixes_the_name(self):
+        html = rs.specimen_html(catalog="X", name="Otiorhynchus", rank="genus",
+                                qualifier="sp.")
+        assert "<i>Otiorhynchus</i> sp." in html
+
+    def test_the_qualifier_reaches_the_plain_twin(self):
+        plain = rs.specimen_plain(catalog="X", name="Otiorhynchus armadillo",
+                                  authorship="(Rossi, 1792)", qualifier="cf.")
+        assert "cf. Otiorhynchus armadillo" in plain
+        assert "<" not in plain
+
 
 class TestHostCarriesItsRelationship:
     """A plant name beside a beetle says nothing about how they met."""
@@ -45,6 +63,11 @@ class TestHostCarriesItsRelationship:
         html = rs.specimen_html(catalog="X", name="Curculio glandium", rank="species",
                                 hosts=[("collected from", "Quercus robur", "species")])
         assert "collected from <i>Quercus robur</i>" in html
+
+    def test_a_host_qualifier_is_placed_in_the_host_name(self):
+        """The host tuple's optional 4th element is the host determination's qualifier."""
+        html = rs.hosts_html([("collected from", "Quercus robur", "species", "cf.")])
+        assert "collected from cf. <i>Quercus robur</i>" in html
 
 
 class TestConfidentiality:

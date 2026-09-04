@@ -122,6 +122,7 @@ def build_records_tab(session_factory, *, on_saved: callable | None = None) -> N
                     catalog=id_svc.format_catalog_display(r.collection_code, r.catalog_number),
                     name=r.scientific_name or "",
                     authorship=r.authorship,
+                    qualifier=r.identification_qualifier,
                     hosts=r.hosts,
                     sex=r.sex,
                     count=r.individual_count,

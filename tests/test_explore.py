@@ -156,7 +156,7 @@ def test_specimen_row_place_excludes_date_and_host(session):
     r = ex.query_specimens(session)[0]
     assert r.locality_place == "Germany: Watzmann"          # place only
     assert "2024" not in r.locality_place and "Quercus" not in r.locality_place
-    assert r.hosts == [("collected from", "Quercus robur", "species")]
+    assert r.hosts == [("collected from", "Quercus robur", "species", None)]
     assert "#None" not in r.locality                          # the composed label is clean too
 
 

@@ -184,10 +184,12 @@ class SpecimenRow:
     taxon_name: str = ""       # composed name WITHOUT authorship
     taxon_rank: str | None = None
     authorship: str | None = None
-    # Biological associations (the host plant, usually) as (relationship, name, rank) —
-    # "collected from Quercus robur". The RELATIONSHIP is what the association means; a plant
-    # name beside a beetle says nothing about how they met.
-    hosts: list[tuple[str, str, str | None]] = field(default_factory=list)
+    identification_qualifier: str | None = None   # open-nomenclature qualifier of the current det.
+    # Biological associations (the host plant, usually) as (relationship, name, rank,
+    # qualifier) — "collected from Quercus robur". The RELATIONSHIP is what the association
+    # means; a plant name beside a beetle says nothing about how they met. `qualifier` is the
+    # host determination's open-nomenclature qualifier (None for a bare object_taxon host).
+    hosts: list[tuple[str, str, str | None, str | None]] = field(default_factory=list)
     # Withheld from public export: the specimen's own flag, or INHERITED from a confidential
     # event (which drops all of its specimens). Shown as one amber padlock; the reason is the
     # tooltip. See CLAUDE.md "Confidential / privacy flag".
@@ -519,6 +521,7 @@ def query_specimens(session: Session, filters: list[dict] | None = None,
             taxon_name=((t.scientific_name or "") if t else ""),
             taxon_rank=rank,
             authorship=((t.scientific_name_authorship or None) if t else None),
+            identification_qualifier=(td.identification_qualifier if td else None),
             hosts=hosts,
             confidential=bool(co.confidential),
             event_confidential=bool(ev.confidential) if ev else False,
@@ -838,7 +841,8 @@ def dashboard(session: Session, filters: list[dict] | None = None,
                 first_coll[r.taxon_id] = min(cy, first_coll.get(r.taxon_id, cy))
             if iy is not None:
                 first_ident[r.taxon_id] = min(iy, first_ident.get(r.taxon_id, iy))
-        for rel, name, _rank in r.hosts:
+        for host in r.hosts:
+            rel, name = host[0], host[1]
             if name:
                 hosts[name] += 1
                 host_by_rel[name][rel or "association"] += 1

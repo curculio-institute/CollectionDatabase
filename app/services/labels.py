@@ -52,6 +52,7 @@ import qrcode
 # startup. The production PDF path uses the Chromium (Playwright) backend, which
 # needs no system libraries — so the app must boot and print without WeasyPrint.
 
+from app.services import taxa as _taxa
 from app.services.label_text import (abbreviate_name, format_coords,
                                      format_geo_prefix)
 from app.vocab import SEX_SYMBOLS
@@ -493,23 +494,40 @@ def _bi(text: str) -> str:
 
 
 def _det_line1(lbl: DeterminationLabel) -> str:
+    # The open-nomenclature qualifier is placed by the same two-group rule as every
+    # on-screen name (taxa.qualifier_is_prefix): a "doubt" qualifier (cf./aff./nr./?)
+    # prefixes the WHOLE name, so it rides at the front of the genus line; a "scope"
+    # qualifier (sp./spp./indet./agg./gr.) suffixes it — and when there is no epithet
+    # (a genus-level "sp." determination) that suffix belongs on this line too.
+    q = (lbl.qualifier or "").strip()
+    is_prefix = _taxa.qualifier_is_prefix(q)
+    lead = f"{_e(q)} " if q and is_prefix else ""
     genus = _bi(_e(lbl.genus)) if lbl.genus else ""
     if lbl.subgenus:
         if lbl.subgenus == lbl.genus:
             suffix = _e(lbl.subgenus_qualifier) or "s.str."
-            return f"{genus} {suffix}".strip()
-        sg = f"(<em>{_e(lbl.subgenus)}</em>)"
-        return f"{genus} {sg}".strip() if genus else sg
-    return genus
+            body = f"{genus} {suffix}".strip()
+        else:
+            sg = f"(<em>{_e(lbl.subgenus)}</em>)"
+            body = f"{genus} {sg}".strip() if genus else sg
+    else:
+        body = genus
+    has_epithet = bool(lbl.specific_epithet or lbl.infraspecific_epithet)
+    tail = f" {_e(q)}" if q and not is_prefix and not has_epithet else ""
+    return f"{lead}{body}{tail}".strip()
 
 
 def _det_line2(lbl: DeterminationLabel) -> str:
+    q = (lbl.qualifier or "").strip()
+    is_prefix = _taxa.qualifier_is_prefix(q)
     parts = []
-    if lbl.qualifier:
-        parts.append(_e(lbl.qualifier))
     epithet = " ".join(_e(p) for p in [lbl.specific_epithet, lbl.infraspecific_epithet] if p)
     if epithet:
         parts.append(_bi(epithet))
+    # A "scope" qualifier follows the epithet ("fruticosus agg."); a "doubt" qualifier is
+    # already on line 1.
+    if q and not is_prefix and epithet:
+        parts.append(_e(q))
     if lbl.authorship:
         parts.append(_e(lbl.authorship))
     if lbl.sex:
