@@ -337,7 +337,9 @@ def _apply_filters(session: Session, q, filters: list[dict], idx: dict[int, Taxo
             # A date range on the collecting date (event_date) or the identification date.
             # ISO date strings sort lexicographically, so >= from / <= to work directly (the
             # eventDate interval "start/end" sorts by its start — "collected on/after"). A
-            # blank bound is open-ended.
+            # blank bound is open-ended. `from` must be the value AS TYPED ("2026", not
+            # "2026-01-01"): a stored partial date is a prefix and sorts first, so an
+            # expanded lower bound drops it (`app/ui/explore.py::date_filter_bounds`).
             col = (CollectingEvent.event_date if f.get("field") == "collected"
                    else TaxonDetermination.date_identified)
             conds = []

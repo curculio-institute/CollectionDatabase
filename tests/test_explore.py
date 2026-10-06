@@ -593,3 +593,64 @@ def test_taxon_filter_reaches_across_a_synonym_link(session):
     # though it is filed under a completely different genus.
     flt = [{"kind": "taxon", "key": g_acc.id}]
     assert {r.catalog for r in ex.query_specimens(session, flt)} == {"A1", "A2"}
+
+
+# ── date filter: the typed value is applied AS TYPED, together with the range ──
+
+def test_date_filter_bounds_keep_the_lower_bound_as_typed():
+    from app.ui.explore import date_filter_bounds as b
+    assert b("2026", None) == ("2026", "2026-12-31", "2026")
+    assert b("2026-03", None) == ("2026-03", "2026-03-31", "2026-03")
+    assert b("2024-02", None) == ("2024-02", "2024-02-29", "2024-02")        # leap year
+    assert b("2026-03-04", None) == ("2026-03-04", "2026-03-04", "2026-03-04")
+    assert b("2024", "2025") == ("2024", "2025-12-31", "2024 to 2025")
+    assert b("2024-06", "2024-08") == ("2024-06", "2024-08-31", "2024-06 to 2024-08")
+    assert b(None, "2025") == (None, "2025-12-31", "up to 2025")
+    assert b(" 2026 ", "") == ("2026", "2026-12-31", "2026")
+
+
+def test_date_filter_finds_partial_dates_but_never_a_vaguer_one(session):
+    """Filtering Explore for identified-in-2026 listed 5 specimens while the per-year
+    chart showed 13: the others carry only the year ("2026"), which sorts before the
+    expanded lower bound "2026-01-01". With the bound applied as typed they are found —
+    and a year-only date is still NOT returned for a month filter."""
+    from app.ui.explore import date_filter_bounds
+    fam = _taxon(session, "Curculionidae", "family")
+    gen = _taxon(session, "Otiorhynchus", "genus", parent=fam)
+    sp = _taxon(session, "Otiorhynchus sulcatus", "species", parent=gen)
+    ev = ev_svc.create_collecting_event(session, country="Germany", locality="A", event_date="2019-06")
+    session.flush()
+    _dated_specimen(session, sp, ev, "P-year", "2026")
+    _dated_specimen(session, sp, ev, "P-jan", "2026-01")
+    _dated_specimen(session, sp, ev, "P-mar", "2026-03")
+    _dated_specimen(session, sp, ev, "P-day", "2026-03-04")
+    _dated_specimen(session, sp, ev, "P-dec31", "2026-12-31")
+    _dated_specimen(session, sp, ev, "P-2025", "2025")
+    _dated_specimen(session, sp, ev, "P-2027", "2027")
+    _dated_specimen(session, sp, ev, "P-none", None)
+
+    def facet(field, dfrom, dto=None):
+        lo, hi, _ = date_filter_bounds(dfrom, dto)
+        return {"kind": "date", "field": field, "from": lo, "to": hi}
+
+    def cats(flt):
+        return {r.catalog for r in ex.query_specimens(session, flt) if r.catalog.startswith("P-")}
+
+    in_2026 = {"P-year", "P-jan", "P-mar", "P-day", "P-dec31"}
+    y2026 = facet("identified", "2026")
+    assert cats([y2026]) == in_2026
+    # the list and the per-year chart agree
+    assert dict(ex.dashboard(session, [y2026]).identified_by_year).get(2026) == len(in_2026)
+
+    # a month filter: that month and its days — never the year-only date
+    assert cats([facet("identified", "2026-03")]) == {"P-mar", "P-day"}
+    # a single day: only that day
+    assert cats([facet("identified", "2026-03-04")]) == {"P-day"}
+    # ranges
+    assert cats([facet("identified", "2025", "2026")]) == in_2026 | {"P-2025"}
+    assert cats([facet("identified", "2026-02", "2026-12")]) == {"P-mar", "P-day", "P-dec31"}
+    # excluding is the exact complement, and keeps the undated
+    assert cats([{"op": "not", "facets": [y2026]}]) == {"P-2025", "P-2027", "P-none"}
+    # the collecting date behaves the same: a month-only eventDate lies in its year
+    assert len(cats([facet("collected", "2019")])) == 8
+    assert cats([facet("collected", "2019-07")]) == set()

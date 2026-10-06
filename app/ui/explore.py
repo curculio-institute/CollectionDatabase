@@ -18,16 +18,6 @@ from nicegui import ui
 import app.ui.record_summary as rs
 
 
-def _iso_start(d: str) -> str:
-    """A partial ISO date → its first day. 2024 → 2024-01-01, 2024-06 → 2024-06-01."""
-    d = d.strip()
-    if len(d) == 4:
-        return f"{d}-01-01"
-    if len(d) == 7:
-        return f"{d}-01"
-    return d
-
-
 def _iso_end(d: str) -> str:
     """A partial ISO date → its last day. 2024 → 2024-12-31, 2024-06 → 2024-06-30."""
     d = d.strip()
@@ -37,6 +27,39 @@ def _iso_end(d: str) -> str:
         y, m = int(d[:4]), int(d[5:7])
         return f"{d}-{_calendar.monthrange(y, m)[1]:02d}"
     return d
+
+
+
+def date_filter_bounds(dfrom: str | None, dto: str | None) -> tuple[str | None, str | None, str]:
+    """(from, to, label) of a date facet, from what the user typed.
+
+    The LOWER bound is the value **as typed** — "2026" stays "2026", never
+    "2026-01-01". Only the UPPER bound is extended to the last day it covers.
+
+    Stored dates are often partial (a determination label carries just the year), and
+    the service compares them as plain ISO strings, where a prefix sorts first:
+    "2026" < "2026-01" < "2026-01-01". So:
+
+      typed "2026"     → from "2026",    to "2026-12-31"
+          matches stored "2026", "2026-03", "2026-03-04" — everything dated in 2026
+      typed "2026-03"  → from "2026-03", to "2026-03-31"
+          matches stored "2026-03", "2026-03-04" — and NOT "2026": a date known only
+          to the year is not known to lie in March, and is never claimed to
+
+    Expanding the lower bound too (to "2026-01-01") silently dropped every stored
+    value vaguer than a full day — the specimen list showed 5 identified in 2026 where
+    the per-year chart, which reads only the year, showed 13."""
+    dfrom = (dfrom or "").strip() or None
+    dto = (dto or "").strip() or None
+    lo = dfrom
+    hi = _iso_end(dto) if dto else (_iso_end(dfrom) if dfrom else None)
+    if dfrom and dto and dfrom != dto:
+        label = f"{dfrom} to {dto}"
+    elif dfrom:
+        label = dfrom
+    else:
+        label = f"up to {dto}"
+    return lo, hi, label
 
 from app.services.identifiers import catalog_label
 import app.services.explore as ex_svc
@@ -367,15 +390,7 @@ def build_explore_panel(session_factory, *, on_open_specimen, on_open_event) -> 
             a, b = dfrom.split("/", 1)
             dfrom, dto = a.strip() or None, (b.strip() or None)
         tag = "Collected" if field == "collected" else "Identified date"
-        # Expand partial dates to full-day bounds: a lone "2024" spans the whole year, and a
-        # range "2024/2025" spans 2024-01-01 … 2025-12-31 (same for months). A single full
-        # date collapses to that one day (from == to).
-        lo = _iso_start(dfrom) if dfrom else None
-        hi = _iso_end(dto) if dto else (_iso_end(dfrom) if dfrom else None)
-        if lo and hi:
-            label = lo if lo == hi else f"{lo} to {hi}"
-        else:
-            label = f"up to {hi}"
+        lo, hi, label = date_filter_bounds(dfrom, dto)
         g["facets"].append({"kind": "date", "field": field, "from": lo, "to": hi,
                             "label": label, "tag": tag})
         state["dash_dates"] = None
