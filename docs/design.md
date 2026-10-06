@@ -438,7 +438,7 @@ animation used by the overridable-auto-selection pattern. Import and inject it w
 
 | Tab / widget | Field | Flags |
 |---|---|---|
-| Digitize (`main.py`) | `eventDate` | `allow_interval=True` |
+| Digitize (`digitize_tab.py`) | `eventDate` | `allow_interval=True` |
 | Records (`records_tab.py`) | `eventDate` (×2, edit and create) | `allow_interval=True` |
 | Import & Assign (`import_assign.py`) | `dateIdentified` | `no_future=True` |
 | Identification list (`identification_list.py`) | `dateIdentified` (×2, add and edit) | `no_future=True` |
@@ -533,11 +533,11 @@ externally sourced.
 
 | Tab / widget | `sources` | `nomenclatural_codes` | Notes |
 |---|---|---|---|
-| Digitize (`main.py`) | `("local", "taxonworks")` | None | via `on_select` callback |
+| Digitize (`digitize_tab.py`) | `("local", "taxonworks")` | None | via `on_select` callback |
 | Records (`records_tab.py`) | `("local", "taxonworks")` | None | via `on_select` callback |
 | Import & Assign (`import_assign.py`) | `("local", "taxonworks")` | None | state dict polled |
 | Identification list (`identification_list.py`) | `("local", "taxonworks")` | None | state dict polled |
-| Bio associations — Digitize (`main.py`) | `("local", "taxonworks", "powo")` | `bio_codes` (mutable list) | state dict polled; `label` used |
+| Bio associations — Digitize (`digitize_tab.py`) | `("local", "taxonworks", "powo")` | `bio_codes` (mutable list) | state dict polled; `label` used |
 | Bio associations — Records (`records_tab.py`) | `("local", "taxonworks", "powo")` | `bio_codes_local` | state dict polled |
 
 `bio_codes` is a mutable list mutated in-place by the "Show animals too" toggle and the
@@ -743,7 +743,7 @@ only visible when the field is empty, consistent with Tier 2 field behaviour (se
 
 | Tab / widget | Field | `default_fn` | `on_change` |
 |---|---|---|---|
-| Digitize (`main.py`) | `recordedBy` | `default_recorded_by` | `_on_event_field_edit` |
+| Digitize (`digitize_tab.py`) | `recordedBy` | `default_recorded_by` | `_on_event_field_edit` |
 | Records — specimen form (`records_tab.py`) | `recordedBy` | `default_recorded_by` | — |
 | Records — event form (`records_tab.py`) | `recordedBy` | `default_recorded_by` | — |
 | Identification list — edit panel (`identification_list.py`) | `identifiedBy` | `default_identified_by` | — |
