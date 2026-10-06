@@ -124,6 +124,18 @@ class TestRendering:
                      if g.source == pq.SOURCE_IDENTIFICATIONS)
         assert 'class="group group-block"' in lbl._group_html(group)
 
+    def test_rows_of_one_batch_are_one_cut_lane_apart(self, session):
+        """More labels than fit one row must NOT start a new chunk table: the chunk gap
+        is wider than the gap between labels, so it would need two cuts — and a wide gap
+        is what separates GROUPS on this sheet."""
+        n = lbl._LABELS_PER_ROW * 2 + 1
+        _queue(session, n=n)
+        group = next(g for g in pq.queued_groups(session)
+                     if g.source == pq.SOURCE_IDENTIFICATIONS and len(g.specimens) == n)
+        html = lbl._group_html(group)
+        assert html.count("<table") == 1 and html.count("<tr>") == 3
+        assert html.count('class="lbl-det') == n
+
 
 class TestOverride:
     def test_editing_one_label_edits_its_identical_copies(self, session):

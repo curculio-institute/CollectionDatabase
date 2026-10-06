@@ -816,8 +816,8 @@ def _grouped_css(borders: dict[str, str] | None = None,
 .chunk {{ table-layout: fixed; border-collapse: separate; border-spacing: {_LABEL_GAP_BORDERED}; page-break-inside: avoid; }}
 /* The identifier grid may be taller than a page — break between rows, never mid-row, so no
    label is split and no page is left mostly empty (#132). Overrides .chunk's avoid. */
-.id-grid {{ page-break-inside: auto; }}
-.id-grid tr {{ page-break-inside: avoid; break-inside: avoid; }}
+.id-grid, .det-grid {{ page-break-inside: auto; }}
+.id-grid tr, .det-grid tr {{ page-break-inside: avoid; break-inside: avoid; }}
 .chunk + .chunk {{ margin-top: {_CHUNK_GAP}; }}
 .cell {{ width: 18mm; padding: 0; vertical-align: top; }}
 .lbl-data {{
@@ -900,6 +900,7 @@ def _group_html(group: LabelGroup, names: dict[str, str] | None = None,
     has_id   = any(s.id_code for s in specs)
     has_det  = any(s.determination is not None for s in specs)
     id_only  = has_id and not has_data and not has_det
+    det_only = has_det and not has_data and not has_id
 
     chunks: list[str] = []
     if id_only:
@@ -915,6 +916,18 @@ def _group_html(group: LabelGroup, names: dict[str, str] | None = None,
             for start in range(0, len(specs), _LABELS_PER_ROW)
         ]
         chunks.append(f'<table class="chunk id-grid">{"".join(id_rows)}</table>')
+    elif det_only:
+        # Determination-only group (plain identification labels from the Labels tab):
+        # the same single multi-row table, for the same reason — between two rows of
+        # labels there must be ONE cut lane, exactly as between two labels in a row. A
+        # wider gap means cutting twice, and on this sheet a wide gap has a meaning of
+        # its own: it separates groups, which is what prevents mislabelling.
+        det_rows = [
+            "<tr>" + "".join(_det_cell(s, editable)
+                             for s in specs[start:start + _LABELS_PER_ROW]) + "</tr>"
+            for start in range(0, len(specs), _LABELS_PER_ROW)
+        ]
+        chunks.append(f'<table class="chunk det-grid">{"".join(det_rows)}</table>')
     else:
         for start in range(0, len(specs), _LABELS_PER_ROW):
             chunk = specs[start:start + _LABELS_PER_ROW]
@@ -935,7 +948,6 @@ def _group_html(group: LabelGroup, names: dict[str, str] | None = None,
     # groups stay inline-block so several sit side by side (#132). A determination-only
     # group is a batch of plain identification labels (Labels tab) and can be just as
     # large, so it flows too.
-    det_only = has_det and not has_data and not has_id
     group_cls = "group group-block" if (id_only or det_only) else "group"
     return f'<div class="{group_cls}">{header}{"".join(chunks)}</div>'
 
