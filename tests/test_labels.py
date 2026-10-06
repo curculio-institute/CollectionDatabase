@@ -421,32 +421,27 @@ def test_data_label_line1_includes_sampling_protocol():
     assert "Heath, Pitfall trap" in line
 
 
-# ── Chromium pixel anchoring (uneven top clearance between identical labels) ──
 
-def test_chromium_sheet_anchors_each_label_table_to_a_whole_pixel():
-    """The Chromium sheet carries the anchor, on the TABLE and in print media only.
-    Anchoring each label/cell/row instead collapses cut lanes to zero, and an identity
-    transform does nothing — both measured, see labels._pixel_anchor_css."""
+# ── Chromium print grid (uneven top clearance between identical labels) ──────
+
+def test_chromium_print_grid_zoom_and_scale_cancel_out():
+    """The sheet is laid out _PRINT_GRID x larger and printed 1/_PRINT_GRID as large,
+    so physical sizes are unchanged while Chromium's whole-pixel rounding shrinks to a
+    fraction of a paper pixel. The two factors must stay exact inverses, and the zoom
+    must be on `body` — on `html` it also multiplies the @page margin."""
+    import inspect
+    from app.services import pdf_backend as B
+    assert B._PRINT_GRID >= 4
+    src = inspect.getsource(B._chromium_pdf_sync)
+    assert 'body {{ zoom: {_PRINT_GRID}; }}' in src
+    assert "scale=1 / _PRINT_GRID" in src
+    assert "html {{ zoom" not in src
+
+
+def test_label_css_carries_no_transform_workaround():
+    """Anchoring labels with a transform was tried and rejected: per label/cell/row it
+    collapses cut lanes to zero, per table it leaves rows 2+ unfixed (see
+    pdf_backend._PRINT_GRID). Guard against it creeping back."""
     from app.services import labels as L
-    css = L._grouped_css(backend="chromium")
-    rule = L._pixel_anchor_css("chromium").strip()
-    assert rule in css
-    assert rule.startswith("@media print")
-    assert ".chunk {" in rule and ".lbl-" not in rule and ".cell" not in rule and "tr {" not in rule
-    assert "scale(1)" not in rule and "scale(1.00001)" in rule
-
-
-def test_weasyprint_sheet_has_no_pixel_anchor():
-    from app.services import labels as L
-    assert L._pixel_anchor_css("weasyprint") == ""
+    assert "transform" not in L._grouped_css(backend="chromium")
     assert "transform" not in L._grouped_css(backend="weasyprint")
-
-
-def test_preview_css_keeps_the_anchor_out_of_screen_media():
-    """The on-screen preview shares the Chromium CSS; the anchor must stay inside
-    @media print so editable boxes are not transformed on screen."""
-    import re
-    from app.services import labels as L
-    css = L.preview_css()
-    outside = re.sub(r"@media print\s*\{.*?\}\s*\}", "", css, flags=re.S)
-    assert "transform" not in outside

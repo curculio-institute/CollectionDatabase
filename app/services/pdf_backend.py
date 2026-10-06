@@ -38,6 +38,34 @@ _INSTALL_ATTEMPTS = 4
 _RETRY_BACKOFF_S = (3, 10, 30)  # waited before attempts 2, 3, 4
 
 
+# Chromium rounds box edges and text baselines to whole CSS px (0.75 pt = 0.26 mm) —
+# each independently. On labels a few mm tall that is not noise: identical labels at
+# different sub-pixel positions printed with 0.18 mm or 0.45 mm above their first line,
+# and the 0.4 mm cut lane printed as 0.26 mm. The sheet is therefore laid out this many
+# times larger (`body { zoom }`) and printed 1/_PRINT_GRID as large (`page.pdf(scale)`),
+# which leaves every physical dimension unchanged but makes one layout px a 1/4 px of
+# paper: 0.19 pt = 0.07 mm, below what a label printer resolves.
+# Measured 2026-10-07 on one sheet of 60 identical determination labels (before: 11
+# printed a px short at the top; after: top clearance within 0.19 pt everywhere, all
+# 56 + 85 cut lanes a true 0.4 mm, a 450-label grid still on the same 2 pages).
+# Dead ends, do not re-derive:
+#   * a higher device scale factor — print ignores it;
+#   * redrawing the hairline (outline, inline SVG, scaled pseudo-element) — the line
+#     was never what moved;
+#   * a non-identity transform to anchor each label / cell / row to a whole px — makes
+#     clearances identical but collapses 13 of 56 cut lanes to ZERO (a transformed box
+#     is drawn at its enclosing pixel rect); on the table instead, lanes survive but
+#     rows 2+ of a multi-row grid stay wrong. (`scale(1)`, `rotate(0)`, `translateZ(0)`
+#     and `will-change` do not anchor at all.)
+# Side effect, known: the finer grid also un-rounds the line height, so text lines sit
+# 0.13 mm further apart and a 3-line determination label is 5.9 mm tall, not 5.56 mm.
+# That exposes an older fact rather than causing it: the sheet has no doctype, so
+# Chromium renders it in quirks mode, where a table does not inherit `line-height` —
+# the labels print with the font's `normal` line height, not the designed 1.41 mm that
+# WeasyPrint and the (standards-mode) on-screen preview both use.
+_PRINT_GRID = 4
+
+
 def ensure_chromium() -> None:
     """Install Playwright's Chromium browser if it is missing (idempotent).
 
@@ -128,11 +156,16 @@ def _chromium_pdf_sync(html: str) -> bytes:
                 page = browser.new_page()
                 page.goto(page_file.as_uri(), wait_until="networkidle")
                 page.emulate_media(media="print")
+                # Lay the sheet out _PRINT_GRID x larger and print it that much
+                # smaller — see _PRINT_GRID. `body`, not `html`: zooming the root
+                # also multiplies the @page margin (measured: 5 mm became 20 mm).
+                page.add_style_tag(content=f"body {{ zoom: {_PRINT_GRID}; }}")
                 # prefer_css_page_size honours the sheet's @page { size: A4 };
                 # margins are supplied by the CSS @page, so zero them here.
                 return page.pdf(
                     prefer_css_page_size=True,
                     print_background=True,
+                    scale=1 / _PRINT_GRID,
                     margin={"top": "0", "bottom": "0", "left": "0", "right": "0"},
                 )
             finally:
