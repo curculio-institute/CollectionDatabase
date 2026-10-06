@@ -932,8 +932,11 @@ def _group_html(group: LabelGroup, names: dict[str, str] | None = None,
 
     header = f'<div class="group-header">{_e(group.source)}</div>' if group.source else ""
     # A large identifier grid is block-level so it can flow across pages; small mixed
-    # groups stay inline-block so several sit side by side (#132).
-    group_cls = "group group-block" if id_only else "group"
+    # groups stay inline-block so several sit side by side (#132). A determination-only
+    # group is a batch of plain identification labels (Labels tab) and can be just as
+    # large, so it flows too.
+    det_only = has_det and not has_data and not has_id
+    group_cls = "group group-block" if (id_only or det_only) else "group"
     return f'<div class="{group_cls}">{header}{"".join(chunks)}</div>'
 
 

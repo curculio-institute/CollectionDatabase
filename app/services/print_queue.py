@@ -31,6 +31,10 @@ SOURCE_IDENTIFIERS = "New identifiers"
 SOURCE_REPRINT     = "Reprint"
 SOURCE_IDENTIFICATIONS = "Identification labels"
 
+# Upper bound on one plain-label batch — one queue row per label, and the preview
+# re-renders every row. Enforced by the write seam, not only the form's widget.
+MAX_PLAIN_LABELS = 500
+
 
 # ---------------------------------------------------------------------------
 # Enqueueing
@@ -100,8 +104,10 @@ def enqueue_plain_determinations(
     """
     from app.services.specimens import _reject_interval
     from app.vocab import IDENTIFICATION_QUALIFIERS
-    if count < 1:
-        raise ValueError("Number of labels must be at least 1.")
+    if not isinstance(count, int) or isinstance(count, bool):
+        raise ValueError("Number of labels must be a whole number.")
+    if not 1 <= count <= MAX_PLAIN_LABELS:
+        raise ValueError(f"Number of labels must be between 1 and {MAX_PLAIN_LABELS}.")
     if session.get(Taxon, taxon_id) is None:
         raise ValueError(f"Taxon #{taxon_id} not found.")
     _reject_interval(date_identified)
@@ -274,16 +280,19 @@ def _row_det_label(row: PrintQueue, *, override: bool = False) -> lbl.Determinat
     return _co_to_det_label(row.collection_object, ov, row.taxon_determination)
 
 
-def _det_column_key(row: PrintQueue, taken: bool) -> tuple:
+def _det_column_key(row: PrintQueue, columns: dict, filled) -> tuple:
     """Sheet column for a determination row. A plain label always stands alone. A
     specimen's first determination fills its column's determination band; further ones
     (a reprint reproduces EVERY identification) each take their own column so they
-    don't overwrite each other. ``taken``: that band is already filled."""
+    don't overwrite each other. ``filled(column)`` says whether a column's
+    determination band is already taken — the only thing that differs between the
+    sheet's and the preview's column objects."""
     if row.collection_object_id is None:
         return ("plain", row.id)
-    if taken:
+    co_key = ("co", row.collection_object_id)
+    if co_key in columns and filled(columns[co_key]):
         return ("det", row.taxon_determination_id or row.id)
-    return ("co", row.collection_object_id)
+    return co_key
 
 
 def queued_groups(session: Session) -> list[lbl.LabelGroup]:
@@ -319,10 +328,8 @@ def queued_groups(session: Session) -> list[lbl.LabelGroup]:
                 _co_to_data_label(session, row.collection_object)))
             col.co_id = row.collection_object_id
         elif _is_det_row(row):
-            co_key = ("co", row.collection_object_id)
             # A single-ID specimen (every create path) still renders as one column.
-            ckey = _det_column_key(
-                row, co_key in columns and columns[co_key].determination is not None)
+            ckey = _det_column_key(row, columns, lambda c: c.determination is not None)
             col = columns.setdefault(ckey, lbl.SpecimenLabels())
             col.determination = _row_det_label(row, override=True)
             col.det_qid = row.id
@@ -408,11 +415,9 @@ def preview_model(session: Session) -> list[dict]:
             col["data_ident"] = _ident(auto)
             col["co_id"] = co.id
         elif _is_det_row(row):
-            co_key = ("co", row.collection_object_id)
             # Same column rule as queued_groups (one shared owner), so the preview
             # matches the printed sheet.
-            col = _col(_det_column_key(
-                row, co_key in cols and cols[co_key]["det_qid"] is not None))
+            col = _col(_det_column_key(row, cols, lambda c: c["det_qid"] is not None))
             dl = _row_det_label(row)
             dl_ov = _row_det_label(row, override=True)
             auto = lbl.label_plaintext(dl) if dl else ""

@@ -23,6 +23,7 @@ def _check_consent_exclusive(confidential: bool, consent_approved: bool) -> None
 _FK_LABELS: dict[tuple[str, str], str] = {
     ("collecting_event",   "recorded_by_id"):          "recorded-by on collecting events",
     ("taxon_determination","identified_by_id"):         "identified-by on determinations",
+    ("print_queue",        "identified_by_id"):         "determiner on identification labels in the print queue",
     ("person_defaults",    "default_identified_by_id"): "set as default identified-by",
     ("person_defaults",    "default_recorded_by_id"):   "set as default recorded-by",
 }

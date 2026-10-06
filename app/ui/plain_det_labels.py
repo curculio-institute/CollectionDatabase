@@ -32,8 +32,9 @@ def build_plain_det_labels_card(session_factory, *, on_queued: callable | None =
         ui.label("Identification labels").classes("section-label mb-2")
         ui.label(
             "Print identification labels that are not tied to a specimen record — "
-            "e.g. for a series you identify at the bench. Nothing is recorded: to "
-            "record an identification, add it to the specimen in Records."
+            "e.g. for a series you identify at the bench. No identification is "
+            "recorded: to record one, add it to the specimen in Records. (A determiner "
+            "who is new is added to People.)"
         ).classes("text-sm mb-4").style("color:var(--tp-base-soft)")
 
         taxon_state = build_taxon_search(session_factory)
@@ -50,7 +51,8 @@ def build_plain_det_labels_card(session_factory, *, on_queued: callable | None =
             qual_state = build_choice_field(_QUAL_OPTIONS, "qualifier", classes="w-28")
 
         with ui.row().classes("mt-4 gap-4 items-center"):
-            count = ui.number("Number of labels", value=1, min=1, max=500, step=1).classes("w-40")
+            count = ui.number("Number of labels", value=1, min=1,
+                              max=pq_svc.MAX_PLAIN_LABELS, step=1).classes("w-40")
             add_btn = ui.button("Add to print queue", icon="queue")
             status = ui.label("").classes("text-sm").style("color:var(--tp-base-soft)")
 
@@ -62,7 +64,11 @@ def build_plain_det_labels_card(session_factory, *, on_queued: callable | None =
             if tid == -1:
                 ui.notify("Taxon is still importing — wait a moment.", type="warning")
                 return
-            n = int(count.value or 0)
+            raw = count.value
+            if raw is None or float(raw) != int(raw):
+                ui.notify("Number of labels must be a whole number.", type="warning")
+                return
+            n = int(raw)
             try:
                 with session_factory() as s:
                     with s.begin():

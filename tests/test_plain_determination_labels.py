@@ -53,7 +53,7 @@ class TestEnqueue:
         _queue(session, n=2)
         assert pq.queue_summary(session).n_determination == before + 2
 
-    @pytest.mark.parametrize("bad", [0, -1])
+    @pytest.mark.parametrize("bad", [0, -1, 501, 2.7])
     def test_a_non_positive_count_is_refused(self, session, bad):
         with pytest.raises(ValueError):
             _queue(session, n=bad)
@@ -116,6 +116,15 @@ class TestRendering:
         assert "armadillo" in html and pq.SOURCE_IDENTIFICATIONS in html
 
 
+    def test_a_large_batch_can_flow_across_pages(self, session):
+        """A determination-only group must be block-level like an identifier grid (#132),
+        or a few hundred labels overflow the page as one unbreakable block."""
+        _queue(session, n=2)
+        group = next(g for g in pq.queued_groups(session)
+                     if g.source == pq.SOURCE_IDENTIFICATIONS)
+        assert 'class="group group-block"' in lbl._group_html(group)
+
+
 class TestOverride:
     def test_editing_one_label_edits_its_identical_copies(self, session):
         t, _ = _queue(session, n=3)
@@ -175,6 +184,12 @@ class TestReferences:
         persons_svc.merge_persons(session, keep.id, absorbed_id)
         session.expire_all()
         assert _plain_rows(session, t)[0].identified_by_id == keep.id
+
+    def test_a_blocked_person_delete_names_the_queued_labels(self, session):
+        t, _ = _queue(session, n=1, identified_by_id=_person(session, "Only Onlabels").id)
+        pid = _plain_rows(session, t)[0].identified_by_id
+        with pytest.raises(ValueError, match="print queue"):
+            persons_svc.delete_person(session, pid)
 
     def test_removing_and_clearing_work_as_for_any_row(self, session):
         t, _ = _queue(session, n=2)
