@@ -20,6 +20,7 @@ from app.ui.map_picker import build_map_picker, add_map_assets
 from app.config import get_config
 
 from app.models import CollectionObject, CollectingEvent
+import app.services.identifiers as id_svc
 import app.services.specimens as sp_svc
 import app.services.biological as bio_svc
 import app.services.media as media_svc
@@ -380,7 +381,7 @@ def _render_specimen(ident, curatorial, det_hist, assocs, life_stages, ext_ids, 
                 lock = rs.lock_html(own=ident["confidential"], from_event=ident["event_confidential"])
                 consent = rs.consent_badge_html(ident["recorded_by_state"])
                 doubt = rs.identification_doubt_badge_html(ident["determination_reasons"])
-                ui.html(f'<span class="rs-cat">{_html.escape(ident["catalog"])}</span>'
+                ui.html(f'<span class="rs-cat">{_html.escape(id_svc.catalog_label(ident["catalog"]))}</span>'
                         f'  ·  <span class="rsheet-muted">{_html.escape(ident["collection"] or "")}</span>'
                         f'  {det}  {lock}{consent}{doubt}')
             with ui.row().classes("items-center gap-2 shrink-0"):

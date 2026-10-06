@@ -10,13 +10,16 @@ thing that differs between modes:
   "standard" — catalog_number picked from the reserved-codes dropdown;
                institution/collection code locked to config (display-only).
                Used for normal digitizing where correct numbering is enforced.
-  "visiting" — catalog_number, collection_code and institution_code are all
-               free-text (any value), shown prominently in the top row; for
-               digitizing specimens held at other collections/museums. Pure
+  "visiting" — the holding collection is PICKED from the Collections vocabulary
+               (or added by name) and catalog_number is an OPTIONAL free-text field
+               — a foreign collection's specimen may have no number at all
+               (migration 0072). For digitizing specimens held elsewhere. Pure
                data capture — the caller does not reserve codes or print labels.
-  "edit"     — catalog_number/collection_code shown read-only in a header label
-               (``identity_label``); other fields seeded from ``initial`` (empty
-               DB values stay empty — no create-defaults applied).
+  "edit"     — catalog_number shown read-only in a header label
+               (``identity_label``) — unless the specimen has none yet, in which
+               case it can be entered ONCE; the collection is the same picker
+               (re-homing). Other fields seeded from ``initial`` (empty DB values
+               stay empty — no create-defaults applied).
 
 The builder is UI-only: it renders fields and exposes the widgets plus helpers
 (``get_identifier_fields``, ``refresh_codes``, ``reset``).  Saving — code
@@ -30,6 +33,7 @@ from nicegui import ui
 import app.services.identifiers as id_svc
 import app.services.repositories as repo_svc
 from app.services.vocabularies import preparation_vocab, disposition_vocab
+from app.ui.repository_field import build_repository_field
 from app.ui.vocab_field import build_vocab_field
 from app.vocab import (
     LIFE_STAGE_OPTIONS, BASIS_OPTIONS, NEW_SPECIMEN_DEFAULTS,
@@ -50,7 +54,8 @@ def build_specimen_form(
 
     initial:        edit-mode snapshot with keys individual_count, preparations,
                     life_stage, disposition, basis_of_record, occurrence_remarks,
-                    and collection_code (seeds the editable collectionCode input).
+                    collection_name (seeds the collection picker) and
+                    catalog_number (None → the fill-once catalogNumber input).
     identity_label: edit-mode read-only header text, e.g. "#12  Doe ab12".
 
     Handle keys:
@@ -60,13 +65,19 @@ def build_specimen_form(
       inst_code_disp, coll_code_disp, rem_in   — the field widgets.
       prep_field       — the preparations controlled-vocab field handle (a dict
                         with get_value/set_value/commit; commit(session)→preparation_id).
-                        In edit mode cat_num/inst_code_disp/coll_code_disp are None.
-                        In standard mode inst/coll are read-only config displays;
-                        in visiting mode they are editable free-text inputs.
+                        inst/coll_code_disp exist only in standard mode (read-only
+                        echoes of the default collection). cat_num is None in edit
+                        mode unless the specimen has no catalog number yet.
+      repo_field       — the collection picker handle (visiting + edit; None in
+                        standard, where the default collection applies).
       get_identifier_fields()
-                       — {catalog_number, collection_code, institution_code} to
-                         store on a NEW specimen (config-backed in standard, typed
-                         in visiting). RAISES in edit mode — see the function.
+                       — {catalog_number, collection_code, institution_code} of a
+                         NEW specimen (the codes are filled in standard mode only).
+                         RAISES in edit mode — see the function.
+      commit_repository(session)
+                       — the repository_id to store: the default collection
+                         (standard) or the picked/added one (visiting, edit).
+                         Raises ValueError when there is none.
       refresh_codes()  — re-query reserved-code options into cat_num (standard only)
       reset()          — clear to create-mode defaults (standard/visiting)
     """
@@ -113,7 +124,7 @@ def build_specimen_form(
         v_other = ""
 
     # Defaults; reassigned per policy below.
-    cat_num = inst_code_disp = coll_code_disp = None
+    cat_num = inst_code_disp = coll_code_disp = repo_field = None
     # Last reserved-code set pushed to the identifier select. The live-refresh
     # (timer) and refresh_codes() both re-push only when this CHANGES — see A4
     # note on refresh_codes().
@@ -126,7 +137,7 @@ def build_specimen_form(
                 ui.label(identity_label).classes("text-sm font-mono") \
                     .style("color:var(--tp-base-soft)")
             elif is_visiting:
-                ui.label("· visiting — free-form identifier") \
+                ui.label("· held in another collection") \
                     .classes("text-sm").style("color:var(--tp-base-soft)")
             # Clear button: only in create modes (edit mode shows an existing
             # record — there is no "uncommitted" content to discard).
@@ -138,11 +149,18 @@ def build_specimen_form(
         ui.separator().classes("mb-3")
 
         if is_visiting:
-            # All three identity fields are required free-text; show them up top.
+            # Identity up top: which collection holds it (picked from the vocabulary,
+            # or added by name), and its catalog number there — if it has one.
             with ui.row().classes("w-full flex-wrap gap-3 items-end"):
-                cat_num = ui.input("catalogNumber *", placeholder="host number").classes("w-40")
-                coll_code_disp = ui.input("collectionCode *", placeholder="host namespace").classes("w-40")
-                inst_code_disp = ui.input("institutionCode *", placeholder="host institution").classes("w-40")
+                repo_field = build_repository_field(
+                    session_factory, "Collection *", exclude_default=True,
+                    classes="flex-1 min-w-56")
+                cat_num = (
+                    ui.input("catalogNumber", placeholder="leave empty if it has none")
+                    .classes("w-56")
+                    .tooltip("The number this specimen carries in that collection. "
+                             "Optional — a specimen without one is recorded without "
+                             "one, but cannot be exported to TaxonWorks."))
             with ui.row().classes("w-full flex-wrap gap-3 items-end mt-2"):
                 count_in = ui.number("n", value=v_count, min=0, precision=0).classes("w-20")
                 prep_field = build_vocab_field(
@@ -199,16 +217,26 @@ def build_specimen_form(
                                  "applies to every new record")
                     )
                 elif is_edit:
-                    # collectionCode is editable: a specimen may be re-homed to
+                    # The collection is editable: a specimen may be re-homed to
                     # another collection when gifted. catalog_number stays
                     # immutable (shown read-only in the header).
-                    coll_code_disp = (
-                        ui.input("collectionCode", value=init.get("collection_code") or "")
-                        .props("dense")
-                        .classes("col-span-1")
-                        .tooltip("Change only when re-homing this specimen to "
-                                 "another collection (gifting). catalogNumber is fixed.")
-                    )
+                    repo_field = build_repository_field(
+                        session_factory, "Collection",
+                        initial_value=init.get("collection_name") or None,
+                        classes="col-span-2")
+                    repo_field["element"].tooltip(
+                        "Change only when re-homing this specimen to another "
+                        "collection (gifting). Its catalogNumber travels with it.")
+                    if not init.get("catalog_number"):
+                        # Fill-once: a specimen saved without a catalog number may be
+                        # given one; from then on it is immutable like any other.
+                        cat_num = (
+                            ui.input("catalogNumber",
+                                     placeholder="none yet — can be set once")
+                            .props("dense").classes("col-span-2")
+                            .tooltip("This specimen has no catalog number. Enter one "
+                                     "here if it has since been given one; after "
+                                     "saving it can no longer be changed."))
             othercat_in = (
                 ui.input("otherCatalogNumbers", value=v_other)
                 .classes("w-full mt-3")
@@ -245,9 +273,10 @@ def build_specimen_form(
             ui.timer(2.0, _refresh_identity_display)
 
     def get_identifier_fields() -> dict:
-        """The identifier triplet to STORE on a new specimen: catalog_number /
-        collection_code / institution_code (config-backed in standard, typed in
-        visiting).
+        """The identifier of a new specimen: catalog_number, plus the default
+        collection's collection_code / institution_code in standard mode (visiting
+        leaves the codes empty — its collection is ``commit_repository``'s business,
+        and its catalog_number may be empty).
 
         This is the specimen *identifier* (catalog number), not its identification
         (taxon determination), and it is a value to write — never a row locator.
@@ -266,8 +295,8 @@ def build_specimen_form(
         if is_visiting:
             return {
                 "catalog_number":   (cat_num.value or "").strip(),
-                "collection_code":  (coll_code_disp.value or "").strip(),
-                "institution_code": (inst_code_disp.value or "").strip(),
+                "collection_code":  "",
+                "institution_code": "",
             }
         coll, inst = _default_repo_codes()  # standard: stamp with the default collection
         return {
@@ -275,6 +304,20 @@ def build_specimen_form(
             "collection_code":  coll,
             "institution_code": inst,
         }
+
+    def commit_repository(session) -> int:
+        """The repository_id this specimen belongs to. Standard: the flagged default
+        collection. Visiting / edit: the picked collection, created by name if new.
+        Call inside the save transaction. Never guesses — no collection, no save."""
+        if is_standard:
+            repo = repo_svc.get_default(session)
+            if repo is None:
+                raise ValueError("No default collection set. Open Settings to choose one.")
+            return repo.id
+        repo_id = repo_field["commit"](session)
+        if repo_id is None:
+            raise ValueError("Choose the collection this specimen belongs to.")
+        return repo_id
 
     def refresh_codes() -> None:
         """Re-query reserved codes into the identifier select — but push new options
@@ -314,9 +357,7 @@ def build_specimen_form(
                 return True
         except (TypeError, ValueError):
             pass
-        if is_visiting and (
-            (coll_code_disp.value or "").strip() or (inst_code_disp.value or "").strip()
-        ):
+        if is_visiting and (repo_field["get_value"]() or "").strip():
             return True
         if conf_chk.value:
             return True
@@ -326,8 +367,7 @@ def build_specimen_form(
         if cat_num is not None:
             cat_num.value = "" if is_visiting else None
         if is_visiting:
-            coll_code_disp.value = ""
-            inst_code_disp.value = ""
+            repo_field["set_value"](None)
         count_in.value  = NEW_SPECIMEN_DEFAULTS["individual_count"]
         with session_factory() as _s:
             prep_field["set_value"](preparation_vocab.get_default_name(_s) or None)
@@ -349,6 +389,8 @@ def build_specimen_form(
         "basis_sel":      basis_sel,
         "inst_code_disp": inst_code_disp,
         "coll_code_disp": coll_code_disp,
+        "repo_field":     repo_field,
+        "commit_repository": commit_repository,
         "rem_in":         rem_in,
         "othercat_in":    othercat_in,
         "conf_chk":       conf_chk,

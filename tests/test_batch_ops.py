@@ -81,7 +81,7 @@ def test_match_catalog_numbers_classifies(session, world):
         numbers=["HOME-00001", "OTHER-00001", "NOPE-99"])
     assert {m.catalog for m in res.matched} == {"HOME-00001"}
     assert [f.catalog for f in res.foreign] == ["OTHER-00001"]
-    assert res.foreign[0].collection_code == "OTHER"
+    assert res.foreign[0].collection == "OTHER"
     assert res.not_found == ["NOPE-99"]
 
 

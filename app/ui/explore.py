@@ -38,6 +38,7 @@ def _iso_end(d: str) -> str:
         return f"{d}-{_calendar.monthrange(y, m)[1]:02d}"
     return d
 
+from app.services.identifiers import catalog_label
 import app.services.explore as ex_svc
 import app.services.saved_searches as fav_svc
 import app.services.vocabularies as vocabs
@@ -585,7 +586,7 @@ def build_explore_panel(session_factory, *, on_open_specimen, on_open_event) -> 
             bits.append(f"×{lot.count}")
         meta = ("  ·  ".join(bits) + "  ·  ") if bits else ""
         loc = _html.escape(lot.locality or "—")
-        return (f'<span class="ex-cat">{_html.escape(lot.catalog)}</span>  {meta}{loc}')
+        return (f'<span class="ex-cat">{_html.escape(catalog_label(lot.catalog))}</span>  {meta}{loc}')
 
     def _render_taxa(groups):
         if not groups:
@@ -633,7 +634,7 @@ def build_explore_panel(session_factory, *, on_open_specimen, on_open_event) -> 
                                             meta.append(_html.escape(lot.sex))
                                         m = ("  ·  " + "  ·  ".join(meta)) if meta else ""
                                         row = ui.html('<div class="ex-lot" style="padding-left:18px">'
-                                                      f'<span class="ex-cat">{_html.escape(lot.catalog)}</span>{m}</div>')
+                                                      f'<span class="ex-cat">{_html.escape(catalog_label(lot.catalog))}</span>{m}</div>')
                                         row.on("click", lambda _, c=lot.co_id: on_open_specimen(c))
 
     def _render_specimens(rows):

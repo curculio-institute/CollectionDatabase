@@ -327,10 +327,23 @@ def test_catalog_number_same_number_different_collection_allowed(session):
     session.flush()  # must not raise
 
 
-def test_catalog_number_required(session):
-    """Inserting a collection_object without catalogNumber must be rejected."""
+def test_catalog_number_optional_in_a_foreign_collection(session):
+    """A specimen in a collection that is NOT the default may have no catalogNumber
+    (migration 0072). The own-collection requirement is a trigger — see
+    tests/test_optional_catalog_number.py."""
     co = CollectionObject(
         repository_id=ensure_repo(session, "COLL1"),
+        created_at=_utcnow(), updated_at=_utcnow(),
+    )
+    session.add(co)
+    session.flush()  # must not raise
+    assert co.catalog_number is None
+
+
+def test_blank_catalog_number_rejected(session):
+    """'' is not a second spelling of "no number" — NULL is the only one."""
+    co = CollectionObject(
+        repository_id=ensure_repo(session, "COLL1"), catalog_number="  ",
         created_at=_utcnow(), updated_at=_utcnow(),
     )
     session.add(co)

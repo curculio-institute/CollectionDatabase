@@ -8,7 +8,11 @@ from .base import Base, TimestampMixin
 class CollectionObject(Base, TimestampMixin):
     """One physical specimen or lot. DwC columns carry dwc: prefix.
 
-    dwc:catalogNumber is NOT NULL — the stable, immutable sync join key with TaxonWorks.
+    dwc:catalogNumber is the stable, immutable sync join key with TaxonWorks. It is
+      nullable (migration 0072) — but only for a specimen held in a FOREIGN collection,
+      which may simply have no number. In the default (own) collection it is required:
+      trg_co_default_requires_catalog_number_ins/_upd RAISE otherwise. Once set it is
+      never changed. A numberless specimen is never exported.
     repository_id is NOT NULL — the FK to the owning collection/institution (migration
       0047, #75). It is the single source of truth for collectionCode / institutionCode /
       ownerInstitutionCode (resolved through the repository at DwC export time); the old
@@ -23,7 +27,7 @@ class CollectionObject(Base, TimestampMixin):
     collecting_event_id: Mapped[Optional[int]] = mapped_column(
         Integer, ForeignKey("collecting_event.id", ondelete="RESTRICT"), nullable=True)
 
-    catalog_number: Mapped[str] = mapped_column("dwc:catalogNumber", String, nullable=False)
+    catalog_number: Mapped[Optional[str]] = mapped_column("dwc:catalogNumber", String, nullable=True)
     repository_id: Mapped[int] = mapped_column(
         Integer, ForeignKey("repository.id", ondelete="RESTRICT"), nullable=False)
 
@@ -54,6 +58,10 @@ class CollectionObject(Base, TimestampMixin):
         # may reuse numbers under their own repository (migration 0047, #75; replaced the
         # former UNIQUE(collectionCode, catalogNumber) when membership became an FK).
         UniqueConstraint("repository_id", "dwc:catalogNumber", name="uq_co_repository_catalog"),
+        # NULL is the one spelling of "no number" — '' would collide on the UNIQUE above.
+        CheckConstraint(
+            '"dwc:catalogNumber" IS NULL OR length(trim("dwc:catalogNumber")) > 0',
+            name="ck_co_catalog_number_not_blank"),
         CheckConstraint('"dwc:individualCount" >= 0', name="ck_co_individual_count_non_negative"),
         CheckConstraint(
             "\"dwc:basisOfRecord\" IN ('PreservedSpecimen', 'FossilSpecimen', 'HumanObservation')",

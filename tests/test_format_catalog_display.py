@@ -22,11 +22,12 @@ from app.services.identifiers import format_catalog_display as fmt
     ("JJPRC", "JJPRC",       "JJPRC"),
     # space separator variant
     ("JJPRC", "JJPRC 00001", "JJPRC 00001"),
-    # missing pieces degrade gracefully
-    ("JJPRC", "",            "JJPRC"),
+    # no catalog number (a foreign collection's specimen may have none) → say so
+    ("JJPRC", "",            "JJPRC · no number"),
+    (None,    None,          "no number"),
     ("",      "JJPRC-00001", "JJPRC-00001"),
     (None,    "JJPRC-00001", "JJPRC-00001"),
-    ("JJPRC", None,          "JJPRC"),
+    ("JJPRC", None,          "JJPRC · no number"),
 ])
 def test_format_catalog_display(cc, cn, expected):
     assert fmt(cc, cn) == expected

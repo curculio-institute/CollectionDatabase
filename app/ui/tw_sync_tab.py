@@ -93,6 +93,7 @@ from urllib.parse import urlsplit
 from nicegui import ui
 from sqlalchemy.orm import selectinload
 
+import app.services.identifiers as id_svc
 import app.services.repositories as repo_svc
 import app.services.taxonworks as tw_svc
 import app.services.tw_compare as tw_compare
@@ -484,10 +485,10 @@ def build_tw_sync_tab(session_factory, refreshers: dict | None = None,
     with session_factory() as _s:
         _default_repo = repo_svc.get_default(_s)
         state["repo_id"] = _default_repo.id if _default_repo else None
-        state["repo_code"] = _default_repo.collection_code if _default_repo else ""
+        state["repo_code"] = repo_svc.display_label(_default_repo) if _default_repo else ""
 
     def _repo_options(s) -> dict:
-        return {r.id: f"{r.collection_code} — {r.collection_full_name}"
+        return {r.id: repo_svc.display_label(r)
                 for r in repo_svc.list_repositories(s)}
 
     def _scoped_cos(s, scope_id, *, repo_id: int | None = None,
@@ -549,6 +550,15 @@ def build_tw_sync_tab(session_factory, refreshers: dict | None = None,
         facet group (app/services/explore.py)."""
         if open_explore is None:
             return
+        # A specimen in a foreign collection may have no catalog number, and this
+        # hand-off addresses specimens by number — say so rather than drop them quietly.
+        numberless = sum(1 for c in catalog_numbers if not c)
+        catalog_numbers = [c for c in catalog_numbers if c]
+        if numberless:
+            ui.notify(
+                f"{numberless} specimen(s) without a catalog number cannot be listed "
+                "here — find them in Explore by their collection.",
+                type="warning", multi_line=True, timeout=8000)
         if not catalog_numbers:
             ui.notify("Nothing to show — this is empty.", type="info")
             return
@@ -809,7 +819,7 @@ def build_tw_sync_tab(session_factory, refreshers: dict | None = None,
                     if r is None:
                         return
                     state["repo_id"] = r.id
-                    state["repo_code"] = r.collection_code
+                    state["repo_code"] = repo_svc.display_label(r)
                     # The previous check ran against a different collection — stale
                     # results would let Download hand out a file that no longer
                     # matches what is shown.
@@ -955,8 +965,7 @@ def build_tw_sync_tab(session_factory, refreshers: dict | None = None,
                         pending = "Pending"
                         rows.append({
                             "repo_id": r.id,
-                            "collection": f"{r.collection_code} — "
-                                          f"{r.collection_full_name}",
+                            "collection": repo_svc.display_label(r),
                             "total": len(cos),
                             "eligible": eligible,
                             "not_eligible": len(cos) - eligible,
@@ -2127,7 +2136,7 @@ def build_tw_sync_tab(session_factory, refreshers: dict | None = None,
                                 ).classes("text-xs") \
                                     .style("color:var(--tp-base-soft)")
                                 for cat, reasons in result.withheld:
-                                    ui.label(f"{cat} — {'; '.join(reasons)}") \
+                                    ui.label(f"{id_svc.catalog_label(cat)} — {'; '.join(reasons)}") \
                                         .classes("text-xs")
 
                         # ── refused — collapsed ──

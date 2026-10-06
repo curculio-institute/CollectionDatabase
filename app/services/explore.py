@@ -24,7 +24,7 @@ from app.models import (
     CollectionObject, CollectingEvent, TaxonDetermination, Taxon, Person,
     Country, StateProvince, County, Island, AdministrativeRegion, Repository,
 )
-from app.services import dwc_export
+from app.services import dwc_export, repositories
 from app.services.taxa import (
     format_scientific_name, parse_scientific_name, TAXON_RANKS,
     expand_taxon_scope, synonym_group_ids,
@@ -149,10 +149,8 @@ def search_facets(session: Session, term: str, limit: int = 25) -> list[Facet]:
             | Repository.collection_full_name.ilike(f"%{tok}%")
             | Repository.institution_code.ilike(f"%{tok}%")
             | Repository.institution_full_name.ilike(f"%{tok}%"))
-    for r in rq.order_by(Repository.collection_code).limit(limit).all():
-        label = (f"{r.collection_code} — {r.collection_full_name}"
-                 if r.collection_full_name else r.collection_code)
-        out.append(Facet("collection", label, r.id, "Collection"))
+    for r in rq.order_by(Repository.collection_full_name).limit(limit).all():
+        out.append(Facet("collection", repositories.display_label(r), r.id, "Collection"))
 
     return out
 
@@ -715,7 +713,7 @@ def to_csv(rows: list[SpecimenRow]) -> bytes:
                 "individualCount", "typeStatus", "locality", "eventDate",
                 "recordedBy", "decimalLatitude", "decimalLongitude"])
     for r in rows:
-        w.writerow([r.co_id, r.catalog, r.collection_code, r.taxon_label, r.sex or "",
+        w.writerow([r.co_id, r.catalog or "", r.collection_code or "", r.taxon_label, r.sex or "",
                     r.count, r.type_status or "", r.locality, r.event_date or "",
                     r.recorded_by or "", r.lat if r.lat is not None else "",
                     r.lon if r.lon is not None else ""])

@@ -8,4 +8,10 @@ def ensure_repo(session, code="TEST", institution=None):
     Specimens reference their owning collection by ``repository_id`` (FK, #75), so
     every test that creates a CollectionObject needs a repository to point at.
     """
-    return repo_svc.resolve_id(session, collection_code=code, institution_code=institution)
+    r = (session.query(repo_svc.Repository)
+         .filter(repo_svc.Repository.collection_code == code).one_or_none())
+    if r is None:
+        r = repo_svc.create_repository(
+            session, collection_full_name=code, collection_code=code,
+            institution_code=institution)
+    return r.id

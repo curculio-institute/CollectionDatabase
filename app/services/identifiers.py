@@ -129,6 +129,16 @@ def _next_sequential_number(session: Session, collection_code: str) -> int:
     return (max_num or 0) + 1
 
 
+# How a specimen WITHOUT a catalog number is named wherever a number would stand. Such
+# a specimen is only ever one held in a foreign collection (migration 0072).
+NO_CATALOG_NUMBER = "no number"
+
+
+def catalog_label(catalog_number: str | None) -> str:
+    """The catalog number for display, or the one shared "no number" wording."""
+    return (catalog_number or "").strip() or NO_CATALOG_NUMBER
+
+
 def format_catalog_display(collection_code: str | None, catalog_number: str | None) -> str:
     """Render a specimen identifier for display without doubling the collection code.
 
@@ -142,13 +152,16 @@ def format_catalog_display(collection_code: str | None, catalog_number: str | No
       * transferred (foreign collection_code) → show both, current holder first
         (``ABC  JJPRC-00001``), which is genuinely informative.
 
+      * no catalog number (a specimen in a foreign collection may have none) →
+        ``ABC · no number``, or just ``no number`` for a collection without a code.
+
     Display-only; never mutates the stored fields (catalog_number must keep its
     prefix for TaxonWorks matching).
     """
     cc = (collection_code or "").strip()
     cn = (catalog_number or "").strip()
     if not cn:
-        return cc
+        return f"{cc} · {NO_CATALOG_NUMBER}" if cc else NO_CATALOG_NUMBER
     if cc and (cn == cc or cn.startswith(f"{cc}-") or cn.startswith(f"{cc} ")):
         return cn
     return f"{cc} {cn}".strip()

@@ -221,6 +221,49 @@ def test_synonym_integrity_triggers_present(engine):
     )
 
 
+def test_own_collection_catalog_number_triggers_present(engine):
+    # Migration 0072: "every specimen in the default collection has a catalog number"
+    # spans two tables, so it is triggers, not a CHECK — and a rebuild of either
+    # collection_object or repository silently drops them. Re-create them.
+    expected = {
+        "trg_co_default_requires_catalog_number_ins": "collection_object",
+        "trg_co_default_requires_catalog_number_upd": "collection_object",
+        "trg_repository_default_requires_catalog_numbers": "repository",
+    }
+    with engine.connect() as conn:
+        live = dict(conn.exec_driver_sql(
+            "SELECT name, tbl_name FROM sqlite_master WHERE type='trigger'").fetchall())
+    for name, table in expected.items():
+        assert live.get(name) == table, f"{table} lost trigger {name}"
+
+
+def test_catalog_number_and_collection_code_are_optional(engine):
+    """0072: both nullable, and never blank; the collection NAME is the identity."""
+    with engine.connect() as conn:
+        co = {r[1]: r for r in conn.exec_driver_sql("PRAGMA table_info(collection_object)")}
+        repo = {r[1]: r for r in conn.exec_driver_sql("PRAGMA table_info(repository)")}
+    assert co["dwc:catalogNumber"][3] == 0
+    assert repo["dwc:collectionCode"][3] == 0
+    assert repo["collection_full_name"][3] == 1
+    co_sql, repo_sql = _table_sql(engine, "collection_object"), _table_sql(engine, "repository")
+    assert "ck_co_catalog_number_not_blank" in co_sql
+    for name in ("ck_repository_collection_code_not_blank", "ck_repository_name_not_blank",
+                 "ck_repository_default_has_code", "uq_repository_collection_full_name"):
+        assert name in repo_sql, f"repository lost {name}"
+
+
+def test_repository_indexes_present(engine):
+    """The partial unique indexes are not part of the table DDL, so a rebuild drops
+    them unless they are re-created: one default at most, and a code unique where set."""
+    with engine.connect() as conn:
+        idx = dict(conn.exec_driver_sql(
+            "SELECT name, sql FROM sqlite_master WHERE type='index' "
+            "AND tbl_name='repository' AND sql IS NOT NULL").fetchall())
+    assert "WHERE is_default = 1" in idx["uq_repository_one_default"]
+    assert "IS NOT NULL" in idx["uq_repository_collection_code"]
+    assert "UNIQUE" in idx["uq_repository_collection_code"]
+
+
 def test_taxon_nomenclatural_code_not_null_and_checked(engine):
     # migration 0054 (#96): every name is governed by a code. The code is never guessed —
     # it is a property of the source or inherited from the parent — so a NULL can only mean

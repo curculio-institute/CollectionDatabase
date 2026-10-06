@@ -20,6 +20,7 @@ from app.models import (
     Country, StateProvince, County, Island, AdministrativeRegion,
 )
 from app.models.base import _utcnow
+from app.services import repositories
 from app.services.taxa import format_scientific_name
 
 # facet kind → (vocab model) for the geography facets (label is the row's name).
@@ -127,8 +128,7 @@ def _resolve_facet(session: Session, kind: str, key) -> str | None:
         r = session.get(Repository, int(key))
         if not r:
             return None
-        return (f"{r.collection_code} — {r.collection_full_name}"
-                if r.collection_full_name else r.collection_code)
+        return repositories.display_label(r)
     return None
 
 

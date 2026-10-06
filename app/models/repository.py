@@ -8,9 +8,11 @@ from .base import Base, TimestampMixin
 class Repository(Base, TimestampMixin):
     """An institution / collection the specimens belong to (migration 0045, #56).
 
-    Keyed by ``dwc:collectionCode`` (the prefix embedded in every catalog number,
-    e.g. ``JJPC`` in ``JJPC-00304``). The identifier label resolves that prefix to
-    ``collection_full_name``. DwC-mapping columns carry the ``dwc:`` prefix so the
+    Identified by ``collection_full_name`` (UNIQUE, migration 0072) — a private
+    collection ("Frank Lange collection") often has no code at all. ``dwc:collectionCode``
+    is optional and unique where present; it is the prefix embedded in the own
+    collection's catalog numbers (``JJPC`` in ``JJPC-00304``), which the identifier label
+    resolves back to ``collection_full_name``. The default collection must have one. DwC-mapping columns carry the ``dwc:`` prefix so the
     export is a passthrough; full names + TW ids are local. TaxonWorks stores the
     institution (Repository) and collection (Namespace) under separate ids.
     """
@@ -20,7 +22,7 @@ class Repository(Base, TimestampMixin):
     id:                        Mapped[int]           = mapped_column(Integer, primary_key=True)
     institution_code:          Mapped[Optional[str]] = mapped_column("dwc:institutionCode", String, nullable=True)
     institution_full_name:     Mapped[Optional[str]] = mapped_column(String, nullable=True)
-    collection_code:           Mapped[str]           = mapped_column("dwc:collectionCode", String, nullable=False)
+    collection_code:           Mapped[Optional[str]] = mapped_column("dwc:collectionCode", String, nullable=True)
     collection_full_name:      Mapped[str]           = mapped_column(String, nullable=False)
     taxonworks_institution_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     taxonworks_collection_id:  Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
@@ -34,8 +36,19 @@ class Repository(Base, TimestampMixin):
         Integer, ForeignKey("person.id", ondelete="RESTRICT"), nullable=True)
 
     __table_args__ = (
-        UniqueConstraint("dwc:collectionCode", name="uq_repository_collection_code"),
+        UniqueConstraint("collection_full_name", name="uq_repository_collection_full_name"),
+        # The code is unique only where there is one (partial unique index).
+        Index("uq_repository_collection_code", "dwc:collectionCode",
+              unique=True, sqlite_where=text('"dwc:collectionCode" IS NOT NULL')),
         CheckConstraint("is_default IN (0, 1)", name="ck_repository_is_default"),
+        CheckConstraint(
+            '"dwc:collectionCode" IS NULL OR length(trim("dwc:collectionCode")) > 0',
+            name="ck_repository_collection_code_not_blank"),
+        CheckConstraint("length(trim(collection_full_name)) > 0",
+                        name="ck_repository_name_not_blank"),
+        # The default collection's code is the catalog-number prefix.
+        CheckConstraint('is_default = 0 OR "dwc:collectionCode" IS NOT NULL',
+                        name="ck_repository_default_has_code"),
         # At most one default collection at a time (partial unique index, #83).
         Index("uq_repository_one_default", "is_default",
               unique=True, sqlite_where=text("is_default = 1")),

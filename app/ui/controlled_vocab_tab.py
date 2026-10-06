@@ -460,8 +460,9 @@ def _build_repository_card(session_factory) -> None:
     with ui.card().classes("w-full shadow-sm"):
         with ui.row().classes("items-center gap-2 mb-1"):
             ui.label("Collections / Institutions").classes("section-label")
-            ui.label("Maps a collectionCode to its full names + TaxonWorks ids; "
-                     "prints the collection name on identifier labels.") \
+            ui.label("A collection needs only a name — codes are optional (many "
+                     "private collections have none). Your own collection needs a "
+                     "collectionCode: it prefixes the catalog numbers.") \
                 .classes("text-sm").style("color:var(--tp-base-soft)")
         ui.separator().classes("mb-3")
 
@@ -471,7 +472,7 @@ def _build_repository_card(session_factory) -> None:
                 return [
                     {
                         "id":        str(r.id),
-                        "ccode":     r.collection_code,
+                        "ccode":     r.collection_code or "",
                         "cname":     r.collection_full_name,
                         "icode":     r.institution_code or "",
                         "iname":     r.institution_full_name or "",
@@ -484,8 +485,8 @@ def _build_repository_card(session_factory) -> None:
 
         table = ui.table(
             columns=[
+                {"name": "cname", "label": "Collection name", "field": "cname", "align": "left", "sortable": True},
                 {"name": "ccode", "label": "dwc:collectionCode", "field": "ccode", "align": "left", "sortable": True},
-                {"name": "cname", "label": "Collection full name", "field": "cname", "align": "left"},
                 {"name": "person", "label": "Contact / owner", "field": "person", "align": "left"},
                 {"name": "icode", "label": "dwc:institutionCode", "field": "icode", "align": "left"},
                 {"name": "iname", "label": "Institution full name", "field": "iname", "align": "left"},
@@ -514,8 +515,8 @@ def _build_repository_card(session_factory) -> None:
         edit_state: dict = {"id": None}
         with ui.dialog() as edit_dialog, ui.card().classes("w-[460px]"):
             ui.label("Edit collection").classes("section-label mb-2")
-            e_ccode = ui.input("dwc:collectionCode *", placeholder="JJPC").classes("w-full")
-            e_cname = ui.input("Collection full name *", placeholder="John Doe Personal Collection").classes("w-full mt-2")
+            e_cname = ui.input("Collection name *", placeholder="John Doe Personal Collection").classes("w-full")
+            e_ccode = ui.input("dwc:collectionCode", placeholder="JJPC — optional").classes("w-full mt-2")
             with ui.row().classes("w-full mt-2"):
                 e_person = build_person_field(
                     session_factory, "Contact / owner (person)", classes="w-full")
@@ -526,15 +527,15 @@ def _build_repository_card(session_factory) -> None:
                 e_twc = ui.input("TW collection id").classes("flex-1")
 
             def _save_edit():
-                if not e_ccode.value.strip() or not e_cname.value.strip():
-                    ui.notify("collectionCode and collection full name are required.", type="warning")
+                if not (e_cname.value or "").strip():
+                    ui.notify("A collection needs a name.", type="warning")
                     return
                 try:
                     with session_factory() as s:
                         with s.begin():
                             repo_svc.update_repository(
                                 s, edit_state["id"],
-                                collection_code=e_ccode.value,
+                                collection_code=e_ccode.value or None,
                                 collection_full_name=e_cname.value,
                                 institution_code=e_icode.value or None,
                                 institution_full_name=e_iname.value or None,
@@ -577,8 +578,8 @@ def _build_repository_card(session_factory) -> None:
         ui.separator().classes("my-3")
         ui.label("Add collection").classes("text-sm font-semibold mb-2")
         with ui.grid(columns=2).classes("w-full gap-3"):
-            a_ccode = ui.input("dwc:collectionCode *", placeholder="JJPC")
-            a_cname = ui.input("Collection full name *", placeholder="John Doe Personal Collection")
+            a_cname = ui.input("Collection name *", placeholder="John Doe Personal Collection")
+            a_ccode = ui.input("dwc:collectionCode", placeholder="JJPC — optional")
             a_person = build_person_field(
                 session_factory, "Contact / owner (person)", classes="w-full")
             a_icode = ui.input("dwc:institutionCode")
@@ -587,15 +588,15 @@ def _build_repository_card(session_factory) -> None:
             a_twc = ui.input("TW collection id")
 
         def _add():
-            if not a_ccode.value.strip() or not a_cname.value.strip():
-                ui.notify("collectionCode and collection full name are required.", type="warning")
+            if not (a_cname.value or "").strip():
+                ui.notify("A collection needs a name.", type="warning")
                 return
             try:
                 with session_factory() as s:
                     with s.begin():
                         repo_svc.create_repository(
                             s,
-                            collection_code=a_ccode.value,
+                            collection_code=a_ccode.value or None,
                             collection_full_name=a_cname.value,
                             institution_code=a_icode.value or None,
                             institution_full_name=a_iname.value or None,

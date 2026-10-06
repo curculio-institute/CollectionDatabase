@@ -1881,9 +1881,11 @@ def index():
             # derive from one chosen row (same DB-integrity rule as person defaults).
             def _repo_opts() -> dict:
                 with _sf() as s:
+                    # Only a collection WITH a code can be the default — the code is
+                    # the prefix of the catalog numbers (ck_repository_default_has_code).
                     return {
-                        r.collection_code: f"{r.collection_code} — {r.collection_full_name}"
-                        for r in repo_svc.list_repositories(s)
+                        r.collection_code: repo_svc.display_label(r)
+                        for r in repo_svc.list_repositories(s) if r.collection_code
                     }
 
             with _sf() as _s_def:

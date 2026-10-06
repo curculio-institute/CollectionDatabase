@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import html as _html
 
+from app.services.identifiers import catalog_label
 import app.services.taxa as taxa_svc
 
 # Amber, not red: a confidential record is restricted, not wrong. Red reads as an error, and the
@@ -232,7 +233,7 @@ def specimen_html(
     return (
         '<div class="rs-row">'
         '<div class="rs-top">'
-        f'<span class="rs-cat">{_html.escape(catalog or "—")}</span>'
+        f'<span class="rs-cat">{_html.escape(catalog_label(catalog))}</span>'
         f'{ident}{_bits(sex, count)}{_det_html(identified_by, date_identified)}'
         f'<span class="rs-spacer"></span>'
         f'{lock_html(own=confidential, from_event=event_confidential)}'

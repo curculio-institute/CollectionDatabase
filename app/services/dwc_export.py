@@ -62,6 +62,9 @@ class ExportDecision:
     # publishable (qualified / below species / no current ID), which privacy_reasons
     # cannot answer.
     determination_reasons: tuple[str, ...] = ()
+    # The third ground (rule 6): the specimen has no catalog number. Neither privacy nor
+    # doubt about the name — the record simply has no identity to publish under.
+    identity_reasons: tuple[str, ...] = ()
 
     @property
     def withheld(self) -> bool:
@@ -230,13 +233,30 @@ def export_decision(
         _determination_reasons(co, determination=determination))
     reasons.extend(determination_reasons)
 
+    # 6. No catalog number (possible only in a foreign collection, migration 0072).
+    # TaxonWorks itself would take the row — its importer creates the CatalogNumber
+    # identifier only `if attributes.dig(:catalog_number, :identifier)`
+    # (dataset_record/darwin_core/occurrence.rb:344 @ 897f385) — which is exactly the
+    # problem: its "Is already in use" duplicate guard (:366) sits inside that branch,
+    # and our own compare recognises "already on TaxonWorks" by catalog number alone.
+    # A numberless specimen would therefore look not-yet-uploaded forever and be
+    # created again by every export, in a CREATE-ONLY importer. No setting, like the
+    # other absolute rules: give the specimen a number and it exports.
+    identity_reasons: tuple[str, ...] = ()
+    if not (co.catalog_number or "").strip():
+        identity_reasons = (
+            "no catalog number — it could not be recognised on TaxonWorks again, so "
+            "every export would create it a second time",)
+        reasons.extend(identity_reasons)
+
     if reasons:
         # A withheld record has no fields to blank — drop them so the report cannot show
         # a redaction for a row that is never written.
         return ExportDecision(eligible=False, reasons=tuple(reasons),
                               privacy_reasons=privacy_reasons,
                               recorded_by_state=recorded_by_state,
-                              determination_reasons=determination_reasons)
+                              determination_reasons=determination_reasons,
+                              identity_reasons=identity_reasons)
     return ExportDecision(
         eligible=True,
         blank_fields=tuple(blank_fields),
@@ -503,15 +523,14 @@ def _validate_row(row: dict[str, str]) -> list[RowProblem]:
     cat_num = row["catalogNumber"]
     problems: list[RowProblem] = []
 
-    # 6. Cannot happen — catalog_number is NOT NULL at the DB level — but the
-    # invariant is asserted here rather than trusted blindly.
+    # 6. Backstop only: `export_decision` already withholds a specimen with no catalog
+    # number (rule 6 there), so an eligible row never arrives here without one.
     if not cat_num:
         problems.append(RowProblem(
             catalog_number=cat_num,
             column="catalogNumber",
-            message="catalogNumber is empty, which violates the database's NOT NULL "
-                    "constraint; this indicates data corruption — investigate before "
-                    "exporting.",
+            message="catalogNumber is empty; a specimen without a catalog number is "
+                    "never exported (it could not be matched on TaxonWorks again).",
         ))
 
     # 1. occurrence.rb:849-850 — only these two values are accepted.

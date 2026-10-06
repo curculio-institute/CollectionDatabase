@@ -535,14 +535,9 @@ def build_digitize_tab(session_factory, *, refreshers, mode_state, mark_form_cle
             ident = active["get_identifier_fields"]()
             return {
                 "catalog_number":    ident["catalog_number"],
-                # Membership is the repository FK (#75): resolve the collection
-                # code (config-backed standard / typed visiting) → repository_id,
-                # get-or-creating the host repository for a visiting specimen.
-                "repository_id":     repo_svc.resolve_id(
-                    session,
-                    collection_code=ident["collection_code"],
-                    institution_code=ident["institution_code"],
-                ),
+                # Membership is the repository FK (#75): the default collection
+                # (standard) or the one picked from the vocabulary (visiting).
+                "repository_id":     active["commit_repository"](session),
                 "individual_count":  int(active["count_in"].value or 1),
                 "preparation_id":    active["prep_field"]["commit"](session),
                 "life_stage":        active["stage_sel"].value,
@@ -557,12 +552,10 @@ def build_digitize_tab(session_factory, *, refreshers, mode_state, mark_form_cle
             active = _active_spec[0]
             ident = active["get_identifier_fields"]()
             if active["policy"] == "visiting":
-                if not ident["catalog_number"]:
-                    return "Enter the specimen's catalogNumber (host number)."
-                if not ident["collection_code"]:
-                    return "Enter the collectionCode (host collection namespace)."
-                if not ident["institution_code"]:
-                    return "Enter the institutionCode (host institution)."
+                # Only the collection is required. A foreign collection's
+                # specimen may have no catalog number at all (migration 0072).
+                if not (active["repo_field"]["get_value"]() or "").strip():
+                    return "Choose the collection this specimen belongs to."
             else:  # standard
                 # Membership derives from the default collection's code
                 # (#83); institutionCode is optional metadata on the repo.
@@ -764,7 +757,8 @@ def build_digitize_tab(session_factory, *, refreshers, mode_state, mark_form_cle
                                 )
                 event_sel.set_options(_event_opts())
                 spec["refresh_codes"]()
-                ui.notify(f"Saved — specimen #{saved_id}  [{code}]", type="positive")
+                ui.notify(f"Saved — specimen #{saved_id}  [{id_svc.catalog_label(code)}]",
+                          type="positive")
                 status_lbl.set_text(f"Last saved: #{saved_id}")
             except Exception as exc:
                 ui.notify(f"Save failed: {exc}", type="negative")

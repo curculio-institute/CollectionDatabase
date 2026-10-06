@@ -1,7 +1,9 @@
 """Repository (institution / collection) CRUD + label lookup (#56).
 
-Keyed by ``collection_code`` (the prefix in every catalog number). The identifier
-label resolves a code's prefix → ``collection_full_name`` via ``name_map``.
+A collection is identified by its **name** (``collection_full_name``, UNIQUE —
+migration 0072): a private collection often has no code at all. ``collection_code`` is
+optional and unique where present; it is the prefix in the own collection's catalog
+numbers, which the identifier label resolves → ``collection_full_name`` via ``name_map``.
 """
 from __future__ import annotations
 
@@ -12,23 +14,68 @@ from app.models.base import _utcnow
 
 
 def list_repositories(session: Session) -> list[Repository]:
-    return session.query(Repository).order_by(Repository.collection_code).all()
+    """All collections — coded ones first by code, then the codeless ones by name."""
+    return (
+        session.query(Repository)
+        .order_by(Repository.collection_code.is_(None),
+                  Repository.collection_code, Repository.collection_full_name)
+        .all()
+    )
+
+
+def display_label(repo: Repository) -> str:
+    """The one human rendering of a collection: ``JJPC — Jakob Jilg collection`` with a
+    code, ``Frank Lange collection`` without. Never a bare code — the name is the
+    collection's identity and is always present."""
+    code = (repo.collection_code or "").strip()
+    name = (repo.collection_full_name or "").strip()
+    if code and name and code != name:
+        return f"{code} — {name}"
+    return name or code
+
+
+def _clean_identity(session: Session, collection_code: str | None,
+                    collection_full_name: str | None, *,
+                    exclude_id: int | None = None) -> tuple[str | None, str]:
+    """Normalise + vet a collection's (code, name), raising a friendly ValueError where
+    the DB would otherwise answer with a raw IntegrityError: the name is required and
+    unique; the code is optional and unique where present."""
+    code = (collection_code or "").strip() or None
+    name = (collection_full_name or "").strip()
+    if not name:
+        raise ValueError("A collection needs a name.")
+    q = session.query(Repository).filter(Repository.collection_full_name == name)
+    if exclude_id is not None:
+        q = q.filter(Repository.id != exclude_id)
+    if q.first() is not None:
+        raise ValueError(f"A collection named {name!r} already exists.")
+    if code is not None:
+        q = session.query(Repository).filter(Repository.collection_code == code)
+        if exclude_id is not None:
+            q = q.filter(Repository.id != exclude_id)
+        other = q.first()
+        if other is not None:
+            raise ValueError(
+                f"The collection code {code!r} is already used by "
+                f"{other.collection_full_name!r}.")
+    return code, name
 
 
 def create_repository(
     session: Session,
     *,
-    collection_code: str,
     collection_full_name: str,
+    collection_code: str | None = None,
     institution_code: str | None = None,
     institution_full_name: str | None = None,
     taxonworks_institution_id: int | None = None,
     taxonworks_collection_id: int | None = None,
     person_id: int | None = None,
 ) -> Repository:
+    code, name = _clean_identity(session, collection_code, collection_full_name)
     r = Repository(
-        collection_code=collection_code.strip(),
-        collection_full_name=collection_full_name.strip(),
+        collection_code=code,
+        collection_full_name=name,
         institution_code=(institution_code or "").strip() or None,
         institution_full_name=(institution_full_name or "").strip() or None,
         taxonworks_institution_id=taxonworks_institution_id,
@@ -46,8 +93,8 @@ def update_repository(
     session: Session,
     repo_id: int,
     *,
-    collection_code: str,
     collection_full_name: str,
+    collection_code: str | None = None,
     institution_code: str | None = None,
     institution_full_name: str | None = None,
     taxonworks_institution_id: int | None = None,
@@ -57,8 +104,14 @@ def update_repository(
     r = session.get(Repository, repo_id)
     if r is None:
         raise ValueError(f"Repository {repo_id} not found")
-    r.collection_code = collection_code.strip()
-    r.collection_full_name = collection_full_name.strip()
+    code, name = _clean_identity(session, collection_code, collection_full_name,
+                                 exclude_id=repo_id)
+    if code is None and r.is_default:
+        raise ValueError(
+            "The default collection needs a collection code — it is the prefix of "
+            "your catalog numbers.")
+    r.collection_code = code
+    r.collection_full_name = name
     r.institution_code = (institution_code or "").strip() or None
     r.institution_full_name = (institution_full_name or "").strip() or None
     r.taxonworks_institution_id = taxonworks_institution_id
@@ -86,45 +139,42 @@ def delete_repository(session: Session, repo_id: int) -> None:
     )
     if n:
         raise ValueError(
-            f"Cannot delete collection {r.collection_code!r}: {n} specimen(s) still "
+            f"Cannot delete collection {display_label(r)!r}: {n} specimen(s) still "
             f"belong to it. Reassign them to another collection first."
         )
     session.delete(r)
     session.flush()
 
 
-def resolve_id(
-    session: Session,
-    *,
-    collection_code: str,
-    institution_code: str | None = None,
-    collection_full_name: str | None = None,
-) -> int:
-    """Resolve a collection code to its repository id, creating the row if absent.
+def get_or_create_by_name(session: Session, name: str) -> Repository:
+    """The collection named ``name``, creating a name-only row if there is none.
 
-    The save-time seam for ``collection_object.repository_id`` (#75): the UI carries
-    a collection-code string (config-backed for the user's own collection, typed for
-    a host/other collection), and this get-or-creates the matching repository inside
-    the caller's transaction — mirroring person / vocab ``commit(session)`` resolution.
-    ``collection_code`` is required (NOT NULL on the FK target); a blank one is refused
-    loudly rather than silently defaulted.
+    The save-time seam for the collection picker's ``✚ add`` (mirrors person / vocab
+    ``commit(session)``): a foreign collection is identified by its name, and its codes
+    — if it has any — are added later in Controlled Vocabularies. Nothing is guessed:
+    a new row gets no code. A blank name is refused loudly.
     """
-    code = (collection_code or "").strip()
-    if not code:
-        raise ValueError("collection_code is required to resolve a repository")
+    name = (name or "").strip()
+    if not name:
+        raise ValueError("A collection name is required.")
     r = (
         session.query(Repository)
-        .filter(Repository.collection_code == code)
+        .filter(Repository.collection_full_name == name)
         .one_or_none()
     )
     if r is None:
-        r = create_repository(
-            session,
-            collection_code=code,
-            collection_full_name=(collection_full_name or "").strip() or code,
-            institution_code=institution_code,
-        )
-    return r.id
+        r = create_repository(session, collection_full_name=name)
+    return r
+
+
+def count_without_catalog_number(session: Session, repo_id: int) -> int:
+    """How many specimens of this collection have no catalog number."""
+    return (
+        session.query(CollectionObject)
+        .filter(CollectionObject.repository_id == repo_id,
+                CollectionObject.catalog_number.is_(None))
+        .count()
+    )
 
 
 def get_default(session: Session) -> Repository | None:
@@ -144,8 +194,21 @@ def get_default(session: Session) -> Repository | None:
 def set_default(session: Session, repo_id: int) -> None:
     """Make ``repo_id`` the sole default collection. Clears the old default first so the
     partial-unique ``one default`` index never trips mid-statement."""
-    if session.get(Repository, repo_id) is None:
+    r = session.get(Repository, repo_id)
+    if r is None:
         raise ValueError(f"Repository {repo_id} not found")
+    # Both are DB-enforced too (ck_repository_default_has_code and
+    # trg_repository_default_requires_catalog_numbers); these say why.
+    if not r.collection_code:
+        raise ValueError(
+            f"{r.collection_full_name!r} has no collection code, so it cannot be the "
+            "default collection — the code is the prefix of your catalog numbers.")
+    n = count_without_catalog_number(session, repo_id)
+    if n:
+        raise ValueError(
+            f"{display_label(r)!r} holds {n} specimen(s) without a catalog number, so "
+            "it cannot be the default collection — every specimen in your own "
+            "collection must have one.")
     now = _utcnow()
     session.query(Repository).filter(Repository.is_default == 1).update(
         {"is_default": 0, "updated_at": now})
@@ -155,8 +218,9 @@ def set_default(session: Session, repo_id: int) -> None:
 
 
 def name_map(session: Session) -> dict[str, str]:
-    """``{collection_code: collection_full_name}`` for the label resolver."""
+    """``{collection_code: collection_full_name}`` for the label resolver. Codeless
+    collections have no prefix to resolve, so they are not in the map."""
     return {
         r.collection_code: r.collection_full_name
-        for r in session.query(Repository).all()
+        for r in session.query(Repository).filter(Repository.collection_code.isnot(None)).all()
     }

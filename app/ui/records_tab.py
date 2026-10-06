@@ -349,6 +349,7 @@ def build_records_tab(session_factory, *, on_saved: callable | None = None) -> N
             co_snap = {
                 "catalog_number":    co.catalog_number,
                 "collection_code": co.repository.collection_code,
+                "collection_name": co.repository.collection_full_name,
                 "individual_count":  co.individual_count,
                 "preparations":      co.preparation.name if co.preparation else None,
                 "life_stage":        co.life_stage,
@@ -521,8 +522,9 @@ def build_records_tab(session_factory, *, on_saved: callable | None = None) -> N
 
         # ── Specimen card ────────────────────────────────────────────────
         # Shared specimen-field block (see app/ui/specimen_form.py), edit policy:
-        # catalog_number is immutable (shown read-only in the header); collectionCode
-        # is editable (gifting). Remaining fields are seeded from the DB snapshot.
+        # catalog_number is immutable (shown read-only in the header) — except that a
+        # specimen saved WITHOUT one can be given one once; the collection is
+        # editable (gifting). Remaining fields are seeded from the DB snapshot.
         # Widgets are unpacked into locals so the save path references them unchanged.
         # The specimen's life-stage history and resource identifiers are STAGED like the
         # identifications: the handles are kept so "Save changes" can commit them in the
@@ -549,7 +551,7 @@ def build_records_tab(session_factory, *, on_saved: callable | None = None) -> N
             session_factory,
             identifier_policy="edit",
             initial=co_snap,
-            identity_label=f"#{co_id}  {co_snap['catalog_number']}",
+            identity_label=f"#{co_id}  {id_svc.catalog_label(co_snap['catalog_number'])}",
             footer_slot=lambda: _build_spec_footer(),
         )
         count_in     = spec["count_in"]
@@ -560,7 +562,11 @@ def build_records_tab(session_factory, *, on_saved: callable | None = None) -> N
         rem_in       = spec["rem_in"]
         othercat_in  = spec["othercat_in"]
         conf_chk     = spec["conf_chk"]
-        coll_code_in = spec["coll_code_disp"]
+        repo_field   = spec["repo_field"]
+        cat_num_in   = spec["cat_num"]   # None unless the specimen has no number yet
+
+        def _new_catalog_number() -> str:
+            return (cat_num_in.value or "").strip() if cat_num_in is not None else ""
 
         # ── Identifications card ──────────────────────────────────────────
         with ui.card().classes("w-full shadow-sm"):
@@ -831,11 +837,12 @@ def build_records_tab(session_factory, *, on_saved: callable | None = None) -> N
             return {
                 # Re-homing to another collection (gifting) re-points the repository
                 # FK (#75) — the in-app equivalent of editing ownerInstitutionCode.
-                # _save rejects an empty code up front; resolve_id get-or-creates the
-                # target repository; catalog_number is never touched.
-                "repository_id":     repo_svc.resolve_id(
-                    session, collection_code=(coll_code_in.value or "").strip()
-                ),
+                # _save rejects an empty collection up front; the picker resolves
+                # (or creates by name) the target repository. catalog_number is only
+                # ever passed for a specimen that has none — the service ignores it
+                # otherwise (immutable once set).
+                "repository_id":     spec["commit_repository"](session),
+                "catalog_number":    _new_catalog_number(),
                 "individual_count":  int(count_in.value or 1),
                 "preparation_id":    prep_field["commit"](session),
                 "life_stage":        stage_sel.value,
@@ -850,8 +857,8 @@ def build_records_tab(session_factory, *, on_saved: callable | None = None) -> N
             return ev_ce["collect_fields"]() if ev_ce else {}
 
         def _save():
-            if not (coll_code_in.value or "").strip():
-                ui.notify("collectionCode cannot be empty.", type="warning")
+            if not (repo_field["get_value"]() or "").strip():
+                ui.notify("A specimen must belong to a collection.", type="warning")
                 return
             _media_orphans: list[str] = []
             try:
@@ -909,7 +916,8 @@ def build_records_tab(session_factory, *, on_saved: callable | None = None) -> N
         # real Save.
         def _current_values() -> dict:
             co = {
-                "collection_code":    (coll_code_in.value or "").strip(),
+                "collection":         (repo_field["get_value"]() or "").strip(),
+                "catalog_number":     _new_catalog_number(),
                 "individual_count":   int(count_in.value or 1),
                 "preparations":       prep_field["get_value"](),
                 "life_stage":         stage_sel.value,

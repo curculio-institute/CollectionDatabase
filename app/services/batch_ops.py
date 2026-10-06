@@ -24,8 +24,9 @@ from dataclasses import dataclass, field
 
 from sqlalchemy.orm import Session
 
-from app.models import CollectionObject, Taxon, TaxonDetermination
+from app.models import CollectionObject, Repository, Taxon, TaxonDetermination
 from app.models.base import _utcnow
+from app.services.repositories import display_label
 from app.services.taxa import format_scientific_name, expand_taxon_scope
 
 
@@ -35,7 +36,7 @@ from app.services.taxa import format_scientific_name, expand_taxon_scope
 class SpecimenMatch:
     """An in-scope specimen, safe to operate on."""
     co_id: int
-    catalog: str
+    catalog: str | None     # None — a foreign-collection specimen without a number
     taxon_label: str
     disposition: str        # current disposition name, or "" if none
 
@@ -44,7 +45,7 @@ class SpecimenMatch:
 class ForeignHit:
     """A pasted catalog number that exists, but in another collection → excluded."""
     catalog: str
-    collection_code: str
+    collection: str         # repositories.display_label of the collection holding it
 
 
 @dataclass
@@ -141,6 +142,24 @@ def parse_catalog_numbers(text: str) -> list[str]:
     return out
 
 
+def fetch_by_ids(
+    session: Session, *, repository_id: int, co_ids: list[int]
+) -> list[SpecimenMatch]:
+    """Re-read a specimen set by id, still scoped to the working collection. The id —
+    not the catalog number — is the handle: a specimen may have no number at all."""
+    if not co_ids:
+        return []
+    idx = _taxon_index(session)
+    cos = (
+        session.query(CollectionObject)
+        .filter(CollectionObject.repository_id == repository_id,
+                CollectionObject.id.in_(co_ids))
+        .order_by(CollectionObject.catalog_number)
+        .all()
+    )
+    return [_to_match(co, idx) for co in cos]
+
+
 def match_catalog_numbers(
     session: Session, *, repository_id: int, numbers: list[str]
 ) -> MatchResult:
@@ -169,7 +188,7 @@ def match_catalog_numbers(
         else:
             other = rows[0]
             result.foreign.append(
-                ForeignHit(catalog=cat, collection_code=other.repository.collection_code)
+                ForeignHit(catalog=cat, collection=display_label(other.repository))
             )
     return result
 
@@ -227,6 +246,16 @@ def apply_repository(
     if target_repository_id == source_repository_id:
         raise ValueError("Target collection is the same as the working collection.")
     cos = _load_in_scope(session, source_repository_id, co_ids)
+    target = session.get(Repository, target_repository_id)
+    if target is None:
+        raise ValueError("The target collection does not exist.")
+    if target.is_default:
+        numberless = sum(1 for co in cos if co.catalog_number is None)
+        if numberless:
+            raise ValueError(
+                f"{numberless} of these specimens have no catalog number, and every "
+                "specimen in your own collection must have one. Give them a number "
+                "in Records first, or leave them out. Nothing was moved.")
     now = _utcnow()
     for co in cos:
         co.repository_id = target_repository_id

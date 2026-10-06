@@ -6,6 +6,7 @@ from sqlalchemy import and_
 from sqlalchemy.orm import Session, joinedload
 
 from app.models import (
+    Repository,
     CollectionObject,
     CollectingEvent,
     Taxon,
@@ -30,8 +31,8 @@ from app.services.label_text import format_place
 @dataclass(frozen=True)
 class RecentRow:
     collection_object_id: int
-    catalog_number: str
-    collection_code: str
+    catalog_number: str | None
+    collection_code: str | None
     scientific_name: str       # composed name, WITHOUT authorship
     authorship: str | None     # kept separate so callers can style it (upright)
     taxon_rank: str | None     # italics are a function of rank — see taxa.scientific_name_html
@@ -60,14 +61,58 @@ class RecentRow:
     determination_reasons: tuple = ()
 
 
+def _require_catalog_number_in_own_collection(
+    session: Session, repository_id: int, catalog_number: str | None
+) -> None:
+    """Every specimen in the default (own) collection has a catalog number. The DB
+    enforces it (trg_co_default_requires_catalog_number_*); this says so in words."""
+    if catalog_number:
+        return
+    # no_autoflush: on an update the pending row would otherwise be flushed by this
+    # lookup and hit the trigger before the friendly message below can be raised.
+    with session.no_autoflush:
+        repo = session.get(Repository, repository_id)
+    if repo is not None and repo.is_default:
+        raise ValueError(
+            "A specimen in your own collection must have a catalog number. Only a "
+            "specimen held in another collection may be saved without one.")
+
+
+def _refuse_duplicate_catalog_number(
+    session: Session, repository_id: int, catalog_number: str | None, *,
+    exclude_id: int | None = None,
+) -> None:
+    """A catalog number is unique within its collection (uq_co_repository_catalog);
+    this turns the raw IntegrityError into words. No number, no clash — any number of
+    numberless specimens may share a collection."""
+    if not catalog_number:
+        return
+    q = session.query(CollectionObject.id).filter(
+        CollectionObject.repository_id == repository_id,
+        CollectionObject.catalog_number == catalog_number)
+    if exclude_id is not None:
+        q = q.filter(CollectionObject.id != exclude_id)
+    with session.no_autoflush:
+        clash = q.first()
+    if clash is not None:
+        raise ValueError(
+            f"Catalog number {catalog_number!r} is already used by another specimen "
+            "in that collection.")
+
+
 def create_collection_object(
     session: Session,
     *,
     collecting_event_id: int | None,
-    catalog_number: str,
+    catalog_number: str | None,
     repository_id: int,
     **fields,
 ) -> CollectionObject:
+    """``catalog_number`` may be None/blank only for a specimen in a FOREIGN collection
+    (it may simply have none); the own collection requires one (migration 0072)."""
+    catalog_number = (catalog_number or "").strip() or None
+    _require_catalog_number_in_own_collection(session, repository_id, catalog_number)
+    _refuse_duplicate_catalog_number(session, repository_id, catalog_number)
     co = CollectionObject(
         collecting_event_id=collecting_event_id,
         catalog_number=catalog_number,
@@ -249,7 +294,8 @@ def finalize_specimen(
 def update_collection_object(session: Session, co_id: int, **fields) -> CollectionObject:
     """Update mutable fields on a CollectionObject.
 
-    catalog_number is immutable. repository_id MAY change — re-homing a specimen to
+    catalog_number is immutable once set; a specimen saved WITHOUT one (foreign
+    collection, migration 0072) may be given one exactly once. repository_id MAY change — re-homing a specimen to
     another collection (gift/exchange) re-points the FK (the in-app equivalent of
     editing ownerInstitutionCode; #75). It is NOT NULL, so an attempt to blank it is
     rejected loudly rather than silently skipped.
@@ -259,7 +305,10 @@ def update_collection_object(session: Session, co_id: int, **fields) -> Collecti
         raise ValueError(f"CollectionObject {co_id} not found")
     for attr, val in fields.items():
         if attr == "catalog_number":
-            continue  # immutable
+            new = (val or "").strip() or None
+            if co.catalog_number is None and new is not None:
+                co.catalog_number = new   # fill-once; immutable from here on
+            continue
         if attr == "repository_id":
             if not val:  # NOT NULL — refuse to blank the owning collection
                 raise ValueError("repository_id cannot be blank (NOT NULL).")
@@ -273,6 +322,10 @@ def update_collection_object(session: Session, co_id: int, **fields) -> Collecti
             except (TypeError, ValueError):
                 continue
         setattr(co, attr, val)
+    _require_catalog_number_in_own_collection(
+        session, co.repository_id, co.catalog_number)
+    _refuse_duplicate_catalog_number(
+        session, co.repository_id, co.catalog_number, exclude_id=co.id)
     co.updated_at = _utcnow()
     session.flush()
     return co

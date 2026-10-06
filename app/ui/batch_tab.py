@@ -15,6 +15,7 @@ from __future__ import annotations
 from nicegui import ui
 
 import app.services.batch_ops as batch
+import app.services.identifiers as id_svc
 import app.services.repositories as repo_svc
 from app.services.vocabularies import disposition_vocab
 from app.ui.taxon_search import build_taxon_search
@@ -30,11 +31,11 @@ def build_batch_tab(session_factory, refreshers: dict | None = None) -> None:
         with session_factory() as s:
             d = repo_svc.get_default(s)
         st["repo_id"] = d.id if d else None
-        st["repo_code"] = d.collection_code if d else ""
+        st["repo_code"] = repo_svc.display_label(d) if d else ""
 
     def _repo_options(exclude: int | None = None) -> dict:
         with session_factory() as s:
-            return {r.id: f"{r.collection_code} — {r.collection_full_name}"
+            return {r.id: repo_svc.display_label(r)
                     for r in repo_svc.list_repositories(s) if r.id != exclude}
 
     _load_default()
@@ -78,7 +79,7 @@ def build_batch_tab(session_factory, refreshers: dict | None = None) -> None:
                 r = s.get(repo_svc.Repository, e.value)
             if r is not None:
                 st["repo_id"] = r.id
-                st["repo_code"] = r.collection_code
+                st["repo_code"] = repo_svc.display_label(r)
                 st["matched"] = []; st["not_found"] = []; st["foreign"] = []
                 _sync_wc_label()
                 _render_results()
@@ -105,7 +106,8 @@ def build_batch_tab(session_factory, refreshers: dict | None = None) -> None:
         with ui.column().classes("w-full mt-2") as paste_box:
             paste_in = ui.textarea(
                 "Catalog numbers",
-                placeholder="Paste catalog numbers — separated by spaces, commas, or new lines",
+                placeholder="Paste catalog numbers — separated by spaces, commas, or new lines. "
+                            "Specimens without a catalog number can only be found by taxon.",
             ).props("outlined autogrow").classes("w-full")
             ui.button("Match", icon="playlist_add_check",
                       on_click=lambda: _match_pasted()).props("no-caps color=secondary")
@@ -155,7 +157,7 @@ def build_batch_tab(session_factory, refreshers: dict | None = None) -> None:
             _render_results()
 
         def _copy_catalogs() -> None:
-            text = "\n".join(m.catalog for m in st["matched"])
+            text = "\n".join(m.catalog for m in st["matched"] if m.catalog)
             ui.run_javascript(f"navigator.clipboard.writeText({text!r})")
             ui.notify(f"Copied {len(st['matched'])} catalog number(s).", type="positive")
 
@@ -165,7 +167,7 @@ def build_batch_tab(session_factory, refreshers: dict | None = None) -> None:
             w = csv.writer(buf)
             w.writerow(["catalogNumber", "taxon", "disposition"])
             for m in st["matched"]:
-                w.writerow([m.catalog, m.taxon_label, m.disposition])
+                w.writerow([m.catalog or "", m.taxon_label, m.disposition])
             ui.download(buf.getvalue().encode(), "batch_selection.csv")
 
         def _render_results() -> None:
@@ -176,7 +178,7 @@ def build_batch_tab(session_factory, refreshers: dict | None = None) -> None:
                     ui.label(f"✗ {cat} — no specimen with this catalog number").classes(
                         "text-xs text-red-600")
                 for f in st["foreign"]:
-                    ui.label(f"⚠ {f.catalog} — belongs to {f.collection_code}, "
+                    ui.label(f"⚠ {f.catalog} — belongs to {f.collection}, "
                              f"not your working collection → excluded").classes(
                         "text-xs text-amber-700")
 
@@ -200,9 +202,10 @@ def build_batch_tab(session_factory, refreshers: dict | None = None) -> None:
                         {"name": "taxon", "label": "Current taxon", "field": "taxon", "align": "left"},
                         {"name": "disp", "label": "Disposition", "field": "disp", "align": "left"},
                     ],
-                    rows=[{"catalog": m.catalog, "taxon": m.taxon_label,
+                    rows=[{"id": m.co_id, "catalog": id_svc.catalog_label(m.catalog),
+                           "taxon": m.taxon_label,
                            "disp": m.disposition or "—"} for m in rows],
-                    row_key="catalog",
+                    row_key="id",   # not the catalog number — a specimen may have none
                     pagination=10,
                 ).classes("w-full").props("flat dense")
 
@@ -286,10 +289,8 @@ def build_batch_tab(session_factory, refreshers: dict | None = None) -> None:
                 return
             co_ids = [m.co_id for m in st["matched"]]
             with session_factory() as s:
-                cats = batch.match_catalog_numbers(
-                    s, repository_id=st["repo_id"],
-                    numbers=[m.catalog for m in st["matched"]])
-            st["matched"] = cats.matched
+                st["matched"] = batch.fetch_by_ids(
+                    s, repository_id=st["repo_id"], co_ids=co_ids)
             _render_results()
 
         # initial paint
