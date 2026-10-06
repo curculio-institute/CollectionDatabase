@@ -797,6 +797,47 @@ class LabelGroup:
 # different queue actions separable (decided 2026-07-07: small gap within a group,
 # large gap between groups). Per-band borders come from config (AppConfig.label_border_*).
 
+def _pixel_anchor_css(backend: str) -> str:
+    """Chromium only: anchor every printed label table to a whole-pixel origin.
+
+    Chromium lays out in fractional CSS px but rounds a box's top edge, its bottom edge
+    and its text baselines to whole px *independently*. The sheet's vertical rhythm is
+    in mm (header 1.41 mm, cut lane 0.4 mm, group gap 6 mm — none a whole px), so each
+    group lands on an arbitrary pixel fraction, and depending on that fraction the three
+    round apart: a label prints one px (0.75 pt, 0.26 mm) shorter at the top, or with
+    its text a px higher — on a 5 mm label that reads as "no space at the top".
+    Measured 2026-10-07 on one sheet of otherwise identical labels: top clearance
+    0.52 pt (*fagi*, *Dodecastichus*) vs 1.27 pt (*coecus*); 11 of 60 labels affected.
+
+    A **non-identity** transform makes the table its own paint origin, which Chromium
+    snaps to a whole px as a unit, so every group starts from the same fraction (0) and
+    its first row rounds the same way everywhere. Measured, do not re-derive:
+
+    * `scale(1)`, `rotate(0deg)`, `rotate(360deg)`, `translateZ(0)`, `will-change` do
+      NOT do it — it must be a real non-translation matrix. Hence 1.00001: 0.0002 mm
+      over an 18 mm label, far below anything printable.
+    * Redrawing the hairline (outline, inline SVG, scaled pseudo-element) changes
+      nothing — the line was never what moved.
+    * Anchoring finer — each label, cell or row — makes all clearances identical but
+      **collapses the cut lane to zero** between some stacked labels (13 of 56 lanes):
+      a transformed box is drawn at its *enclosing* pixel rect. Do not do that.
+    * A higher device scale factor has no effect on print output.
+
+    Known remainder: inside ONE multi-row grid, rows 2+ sit at fractions set by the
+    row pitch and can still lose the px (5 of 60 in the same measurement). The complete
+    cure is a finer pixel grid for the whole sheet (`body { zoom: 4 }` + `page.pdf(
+    scale=0.25)`: clearance spread 0.19 pt, lanes a true 0.4 mm) — not adopted because
+    it also un-rounds the font metrics and makes a determination label 0.33 mm taller,
+    which is a label-geometry decision, not a bug fix.
+
+    Print media only: on screen the preview scales the sheet itself. A 450-label grid
+    still flows over the same pages with identical boxes and lanes (#132 unaffected).
+    WeasyPrint does not pixel-snap and needs nothing."""
+    if backend != "chromium":
+        return ""
+    return "\n@media print { .chunk { transform: scale(1.00001); } }\n"
+
+
 def _grouped_css(borders: dict[str, str] | None = None,
                  backend: str = "weasyprint", paper: str | None = None) -> str:
     borders = borders or {}
@@ -804,7 +845,7 @@ def _grouped_css(borders: dict[str, str] | None = None,
     bt = _border_decl(borders.get("determination", "black"), backend)
     bi = _border_decl(borders.get("identifier", "black"), backend)
     pw, ph = paper_dims(paper)
-    return _BASE_CSS + _ID_TEXT_CSS + f"""
+    return _BASE_CSS + _ID_TEXT_CSS + _pixel_anchor_css(backend) + f"""
 @page {{ size: {pw} {ph}; margin: 5mm; }}
 .printed-at {{ font-size: 5pt; color: #666; margin-bottom: 3mm; }}
 .group {{ display: inline-block; vertical-align: top; line-height: {_LINE_H}; margin: 0 {_GROUP_GAP} {_GROUP_GAP} 0; }}
