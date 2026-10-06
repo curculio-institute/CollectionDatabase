@@ -855,13 +855,17 @@ def _orphans(
     cats = [e.catalog_number for e in candidates]
     for chunk_start in range(0, len(cats), 500):        # keep the IN list well inside
         chunk = cats[chunk_start:chunk_start + 500]     # SQLite's bound-parameter limit
-        for cat, code in (
-            session.query(CollectionObject.catalog_number, Repository.collection_code)
+        for cat, code, name in (
+            session.query(CollectionObject.catalog_number, Repository.collection_code,
+                          Repository.collection_full_name)
             .join(Repository, CollectionObject.repository_id == Repository.id)
             .filter(CollectionObject.catalog_number.in_(chunk))
             .all()
         ):
-            elsewhere[cat] = code
+            # A collection may have no code (migration 0072) — a specimen given to
+            # "Frank Lange collection" must still read as MOVED there, never fall
+            # through to `None` below, which means "gone from the database".
+            elsewhere[cat] = code or name
     moved: list[OrphanRow] = []
     excluded: list[OrphanRow] = []
     gone: list[OrphanRow] = []

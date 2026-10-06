@@ -217,6 +217,39 @@ def test_a_re_homed_specimen_reads_as_moved_not_as_deleted(session):
     assert result.orphaned == ()
 
 
+def test_a_specimen_given_to_a_codeless_collection_is_moved_not_gone(session):
+    """A collection may have only a name (migration 0072). A specimen transferred to
+    one keeps its catalog number and must still be reported as MOVED — keying the
+    lookup on the (absent) collection code alone would call it deleted."""
+    import app.services.repositories as repo_svc
+    co = _specimen(session, "JJPC-00016")
+    lange = repo_svc.get_or_create_by_name(session, "Frank Lange collection")
+    spec_svc.update_collection_object(session, co.id, repository_id=lange.id)
+    session.flush()
+    result = compare_repository(
+        session, {}, repository_id=_repo_id(session),
+        index=_index(("JJPC-00016", 516, "JJPC")),
+    )
+    assert [(m.catalog_number, m.local_collection) for m in result.moved] \
+        == [("JJPC-00016", "Frank Lange collection")]
+    assert result.orphaned == ()
+
+
+def test_a_numberless_specimen_never_counts_as_on_taxonworks(session):
+    """It has no catalog number to match on, so it is simply not eligible — never
+    looked up, never "not yet uploaded"."""
+    import app.services.repositories as repo_svc
+    lange = repo_svc.get_or_create_by_name(session, "Frank Lange collection")
+    co = spec_svc.create_collection_object(
+        session, collecting_event_id=None, catalog_number=None, repository_id=lange.id)
+    spec_svc.create_determination(
+        session, collection_object_id=co.id, taxon_id=_species(session).id, is_current=1)
+    session.flush()
+    result = compare_repository(session, {}, repository_id=lange.id, index=_index())
+    assert result.not_on_tw == ()
+    assert result.leaked == ()
+
+
 def test_another_namespaces_records_are_not_our_orphans(session):
     _specimen(session, "JJPC-00013")
     result = compare_repository(

@@ -231,3 +231,12 @@ def test_batch_refetch_by_id_reaches_numberless_specimens(session, lange):
 def test_batch_refetch_stays_collection_scoped(session, home, lange):
     mine = _co(session, home, "HOME72-90001")
     assert batch.fetch_by_ids(session, repository_id=lange, co_ids=[mine.id]) == []
+
+
+# ── display ──────────────────────────────────────────────────────────────────
+
+def test_summary_row_says_no_number_and_why_it_is_not_exported():
+    import app.ui.record_summary as rs
+    assert 'not exported to TaxonWorks' in rs._catalog_html(None)
+    assert 'no number' in rs._catalog_html("FL · no number")
+    assert 'title=' not in rs._catalog_html("JJPC-00001")

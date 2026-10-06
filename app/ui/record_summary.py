@@ -32,7 +32,7 @@ from __future__ import annotations
 
 import html as _html
 
-from app.services.identifiers import catalog_label
+from app.services.identifiers import NO_CATALOG_NUMBER, catalog_label
 import app.services.taxa as taxa_svc
 
 # Amber, not red: a confidential record is restricted, not wrong. Red reads as an error, and the
@@ -93,6 +93,20 @@ _CONSENT_COLOR = {
     "blocked": _LOCK_AMBER,
     "redacted": "var(--tp-base-soft)",   # informational, not a restriction — still exported
 }
+
+
+def _catalog_html(catalog: str | None) -> str:
+    """The catalog slot of a row. A specimen without a catalog number (possible only in
+    a foreign collection) says so in the slot itself, muted, with the consequence on
+    hover — that wording IS its export badge: `export_decision` withholds it on exactly
+    this ground (rule 6), so a fourth icon would only repeat what the slot already reads."""
+    label = catalog_label(catalog)
+    if NO_CATALOG_NUMBER not in label:
+        return f'<span class="rs-cat">{_html.escape(label)}</span>'
+    return (
+        '<span class="rs-cat" style="font-style:italic;opacity:.65" '
+        'title="No catalog number — recorded, but not exported to TaxonWorks: it could '
+        f'not be recognised there again.">{_html.escape(label)}</span>')
 
 
 def consent_badge_html(state: str = "") -> str:
@@ -233,7 +247,7 @@ def specimen_html(
     return (
         '<div class="rs-row">'
         '<div class="rs-top">'
-        f'<span class="rs-cat">{_html.escape(catalog_label(catalog))}</span>'
+        f'{_catalog_html(catalog)}'
         f'{ident}{_bits(sex, count)}{_det_html(identified_by, date_identified)}'
         f'<span class="rs-spacer"></span>'
         f'{lock_html(own=confidential, from_event=event_confidential)}'
