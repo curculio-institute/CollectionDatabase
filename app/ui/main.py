@@ -2881,56 +2881,59 @@ def index():
                         _reserved_count_ref[0].set_text(f"{n} staged")
                 _refreshers["batch_stats"] = _refresh_batch_stats
 
-                # ── Mode A: identifier-only labels ───────────────────────
-                with ui.card().classes("w-full shadow-sm"):
-                    ui.label("Identifier labels").classes("section-label mb-2")
-                    ui.label(
-                        "Pre-print blank identifier labels to pin onto undigitised "
-                        "specimens. Each label carries a unique sequential code "
-                        "(e.g. JJPC-00001) and QR code. Codes are reserved in the "
-                        "database immediately."
-                    ).classes("text-sm mb-4").style("color:var(--tp-base-soft)")
+                # The two "queue labels" cards sit side by side on a wide window (each form is
+                # narrow; full width stretched them) and stack on a narrow one.
+                with ui.element("div").classes("w-full grid grid-cols-1 lg:grid-cols-2 gap-4"):
+                    # ── Mode A: identifier-only labels ───────────────────────
+                    with ui.card().classes("w-full shadow-sm"):
+                        ui.label("Identifier labels").classes("section-label mb-2")
+                        ui.label(
+                            "Pre-print blank identifier labels to pin onto undigitised "
+                            "specimens. Each label carries a unique sequential code "
+                            "(e.g. JJPC-00001) and QR code. Codes are reserved in the "
+                            "database immediately."
+                        ).classes("text-sm mb-4").style("color:var(--tp-base-soft)")
 
-                    with ui.row().classes("items-center gap-4"):
-                        count_input = (
-                            ui.number("Number of labels; 400 are one page", value=20, min=1, max=500, step=1)
-                            .classes("w-60")
-                        )
-                        id_status = ui.label("").classes("text-sm").style("color:var(--tp-base-soft)")
+                        with ui.row().classes("items-center gap-4"):
+                            count_input = (
+                                ui.number("Number of labels; 400 are one page", value=20, min=1, max=500, step=1)
+                                .classes("w-60")
+                            )
+                            id_status = ui.label("").classes("text-sm").style("color:var(--tp-base-soft)")
 
-                    with ui.row().classes("mt-4 gap-3 items-end"):
-                        gen_btn = ui.button("Generate", icon="queue")
+                        with ui.row().classes("mt-4 gap-3 items-end"):
+                            gen_btn = ui.button("Generate", icon="queue")
 
-                    def _generate_id_labels():
-                        n = int(count_input.value or 1)
-                        with _sf() as session:
-                            with session.begin():
-                                # The catalog-number prefix comes from the default
-                                # collection (#83), not a config string.
-                                _default_repo = repo_svc.get_default(session)
-                                if _default_repo is None:
-                                    ui.notify(
-                                        "No default collection set — open Settings "
-                                        "to choose one.", type="negative")
-                                    return
-                                coll_code = _default_repo.collection_code
-                                batch_id, _ = id_svc.reserve_sequential_codes(session, coll_code, n)
-                                # Enqueue the freshly reserved batch through the one
-                                # shared seam (dedup + "New identifiers" group) — the
-                                # same path as "Add to print queue" for an existing
-                                # batch. Right after reserve the dedup is a no-op.
-                                pq_svc.requeue_batch_identifiers(session, batch_id)
-                        # Queue-only: printing happens solely via the Print queue
-                        # tab. Emitting a PDF here too risked a double print (print
-                        # now + print the queue later = duplicate identifier labels).
-                        id_status.set_text(f"✓ {n} codes reserved and added to the print queue")
-                        _refresh_batch_stats()
-                        _refresh_queue()
+                        def _generate_id_labels():
+                            n = int(count_input.value or 1)
+                            with _sf() as session:
+                                with session.begin():
+                                    # The catalog-number prefix comes from the default
+                                    # collection (#83), not a config string.
+                                    _default_repo = repo_svc.get_default(session)
+                                    if _default_repo is None:
+                                        ui.notify(
+                                            "No default collection set — open Settings "
+                                            "to choose one.", type="negative")
+                                        return
+                                    coll_code = _default_repo.collection_code
+                                    batch_id, _ = id_svc.reserve_sequential_codes(session, coll_code, n)
+                                    # Enqueue the freshly reserved batch through the one
+                                    # shared seam (dedup + "New identifiers" group) — the
+                                    # same path as "Add to print queue" for an existing
+                                    # batch. Right after reserve the dedup is a no-op.
+                                    pq_svc.requeue_batch_identifiers(session, batch_id)
+                            # Queue-only: printing happens solely via the Print queue
+                            # tab. Emitting a PDF here too risked a double print (print
+                            # now + print the queue later = duplicate identifier labels).
+                            id_status.set_text(f"✓ {n} codes reserved and added to the print queue")
+                            _refresh_batch_stats()
+                            _refresh_queue()
 
-                    gen_btn.on_click(_generate_id_labels)
+                        gen_btn.on_click(_generate_id_labels)
 
-                # ── Mode B: plain identification labels (no specimen) ─────
-                build_plain_det_labels_card(_sf, on_queued=lambda: _refresh_queue())
+                    # ── Mode B: plain identification labels (no specimen) ─────
+                    build_plain_det_labels_card(_sf, on_queued=lambda: _refresh_queue())
 
                 # ── Reserved codes viewer ────────────────────────────────
                 with ui.card().classes("w-full shadow-sm"):
