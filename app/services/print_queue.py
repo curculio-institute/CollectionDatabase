@@ -5,7 +5,9 @@ Call build_pdf() to render everything queued, then clear_queue() once printed.
 
 Three label types:
   'data'          — locality label, sourced from collection_object → collecting_event
-  'determination' — taxon label, sourced from collection_object → current determination
+  'determination' — taxon label, sourced from collection_object → current determination,
+                    OR a *plain* identification label with no specimen, whose content
+                    sits on the queue row itself (Labels tab; migration 0071)
   'identifier'    — code + QR label, sourced from label_code
 """
 from __future__ import annotations
@@ -17,7 +19,7 @@ from sqlalchemy.orm import Session
 
 from sqlalchemy import func
 
-from app.models import PrintQueue, CollectionObject, TaxonDetermination, LabelCode
+from app.models import PrintQueue, CollectionObject, Taxon, TaxonDetermination, LabelCode
 from app.models.base import _utcnow
 from app.services import taxa as taxa_svc
 import app.services.labels as lbl
@@ -27,6 +29,7 @@ import app.services.labels as lbl
 SOURCE_MOUNTING    = "Mounting Session"
 SOURCE_IDENTIFIERS = "New identifiers"
 SOURCE_REPRINT     = "Reprint"
+SOURCE_IDENTIFICATIONS = "Identification labels"
 
 
 # ---------------------------------------------------------------------------
@@ -80,6 +83,46 @@ def enqueue_identifier(
         print_group_id=print_group_id, source=source,
         created_at=_utcnow(), updated_at=_utcnow(),
     ))
+
+
+def enqueue_plain_determinations(
+    session: Session, *, taxon_id: int, count: int,
+    identified_by_id: int | None = None, date_identified: str | None = None,
+    type_status: str | None = None, identification_qualifier: str | None = None,
+    sex: str | None = None,
+) -> int:
+    """Queue ``count`` plain identification labels — determination labels that belong
+    to no specimen (Labels tab), to be pinned by hand. One row per physical label, all
+    in one "Identification labels" group. Returns how many were added.
+
+    Bad input is refused with a sentence rather than left to the DB CHECKs (which
+    remain the backstop): same rules as a specimen's determination.
+    """
+    from app.services.specimens import _reject_interval
+    from app.vocab import IDENTIFICATION_QUALIFIERS
+    if count < 1:
+        raise ValueError("Number of labels must be at least 1.")
+    if session.get(Taxon, taxon_id) is None:
+        raise ValueError(f"Taxon #{taxon_id} not found.")
+    _reject_interval(date_identified)
+    qualifier = identification_qualifier or None
+    if qualifier is not None and qualifier not in IDENTIFICATION_QUALIFIERS:
+        raise ValueError(f"Unknown identification qualifier {qualifier!r}.")
+    gid = next_print_group_id(session)
+    for _ in range(count):
+        session.add(PrintQueue(
+            label_type="determination",
+            taxon_id=taxon_id,
+            identified_by_id=identified_by_id,
+            date_identified=date_identified or None,
+            type_status=type_status or None,
+            identification_qualifier=qualifier,
+            sex=sex or None,
+            print_group_id=gid, source=SOURCE_IDENTIFICATIONS,
+            created_at=_utcnow(), updated_at=_utcnow(),
+        ))
+    session.flush()
+    return count
 
 
 def requeue_batch_identifiers(session: Session, batch_id: int) -> int:
@@ -193,7 +236,13 @@ def _co_to_det_label(
         if lbl.canonical_override(text_override):
             return lbl.DeterminationLabel(text_override=text_override)
         return None
-    t = det.taxon
+    return _det_label(det.taxon, det, text_override)
+
+
+def _det_label(t: Taxon, src, text_override: str | None = None) -> lbl.DeterminationLabel:
+    """Compose a determination label for taxon ``t``. ``src`` supplies the
+    identification's own fields — a `TaxonDetermination`, or a plain-label queue row,
+    which carries the same attribute names for exactly this reason."""
     genus, subgenus, specific, infra = taxa_svc.parse_scientific_name(t.scientific_name or "")
     return lbl.DeterminationLabel(
         text_override         = text_override,
@@ -202,12 +251,39 @@ def _co_to_det_label(
         specific_epithet      = specific,
         infraspecific_epithet = infra,
         authorship            = t.scientific_name_authorship,
-        qualifier             = det.identification_qualifier,   # cf. / aff. / ?
-        type_status           = det.type_status,                # Holotype, …
-        determiner            = det.identified_by_person.full_name if det.identified_by_person else None,
-        year                  = (det.date_identified or "")[:4] or None,
-        sex                   = det.sex,
+        qualifier             = src.identification_qualifier,   # cf. / aff. / ?
+        type_status           = src.type_status,                # Holotype, …
+        determiner            = src.identified_by_person.full_name if src.identified_by_person else None,
+        year                  = (src.date_identified or "")[:4] or None,
+        sex                   = src.sex,
     )
+
+
+def _is_det_row(row: PrintQueue) -> bool:
+    """A renderable determination row: a specimen's, or a plain one (taxon on the row)."""
+    return row.label_type == "determination" and bool(row.collection_object or row.taxon)
+
+
+def _row_det_label(row: PrintQueue, *, override: bool = False) -> lbl.DeterminationLabel | None:
+    """The determination label a queue row prints — THE one place that knows a row is
+    either a specimen's determination or a plain label. ``override=False`` gives the
+    auto label (identity / "edited == auto"); True applies the row's print-only edit."""
+    ov = row.text_override if override else None
+    if row.taxon is not None:
+        return _det_label(row.taxon, row, ov)
+    return _co_to_det_label(row.collection_object, ov, row.taxon_determination)
+
+
+def _det_column_key(row: PrintQueue, taken: bool) -> tuple:
+    """Sheet column for a determination row. A plain label always stands alone. A
+    specimen's first determination fills its column's determination band; further ones
+    (a reprint reproduces EVERY identification) each take their own column so they
+    don't overwrite each other. ``taken``: that band is already filled."""
+    if row.collection_object_id is None:
+        return ("plain", row.id)
+    if taken:
+        return ("det", row.taxon_determination_id or row.id)
+    return ("co", row.collection_object_id)
 
 
 def queued_groups(session: Session) -> list[lbl.LabelGroup]:
@@ -242,21 +318,15 @@ def queued_groups(session: Session) -> list[lbl.LabelGroup]:
             col.data_ident = _ident(lbl.label_plaintext(
                 _co_to_data_label(session, row.collection_object)))
             col.co_id = row.collection_object_id
-        elif row.label_type == "determination" and row.collection_object:
-            det = row.taxon_determination  # a pinned identification (reprint) or None → current
+        elif _is_det_row(row):
             co_key = ("co", row.collection_object_id)
-            # First determination to land fills the specimen column's determination band;
-            # further ones (a reprint reproduces EVERY identification) each take their own
-            # column so they don't overwrite each other. A single-ID specimen (every create
-            # path) still renders as one column, exactly as before.
-            if co_key in columns and columns[co_key].determination is not None:
-                ckey = ("det", row.taxon_determination_id or row.id)
-            else:
-                ckey = co_key
+            # A single-ID specimen (every create path) still renders as one column.
+            ckey = _det_column_key(
+                row, co_key in columns and columns[co_key].determination is not None)
             col = columns.setdefault(ckey, lbl.SpecimenLabels())
-            col.determination = _co_to_det_label(row.collection_object, row.text_override, det)
+            col.determination = _row_det_label(row, override=True)
             col.det_qid = row.id
-            _auto_dl = _co_to_det_label(row.collection_object, det=det)
+            _auto_dl = _row_det_label(row)
             _auto = lbl.label_plaintext(_auto_dl) if _auto_dl else ""
             col.det_ident = _ident(_auto) if _auto else None
             col.co_id = row.collection_object_id
@@ -291,8 +361,8 @@ def _row_auto_identity(session: Session, row: PrintQueue) -> str | None:
     identifier rows / rows with no renderable label."""
     if row.label_type == "data" and row.collection_object:
         return _ident(lbl.label_plaintext(_co_to_data_label(session, row.collection_object)))
-    if row.label_type == "determination" and row.collection_object:
-        dl = _co_to_det_label(row.collection_object, det=row.taxon_determination)
+    if _is_det_row(row):
+        dl = _row_det_label(row)
         return _ident(lbl.label_plaintext(dl)) if dl else None
     return None
 
@@ -337,18 +407,14 @@ def preview_model(session: Session) -> list[dict]:
             col["data_qid"] = row.id
             col["data_ident"] = _ident(auto)
             col["co_id"] = co.id
-        elif row.label_type == "determination" and row.collection_object:
-            co = row.collection_object
-            det = row.taxon_determination  # pinned identification (reprint) or None → current
+        elif _is_det_row(row):
             co_key = ("co", row.collection_object_id)
-            # Same first-fills-the-column rule as queued_groups, so the preview matches
-            # the printed sheet when a specimen carries several identifications.
-            if co_key in cols and cols[co_key]["det_qid"] is not None:
-                col = _col(("det", row.taxon_determination_id or row.id))
-            else:
-                col = _col(co_key)
-            dl = _co_to_det_label(co, det=det)
-            dl_ov = _co_to_det_label(co, row.text_override, det)
+            # Same column rule as queued_groups (one shared owner), so the preview
+            # matches the printed sheet.
+            col = _col(_det_column_key(
+                row, co_key in cols and cols[co_key]["det_qid"] is not None))
+            dl = _row_det_label(row)
+            dl_ov = _row_det_label(row, override=True)
             auto = lbl.label_plaintext(dl) if dl else ""
             col["det_auto"] = auto or "—"
             col["det"] = row.text_override if row.text_override is not None else (auto or "—")
@@ -361,7 +427,7 @@ def preview_model(session: Session) -> list[dict]:
             # set_override_for_identical. Previously this hashed the "—" placeholder, so the
             # preview grouped them and offered an edit the store then silently dropped (#67).
             col["det_ident"] = _ident(auto) if auto else None
-            col["co_id"] = co.id
+            col["co_id"] = row.collection_object_id     # None for a plain label
         elif row.label_type == "identifier" and row.label_code:
             lc = row.label_code
             col = _col(("co", lc.collection_object_id) if lc.collection_object_id else ("code", lc.id))
@@ -378,12 +444,12 @@ def row_auto_html(session: Session, queue_id: int) -> str:
     """The composed, formatted auto HTML for a queued data/determination row —
     used to detect when an edit equals the auto text (→ clear the override)."""
     row = session.get(PrintQueue, queue_id)
-    if row is None or not row.collection_object:
+    if row is None:
         return ""
-    if row.label_type == "data":
+    if row.label_type == "data" and row.collection_object:
         return lbl.label_auto_html(_co_to_data_label(session, row.collection_object))
-    if row.label_type == "determination":
-        dl = _co_to_det_label(row.collection_object, det=row.taxon_determination)
+    if _is_det_row(row):
+        dl = _row_det_label(row)
         return lbl.label_auto_html(dl) if dl else ""
     return ""
 
@@ -392,12 +458,12 @@ def row_current_html(session: Session, queue_id: int) -> str:
     """The formatted HTML currently PRINTED for a data/determination row — the
     override if one is set, else the auto text. Seeds the larger label editor."""
     row = session.get(PrintQueue, queue_id)
-    if row is None or not row.collection_object:
+    if row is None:
         return ""
-    if row.label_type == "data":
+    if row.label_type == "data" and row.collection_object:
         return lbl._data_inner_html(_co_to_data_label(session, row.collection_object, row.text_override))
-    if row.label_type == "determination":
-        dl = _co_to_det_label(row.collection_object, row.text_override, row.taxon_determination)
+    if _is_det_row(row):
+        dl = _row_det_label(row, override=True)
         return lbl._det_inner_html(dl) if dl else ""
     return ""
 

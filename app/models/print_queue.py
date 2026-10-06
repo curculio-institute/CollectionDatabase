@@ -3,6 +3,31 @@ from typing import Optional
 from sqlalchemy import CheckConstraint, Integer, String, ForeignKey
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from .base import Base, TimestampMixin
+from .taxon_determination import _QUAL_CHECK_SQL, _NO_INTERVAL_SQL
+
+ARC_CHECK_SQL = (
+    "(label_type = 'data'"
+    "  AND collection_object_id IS NOT NULL"
+    "  AND label_code_id IS NULL AND taxon_id IS NULL)"
+    " OR "
+    "(label_type = 'determination' AND label_code_id IS NULL"
+    "  AND ((collection_object_id IS NOT NULL AND taxon_id IS NULL)"
+    "    OR (collection_object_id IS NULL AND taxon_id IS NOT NULL)))"
+    " OR "
+    "(label_type = 'identifier'"
+    "  AND label_code_id IS NOT NULL"
+    "  AND collection_object_id IS NULL AND taxon_id IS NULL)"
+)
+
+# The plain-label content columns exist only on a plain row, which in turn is never
+# pinned to a specimen's taxon_determination.
+PLAIN_FIELDS_CHECK_SQL = (
+    "(taxon_id IS NOT NULL AND taxon_determination_id IS NULL)"
+    " OR "
+    "(taxon_id IS NULL AND identified_by_id IS NULL"
+    '  AND "dwc:dateIdentified" IS NULL AND "dwc:typeStatus" IS NULL'
+    '  AND "dwc:identificationQualifier" IS NULL AND "dwc:sex" IS NULL)'
+)
 
 
 class PrintQueue(Base, TimestampMixin):
@@ -39,23 +64,38 @@ class PrintQueue(Base, TimestampMixin):
         Integer, ForeignKey("taxon_determination.id", ondelete="CASCADE"), nullable=True
     )
 
+    # ── Plain identification label (migration 0071) ──────────────────────────────
+    # A 'determination' row queued from the Labels tab WITHOUT a specimen: there is no
+    # record to derive it from, so the row carries the label's content itself. Set
+    # together with taxon_id (the arc's third arm) and NULL on every other row
+    # (ck_print_queue_plain_fields). The name is still read live from the taxon.
+    taxon_id: Mapped[Optional[int]] = mapped_column(
+        Integer, ForeignKey("taxon.id", ondelete="CASCADE"), nullable=True
+    )
+    identified_by_id: Mapped[Optional[int]] = mapped_column(
+        Integer, ForeignKey("person.id", ondelete="RESTRICT"), nullable=True
+    )
+    date_identified: Mapped[Optional[str]] = mapped_column("dwc:dateIdentified", String, nullable=True)
+    type_status: Mapped[Optional[str]] = mapped_column("dwc:typeStatus", String, nullable=True)
+    identification_qualifier: Mapped[Optional[str]] = mapped_column("dwc:identificationQualifier", String, nullable=True)
+    sex: Mapped[Optional[str]] = mapped_column("dwc:sex", String, nullable=True)
+
     collection_object  = relationship("CollectionObject")
     label_code         = relationship("LabelCode")
     taxon_determination = relationship("TaxonDetermination")
+    taxon               = relationship("Taxon")
+    identified_by_person = relationship("Person", foreign_keys=[identified_by_id])
 
     __table_args__ = (
         CheckConstraint(
             "label_type IN ('data', 'determination', 'identifier')",
             name="ck_print_queue_label_type",
         ),
-        CheckConstraint(
-            "(label_type IN ('data', 'determination')"
-            "  AND collection_object_id IS NOT NULL"
-            "  AND label_code_id IS NULL)"
-            " OR "
-            "(label_type = 'identifier'"
-            "  AND label_code_id IS NOT NULL"
-            "  AND collection_object_id IS NULL)",
-            name="ck_print_queue_exclusive_arc",
-        ),
+        # Exactly one source per row: a specimen (data / determination), a taxon (a
+        # plain determination label, 0071), or a label code (identifier).
+        CheckConstraint(ARC_CHECK_SQL, name="ck_print_queue_exclusive_arc"),
+        CheckConstraint(PLAIN_FIELDS_CHECK_SQL, name="ck_print_queue_plain_fields"),
+        # Same two rules as taxon_determination (0058 / 0069), for the same reasons.
+        CheckConstraint(_QUAL_CHECK_SQL, name="ck_print_queue_identification_qualifier"),
+        CheckConstraint(_NO_INTERVAL_SQL, name="ck_print_queue_date_identified_no_interval"),
     )

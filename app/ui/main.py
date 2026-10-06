@@ -52,6 +52,7 @@ from app.ui.tw_sync_tab import build_tw_sync_tab
 from app.ui.map_picker import add_map_assets
 from app.ui.taxon_editor import build_taxon_editor
 from app.ui.person_field import build_person_field
+from app.ui.plain_det_labels import build_plain_det_labels_card
 from app.ui.records_tab import build_records_tab
 from app.ui.explore import build_explore_panel
 from app.ui.mounting_session import build_mounting_session_section
@@ -2927,6 +2928,9 @@ def index():
                         _refresh_queue()
 
                     gen_btn.on_click(_generate_id_labels)
+
+                # ── Mode B: plain identification labels (no specimen) ─────
+                build_plain_det_labels_card(_sf, on_queued=lambda: _refresh_queue())
 
                 # ── Reserved codes viewer ────────────────────────────────
                 with ui.card().classes("w-full shadow-sm"):

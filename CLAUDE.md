@@ -195,6 +195,28 @@ mounting produces fresh specimens that need a printed sheet. (Historical note: D
 standard and Import & Assign formerly enqueued data + determination labels — removed
 2026-06-12; they now queue nothing.)
 
+**Plain identification labels (decided 2026-10-06; migration 0071).** Besides the four
+create modes, the **Labels tab** queues determination labels that belong to **no specimen**
+(card "Identification labels": taxon — with the usual import-if-absent — identifiedBy,
+dateIdentified, sex, typeStatus, qualifier, and a count), for a series identified at the
+bench. Exactly like the identifier labels queued from the card above it, they are print
+jobs, **not records**: nothing is written to `taxon_determination`.
+
+- **The queue row carries the content**, because there is no record to derive it from:
+  `print_queue.taxon_id` (FK, ON DELETE CASCADE) + `identified_by_id` (FK → `person`, ON
+  DELETE RESTRICT; `merge_persons` re-points it) + `dwc:dateIdentified` / `dwc:typeStatus` /
+  `dwc:identificationQualifier` / `dwc:sex`. `ck_print_queue_exclusive_arc` has a third arm
+  (a determination row has a specimen **xor** a taxon) and `ck_print_queue_plain_fields`
+  keeps those columns NULL on every other row. The name is still read live from the taxon.
+- **One row per physical label**, all in one "Identification labels" group, each a
+  determination-only column. The print-only override works unchanged: the N copies share
+  one auto text, so editing one edits all.
+- **One owner of "specimen's determination or plain label":** `print_queue._row_det_label`
+  (+ `_is_det_row`, `_det_column_key`). Every reader — sheet, preview, identity, the two
+  HTML getters, the override store — goes through it; never branch on
+  `row.collection_object` for a determination row again, or a plain label is silently
+  skipped. Single write seam: `enqueue_plain_determinations`. UI: `app/ui/plain_det_labels.py`.
+
 **How the queued labels are rendered** (the grouped, column-aligned sheet — groups,
 per-specimen columns, archival, the planned reprint path) is a UI/layout concern and is
 specified in `docs/design.md` → "Grouped print sheet layout". This table is the authoritative
@@ -417,7 +439,7 @@ attributes. Mermaid diagrams use plain camelCase. Do not deviate from this patte
 | `biological_association` | Exclusive-arc pattern: (`subject_collection_object_id` XOR `subject_taxon_id`) and (`object_collection_object_id` XOR `object_taxon_id`). CHECK enforces exactly-one-non-null per role. |
 | `label_code` | 4-char alphanumeric specimen identifiers (`[0-9a-z]{4}`, ~1.7 M possibilities). Tied to a `label_batch`. Once used on a specimen they are immutable. |
 | `label_batch` | Groups of `label_code` rows with a `created_at` timestamp. Batches can be reprinted only if no code in the batch has been used yet. |
-| `print_queue` | Staged label jobs (`label_type` ∈ {data, determination, identifier}) pending a single print run. Items removed after printing. (The `data` label carries locality/date/collector — there is no separate "locality" type.) |
+| `print_queue` | Staged label jobs (`label_type` ∈ {data, determination, identifier}) pending a single print run. Items removed after printing. (The `data` label carries locality/date/collector — there is no separate "locality" type.) A `determination` row may instead be a **plain identification label** with no specimen, its content on the row itself (migration 0071 — see "Print-queue policy by create mode"). |
 | `person_defaults` | Single-row table holding the push-pin person defaults: `default_identified_by_id`, `default_recorded_by_id`, and `default_rights_holder_id` (media rightsHolder; migration 0036). All are `INTEGER REFERENCES person(id) ON DELETE RESTRICT`. See rationale below. |
 | `preparation` | Single-name controlled vocabulary (`id`, `name` UNIQUE) for `collection_object.preparation_id`. First of the single-name vocabularies built on the generic `Vocabulary` service; see "Controlled vocabularies". Migration 0039. |
 | `habitat` | Single-name controlled vocabulary for `collecting_event.habitat_id` (was free-text `dwc:habitat`). Migration 0040. |
@@ -1490,7 +1512,7 @@ the distinct values used are listed for the user to confirm.
 | **Records** | View/edit a single specimen or collecting event (search → detail edit form). The shared `specimen_form` / `collecting_event_form` widgets. Reached directly or drilled into from Explore (`open_specimen` / `open_event` handle). |
 | **Explore** | Dataset browse/query (#40): one faceted search bar (taxa / geography / collectors) drives a **drawer-order taxa checklist** (family→genus headers, species rows w/ material count + ⚠ needs-attention, expand → lots) and an **events** view; click drills into Records; CSV export. Service: `app/services/explore.py`. Map view is Phase C (not built). |
 | **Taxonomy** | Checklist tree (family → synonyms). Filter by rank. Links to TaxonPages. Rebuilds on every tab switch and on every save (via `_refreshers["taxonomy_tree"]`). |
-| **Labels** | Generate identifier label batches (4-char codes). Preview + download PDF. Reprint a whole batch if unused. Staged-codes dashboard. |
+| **Labels** | Generate identifier label batches (4-char codes). Preview + download PDF. Reprint a whole batch if unused. Staged-codes dashboard. Also queues **plain identification labels** (no specimen) — N copies of a chosen name + determiner/date/sex/type status/qualifier. |
 | **Print queue** | Preview and print all staged labels in one grouped PDF (per queue addition; data/identifier/determination column-aligned per specimen). Saves the PDF to `printed_pdf_dir` on print, then clears the queue. |
 | **Import** | Two sub-tabs under one tab. **Import & Assign** — the row-by-row retroactive-digitisation flow (upload a DwC CSV; live-filter rows; assign taxon + per-specimen fields; save). **Bulk import** — wholesale, staged import of specimen **records** (#39), modelled on TaxonWorks' Import Dataset: upload → stage every row (writes nothing) → status grid + per-reason blocker list → import the `ready` rows, resumable via a cursor. Service: `app/services/bulk_import.py`. See "Bulk import" below. |
 | **TaxonWorks** | Sync with the TaxonWorks mirror (#149). Only present when a connection is configured (`taxonworks_enabled`). Checks every taxon name against the configured instance **before** anything is emitted, reports withheld (privacy) / refused (TW would reject) / redacted specimens, emits the DwC **TSV** for TW's DwC-A Import, and reconciles per-instance OTU ids. See §5c for the contract. |
