@@ -371,6 +371,12 @@ Three rules govern the set, and they are what keep it from growing into a row of
   voice. A bare noun ("Confidential") does not say what follows from it or which party it
   is about.
 
+**The third export ground has no badge — the catalog slot carries it.** A specimen without
+a catalog number (possible only in a foreign collection; CLAUDE.md §5c rule 6) renders its
+catalog slot as a muted, italic "no number" (`rs._catalog_html`) with the consequence in the
+tooltip. The slot already has to say *something* where the number would stand, and that
+wording is the reason it is not exported — a fourth glyph beside it would say it twice.
+
 An unrecognised `recorded_by_state` renders **nothing** rather than raising: the browse
 surfaces build a whole results panel's rows in one loop, so one bad value taking down every
 other row's render is a far worse failure than a missing badge.

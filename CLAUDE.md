@@ -64,9 +64,38 @@ Epic #30 (atomic taxon names) phases #33–#36 also remain open until the
 
 ## Specimen workflows
 
-**Invariant across all workflows:** every specimen in the database must have an identifier
-(`catalog_number`). Specimens without identifiers must never be committed. Identifiers are
+**Invariant across all workflows:** every specimen **in the own (default) collection** must
+have an identifier (`catalog_number`); one without must never be committed. Identifiers are
 always physical labels pinned with the specimen.
+
+**The one exception — a specimen held in a foreign collection (decided 2026-10-06, migration
+0072).** Another collection's specimen may have no catalog number at all, and inventing one
+is a false claim about a specimen we do not hold. So `catalog_number` is nullable, **only**
+outside the default collection. The rule is DB-enforced, not a form validation:
+
+- `trg_co_default_requires_catalog_number_ins` / `_upd` RAISE on a numberless specimen in the
+  default collection — on create **and** on re-homing one into it;
+  `trg_repository_default_requires_catalog_numbers` refuses to flag as default a collection
+  that holds any. (A CHECK cannot see a second table, hence triggers; a rebuild of either
+  table must re-create them — `test_schema_integrity.py` guards it.)
+- **NULL is the only spelling of "no number"** (`ck_co_catalog_number_not_blank`). The
+  existing `UNIQUE(repository_id, catalogNumber)` is untouched and does the right thing by
+  itself: SQLite's NULLs are distinct, so any number of numberless specimens share a
+  collection while a filled number stays unique in it. This is deliberately the *opposite*
+  of the geography vocab's `IFNULL` index — there NULL means "the one uncoded row", here it
+  means "no identity claimed".
+- **Fill-once.** A numberless specimen may be given a number later
+  (`update_collection_object`); from then on it is immutable like any other.
+- **Never exported** — see §5c, rule 6. And nothing can stop the same numberless specimen
+  being entered twice: with no handle but its data, two identical ones are
+  indistinguishable. That mirrors the physical situation and is accepted.
+- **Transfers are unaffected.** A specimen given away keeps its number (only `repository_id`
+  moves), and that number can never be handed out again: the next one is derived from
+  `label_code` (`identifiers._next_sequential_number`), whose `code` is globally UNIQUE and
+  whose row outlives the specimen (`ON DELETE SET NULL`) — independent of who holds it now.
+- **Display:** `identifiers.catalog_label` / `format_catalog_display` are the one wording
+  ("no number"); a browse surface must not key a row on the catalog number (Batch tools
+  re-reads its set by id — `batch_ops.fetch_by_ids`).
 
 ### Workflow 1 — Retroactive digitisation (Import & Assign)
 
@@ -186,7 +215,7 @@ incidental of each tab:
 | Mode | `code` | `queue_labels` | Queues to `print_queue` |
 |------|--------|----------------|-------------------------|
 | **Digitize standard** | reserved code | `False` | **nothing** — identifier is pre-printed in a batch and pinned by hand; the specimen already carries its own data labels. The code is still bound (`assign_code`). |
-| **Digitize visiting** | `None` | — | nothing — foreign `catalogNumber`, no reserved code; bio associations still saved. |
+| **Digitize visiting** ("other collection") | `None` | — | nothing — the collection is picked from the vocabulary, the foreign `catalogNumber` is optional, no reserved code; bio associations still saved. |
 | **Import & Assign** (retroactive digitisation) | reserved code | `False` | **nothing** — same as standard: the specimen already has its data + identification labels; only the pre-printed identifier is added. |
 | **Mounting** | reserved code | `True` | identifier + data + determination — a freshly mounted specimen needs its whole sheet printed, grouped under a "Mounting Session" header. |
 
@@ -432,7 +461,7 @@ attributes. Mermaid diagrams use plain camelCase. Do not deviate from this patte
 
 | Table | Purpose |
 |-------|---------|
-| `collection_object` | One physical specimen or lot. `catalog_number` (NOT NULL) is the stable, immutable sync join key. `repository_id` FK → `repository` (NOT NULL, ON DELETE RESTRICT — migration 0047, #75) is the **single source of truth for collection membership**; the old denormalised `dwc:collectionCode` + `dwc:institutionCode` text columns were dropped (codes resolve through the repository at export; `UNIQUE(repository_id, catalogNumber)`). `dwc:basisOfRecord`, `dwc:sex`, `dwc:typeStatus`, etc. `preparation_id` FK → `preparation` and `disposition_id` FK → `disposition` (controlled vocabs, not free text — migrations 0039/0048; see "Controlled vocabularies"). `dwc:otherCatalogNumbers` (free text) records prior catalog numbers from previous owning institutions (migration 0049, #77; previous institutions themselves are not recorded). |
+| `collection_object` | One physical specimen or lot. `catalog_number` is the stable, immutable sync join key — NOT NULL in effect for the own collection (triggers), nullable for a specimen held in a foreign one (migration 0072; see "Specimen workflows"). `repository_id` FK → `repository` (NOT NULL, ON DELETE RESTRICT — migration 0047, #75) is the **single source of truth for collection membership**; the old denormalised `dwc:collectionCode` + `dwc:institutionCode` text columns were dropped (codes resolve through the repository at export; `UNIQUE(repository_id, catalogNumber)`). `dwc:basisOfRecord`, `dwc:sex`, `dwc:typeStatus`, etc. `preparation_id` FK → `preparation` and `disposition_id` FK → `disposition` (controlled vocabs, not free text — migrations 0039/0048; see "Controlled vocabularies"). `dwc:otherCatalogNumbers` (free text) records prior catalog numbers from previous owning institutions (migration 0049, #77; previous institutions themselves are not recorded). |
 | `collecting_event` | Where/when collected; shared by many specimens. Full DwC locality + coordinate block. `dwc:eventDate` supports ISO 8601 intervals (`2024-06-15/2024-06-20`). `dwc:recordedBy` FK → `person(full_name)`. `habitat_id` + `sampling_protocol_id` (migration 0040) and the geography hierarchy `country_id` / `state_province_id` / `administrative_region_id` / `county_id` / `island_id` (migration 0041) are all controlled-vocab FKs (see "Controlled vocabularies"). `municipality` + `locality` stay free text. **No `dwc:countryCode` column** — dropped in 0057; it is derived from `country.iso_code` (a stored copy drifted: `Germany` could carry `FR`). |
 | `taxon` | Local OTU analogue. DwC parent-link model (GBIF best practices). Columns: `name_element` (atomic source of truth — this rank's own epithet/uninomial, e.g. `crypticus`; migration 0032, Epic #30), `dwc:scientificName` (the *composed* full name without authorship, e.g. `Otiorhynchus crypticus`, maintained from `name_element` + the parent chain), `dwc:taxonRank`, `dwc:scientificNameAuthorship`, `dwc:parentNameUsageID` (self-FK, encodes hierarchy), `dwc:acceptedNameUsageID` (self-FK, marks synonyms — its presence *is* synonym status; `taxonomicStatus` is derived at export, not stored, see below), `taxonworksOtuID`, `ipniID` (the IPNI id of the name a row was imported from — identity like `taxonworksOtuID`, not a `dwc:` term; migration 0053). `dwc:nomenclaturalCode` is **NOT NULL + CHECK**-constrained to the closed list (migration 0054, #96): it is a property of the source or inherited from the parent, never guessed. No denormalised rank columns. |
 | `taxon_determination` | `collection_object` → `taxon` link. `is_current` flag. `taxon_id` may reference a synonym row (deliberate design). `dwc:identifiedBy` FK → `person(full_name)`. **`dwc:dateIdentified` may NOT be an interval** (`ck_td_date_identified_no_interval`, migration 0069): an identification is made on one date, and TW's importer raises *"Date range for taxon determination is not supported."* (`occurrence.rb:1395-1397` @ `897f385`). Deliberately the opposite of `collecting_event."dwc:eventDate"`, which does allow one. |
@@ -949,8 +978,9 @@ The shared mechanism:
 - **Person stays separate** (not folded into `Vocabulary`): it carries extra columns
   (`abbreviated_name`, `orcid`) and label-printing logic. `Vocabulary` is for the *single-name*
   case only.
-- **Collections/institutions (`repository`) stay separate too** (multi-column, #56): keyed
-  by `dwc:collectionCode`, with `collection_full_name` / `institution_full_name` and the two
+- **Collections/institutions (`repository`) stay separate too** (multi-column, #56): identified
+  by `collection_full_name` (UNIQUE; `dwc:collectionCode` is optional — migration 0072, see
+  the namespace section), with `institution_full_name` and the two
   TaxonWorks ids (institution=Repository, collection=Namespace). DwC-mapping columns carry the
   `dwc:` prefix; the rest are local. It is the source for the identifier label's full
   collection name (`repositories.name_map`, resolved by the code prefix `JJPC-00304`→`JJPC`)
@@ -1327,8 +1357,9 @@ staging class). The **line numbers in §5/§5b are stale for the pinned commit `
 ### Eligibility has two independent grounds: privacy and certainty (decided 2026-07-26)
 
 `dwc_export.export_decision` is the single owner of "may this specimen leave the building",
-read by both the comparison and the writer. It withholds on **two unrelated grounds**, and
-`ExportDecision.privacy_reasons` keeps them apart:
+read by both the comparison and the writer. It withholds on **three unrelated grounds**, and
+`ExportDecision.privacy_reasons` / `.determination_reasons` / `.identity_reasons` keep them
+apart:
 
 - **Privacy** — the three `confidential` flags + person consent (the table in "Confidential /
   privacy flag"). Unchanged.
@@ -1339,8 +1370,19 @@ read by both the comparison and the writer. It withholds on **two unrelated grou
   (species or below — a subspecies is *more* precise, not less), nor is a specimen with no
   current identification. A rank the model cannot place is reported as *unplaceable*, never as
   "not to species" — we never compared it.
+- **Identity — no catalog number** (rule 6, decided 2026-10-06). TaxonWorks itself would
+  take the row: its importer creates the CatalogNumber identifier only
+  `if attributes.dig(:catalog_number, :identifier)` (`occurrence.rb:344` @ `897f385`). That
+  is exactly the problem — its *"Is already in use"* guard (`:366`) sits inside that branch,
+  and our Compare recognises "already on TaxonWorks" by catalog number alone. A numberless
+  specimen would look not-yet-uploaded forever and be **created again by every export**.
+  The specimen row shows it in the catalog slot itself ("no number", with the consequence
+  on hover) rather than as a fourth badge. *Not built, deliberately:* matching on a locally
+  minted `occurrenceID` instead — TW stores it as `Identifier::Local::Import::Dwc` only when
+  the import dataset has a core-record-identifier namespace set and drops it silently
+  otherwise (`:378-383`), and whether `/identifiers` returns that type usably is unprobed.
 
-Both are absolute, with **no setting**, for the same reason rule 3 (a confidential collector)
+All three are absolute, with **no setting**, for the same reason rule 3 (a confidential collector)
 has none: the importer is CREATE-ONLY, so a record published too early can be neither
 corrected nor deleted through the API, while a record withheld today exports fine tomorrow.
 
@@ -1574,7 +1616,7 @@ arrow-key event, chip styling) is design.md's concern → "Digitize layout modes
 | `life_stage.py` | Reared-specimen life-stage history CRUD + `life_stage_facets()` export projection (Phase 3) |
 | `vocab.py` | Generic single-name controlled-vocabulary service (`Vocabulary`: list/options/get_or_create/update/delete/merge, dynamic FK re-pointing) |
 | `vocabularies.py` | Vocabulary instances + `VOCAB_REGISTRY` (the Controlled Vocabularies tab renders one section per entry) |
-| `repositories.py` | Collections/institutions CRUD (multi-column vocab, #56) + `name_map` (collectionCode→full name) for the identifier label + `resolve_id` (get-or-create the repository for a code, the save-time seam for `collection_object.repository_id`, #75) + `delete_repository` guard (blocked while specimens reference it, #72) |
+| `repositories.py` | Collections/institutions CRUD (multi-column vocab, #56) + `name_map` (collectionCode→full name) for the identifier label + `display_label` (the one human rendering — `JJPC — Name`, or just the name for a codeless collection) + `get_or_create_by_name` (the collection picker's save-time seam for `collection_object.repository_id`; a new collection gets a name and nothing else) + `delete_repository` guard (blocked while specimens reference it, #72) |
 | `explore.py` | Explore-tab querying (#40): `search_facets`, `query_specimens(filters)`, `checklist(filters)` (drawer-order taxa+lots), `events(filters)`, `to_csv`, `counts` |
 | `name_source.py` | The generic offline-name-source engine (DwC Archive → SQLite index → search → import chain). WCVP is one instance; user datasets are others. See "Offline name sources" below |
 | `datasets.py` | User-added name datasets (**experimental**): install from a chosen file → `data/name_sources/<slug>/`, rebuild, remove, `import_all` |
@@ -1857,11 +1899,22 @@ The four-character code is the `catalogNumber` as-is; the namespace label comes 
   The Settings "Default collection" picker flags an existing repository; `config.json` stores
   **no** collection code (same DB-integrity rule as person defaults — a configurable default
   that references a DB entity belongs in the DB, never a flat string).
-- **Save-time resolution:** `repositories.resolve_id(session, collection_code=…)` get-or-creates
-  the repository by a **freely-typed** code inside the save transaction (mirrors person / vocab
-  `commit`). It is used **only** for "Digitize other collection" (visiting) and the Records
-  re-home field — the own-collection paths use `get_default` instead, so there is no string to
-  silently stub from.
+- **A collection is identified by its name, not its code (decided 2026-10-06, migration
+  0072).** A private collection ("Frank Lange collection") often has neither a collection
+  code nor an institution code, and being forced to invent them put made-up DwC values in
+  the vocabulary. So `collection_full_name` is UNIQUE + never blank; `dwc:collectionCode` is
+  nullable and unique only where present (partial index). The **default** collection must
+  have one (`ck_repository_default_has_code`) — it is the catalog-number prefix. The upgrade
+  refuses, rather than renames, when two existing collections share a name.
+- **Save-time resolution is by pick, never by typed code.** "Digitize other collection" and
+  the Records re-home field share one widget, `app/ui/repository_field.py` — the standard
+  vocabulary dropdown (existing collections + `✚ add <name>`) over an adapter onto
+  `repository`; `commit(session)` → `repositories.get_or_create_by_name`. A collection added
+  that way has a name and **nothing else**; codes are added later in Controlled
+  Vocabularies, never guessed. The old `resolve_id` (get-or-create by a freely-typed code)
+  is **gone** — do not re-introduce it. The own-collection paths use `get_default`.
+- A codeless collection cannot form an `occurrenceID`, so its specimens are refused by the
+  export's row validation — give it its codes first.
 
 For a single-collection setup, add one repository in Controlled Vocabularies and flag it as
 the default in Settings; give it a real `collection_full_name`. Its `collection_code` /

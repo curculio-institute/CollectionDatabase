@@ -468,7 +468,13 @@ erDiagram
 <div class="table-card" id="collection_object">
   <h2>collection_object</h2>
   <div class="desc">One physical specimen or lot.
-    <code>dwc:catalogNumber</code> is NOT NULL — the pin-label identity and DwC sync key.
+    <code>dwc:catalogNumber</code> is the pin-label identity and DwC sync key. It is
+    <strong>nullable</strong> (migration 0072) — but only for a specimen held in a
+    <em>foreign</em> collection, which may simply have no number; in the default (own)
+    collection it is required, enforced by the
+    <code>trg_co_default_requires_catalog_number</code> triggers. Never blank
+    (<code>ck_co_catalog_number_not_blank</code>): NULL is the one spelling of "no number".
+    Once set it is immutable. A numberless specimen is never exported.
     Collection membership is the <code>repository_id</code> FK (NOT NULL, migration 0047, #75);
     <code>UNIQUE (repository_id, dwc:catalogNumber)</code>. The old denormalised
     <code>collectionCode</code>/<code>institutionCode</code> text columns were dropped — codes
@@ -480,7 +486,7 @@ erDiagram
     <tbody>
       <tr><td><span class="badge badge-INTEGER">INTEGER</span></td><td class="col-local">id</td><td><span class="tag tag-PK">PK</span></td></tr>
       <tr><td><span class="badge badge-INTEGER">INTEGER</span></td><td class="col-local">collecting_event_id</td><td><span class="tag tag-FK">FK</span> → collecting_event</td></tr>
-      <tr><td><span class="badge badge-TEXT">TEXT</span></td><td class="col-dwc"><a href="https://dwc.tdwg.org/list/#dwc_catalogNumber">dwc:catalogNumber</a></td><td><span class="tag tag-NN">NN</span> <span class="tag tag-UQ">UQ</span></td></tr>
+      <tr><td><span class="badge badge-TEXT">TEXT</span></td><td class="col-dwc"><a href="https://dwc.tdwg.org/list/#dwc_catalogNumber">dwc:catalogNumber</a></td><td><span class="tag tag-UQ">UQ</span> nullable — required in the default collection (trigger), never blank (CHECK); migration 0072</td></tr>
       <tr><td><span class="badge badge-INTEGER">INTEGER</span></td><td class="col-local">repository_id</td><td><span class="tag tag-NN">NN</span> <span class="tag tag-FK">FK</span> → repository(id) ON DELETE RESTRICT; owning collection — single source for collectionCode/institutionCode/ownerInstitutionCode at export (migration 0047, #75; replaced the catalogNamespace/collectionCode + institutionCode text columns)</td></tr>
       <tr><td><span class="badge badge-TEXT">TEXT</span></td><td class="col-dwc"><a href="https://dwc.tdwg.org/list/#dwc_basisOfRecord">dwc:basisOfRecord</a></td><td>default 'PreservedSpecimen'</td></tr>
       <tr><td><span class="badge badge-INTEGER">INTEGER</span></td><td class="col-dwc"><a href="https://dwc.tdwg.org/list/#dwc_individualCount">dwc:individualCount</a></td><td>CHECK ≥ 0; default 1</td></tr>
@@ -692,20 +698,22 @@ erDiagram
 
 <div class="table-card">
   <h2>repository</h2>
-  <div class="desc">Collections / institutions controlled vocabulary (#56). Keyed by
-    dwc:collectionCode (the prefix embedded in every catalog number, e.g. JJPC in
-    JJPC-00304). Source for the identifier label's full collection name and the Settings
+  <div class="desc">Collections / institutions controlled vocabulary (#56). Identified by
+    <strong>collection_full_name</strong> (UNIQUE, migration 0072) — a private collection
+    ("Frank Lange collection") often has no code at all. dwc:collectionCode is optional and
+    unique where present; it is the prefix embedded in the own collection's catalog numbers
+    (JJPC in JJPC-00304), and the default collection must have one. Source for the identifier label's full collection name and the Settings
     default collection. DwC-mapping columns carry the dwc: prefix; full names + TW ids are
     local. TaxonWorks stores the institution (Repository) and collection (Namespace) under
-    separate ids. STRICT. Migration 0045.</div>
+    separate ids. STRICT. Migrations 0045, 0072.</div>
   <table>
     <thead><tr><th>Type</th><th>Column</th><th>Notes</th></tr></thead>
     <tbody>
       <tr><td><span class="badge badge-INTEGER">INTEGER</span></td><td class="col-local">id</td><td><span class="tag tag-PK">PK</span></td></tr>
       <tr><td><span class="badge badge-TEXT">TEXT</span></td><td class="col-dwc"><a href="https://dwc.tdwg.org/list/#dwc_institutionCode">dwc:institutionCode</a></td><td></td></tr>
       <tr><td><span class="badge badge-TEXT">TEXT</span></td><td class="col-local">institution_full_name</td><td></td></tr>
-      <tr><td><span class="badge badge-TEXT">TEXT</span></td><td class="col-dwc"><a href="https://dwc.tdwg.org/list/#dwc_collectionCode">dwc:collectionCode</a></td><td>NOT NULL, UNIQUE — the label join key</td></tr>
-      <tr><td><span class="badge badge-TEXT">TEXT</span></td><td class="col-local">collection_full_name</td><td>NOT NULL — prints on the identifier label</td></tr>
+      <tr><td><span class="badge badge-TEXT">TEXT</span></td><td class="col-dwc"><a href="https://dwc.tdwg.org/list/#dwc_collectionCode">dwc:collectionCode</a></td><td>nullable; partial UNIQUE (<code>uq_repository_collection_code</code>, WHERE NOT NULL); never blank (CHECK) — the label join key. Required on the default collection (<code>ck_repository_default_has_code</code>)</td></tr>
+      <tr><td><span class="badge badge-TEXT">TEXT</span></td><td class="col-local">collection_full_name</td><td>NOT NULL, UNIQUE, never blank — the collection's identity; prints on the identifier label</td></tr>
       <tr><td><span class="badge badge-INTEGER">INTEGER</span></td><td class="col-local">taxonworks_institution_id</td><td>TW Repository id (nullable)</td></tr>
       <tr><td><span class="badge badge-INTEGER">INTEGER</span></td><td class="col-local">taxonworks_collection_id</td><td>TW Namespace id (nullable)</td></tr>
       <tr><td><span class="badge badge-INTEGER">INTEGER</span></td><td class="col-local">is_default</td><td>NOT NULL DEFAULT 0, CHECK IN (0,1) — the user's own/home collection; partial-UNIQUE so at most one row is 1 (migration 0050, #83). Digitize/Mounting/Import read it for repository_id + catalog-number prefix and refuse to save if none is set</td></tr>
@@ -817,6 +825,10 @@ erDiagram
       <tr><td class="col-local">ck_media_attachment_is_primary</td><td class="col-local">media_attachment</td><td><code>is_primary</code> is 0 or 1</td></tr>
       <tr><td class="col-local">ck_external_identifier_exclusive_arc</td><td class="col-local">external_identifier</td><td>exactly one of <code>collection_object_id</code> / <code>biological_association_id</code> / <code>field_occurrence_id</code> is set (widened migration 0062) <span class="tag tag-ARC">ARC</span></td></tr>
       <tr><td class="col-local">ck_life_stage_basis_of_record</td><td class="col-local">life_stage_record</td><td><code>basisOfRecord</code> ∈ {PreservedSpecimen, FossilSpecimen, HumanObservation}</td></tr>
+      <tr><td class="col-local">ck_co_catalog_number_not_blank</td><td class="col-local">collection_object</td><td><code>catalogNumber</code> is NULL or non-blank — NULL is the only spelling of "no number" (migration 0072)</td></tr>
+      <tr><td class="col-local">ck_repository_collection_code_not_blank</td><td class="col-local">repository</td><td><code>collectionCode</code> is NULL or non-blank (migration 0072)</td></tr>
+      <tr><td class="col-local">ck_repository_name_not_blank</td><td class="col-local">repository</td><td><code>collection_full_name</code> is non-blank (migration 0072)</td></tr>
+      <tr><td class="col-local">ck_repository_default_has_code</td><td class="col-local">repository</td><td>the default collection has a <code>collectionCode</code> — it is the catalog-number prefix (migration 0072)</td></tr>
       <tr><td class="col-local">ck_repository_is_default</td><td class="col-local">repository</td><td><code>is_default</code> is 0 or 1 (default-collection flag, migration 0050, #83)</td></tr>
       <tr><td class="col-local">ck_preparation_is_default</td><td class="col-local">preparation</td><td><code>is_default</code> is 0 or 1 (flaggable Tier-1 autofill default, migration 0052)</td></tr>
     </tbody>
@@ -829,7 +841,8 @@ erDiagram
   <table>
     <thead><tr><th>Kind</th><th>Where</th><th>Rule</th></tr></thead>
     <tbody>
-      <tr><td><span class="tag tag-UQ">UQ</span></td><td class="col-local">collection_object</td><td>UNIQUE (<code>repository_id</code>, <code>catalogNumber</code>) — catalog number unique within its owning collection (migration 0047, #75; was <code>(collectionCode, catalogNumber)</code>)</td></tr>
+      <tr><td><span class="tag tag-UQ">UQ</span></td><td class="col-local">collection_object</td><td>UNIQUE (<code>repository_id</code>, <code>catalogNumber</code>) — catalog number unique within its owning collection (migration 0047, #75; was <code>(collectionCode, catalogNumber)</code>). NULLs are distinct, so any number of numberless specimens share a collection (migration 0072)</td></tr>
+      <tr><td><span class="tag tag-UQ">UQ</span></td><td class="col-local">repository</td><td>UNIQUE (<code>collection_full_name</code>) — the name is the collection's identity; partial UNIQUE index <code>uq_repository_collection_code</code> on <code>collectionCode</code> WHERE NOT NULL (migration 0072)</td></tr>
       <tr><td><span class="tag tag-UQ">UQ</span></td><td class="col-local">repository</td><td>partial UNIQUE index <code>uq_repository_one_default</code> on <code>is_default</code> WHERE <code>is_default = 1</code> — at most one default/home collection (migration 0050, #83)</td></tr>
       <tr><td><span class="tag tag-UQ">UQ</span></td><td class="col-local">preparation</td><td>partial UNIQUE index <code>uq_preparation_one_default</code> on <code>is_default</code> WHERE <code>is_default = 1</code> — at most one flaggable autofill default (migration 0052)</td></tr>
       <tr><td><span class="tag tag-UQ">UQ</span></td><td class="col-local">biological_relationship</td><td>UNIQUE (<code>name</code>)</td></tr>
@@ -865,6 +878,8 @@ erDiagram
   <table>
     <thead><tr><th>Trigger</th><th>Table</th><th>Rule</th></tr></thead>
     <tbody>
+      <tr><td class="col-local">trg_co_default_requires_catalog_number</td><td class="col-local">collection_object</td><td>a specimen in the default (own) collection must have a <code>catalogNumber</code> — creating one without, or re-homing a numberless one into it, is refused (INSERT + UPDATE; migration 0072)</td></tr>
+      <tr><td class="col-local">trg_repository_default_requires_catalog_numbers</td><td class="col-local">repository</td><td>a collection holding numberless specimens cannot be flagged <code>is_default</code> (UPDATE; migration 0072)</td></tr>
       <tr><td class="col-local">trg_taxon_accepted_is_terminal</td><td class="col-local">taxon</td><td><code>acceptedNameUsageID</code> must reference an accepted (terminal) name, never another synonym — GBIF "chained synonym" rule (INSERT + UPDATE)</td></tr>
     </tbody>
   </table>
