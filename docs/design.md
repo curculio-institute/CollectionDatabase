@@ -1095,7 +1095,8 @@ sheet** (`labels.py::grouped_sheet`, fed by `print_queue.py::queued_groups`):
 
 - **Groups = queue additions.** Rows enqueued in one operation share a `print_group_id` +
   a `source` header (`SOURCE_MOUNTING` "Mounting Session", `SOURCE_IDENTIFIERS`
-  "New identifiers", `SOURCE_REPRINT` "Reprint"). Allocate the id once per batch with
+  "New identifiers", `SOURCE_REPRINT` "Reprint", `SOURCE_IDENTIFICATIONS`
+  "Identification labels"). Allocate the id once per batch with
   `next_print_group_id(session)` (columns added in migration 0028). Groups flow as
   inline-block boxes that wrap, separated by a large gap.
 - **Within a group, one column per specimen**, with bands stacked top→bottom: **data /
@@ -1108,6 +1109,21 @@ sheet** (`labels.py::grouped_sheet`, fed by `print_queue.py::queued_groups`):
   `_LABELS_PER_ROW` columns. Per-type borders come from config (`AppConfig.label_border_*`,
   default black; see "Code label layout" above); gap metrics are named constants in
   `labels.py` — tune by eye against a real PDF.
+- **A gap wider than one cut lane means "different group" — and nothing else (requirement,
+  2026-10-06).** Two gap sizes exist on the sheet and each has exactly one meaning: the
+  small `_LABEL_GAP` separates labels that are cut apart with **one cut**; the large gap
+  separates **groups**, and is what stops labels of one batch being pinned to the wrong
+  specimens. So a wide gap must never appear *inside* a batch of like labels: it costs a
+  second cut and reads as a group boundary that is not there. Consequence for wrapping:
+  a **single-band group** — identifier-only ("New identifiers") or determination-only
+  ("Identification labels") — that exceeds `_LABELS_PER_ROW` is **one multi-row table**
+  (`.id-grid` / `.det-grid`), so the gap between its rows is the same single
+  `border-spacing` as between its columns. Wrapping each row into its own chunk table
+  stacks two border-spacings plus `_CHUNK_GAP` (~2.3 mm) and is wrong for these groups.
+  A **multi-band** group (data / identifier / determination per specimen) still wraps into
+  separate chunks: there each chunk is a row of *specimens*, and the wider gap between
+  chunks keeps one specimen's stacked labels visibly together. Any new label kind that can
+  form a single-band group must follow the single-table rule.
 - **Column reconstruction:** a data/determination row joins its column by
   `collection_object_id`; an identifier row joins by its label code's `collection_object_id`
   (set at assign time), or stands alone if the code is reserved-but-unassigned (a pre-print
