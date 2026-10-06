@@ -1177,6 +1177,15 @@ def delete_taxon(session: Session, taxon_id: int) -> None:
     if assoc_count:
         raise ValueError(
             f"Cannot delete: taxon is used in {assoc_count} biological association(s)")
+    # Plain identification labels waiting in the print queue name this taxon. The FK is
+    # ON DELETE CASCADE (the DB backstop), which would drop those print jobs without a
+    # word — refuse instead, so the user prints or removes them deliberately.
+    from app.models import PrintQueue
+    queued = session.query(PrintQueue).filter(PrintQueue.taxon_id == taxon_id).count()
+    if queued:
+        raise ValueError(
+            f"Cannot delete: taxon is on {queued} identification label(s) in the print "
+            "queue — print or remove them first")
     session.delete(t)
     session.flush()
 

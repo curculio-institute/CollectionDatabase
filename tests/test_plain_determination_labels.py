@@ -191,6 +191,15 @@ class TestReferences:
         with pytest.raises(ValueError, match="print queue"):
             persons_svc.delete_person(session, pid)
 
+    def test_deleting_the_taxon_is_refused_while_labels_are_queued(self, session):
+        from app.services import taxa as taxa_svc
+        t, _ = _queue(session, n=2)
+        with pytest.raises(ValueError, match="2 identification label"):
+            taxa_svc.delete_taxon(session, t.id)
+        assert len(_plain_rows(session, t)) == 2
+        pq.clear_queue(session)
+        taxa_svc.delete_taxon(session, t.id)        # nothing queued → allowed again
+
     def test_removing_and_clearing_work_as_for_any_row(self, session):
         t, _ = _queue(session, n=2)
         rows = _plain_rows(session, t)

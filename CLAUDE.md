@@ -203,7 +203,8 @@ bench. Exactly like the identifier labels queued from the card above it, they ar
 jobs, **not records**: nothing is written to `taxon_determination`.
 
 - **The queue row carries the content**, because there is no record to derive it from:
-  `print_queue.taxon_id` (FK, ON DELETE CASCADE) + `identified_by_id` (FK → `person`, ON
+  `print_queue.taxon_id` (FK, ON DELETE CASCADE as the DB backstop — `taxa.delete_taxon`
+  **refuses** while labels for the name are queued, rather than dropping them silently) + `identified_by_id` (FK → `person`, ON
   DELETE RESTRICT; `merge_persons` re-points it) + `dwc:dateIdentified` / `dwc:typeStatus` /
   `dwc:identificationQualifier` / `dwc:sex`. `ck_print_queue_exclusive_arc` has a third arm
   (a determination row has a specimen **xor** a taxon) and `ck_print_queue_plain_fields`
