@@ -2855,19 +2855,6 @@ def index():
                 # ── Batch dashboard ──────────────────────────────────────
                 stats = _with_session(id_svc.batch_stats)
                 _batch_stat_labels: dict[str, object] = {}
-                with ui.row().classes("w-full gap-4"):
-                    for label, value in [
-                        ("Batches",     stats.total_batches),
-                        ("Total codes", stats.total_codes),
-                        ("Assigned",    stats.total_assigned),
-                        ("Staged",      stats.total_reserved),
-                    ]:
-                        with ui.card().classes("shadow-sm px-5 py-3 flex-1 text-center"):
-                            _batch_stat_labels[label] = ui.label(str(value)).style(
-                                "font-size:1.6rem; font-weight:300; color:var(--tp-secondary);"
-                            )
-                            ui.label(label).classes("section-label mt-1")
-
                 _reserved_count_ref = [None]   # filled in by the reserved-codes card below
 
                 def _refresh_batch_stats():
@@ -2893,6 +2880,22 @@ def index():
                             "(e.g. JJPC-00001) and QR code. Codes are reserved in the "
                             "database immediately."
                         ).classes("text-sm mb-4").style("color:var(--tp-base-soft)")
+
+                        # Batch statistics — folded into this card (they describe
+                        # identifier codes only), refreshed by _refresh_batch_stats.
+                        with ui.row().classes("w-full gap-6 mb-4"):
+                            for label, value in [
+                                ("Batches",     stats.total_batches),
+                                ("Total codes", stats.total_codes),
+                                ("Assigned",    stats.total_assigned),
+                                ("Staged",      stats.total_reserved),
+                            ]:
+                                with ui.column().classes("gap-0 items-start"):
+                                    _batch_stat_labels[label] = ui.label(str(value)).style(
+                                        "font-size:1.3rem; font-weight:300; "
+                                        "line-height:1.2; color:var(--tp-secondary);"
+                                    )
+                                    ui.label(label).classes("section-label")
 
                         with ui.row().classes("items-center gap-4"):
                             count_input = (
