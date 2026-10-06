@@ -299,7 +299,7 @@ det. Firstname Lastname
 
 This applies to:
 - The meta line in the identification list (`identification_list.py`)
-- The "det" column in the recent specimens table (`main.py`)
+- The "det" column in the recent specimens table (`digitize_tab.py`)
 - The secondary info line in mounting session specimen rows (`mounting_session.py`)
 - Label PDFs (`labels.py`) — already uses this prefix
 

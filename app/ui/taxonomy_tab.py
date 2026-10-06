@@ -1,8 +1,8 @@
 """Taxonomy tab: the checklist tree (family → synonyms) with its rank / nomenclatural-code
 filters, the taxon editor entry points, "Merge names" and "Check consistency".
 
-Moved verbatim out of main.py. Returns the three things main.py's tab-change handler
-needs to rebuild and expand the tree when the tab is shown.
+Moved out of main.py. Returns a handle: ``on_shown()`` rebuilds and expands the tree,
+called by main.py's tab-change handler.
 """
 from __future__ import annotations
 
@@ -32,13 +32,6 @@ def build_taxonomy_tab(session_factory, *, refreshers):
             return fn(s)
 
     with ui.column().classes("w-full max-w-5xl mx-auto px-4 pt-6 pb-16 gap-4"):
-
-        # Summary stat cards (accepted-taxa / species counts) were removed
-        # — low value, took vertical space. The refresher stays as a no-op
-        # so the existing call sites need no change.
-        def _refresh_taxonomy_stats():
-            pass
-        _refreshers["taxonomy_stats"] = _refresh_taxonomy_stats
 
         # ── nomenclatural code tabs + manage buttons ──────────────
         # Current code filter: None = all, "ICZN", "ICN", etc.
@@ -93,7 +86,6 @@ def build_taxonomy_tab(session_factory, *, refreshers):
                 _reorder_btn.on_click(_toggle_reorder)
 
                 def _on_saved_taxon():
-                    _refresh_taxonomy_stats()
                     _refresh_tree()
 
                 _taxon_editor = build_taxon_editor(_sf, _on_saved_taxon)
@@ -217,7 +209,6 @@ def build_taxonomy_tab(session_factory, *, refreshers):
                             return
                         ui.notify("Names merged.", type="positive")
                         dlg.close()
-                        _refresh_taxonomy_stats()
                         _refresh_tree()
 
                     merge_btn.on_click(_do_merge)
@@ -396,30 +387,33 @@ def build_taxonomy_tab(session_factory, *, refreshers):
                 _collapse_btn.set_text("Collapse all")
                 _collapse_btn.props("icon=unfold_less")
 
-            async def _on_filter_change(e):
-                key = e.value or ""
+            def _nodes_for(key: str | None) -> list:
+                """The tree for the active nomenclatural code and filter key — the one
+                builder behind every rebuild, so a refresh can never show a different
+                tree than the filter select says it shows."""
+                key = key or ""
                 code = _nomen_filter["code"]
                 if not key:
-                    new_nodes = _with_session(
+                    return _with_session(
                         lambda s: tax_svc.build_taxonomy_tree(s, nomenclatural_code=code)
                     )
-                else:
-                    part = key.split(":", 1)
-                    rank, val = part[0], part[1] if len(part) > 1 else ""
-                    if rank in ("species", "taxon"):
-                        new_nodes = _with_session(
-                            lambda s, v=val: tax_svc.build_taxonomy_tree(
-                                s, filter_id=int(v), nomenclatural_code=code
-                            )
+                part = key.split(":", 1)
+                rank, val = part[0], part[1] if len(part) > 1 else ""
+                if rank in ("species", "taxon"):
+                    return _with_session(
+                        lambda s, v=val: tax_svc.build_taxonomy_tree(
+                            s, filter_id=int(v), nomenclatural_code=code
                         )
-                    else:
-                        new_nodes = _with_session(
-                            lambda s, r=rank, v=val: tax_svc.build_taxonomy_tree(
-                                s, filter_rank=r, filter_value=v,
-                                nomenclatural_code=code
-                            )
-                        )
-                tax_tree._props['nodes'] = new_nodes
+                    )
+                return _with_session(
+                    lambda s, r=rank, v=val: tax_svc.build_taxonomy_tree(
+                        s, filter_rank=r, filter_value=v,
+                        nomenclatural_code=code
+                    )
+                )
+
+            async def _on_filter_change(e):
+                tax_tree._props['nodes'] = _nodes_for(e.value)
                 tax_tree.update()
                 await _expand()
 
@@ -440,14 +434,24 @@ def build_taxonomy_tab(session_factory, *, refreshers):
             _nomen_tabs.on_value_change(_on_nomen_tab_change)
 
             def _refresh_tree():
-                filter_sel.options = _with_session(tax_svc.checklist_options)
+                opts = _with_session(tax_svc.checklist_options)
+                # The filtered taxon may be gone (deleted / merged / synonymised): drop
+                # the filter rather than keep showing a name that no longer exists.
+                if filter_sel.value and filter_sel.value not in opts:
+                    filter_sel.value = None
+                filter_sel.options = opts
                 filter_sel.update()
-                code = _nomen_filter["code"]
-                tax_tree._props['nodes'] = _with_session(
-                    lambda s: tax_svc.build_taxonomy_tree(s, nomenclatural_code=code)
-                )
+                # Honour the active filter — rebuilding unfiltered here left the select
+                # showing a family while the tree showed everything.
+                tax_tree._props['nodes'] = _nodes_for(filter_sel.value)
                 tax_tree.update()
 
             _refreshers["taxonomy_tree"] = _refresh_tree
 
-    return _refresh_taxonomy_stats, _refresh_tree, tax_tree
+            async def _on_shown():
+                """The tab became visible: rebuild and expand. Goes through _expand so
+                the Collapse/Expand toggle is reset along with the tree."""
+                _refresh_tree()
+                await _expand()
+
+    return {"on_shown": _on_shown}

@@ -5,8 +5,8 @@ unsaved-changes poll.
 
 Moved verbatim out of main.py. `mode_state` and `bio_codes` are the SAME objects
 main.py's header (mode switch) and Settings (association filter) mutate in place — do
-not copy them. Returns the stepper index + layout function Settings uses to apply a
-layout change live.
+not copy them. Returns a handle: ``reset_layout()`` applies a layout change from
+Settings live.
 """
 from __future__ import annotations
 
@@ -929,4 +929,9 @@ def build_digitize_tab(session_factory, *, refreshers, mode_state, mark_form_cle
 
         ui.timer(1.0, _sync_dig_dirty)
 
-    return _step_idx, _apply_digitize_layout
+    def _reset_layout():
+        """Re-apply the configured layout from its first step (Settings changed it)."""
+        _step_idx[0] = 0
+        _apply_digitize_layout()
+
+    return {"reset_layout": _reset_layout}

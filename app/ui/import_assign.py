@@ -757,8 +757,6 @@ def build_import_assign_tab(session_factory, refreshers: dict, on_saved=None) ->
 
         def _on_manual_created(tid: int):
             _set_taxon(tid, "added manually")
-            if "taxonomy_stats" in refreshers:
-                refreshers["taxonomy_stats"]()
 
         def _set_taxon(tid: int, caption: str = "selected") -> None:
             state["taxon_id"] = tid

@@ -9,80 +9,40 @@ All DB access goes through app.services — no ORM queries in this file.
 from __future__ import annotations
 
 import asyncio
-import html as _html
-import json
 import os
-import re
 import sys
-from datetime import datetime
 
 from nicegui import ui, app, run
 
 from app.database import get_engine, get_session_factory
-import app.services as svc
-import app.services.taxonomy as tax_svc
-import app.services.identifiers as id_svc
-import app.services.labels as lbl_svc
 import app.services.repositories as repo_svc
-import app.services.persons as persons_svc
-import app.services.print_queue as pq_svc
 import app.services.taxonworks as tw_svc
 import app.services.wcvp as wcvp_svc
 import app.services.name_source as ns_svc
 import app.services.datasets as ds_svc
-from app.config import get_config, reload_config, save_config, printed_pdf_dir, media_dir
+from app.config import get_config, reload_config, save_config, media_dir
 
 # Serve the managed media store so attached images/files render in the browser
 # (range-request aware → also handles audio/video). Registered once at import.
 app.add_media_files("/media", media_dir())
 import app.services.person_defaults as pd_svc
-import app.services.events as ev_svc
 import app.services.db_safety as db_safety
 import app.services.launcher as launcher
-from app.services.label_text import format_event_preview_html
-from app.models import CollectionObject, CollectingEvent, TaxonDetermination
-from app.ui.taxon_search import build_taxon_search
-from app.ui.choice_field import build_choice_field
-from app.ui.identification_list import build_identification_list
 from app.ui.import_assign import build_import_assign_tab
 from app.ui.controlled_vocab_tab import build_controlled_vocab_tab
 from app.ui.batch_tab import build_batch_tab
 from app.ui.bulk_import_tab import build_bulk_import_tab
 from app.ui.tw_sync_tab import build_tw_sync_tab
 from app.ui.map_picker import add_map_assets
-from app.ui.taxon_editor import build_taxon_editor
 from app.ui.person_field import build_person_field
 from app.ui.digitize_tab import build_digitize_tab
 from app.ui.taxonomy_tab import build_taxonomy_tab
 from app.ui.labels_tab import build_labels_tab
-from app.ui.plain_det_labels import build_plain_det_labels_card
 from app.ui.records_tab import build_records_tab
 from app.ui.explore import build_explore_panel
-from app.ui.mounting_session import build_mounting_session_section
-from app.ui.specimen_form import build_specimen_form
-from app.ui.collecting_event_form import build_collecting_event_form
-from app.ui.event_reuse import build_event_share_banner
 import app.ui.record_summary as _record_summary
-from app.ui.media_panel import build_media_button
-from app.ui.external_id_panel import build_external_id_button
-from app.ui.life_stage_panel import build_life_stage_button
-from app.ui.event_completeness import confirm_incomplete_event
 from app.ui.confirm_dialog import confirm as confirm_dialog
-import app.services.media as media_svc
-import app.services.external_ids as extid_svc
-import app.services.life_stage as lifestage_svc
-from app.services.biological import (
-    sync_biological_relationships,
-    get_relationship_options,
-)
-from app.services.validation import validate_event_fields
-from app.vocab import IDENTIFICATION_QUALIFIER_OPTIONS
-
-# ---------------------------------------------------------------------------
-# Constants
-# ---------------------------------------------------------------------------
-# Controlled-vocabulary lists live in app/vocab.py (single source of truth).
-
+from app.services.biological import sync_biological_relationships
 
 # ---------------------------------------------------------------------------
 # Engine (module-level, created once)
@@ -99,11 +59,6 @@ with _sf() as _s:
         from app.services.taxa import ensure_higher_taxa as _eht, seed_root_taxa as _srt
         _eht(_s)
         _srt(_s)
-
-
-def _with_session(fn):
-    with _sf() as s:
-        return fn(s)
 
 
 # ---------------------------------------------------------------------------
@@ -1143,7 +1098,7 @@ def index():
         with ui.tab_panel("digitize"):
             # _mode_state and bio_codes are passed as the same objects the header's mode
             # switch and Settings mutate in place.
-            _step_idx, _apply_digitize_layout = build_digitize_tab(
+            _digitize_handle = build_digitize_tab(
                 _sf, refreshers=_refreshers, mode_state=_mode_state,
                 mark_form_clean=_mark_form_clean, bio_codes=bio_codes)
 
@@ -1250,7 +1205,7 @@ def index():
         # TAB: TAXONOMY
         # ================================================================
         with ui.tab_panel("taxonomy"):
-            _refresh_taxonomy_stats, _refresh_tree, tax_tree = build_taxonomy_tab(
+            _taxonomy_handle = build_taxonomy_tab(
                 _sf, refreshers=_refreshers)
 
         # ================================================================
@@ -1291,10 +1246,7 @@ def index():
     # Rebuild + expand the taxonomy tree whenever the user switches to that tab.
     async def _on_tab_change(e):
         if e.value == "taxonomy":
-            _refresh_taxonomy_stats()
-            _refresh_tree()
-            await asyncio.sleep(0.15)
-            await tax_tree.run_method("expandAll")
+            await _taxonomy_handle["on_shown"]()
         elif e.value == "digitize":
             refresh_persons = _refreshers.get("person_opts")
             if refresh_persons:
@@ -1875,10 +1827,9 @@ def index():
                                 ui.notify(r, type="warning", timeout=8000)
                             # The Taxonomy tab's refreshers live in its own scope; the
                             # registry is how any tab reaches them (see _refreshers).
-                            for _key in ("taxonomy_stats", "taxonomy_tree"):
-                                fn = _refreshers.get(_key)
-                                if fn:
-                                    fn()
+                            fn = _refreshers.get("taxonomy_tree")
+                            if fn:
+                                fn()
 
                         ui.button("Import all", icon="download", on_click=_go) \
                             .props("color=negative")
@@ -2178,8 +2129,7 @@ def index():
                 bio_codes.extend(selected)
                 # Apply the Digitize layout live (no page reload, so any unsaved
                 # form entry survives the settings change).
-                _step_idx[0] = 0
-                _apply_digitize_layout()
+                _digitize_handle["reset_layout"]()
                 # Live-refresh the TaxonWorks tab's Collections report (eligible/not
                 # eligible split + the privacy-consent status line both read config)
                 # rather than leaving it showing whatever was true at page load.

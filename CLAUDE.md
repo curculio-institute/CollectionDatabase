@@ -1517,7 +1517,9 @@ Labels were extracted from `main.py` on 2026-10-06 as pure moves. Still inline i
 `main.py`: **Settings**, and the print queue's client-side JavaScript (it talks to
 `labels_tab.py` by event name only). A new tab gets its own module; whatever it needs from
 the page (`_refreshers`, another tab's handle) is passed in as an argument, never reached
-for through `main.py`'s scope.
+for through `main.py`'s scope. What the page needs back from a tab is a **handle
+dict of callables** (`_records_handle["open_specimen"]`, `_taxonomy_handle["on_shown"]`,
+`_digitize_handle["reset_layout"]`) — never the tab's internal widgets or state.
 
 | Tab | Purpose |
 |-----|---------|
