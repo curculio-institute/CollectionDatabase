@@ -1505,7 +1505,19 @@ the distinct values used are listed for the user to confirm.
 
 ## 6. Application structure
 
-### App tabs (in `app/ui/main.py`)
+### App tabs
+
+`app/ui/main.py` is the **page shell** — head scripts, the tab bar, the unsaved-changes
+banner, Settings — and calls one `build_…` function per tab. **Every tab's UI lives in its
+own module** (`digitize_tab.py`, `records_tab.py`, `explore.py`, `taxonomy_tab.py`,
+`labels_tab.py` — Labels *and* the Print queue —, `import_assign.py`, `bulk_import_tab.py`,
+`tw_sync_tab.py`, `batch_tab.py`, `controlled_vocab_tab.py`); the small `*_field.py` /
+`*_panel.py` / `*_form.py` files are widgets shared between tabs. Digitize, Taxonomy and
+Labels were extracted from `main.py` on 2026-10-06 as pure moves. Still inline in
+`main.py`: **Settings**, and the print queue's client-side JavaScript (it talks to
+`labels_tab.py` by event name only). A new tab gets its own module; whatever it needs from
+the page (`_refreshers`, another tab's handle) is passed in as an argument, never reached
+for through `main.py`'s scope.
 
 | Tab | Purpose |
 |-----|---------|
