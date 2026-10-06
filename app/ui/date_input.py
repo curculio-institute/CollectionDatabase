@@ -14,19 +14,21 @@ from nicegui import ui
 from app.services.dates import parse_dwc_date
 
 
-def append_year_pin(inp, *, visible_when_empty: bool = True) -> None:
-    """Add a push_pin button that inserts the current year into a DwC date input.
+def append_today_pin(inp, *, visible_when_empty: bool = True) -> None:
+    """Add a push_pin button that inserts today's date into a DwC date input.
 
-    The Tier-2 "insert current year" default for every dateIdentified field
-    (see design.md → Auto-fill tiers). Shared so the standard, records, and
-    mounting forms stay consistent.
+    The Tier-2 one-click default for every dateIdentified field (see design.md →
+    Auto-fill tiers). Shared so the standard, records, mounting and plain-label
+    forms stay consistent. The full date, not just the year: it is what makes
+    identification activity countable per day/month. The determination label still
+    prints only the year.
     """
     with inp.add_slot("append"):
         btn = (
             ui.button("", icon="push_pin")
             .props("flat dense round size=xs")
-            .tooltip("Insert current year")
-            .on_click(lambda: inp.set_value(str(date.today().year)))
+            .tooltip("Insert today's date")
+            .on_click(lambda: inp.set_value(date.today().isoformat()))
         )
         if visible_when_empty:
             btn.bind_visibility_from(inp, "value", lambda v: not v)

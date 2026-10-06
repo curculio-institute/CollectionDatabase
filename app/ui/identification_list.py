@@ -45,7 +45,7 @@ from app.services.taxa import (
     split_scientific_name_authorship,
 )
 from app.ui.taxon_search import build_taxon_search, _local_item_html
-from app.ui.date_input import AUTO_CHANGED_CSS, attach_date_validation, append_year_pin
+from app.ui.date_input import AUTO_CHANGED_CSS, attach_date_validation, append_today_pin
 from app.ui.person_field import build_person_field
 from app.ui.choice_field import build_choice_field
 import app.services.specimens as sp_svc
@@ -384,7 +384,7 @@ def build_identification_list(
                         value=d["date_identified"] or "",
                         placeholder="YYYY-MM-DD",
                     ).classes("col-span-1")
-                    append_year_pin(e_dtid, visible_when_empty=False)
+                    append_today_pin(e_dtid, visible_when_empty=False)
                     attach_date_validation(e_dtid, no_future=True)
                     e_sex = ui.select(
                         _SEX_OPTIONS, label="sex",
@@ -543,7 +543,7 @@ def build_identification_list(
                 default_fn=_default_idby,
             )
         add_dtid = ui.input("dateIdentified", placeholder="YYYY-MM-DD").classes("w-36")
-        append_year_pin(add_dtid)
+        append_today_pin(add_dtid)
         attach_date_validation(add_dtid, no_future=True)
         add_sex  = ui.select(_SEX_OPTIONS, label="sex").classes("w-28")
         add_type = build_type_status_field(classes="w-36")

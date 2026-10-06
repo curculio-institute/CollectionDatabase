@@ -215,7 +215,7 @@ inside it), for every Tier 2 field without exception.
 |---|---|
 | `identifiedBy` | user's full name |
 | `recordedBy` | user's full name |
-| `dateIdentified` | current 4-digit year (e.g. `"2026"`) — insert the year only; the user completes month/day |
+| `dateIdentified` | today's full date (e.g. `"2026-10-06"`, `date_input.append_today_pin`) — the full date, not the year, so identification activity is countable per day/month; the determination label still prints only the year |
 
 **Placement (mandatory):** the button must be a **sibling adjacent** to the field (in a flex
 row), **not** inside the field's `add_slot("append")`. Quasar QSelect intercepts all events

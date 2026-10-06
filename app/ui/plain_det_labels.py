@@ -13,7 +13,7 @@ from nicegui import ui
 import app.services.person_defaults as pd_svc
 import app.services.print_queue as pq_svc
 from app.ui.choice_field import build_choice_field
-from app.ui.date_input import AUTO_CHANGED_CSS, attach_date_validation, append_year_pin
+from app.ui.date_input import AUTO_CHANGED_CSS, attach_date_validation, append_today_pin
 from app.ui.person_field import build_person_field
 from app.ui.taxon_search import build_taxon_search
 from app.ui.type_status_field import build_type_status_field
@@ -44,7 +44,7 @@ def build_plain_det_labels_card(session_factory, *, on_queued: callable | None =
                 idby_state = build_person_field(
                     session_factory, "identifiedBy", default_fn=_default_idby)
             dtid = ui.input("dateIdentified", placeholder="YYYY-MM-DD").classes("w-36")
-            append_year_pin(dtid)
+            append_today_pin(dtid)
             attach_date_validation(dtid, no_future=True)
             sex = ui.select(_SEX_OPTIONS, label="sex").classes("w-28")
             type_state = build_type_status_field(classes="w-36")

@@ -25,7 +25,7 @@ from app.services.dates import parse_dwc_date
 from app.services.validation import validate_event_fields
 from app.ui.event_completeness import confirm_incomplete_event
 import app.services.person_defaults as pd_svc
-from app.ui.date_input import attach_date_validation, append_year_pin
+from app.ui.date_input import attach_date_validation, append_today_pin
 from app.ui.person_field import build_person_field
 from app.ui.vocab_field import build_vocab_field
 from app.services.vocabularies import preparation_vocab
@@ -111,7 +111,7 @@ def build_mounting_session_section(
                     )
                     .classes("w-full mt-2")
                 )
-                append_year_pin(date_in)
+                append_today_pin(date_in)
                 attach_date_validation(date_in, no_future=True)
 
                 with ui.row().classes("w-full flex-wrap gap-2 mt-2"):
