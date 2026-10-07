@@ -883,8 +883,10 @@ def build_digitize_tab(session_factory, *, refreshers, mode_state, mark_form_cle
                 })
             for label in missing_event_fields(
                     ce["collect_fields"](), recorded_by=bool(ce["recby_get"]())):
+                # "Coordinates" is the one plural label.
+                verb = "are" if label == "Coordinates" else "is"
                 out.append({"group": "Collecting Event", "key": f"ev-missing-{label}",
-                            "text": f"{label} is missing"})
+                            "text": f"{label} {verb} missing"})
             # Suggest only while a NEW event is being entered; a reused event is
             # already one of them.
             if state["event_id"] is None:
