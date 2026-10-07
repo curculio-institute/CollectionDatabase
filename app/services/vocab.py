@@ -138,6 +138,18 @@ class Vocabulary:
         code = getattr(obj, self.code_attr, None) if self.code_attr else None
         return f"{name} ({code})" if code else name
 
+    def merge_label(self, obj) -> str:
+        """``display_label`` for the merge dialog, where BOTH sides are shown at once.
+
+        In a coded vocab the uncoded row is spelled out — "Austria (no code)" — because
+        folding it into "Austria (AT)" is the commonest merge, and a bare "Austria"
+        beside "Austria (AT)" (or beside another bare "Austria") does not say which row
+        is which. Uncoded vocabs are unchanged.
+        """
+        if self.code_attr and not getattr(obj, self.code_attr, None):
+            return f"{self._name(obj)} (no code)"
+        return self.display_label(obj)
+
     def entries(self, session: Session) -> list[tuple[str, str | None]]:
         """[(name, code)] for the dropdown widget — one tuple per *row*, not per name.
 

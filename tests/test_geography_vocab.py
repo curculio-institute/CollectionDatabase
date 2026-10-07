@@ -256,3 +256,15 @@ def test_display_label_shows_the_code(session):
     session.flush()
     row = session.query(StateProvince).filter_by(name="Limburg").one()
     assert state_province_vocab.display_label(row) == "Limburg (NL-LI)"
+
+
+def test_merge_label_spells_out_the_uncoded_row(session):
+    # The merge dialog shows both sides at once: "Austria" beside "Austria (AT)" must
+    # say which is which.
+    from app.models.geography import Country
+    coded = Country(name="Merge-Land", iso_code="ZZ")
+    bare = Country(name="Merge-Land")
+    session.add_all([coded, bare])
+    session.flush()
+    assert country_vocab.merge_label(coded) == "Merge-Land (ZZ)"
+    assert country_vocab.merge_label(bare) == "Merge-Land (no code)"

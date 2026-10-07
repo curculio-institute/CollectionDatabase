@@ -1233,6 +1233,17 @@ Two build constraints, both learned the hard way:
   to scroll it when it overflows; two unlabelled arrow pairs side by side read as one control
   with two meanings.
 
+### Merge dialog (generic vocabulary cards)
+
+Both sides are named with `vocab.merge_label` — the code, or **"(no code)"** in a coded
+vocab — in the header *and* the target list, from one `{id: label}` map; the "Kept" side
+once showed the bare name, so folding `Austria` into `Austria (AT)` read "Austria → Austria".
+The entry to keep is **pre-selected only when exactly one other row carries the absorbed
+row's name**; otherwise nothing is selected and Merge stays disabled (the first row of an
+alphabetical list is not a candidate). The target list filters on a search box, scrolls
+inside the dialog, and renders at most 100 rows at a time. The Persons merge dialog is a
+separate copy and does not have the search yet.
+
 ### The ISO-code pill (`.pf-code`)
 
 A code-bearing vocabulary (`Vocabulary(code_attr=…)`: `country`, `state_province`) renders its
