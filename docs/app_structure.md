@@ -114,7 +114,10 @@ The durability guarantee and the three mechanisms that back it (#41):
   **not** mtime — `copy2` copies the source's mtime, so mtimes are not creation order.
 - **Unsaved-changes detection + banner.** A scope-aware bottom banner ("Unsaved changes in:
   *tab*") plus a `beforeunload` guard fire while a data-entry area has unsaved edits (in-app
-  tab switches keep the SPA alive, so they never warn). Detection is **value-based on every
+  tab switches keep the SPA alive, so they never warn). **The banner lists only areas other
+  than the one in view** (`window.tpSetActiveScope`, pushed on every tab / Import sub-tab
+  switch): edits in the open tab are in plain sight, so it is purely a reminder of what was
+  left behind elsewhere; the `beforeunload` guard still counts every area. Detection is **value-based on every
   data-entry tab** (Digitize, Records, Import & Assign — #41, #47): a per-tab `ui.timer`
   polls the form's real field *values* via `has_content()` and pushes the scope to the client
   via `window.tpSetScope()` only when the boolean flips. This is deliberate — **DOM

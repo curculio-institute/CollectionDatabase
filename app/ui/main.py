@@ -542,6 +542,10 @@ def index():
       // Track WHICH areas have unsaved edits (each tab pushes its own scope label
       // via tpSetScope). The banner names them so the user knows where to go.
       var dirty = new Set();
+      // The scope the user is looking at right now (pushed from Python on every tab
+      // switch). Its own unsaved edits are in plain sight, so the banner lists only
+      // the OTHER areas; the page starts on Specimen Digitization.
+      var active = 'Specimen Digitization';
       window._tpDirty = false;
       function banner(){
         var b = document.getElementById('tp-unsaved-banner');
@@ -554,14 +558,16 @@ def index():
       }
       function render(){
         var b = banner();
+        // _tpDirty (the beforeunload guard) counts EVERY scope, the visible one too.
         window._tpDirty = dirty.size > 0;
-        if(dirty.size === 0){ b.style.display = 'none'; return; }
+        var shown = Array.from(dirty).filter(function(l){ return l !== active; });
+        if(shown.length === 0){ b.style.display = 'none'; return; }
         // #172: each scope name is its own clickable span (text-only, several may be
         // listed) so the user can jump straight to the tab that holds the unsaved edit.
         var esc = function(s){
           var d = document.createElement('div'); d.textContent = s; return d.innerHTML;
         };
-        var links = Array.from(dirty).map(function(l){
+        var links = shown.map(function(l){
           return '<span class="tp-banner-nav" data-label="' + esc(l)
             + '" style="text-decoration:underline;cursor:pointer;">' + esc(l) + '</span>';
         });
@@ -588,6 +594,7 @@ def index():
         if(on){ dirty.add(label); } else { dirty.delete(label); }
         render();
       };
+      window.tpSetActiveScope = function(label){ active = label || null; render(); };
       window.addEventListener('beforeunload', function(e){
         if (window._tpDirty){ e.preventDefault(); e.returnValue = ''; return ''; }
       });
@@ -1294,6 +1301,22 @@ def index():
                 refresh_queue()
 
     main_tabs.on_value_change(_on_tab_change)
+
+    # The unsaved-changes banner hides the scope the user is currently looking at —
+    # it is a reminder about edits left behind in ANOTHER tab. Import & Assign is a
+    # sub-tab, so it is "in view" only while that sub-tab is the open one.
+    def _push_active_scope(_=None):
+        tab = main_tabs.value
+        if tab == "import":
+            label = "Import & Assign" if _import_sub.value == "assign" else None
+        else:
+            label = {v: k for k, v in _banner_scope_tabs.items()}.get(tab)
+        arg = "null" if label is None else repr(label)
+        ui.run_javascript(
+            f"window.tpSetActiveScope && window.tpSetActiveScope({arg})")
+
+    main_tabs.on_value_change(_push_active_scope)
+    _import_sub.on_value_change(_push_active_scope)
 
     # #172: clicking a scope name in the unsaved-changes banner jumps to that tab.
     # Import & Assign additionally needs the Import tab's own sub-tab switched.
