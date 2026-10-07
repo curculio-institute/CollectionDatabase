@@ -384,7 +384,7 @@ other row's render is a far worse failure than a missing badge.
 ### Digitize layout modes (normal / single-card)
 
 The Digitize tab has two layouts, chosen in Settings (`AppConfig.digitize_layout`,
-`"normal"` | `"single_card"`). The *policy/decision* lives in CLAUDE.md → "Digitize
+`"normal"` | `"single_card"`). The *policy/decision* lives in `docs/app_structure.md` → "Digitize
 layout modes"; this is the build detail.
 
 Both layouts use the **same cards** (`specimen_card` / `spec_visiting["card"]`,
@@ -1092,7 +1092,7 @@ specimens. Each specimen is finalised through the shared seam
 binds the reserved code and queues **data + identifier + determination** labels for that
 specimen under one shared print group. Biological associations (shared from the bio section)
 are applied to every specimen row. Mounting is the only create mode that queues labels — see
-CLAUDE.md → "Print-queue policy by create mode" for the authoritative per-mode policy.
+`docs/workflows.md` → "Print-queue policy by create mode" for the authoritative per-mode policy.
 
 ### Grouped print sheet layout
 

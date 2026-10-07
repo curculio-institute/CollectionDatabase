@@ -2,1935 +2,276 @@
 
 Project context and working agreement for Claude Code. Read this before writing code.
 
+This file is deliberately **compact**: it holds the binding rules and an index. The full
+rationale, measurements and recorded dead ends live in the linked `docs/` files — **read the
+linked file before working in that area**; the summaries here are not a substitute.
+
 ## Documentation map
 
-`CLAUDE.md` is the always-loaded entry point and the index to everything else. Read the
-linked file when working in that area:
+| File | Owns |
+|------|------|
+| `docs/workflows.md` | Specimen workflows 1–3, the catalog-number exception for foreign collections, bulk import (#39), print-queue policy by create mode, plain identification labels, label editing/overrides (#37, #45/#46, #67) |
+| `docs/data_model.md` | Core tables, media store (#48, #63), external identifiers (#49), life-stage history (#50), confidential/consent flags, why person defaults live in the DB, removed columns |
+| `docs/vocabularies_geography.md` | The generic controlled-vocabulary pattern, `(name, iso_code)` identity, label geo prefix, geocoding (Overpass/Photon) with all measured dead ends, locality eligibility, the reverted boundary check |
+| `docs/taxonomy.md` | Synonym integrity, synonym-aware search (#151), merging names, offline name sources/datasets, code-specific ranks, parent-rank rows, taxon search widget (#152) |
+| `docs/taxonworks.md` | §5 integration constraints, §5b importer gaps, §5c export contract (#149: eligibility, name pre-flight, OTU ids, verified API facts, emitted file), institutionCode/collectionCode namespace |
+| `docs/app_structure.md` | Tab table, Digitize layout modes, service-layer module table, data safety (#41) |
+| `docs/design.md` | *How the UI is built*: UI conventions, widget and layout specs, templates (field-filling tiers, custom dropdown, grouped print sheet) |
+| `docs/schema.html` | Schema reference: tables, columns, every CHECK / STRICT / UNIQUE / FK. **Update it with every schema change.** |
+| `docs/field_occurrence.md` | Field occurrence (HumanObservation) design, PR #115 |
+| `docs/import_assign_todo.md` | Import & Assign open follow-ups |
+| `docs/plant_names.md` | Plant-name lifecycle (local → TaxonWorks → WCVP), the offline WCVP index |
+| `docs/archive/` | Superseded documents; not maintained |
 
-- **`docs/design.md`** — *how the UI is built*: UI conventions, widget specs, layout specs,
-  and reusable implementation templates (field-filling tiers, custom-dropdown checklist,
-  the grouped print sheet).
-- **`docs/schema.html`** — the database schema reference: tables, columns, and the full
-  integrity-constraint list (CHECK / STRICT / UNIQUE / FK).
-- **`docs/plant_names.md`** — *the plant name lifecycle*: where plant names come from
-  (local → TaxonWorks → WCVP), the offline WCVP index and how it is refreshed, which WCVP
-  statuses are importable and which are refused, what an import creates, and why an imported
-  name is thereafter local and never rewritten.
-- **GitHub issues** — all open bugs and tasks live at
-  [`curculio-institute/CollectionDatabase`](https://github.com/curculio-institute/CollectionDatabase/issues)
-  (`gh issue list`), not in this file.
-- **`docs/archive/`** — superseded/historical documents; not maintained.
-
-**Ownership rule (sharp boundary, no duplication):** every topic has **exactly one home.**
-CLAUDE.md owns the *what / why* — decisions, policies, contracts, and reference. design.md
-owns the *how of the UI* — visual layout, widget construction, templates. When a topic spans
-both, CLAUDE.md states the decision and **links** to design.md for the build detail; the
-detail is never copied into both. (There is no "design.md overrides CLAUDE.md" rule — if you
-find the same thing described in both, that is a bug to fix, not a precedence to resolve.)
-
----
+**Ownership rule (no duplication):** every topic has **exactly one home.** `CLAUDE.md` owns
+the binding rule in one or two lines; the topic file owns the full *what / why*; `design.md`
+owns the *how of the UI*. If the same detail is described in two places, that is a bug to fix,
+not a precedence to resolve. New decisions go into the topic file, with at most a one-line
+rule added here.
 
 ## Roadmap / open tasks
 
-Tracked as **GitHub issues** (per the ownership rule below — tasks live in the
-tracker, not this file), `gh issue list`:
+Bugs and tasks are **GitHub issues** on
+[`curculio-institute/CollectionDatabase`](https://github.com/curculio-institute/CollectionDatabase/issues)
+(`gh issue list`, `gh issue view <n> --comments`), not in this file. Close with
+`gh issue close <n>` and reference it in the commit (`Fixes #1`).
 
-- [#37](https://github.com/curculio-institute/CollectionDatabase/issues/37) — Print queue: edit labels before printing (+ batch-edit identical labels)
-- [#38](https://github.com/curculio-institute/CollectionDatabase/issues/38) — Workflow: printing locality labels
-- [#39](https://github.com/curculio-institute/CollectionDatabase/issues/39) — Workflow: bulk-import the existing dataset (unlinked taxon names)
-- [#40](https://github.com/curculio-institute/CollectionDatabase/issues/40) — Collection map view + data analysis tools
-- [#149](https://github.com/curculio-institute/CollectionDatabase/issues/149) — Syncing with TaxonWorks.
-  **Step 3 (emit the export) + the name pre-flight + Step 1 "Compare", including media
-  (step 1.6), are built** (§5c, `dwc_export.py` / `tw_sync.py` / `tw_compare.py` /
-  `tw_media_compare.py` / the TaxonWorks tab). Compare covers which specimens are already
-  on TW (identity = `catalogNumber` via the `/identifiers` index), duplicate
-  catalogNumbers with their namespace, specimens on TW that are confidential locally
-  (`leaked`), specimens on TW that this collection no longer holds (`orphaned` vs.
-  `moved`), field-level differences with a deep link per record, and — since 2026-07-27 —
-  which locally-attached media files are missing from TaxonWorks' Depictions (matched by
-  MD5 fingerprint, migration 0070; diagnostic only, since TW has no import or create path
-  for media — the tab links to TW's own upload UI and stages the exact files locally for
-  drag-and-drop).
-  **Step 2 "Recompare" needs no separate feature** (decided 2026-07-26): it is just running
-  Step 1 "Compare" again after the user has acted on its findings, which the built Compare tab
-  already supports on demand — there is nothing dynamic-per-user-action to build.
-
-(#41 — data safety: crash recovery + unsaved-changes guard — done; see §8 "Data safety".)
-
-Epic #30 (atomic taxon names) phases #33–#36 also remain open until the
-`refactor/atomic-taxon-names` branch is merged.
+- #37 print queue: edit labels before printing · #38 printing locality labels · #39 bulk
+  import · #40 map view + analysis tools
+- #149 syncing with TaxonWorks — export, name pre-flight, Compare and media compare are built
+  (`docs/taxonworks.md` §5c). "Recompare" is just running Compare again; nothing to build.
+- Epic #30 (atomic taxon names) phases #33–#36 stay open until the branch is merged.
+- Historical short-codes: DB-1=#1, U-3=#2, ALT-3=#3, m-1=#4, m-3=#5, m-5=#6, m-6=#7, m-7=#8,
+  m-8=#9, U-1=#10, U-2=#11, T-1=#12, m-2=#13.
 
 ---
-
-## Specimen workflows
-
-**Invariant across all workflows:** every specimen **in the own (default) collection** must
-have an identifier (`catalog_number`); one without must never be committed. Identifiers are
-always physical labels pinned with the specimen.
-
-**The one exception — a specimen held in a foreign collection (decided 2026-10-06, migration
-0072).** Another collection's specimen may have no catalog number at all, and inventing one
-is a false claim about a specimen we do not hold. So `catalog_number` is nullable, **only**
-outside the default collection. The rule is DB-enforced, not a form validation:
-
-- `trg_co_default_requires_catalog_number_ins` / `_upd` RAISE on a numberless specimen in the
-  default collection — on create **and** on re-homing one into it;
-  `trg_repository_default_requires_catalog_numbers` refuses to flag as default a collection
-  that holds any. (A CHECK cannot see a second table, hence triggers; a rebuild of either
-  table must re-create them — `test_schema_integrity.py` guards it.)
-- **NULL is the only spelling of "no number"** (`ck_co_catalog_number_not_blank`). The
-  existing `UNIQUE(repository_id, catalogNumber)` is untouched and does the right thing by
-  itself: SQLite's NULLs are distinct, so any number of numberless specimens share a
-  collection while a filled number stays unique in it. This is deliberately the *opposite*
-  of the geography vocab's `IFNULL` index — there NULL means "the one uncoded row", here it
-  means "no identity claimed".
-- **Fill-once.** A numberless specimen may be given a number later
-  (`update_collection_object`); from then on it is immutable like any other.
-- **Never exported** — see §5c, rule 6. And nothing can stop the same numberless specimen
-  being entered twice: with no handle but its data, two identical ones are
-  indistinguishable. That mirrors the physical situation and is accepted.
-- **Transfers are unaffected.** A specimen given away keeps its number (only `repository_id`
-  moves), and that number can never be handed out again: the next one is derived from
-  `label_code` (`identifiers._next_sequential_number`), whose `code` is globally UNIQUE and
-  whose row outlives the specimen (`ON DELETE SET NULL`) — independent of who holds it now.
-- **Display:** `identifiers.catalog_label` / `format_catalog_display` are the one wording
-  ("no number"); a browse surface must not key a row on the catalog number (Batch tools
-  re-reads its set by id — `batch_ops.fetch_by_ids`).
-
-### Workflow 1 — Retroactive digitisation (Import & Assign)
-
-Use case: specimens already in the collection have data/identification labels but no
-identifier label. A reference table with the relevant data exists, but it may contain
-records for specimens no longer in the collection, so it cannot be imported wholesale.
-
-Process:
-1. Pre-print a batch of identifier labels (Labels tab → reserve codes → print).
-2. Go through the physical collection specimen by specimen.
-3. In the Import & Assign tab, search for the specimen's data (by date, locality, taxon,
-   etc.) and select the matching row from the reference table.
-4. Take one pre-printed identifier label, pin it with the specimen.
-5. Select that code from the "generated but unused" identifier dropdown.
-6. Save → the complete record (data + identifier) is committed to the DB.
-
-Only specimens physically found in the collection ever get a database record. Records in
-the reference table that have no matching physical specimen are simply never selected.
-
-**Collecting-event reuse (decided).** A retroactive-digitisation batch is a long run of
-specimens that often share one collecting event, so Import & Assign **reuses an existing
-`collecting_event` that is 100% identical** to the row being saved rather than inserting a
-duplicate per specimen (`events.get_or_create_exact_event`, passed via
-`save_specimen_entry(reuse_event=True)`). "Identical" is exact: every data column must equal
-what a new row from these fields *would store* — same geo name→FK resolution, float coercion
-and defaults as the insert (one shared normaliser, `_normalize_event_fields`, so create and
-match can't drift). An event that additionally carries a coordinate, habitat, or any column
-the new fields lack is **not** reused. Erring toward create is safe (at worst a duplicate, the
-old behaviour); a false match would silently file a specimen under the wrong locality (§2), so
-the comparison is over *all* columns, never just the ones provided. Only Import & Assign opts
-in; the other create paths still make a fresh event each save.
-
-### Workflow 2 — New incoming specimen (Digitize tab)
-
-Use case: a fresh specimen arrives and needs to be recorded immediately.
-
-Process:
-1. Pre-print identifier labels (can be done in bulk ahead of time).
-2. Open the Digitize tab, fill in all fields (collecting event, taxon, sex, count, etc.).
-3. Select an unused identifier code from the dropdown.
-4. Pin the corresponding label with the specimen and save.
-
-### Workflow 3 — Mounting session (not yet built)
-
-Use case: mounting a batch of specimens that have no labels at all. Need to produce labels
-during or immediately after mounting; identifiers may or may not be assigned at this stage.
-
-Key design decisions:
-- **Identifier timing:** assign identifiers during mounting (immediate). Identifiers are
-  pre-printed in a batch before the mounting session; the user selects one per specimen.
-- **Label layout — adjacent sheet layout (decided):** data label and its matching identifier
-  label are printed on the same sheet, adjacent in paired rows (data row / identifier row /
-  small gap / next pair). Physical proximity on the sheet prevents mix-ups without embedding
-  the code in the data label itself.
-
-**Print queue model implication (decided):** the adjacent layout is implemented as a **pair
-of separate print queue rows** — one `"data"` row (`collection_object_id`) + one
-`"identifier"` row (`label_code_id`) — rather than a combined row type linking both FKs.
-The print service interleaves them into the paired sheet layout. This keeps the exclusive-arc
-constraint on `print_queue` valid and avoids a special-case label type.
-
-This workflow requires a new UI task (staging tab or modal): the user stages N specimens
-that share the same collecting event, sets the specimen count, queues them for printing,
-and the print sheet is generated in one go. Identifications are added later via the Records
-tab.
-
-### Bulk import — staged wholesale record import (#39, decided)
-
-The **wholesale** ingest path, distinct from the row-by-row **Import & Assign** and modelled
-on TaxonWorks' **Import Dataset** (`ImportDataset` / `DatasetRecord`, TW @ `aadf21a`:
-`app/models/import_dataset/darwin_core/{occurrences,checklist}.rb`). The whole uploaded file
-becomes a **durable, resumable entity** — migration 0064's `import_dataset` +
-`import_dataset_record` STRICT tables — not an in-memory parse, so an import can be inspected
-before it writes, resumed after a restart, and de-duplicated against what is already imported.
-
-- **Two phases.** *Stage* validates every row and assigns a per-row status — `ready`,
-  `blocked` (a reason it cannot import yet), `errored` (a hard failure), `imported` — **writing
-  nothing**. *Import* (`import_ready`) creates the records for each `ready` row in a
-  time/count-boxed loop with a **resume cursor** on the dataset (TW persists `import_start_id`
-  the same way). `retry_errored` re-runs only the failures; `blocker_summary` groups blocked
-  rows by distinct reason — the issue's *"surface the ones that can't be resolved"*.
-- **Two `kind`s, exactly as TW splits `occurrences.rb` from `checklist.rb`:**
-  - **`occurrence` — the primary path (records).** Specimen records that **already carry an
-    identifier** (`catalogNumber`, **required** — the "every specimen has an identifier"
-    invariant is satisfied *from the data*, not auto-assigned; a row without one is `errored`).
-    A **collection column** names the target collection, so **one file can span collections**
-    (matched on the repository's full name or code; blank → the home/default via
-    `repositories.get_default`). A *named* collection that isn't set up is **`blocked`**, never
-    fabricated — its catalog-number format belongs to it (§2). **Dedup is the DB's own
-    `UNIQUE(repository_id, catalogNumber)`:** an existing pair is recognised and skipped, never
-    duplicated. Each row resolves its `scientificName` via the taxon resolver below, its event
-    (`events`) and determination through the **same services the row-by-row Import & Assign save
-    uses** — one tested path. Foreign identifiers bind **no** reserved label code
-    (`finalize_specimen(code=None)`, the Visiting-mode policy). **Dates:** an eventDate-only file
-    parses that column; a **verbatim-only** file (every row of the Käfersammlung export) has its
-    `verbatimEventDate` parsed into `eventDate` automatically (`_date_overrides`) — the bulk
-    equivalent of Import & Assign's ⚡ button, deterministic, with the verbatim always preserved
-    and an unparseable date refused loudly (§2/#1).
-  - **`taxon` — a name checklist** (`create_taxon_dataset`), and the internal name-resolution
-    engine the occurrence import reuses (`_chain_for_name` → `taxa.get_or_create_from_chain`,
-    idempotent → the name dedup). Its nomenclatural code is a dataset-level default (a checklist
-    is one code), never guessed; `set_dataset_code` re-stages (the resolve-once seam).
-- Removing a dataset keeps everything it imported (local rows now, same rule as a name-source
-  dataset); the `taxon_id` / `collection_object_id` FKs on the record are `ON DELETE SET NULL`,
-  so deleting the entity forgets the link without deleting the audit record. Service:
-  `app/services/bulk_import.py`; UI: `app/ui/bulk_import_tab.py`.
-
-### Print-queue policy by create mode (decided)
-
-Every specimen-create path runs the same finalization tail through one seam,
-`app/services/specimens.py::finalize_specimen(session, *, collection_object_id, code,
-queue_labels=False, print_group_id=None, source=None, associations=())`: bind the reserved
-identifier code, optionally queue labels (tagged with a print group + origin header), and
-persist biological associations. Which modes queue labels is a deliberate policy, **not** an
-incidental of each tab:
-
-| Mode | `code` | `queue_labels` | Queues to `print_queue` |
-|------|--------|----------------|-------------------------|
-| **Digitize standard** | reserved code | `False` | **nothing** — identifier is pre-printed in a batch and pinned by hand; the specimen already carries its own data labels. The code is still bound (`assign_code`). |
-| **Digitize visiting** ("other collection") | `None` | — | nothing — the collection is picked from the vocabulary, the foreign `catalogNumber` is optional, no reserved code; bio associations still saved. |
-| **Import & Assign** (retroactive digitisation) | reserved code | `False` | **nothing** — same as standard: the specimen already has its data + identification labels; only the pre-printed identifier is added. |
-| **Mounting** | reserved code | `True` | identifier + data + determination — a freshly mounted specimen needs its whole sheet printed, grouped under a "Mounting Session" header. |
-
-**Rationale:** standard / visiting / import specimens already have physical labels; only
-mounting produces fresh specimens that need a printed sheet. (Historical note: Digitize
-standard and Import & Assign formerly enqueued data + determination labels — removed
-2026-06-12; they now queue nothing.)
-
-**Plain identification labels (decided 2026-10-06; migration 0071).** Besides the four
-create modes, the **Labels tab** queues determination labels that belong to **no specimen**
-(card "Identification labels": taxon — with the usual import-if-absent — identifiedBy,
-dateIdentified, sex, typeStatus, qualifier, and a count), for a series identified at the
-bench. Exactly like the identifier labels queued from the card above it, they are print
-jobs, **not records**: nothing is written to `taxon_determination`.
-
-- **The queue row carries the content**, because there is no record to derive it from:
-  `print_queue.taxon_id` (FK, ON DELETE CASCADE as the DB backstop — `taxa.delete_taxon`
-  **refuses** while labels for the name are queued, rather than dropping them silently) + `identified_by_id` (FK → `person`, ON
-  DELETE RESTRICT; `merge_persons` re-points it) + `dwc:dateIdentified` / `dwc:typeStatus` /
-  `dwc:identificationQualifier` / `dwc:sex`. `ck_print_queue_exclusive_arc` has a third arm
-  (a determination row has a specimen **xor** a taxon) and `ck_print_queue_plain_fields`
-  keeps those columns NULL on every other row. The name is still read live from the taxon.
-- **One row per physical label**, all in one "Identification labels" group, each a
-  determination-only column. The print-only override works unchanged: the N copies share
-  one auto text, so editing one edits all.
-- **One owner of "specimen's determination or plain label":** `print_queue._row_det_label`
-  (+ `_is_det_row`, `_det_column_key`). Every reader — sheet, preview, identity, the two
-  HTML getters, the override store — goes through it; never branch on
-  `row.collection_object` for a determination row again, or a plain label is silently
-  skipped. Single write seam: `enqueue_plain_determinations`. UI: `app/ui/plain_det_labels.py`.
-
-**How the queued labels are rendered** (the grouped, column-aligned sheet — groups,
-per-specimen columns, archival, the planned reprint path) is a UI/layout concern and is
-specified in `docs/design.md` → "Grouped print sheet layout". This table is the authoritative
-*policy* (which mode queues what); design.md is authoritative for *layout*.
-
-### Editing labels before printing (decided, #37)
-
-A label is *derived* from the linked records (`_co_to_data_label` / `_co_to_det_label` in
-`print_queue.py`), but the user can apply a **print-only override** per row to fit the tiny
-physical label — abbreviate text too long, or add what the auto-format omits — **without
-changing the record**. The record stays master: substantial corrections are made in Records
-(every label has an "open in Records" link) and the derived label updates from them.
-
-- **Persistence:** the override is stored on `print_queue.text_override` (nullable TEXT,
-  migration 0034 — added via SQLite `ADD COLUMN`, preserving STRICT/CHECK/FK). Blank or
-  equal-to-auto clears it back to the auto-composed text.
-- **Editable rows:** data + determination. **Identifier** rows are **read-only** (the
-  immutable catalog number is the sync join key).
-- **Primary surface:** the interactive **sheet preview** (groups → per-specimen columns →
-  data / id / determination boxes) is the main UI; data/det labels are edited inline.
-- **Identical labels are linked.** Identity is the rendered *auto* text — for a **data**
-  label that means the collecting **event *and* the biological associations** (the label is
-  composed from both), for a **determination** the name — hashed by `_ident` /
-  `_row_auto_identity`. Editing one label applies the override to **every identical** label
-  (`set_override_for_identical`); hovering highlights them. This works across batches /
-  distinct event rows (identity is content, not the event id).
-- **Determination labels** carry the open-nomenclature qualifier (cf./aff.) and type status.
-
-History: a first cut had the queue edit the *record* directly (`update_collecting_event`,
-live determination editor); that was reversed — a label is a physical artifact with size
-limits, and forcing record edits there mixed concerns. The print-only override was
-deliberately (re-)introduced.
-
-**Formatting-aware editing (decided, #45/#46 — done).** The override is **formatted HTML**,
-not plain text, so an edit keeps the scientific name's italics/bold on the printed PDF:
-
-- The preview box is a **`contenteditable` rendered with the real formatted label HTML**
-  (genus+species bold-italic, subgenus italic, associated species italic) — so the preview
-  resembles the PDF (#46). Editing *inside* a `<strong><em>` token keeps its styling; text
-  typed outside stays plain (#45's "knows what was edited", achieved structurally, no
-  token-classification logic). The inline box is for quick tweaks.
-- **Larger editor dialog** (per-box ⤢ button, `_open_label_dialog`): a readable,
-  comfortably-sized WYSIWYG area with a **Bold / Italic toolbar** (select text → click;
-  `document.execCommand` with `styleWithCSS=false` so it emits `<b>/<i>`, which the sanitizer
-  maps to `<strong>/<em>`) — so a user can add explicit formatting without hand-editing tags.
-  The toolbar buttons use a client-side `mousedown.preventDefault` handler so clicking them
-  doesn't collapse the editor's text selection. The dialog also has a **raw-HTML source
-  toggle** (the escape hatch for long/precise markup, which is unreadable in the tiny inline
-  box). The editor's `innerHTML` is read on Save via `ui.run_javascript`; seeded imperatively
-  so Vue never re-binds it. Standard Abort / Save & close modal, deleted on close (timer-leak
-  rule).
-- **Single gatekeeper:** `labels.sanitize_override_html()` reduces arbitrary contenteditable
-  HTML to a tiny safe subset (`<div>` lines of `<em>`/`<strong>`; `<b>`→`<strong>`,
-  `<i>`→`<em>`; all attributes dropped) — applied both on store and on render.
-  `labels._override_html` keeps the legacy plaintext path for old overrides (detected by the
-  absence of tags). `labels.label_auto_html()` composes the formatted auto HTML used to seed
-  the editor and to detect "edited == auto → clear".
-- **Capture seam:** a contenteditable's `innerHTML` cannot ride NiceGUI's event args (the DOM
-  node is stripped before serialisation), so a **global capture-phase `blur` listener** reads
-  `innerHTML` client-side and emits `pq_edit {qid, html}`; the server recomputes the row's
-  auto text (`pq_svc.row_auto_html`) to decide store-vs-clear. This also sidesteps a
-  `v-html`-bound contenteditable being clobbered mid-edit by an unrelated Vue patch.
-
-**One canonical form, stored not sniffed (#67, 2026-07-12).** An override is **sanitised on the
-way in** (`labels.canonical_override`, called by `set_override_for_identical`), so the DB holds
-exactly one form and rendering is a pass-through — *what the preview showed is what prints*.
-Four defects came from getting this wrong, and each is a rule now:
-
-| rule | what went wrong without it |
-|---|---|
-| **An override that renders to nothing is `None`, not an empty override.** `''`, whitespace, `<div></div>` all clear it → the auto text. | `text_override is not None` treated `''` as real, so the label printed **blank**. A blank label pinned to a specimen is a curation error; the record still holds the data, so falling back to auto is always the honest answer. |
-| **A tag we do not emit is text, not markup.** `_looks_like_html` matches only `div/p/br/b/i/em/strong`; the sanitizer emits any *unknown* tag escaped. | `<\w+` took `Quercus <robur>` for HTML and **silently deleted** `<robur>` from the label. |
-| **Input from the editor is always HTML — sanitise it, never sniff it.** (`_override_html` still sniffs, but only to render *legacy* plaintext overrides.) | innerHTML is already entity-encoded: `R & D` arrives as `R &amp; D`, looked tagless, was escaped a *second* time, and printed as the literal `R &amp; D`. |
-| **A row with no auto text has no identity — editable alone, never grouped.** | Identity is "same auto text". A determination label on a specimen with **no current ID** has none: the preview hashed the `—` placeholder (so it grouped them and offered an edit) while the store returned `0` and **dropped the edit silently**; `_co_to_det_label` then returned `None`, so even a stored override never reached the paper. Grouping them instead would be worse — they share only their *emptiness*, so one hand-written name would be stamped onto every unidentified specimen in the queue. |
-
-`canonical_override` is **idempotent** — the stored form is fed back through the editor on the
-next edit, so it must be a fixed point.
-
-Layout/rendering detail is design.md's concern; this section owns the *policy*.
-
-## Open issues → GitHub
-
-Bugs and tasks are tracked as **GitHub issues** on
-[`curculio-institute/CollectionDatabase`](https://github.com/curculio-institute/CollectionDatabase/issues),
-not in this file. Use `gh issue list` / `gh issue view <n>`. Resolved items live in git
-history (and the archived code review under `docs/archive/`).
-
-Historical short-codes used in commits/comments map to issues as follows:
-
-| Code | Issue | Code | Issue |
-|------|-------|------|-------|
-| DB-1 | [#1](https://github.com/curculio-institute/CollectionDatabase/issues/1) | m-3 | [#5](https://github.com/curculio-institute/CollectionDatabase/issues/5) |
-| U-3  | [#2](https://github.com/curculio-institute/CollectionDatabase/issues/2) | m-5 | [#6](https://github.com/curculio-institute/CollectionDatabase/issues/6) |
-| ALT-3| [#3](https://github.com/curculio-institute/CollectionDatabase/issues/3) | m-6 | [#7](https://github.com/curculio-institute/CollectionDatabase/issues/7) |
-| m-1  | [#4](https://github.com/curculio-institute/CollectionDatabase/issues/4) | m-7 | [#8](https://github.com/curculio-institute/CollectionDatabase/issues/8) |
-| m-8  | [#9](https://github.com/curculio-institute/CollectionDatabase/issues/9) | U-1 | [#10](https://github.com/curculio-institute/CollectionDatabase/issues/10) |
-| U-2  | [#11](https://github.com/curculio-institute/CollectionDatabase/issues/11) | T-1 | [#12](https://github.com/curculio-institute/CollectionDatabase/issues/12) |
-| m-2  | [#13](https://github.com/curculio-institute/CollectionDatabase/issues/13) | | |
-
-When you finish an issue, close it with `gh issue close <n>` (reference it in the commit,
-e.g. `Fixes #1`). C-1/2/3, M-1…4, m-4, TX-1 were already resolved before migration to
-GitHub (see git history).
 
 ## 1. What this project is
 
-A **local-first, single-user desktop application** for maintaining an entomological
-specimen collection (primary focus: Coleoptera). The local database is the **source of
-truth**. TaxonWorks is treated as a downstream **published mirror** that we keep in sync
-one-directionally (local → TaxonWorks), with the API used to *verify* state by comparison.
-
-The data model deliberately stays close to what TaxonWorks ingests via its Darwin Core
-(DwC) importer, so that local records translate cleanly to a DwC export for upload. We
-additionally model **biological associations** (e.g. a beetle collected on a host plant)
-following TaxonWorks' `BiologicalAssociation` / `BiologicalRelationship` structure — with
-the important caveat (see §5) that these **cannot be imported via DwC** and are therefore
-local-master with no automated push.
-
----
+A **local-first, single-user desktop application** for an entomological specimen collection
+(primary focus: Coleoptera). The local database is the **source of truth**; TaxonWorks is a
+downstream **published mirror**, synced one-directionally (local → TW), with its API used to
+*verify* state by comparison. The data model stays close to what TaxonWorks ingests via its
+Darwin Core importer. **Biological associations** follow TW's model but cannot be imported
+via DwC, so they are local-master with no automated push.
 
 ## 2. Non-negotiable principles
 
 - **Local DB is the single source of truth.** TaxonWorks is a mirror, never the master.
-- **Sync is one-directional and insert-only** (local → TW). Never design a flow that
-  assumes re-importing updates existing TaxonWorks records — it does not (see §5).
-- **Data integrity is paramount.** Prefer DB-enforced constraints over application-level
-  hope. Enable `PRAGMA foreign_keys = ON` on every connection; use `STRICT` tables; add
-  `CHECK` constraints. A silent wrong value is worse than a loud failure.
-- **Data transformation happens in versioned, testable Python scripts**, never via ad-hoc
-  or LLM-in-the-loop wrangling. Spatial joins, format conversion, and diffing are scripts
-  with deterministic output, committed to the repo, with tests.
-- **Fetch from APIs or local files, not web scraping.** External state (TaxonWorks) comes
-  from its documented API. Reference layers (habitats) come from files on disk.
-- **When a TaxonWorks behaviour is assumed, cite where it was verified** (file:line or API
-  route) in a code comment, so assumptions can be re-checked against a future TW release.
-- **Determinations may target synonyms.** Recording a determination under a name that is
-  later synonymised is valid scientific practice. `taxon_determination.taxon_id` may point
-  to any `taxon` row, accepted or synonym. **The DwC export emits the name AS DETERMINED —
-  it does NOT resolve to the accepted name** (revised 2026-07-25, #149): TaxonWorks has no
-  import path for `verbatimIdentification` at all (the term is absent from its occurrence
-  importer), so resolving a synonym to its accepted name would delete the
-  determination-as-made from the exported record with nothing left preserving it. TW models
-  synonymy itself and matches the protonym, so a synonym name imports correctly. Synonymy is
-  never *pushed* either way — `taxonomicStatus` is `[Not mapped]` — so a disagreement between
-  local and TW is reported by the sync tab and corrected by neither.
-- **Determinations freeze the name as used (Epic #30, Phase 5).** Every ID point saves
-  `dwc:verbatimIdentification` = the *composed full name* of the chosen taxon **at save time**
-  — bare name **plus authorship** (`taxa.compose_full_name`; authorship is part of a name),
-  qualifier-free; the open-nomenclature qualifier lives separately in
-  `dwc:identificationQualifier`. Re-classifying the taxon later never rewrites a saved
-  determination's name, yet `taxon_id` still drives search / grouping / export.
-- **One name renderer — `taxa.render_full_name` (decided).** *Every* surface that shows a
-  scientific name goes through the single owner of the convention: only the genus group and
-  below is italic (a family/tribe/order is roman), the **authorship is roman**, and — for a
-  determination — the qualifier is placed by **two groups** (`_PREFIX_QUALIFIERS` in
-  `taxa.py`), roman: the *doubt* qualifiers `cf.` / `aff.` / `nr.` / `?` **prefix the whole
-  name** (`cf. Otiorhynchus (Nihus) forticollis` — not `Otiorhynchus cf. forticollis`, which
-  would wrongly imply the genus is certain and only the species tentative, a distinction the
-  model does not carry); the *scope* qualifiers `sp.` / `spp.` / `indet.` / `agg.` / `gr.`
-  **suffix the name** by universal convention (`Otiorhynchus sp.`, `Rubus fruticosus agg.`,
-  `Curculionidae indet.`). The set is closed (no user-added values), so the two groups are
-  exhaustive. It renders the *name* only — the determiner/date belong to the *identification*, not the
-  name. Adapters: **`render_full_name_of(taxon, …)`** (from a `Taxon` row) and
-  **`render_full_name_frozen(verbatim, …)`** (splits the authorship back out of a frozen
-  `verbatimIdentification` so it renders roman). `scientific_name_html` and the qualifier
-  placer `_place_qualifier` (was `render_identification`) are **private building blocks** —
-  call `render_full_name`, never them.
-
----
+- **Sync is one-directional and insert-only** (local → TW). TW's importer does not update.
+- **Data integrity is paramount.** Prefer DB-enforced constraints: `PRAGMA foreign_keys = ON`
+  on every connection, `STRICT` tables, `CHECK` constraints. **A silent wrong value is worse
+  than a loud failure** — never skip, drop, null or guess past bad input; refuse loudly.
+- **No fallback defaults** for required fields; make the bad state impossible instead.
+- **Data transformation happens in versioned, tested Python scripts**, never ad-hoc or
+  LLM-in-the-loop.
+- **Fetch from APIs or local files, not web scraping.**
+- **Cite where a TaxonWorks behaviour was verified** (file:line or API route) in a code
+  comment. Verify against the GitHub source at the pinned commit `897f385`, not a local clone.
+- **Determinations may target synonyms**, and the DwC export emits the name **as determined**,
+  never resolved to the accepted name. Synonymy is never pushed either way.
+- **Determinations freeze the name as used:** `dwc:verbatimIdentification` = the composed full
+  name plus authorship at save time (`taxa.compose_full_name`), qualifier-free. Re-classifying
+  a taxon never rewrites it; `taxon_id` still drives search, grouping and export.
+- **One name renderer — `taxa.render_full_name`** (adapters `render_full_name_of`,
+  `render_full_name_frozen`). Genus group and below italic, authorship roman. Doubt qualifiers
+  (`cf.` `aff.` `nr.` `?`) **prefix the whole name**; scope qualifiers (`sp.` `spp.` `indet.`
+  `agg.` `gr.`) **suffix** it. Never call the private building blocks directly.
 
 ## 3. Tech stack (decided)
 
-| Layer            | Choice                                  | Notes |
-|------------------|-----------------------------------------|-------|
-| Language         | **Python**                              | Single language across the whole app. Cross-platform. |
-| Store            | **SQLite** via **SQLAlchemy** ORM       | Single-file, archival-grade, std-lib driver. ORM is the migration escape hatch to Postgres if ever needed. |
-| Schema migrations| **Alembic**                             | All schema changes go through migrations, never manual DDL on a live DB. |
-| App / UI         | **NiceGUI** (on FastAPI)                | Pure-Python UI; renders a real web frontend; **runs in the browser** at localhost — deliberately, not a native window (see below). |
-| Labels / PDF     | **WeasyPrint**                          | Generates tiny specimen labels (≤18×7 mm) as PDF. Micro-font via Context Condensed. |
-| Spatial          | **GeoPandas**                           | Habitat enrichment as a standalone batch script (Phase 3, not yet built). |
-| Future analytics | **DuckDB**                              | Not the store. Optional later layer. Do not introduce yet. |
-
-**The browser is the UI, not an accident (decided).** NiceGUI can open a native window
-(`ui.run(native=True)` + `pywebview`), and it was considered. We stay in the browser because:
-
-- **Attached media and label PDFs open in a tab.** The media store is served at `/media`, so an
-  image or a print sheet gets the browser's own viewer — zoom, save, print, several open at
-  once. A native webview would mean reimplementing that; WebKitGTK cannot even display PDFs.
-- **The unsaved-changes guard is a browser contract.** `beforeunload` (main.py) is what warns
-  before a page close discards typed-but-unsaved data (#41). A pywebview window does not fire
-  it; its `confirm_close` is a generic "really quit?" with no idea which tab is dirty. Going
-  native would silently downgrade a deliberate data-safety mechanism.
-
-Packaging (a single executable) does **not** require a native window: the launcher starts the
-server and opens the user's default browser.
-
-**Environment:** conda env named `collection`. Do NOT touch `phylogeny` or `catalogue` envs.
-Primary dev OS: Arch Linux; all code must remain cross-platform (Windows/macOS).
-
----
-
-## 4. Data model (implemented)
-
-22 migrations applied. Schema is in production use.
-
-### DwC column naming convention
-
-Darwin Core fields are stored on SQLite columns named **`dwc:columnName`** (colon separator,
-camelCase after the colon). SQLAlchemy `mapped_column` maps these to snake_case Python
-attributes. Mermaid diagrams use plain camelCase. Do not deviate from this pattern.
-
-### Core tables
-
-| Table | Purpose |
-|-------|---------|
-| `collection_object` | One physical specimen or lot. `catalog_number` is the stable, immutable sync join key — NOT NULL in effect for the own collection (triggers), nullable for a specimen held in a foreign one (migration 0072; see "Specimen workflows"). `repository_id` FK → `repository` (NOT NULL, ON DELETE RESTRICT — migration 0047, #75) is the **single source of truth for collection membership**; the old denormalised `dwc:collectionCode` + `dwc:institutionCode` text columns were dropped (codes resolve through the repository at export; `UNIQUE(repository_id, catalogNumber)`). `dwc:basisOfRecord`, `dwc:sex`, `dwc:typeStatus`, etc. `preparation_id` FK → `preparation` and `disposition_id` FK → `disposition` (controlled vocabs, not free text — migrations 0039/0048; see "Controlled vocabularies"). `dwc:otherCatalogNumbers` (free text) records prior catalog numbers from previous owning institutions (migration 0049, #77; previous institutions themselves are not recorded). |
-| `collecting_event` | Where/when collected; shared by many specimens. Full DwC locality + coordinate block. `dwc:eventDate` supports ISO 8601 intervals (`2024-06-15/2024-06-20`). `dwc:recordedBy` FK → `person(full_name)`. `habitat_id` + `sampling_protocol_id` (migration 0040) and the geography hierarchy `country_id` / `state_province_id` / `administrative_region_id` / `county_id` / `island_id` (migration 0041) are all controlled-vocab FKs (see "Controlled vocabularies"). `municipality` + `locality` stay free text. **No `dwc:countryCode` column** — dropped in 0057; it is derived from `country.iso_code` (a stored copy drifted: `Germany` could carry `FR`). |
-| `taxon` | Local OTU analogue. DwC parent-link model (GBIF best practices). Columns: `name_element` (atomic source of truth — this rank's own epithet/uninomial, e.g. `crypticus`; migration 0032, Epic #30), `dwc:scientificName` (the *composed* full name without authorship, e.g. `Otiorhynchus crypticus`, maintained from `name_element` + the parent chain), `dwc:taxonRank`, `dwc:scientificNameAuthorship`, `dwc:parentNameUsageID` (self-FK, encodes hierarchy), `dwc:acceptedNameUsageID` (self-FK, marks synonyms — its presence *is* synonym status; `taxonomicStatus` is derived at export, not stored, see below), `taxonworksOtuID`, `ipniID` (the IPNI id of the name a row was imported from — identity like `taxonworksOtuID`, not a `dwc:` term; migration 0053). `dwc:nomenclaturalCode` is **NOT NULL + CHECK**-constrained to the closed list (migration 0054, #96): it is a property of the source or inherited from the parent, never guessed. No denormalised rank columns. |
-| `taxon_determination` | `collection_object` → `taxon` link. `is_current` flag. `taxon_id` may reference a synonym row (deliberate design). `dwc:identifiedBy` FK → `person(full_name)`. **`dwc:dateIdentified` may NOT be an interval** (`ck_td_date_identified_no_interval`, migration 0069): an identification is made on one date, and TW's importer raises *"Date range for taxon determination is not supported."* (`occurrence.rb:1395-1397` @ `897f385`). Deliberately the opposite of `collecting_event."dwc:eventDate"`, which does allow one. |
-| `biological_relationship` | Kind of association (`collected_on`, `feeds_on`, …). |
-| `biological_association` | Exclusive-arc pattern: (`subject_collection_object_id` XOR `subject_taxon_id`) and (`object_collection_object_id` XOR `object_taxon_id`). CHECK enforces exactly-one-non-null per role. |
-| `label_code` | 4-char alphanumeric specimen identifiers (`[0-9a-z]{4}`, ~1.7 M possibilities). Tied to a `label_batch`. Once used on a specimen they are immutable. |
-| `label_batch` | Groups of `label_code` rows with a `created_at` timestamp. Batches can be reprinted only if no code in the batch has been used yet. |
-| `print_queue` | Staged label jobs (`label_type` ∈ {data, determination, identifier}) pending a single print run. Items removed after printing. (The `data` label carries locality/date/collector — there is no separate "locality" type.) A `determination` row may instead be a **plain identification label** with no specimen, its content on the row itself (migration 0071 — see "Print-queue policy by create mode"). |
-| `person_defaults` | Single-row table holding the push-pin person defaults: `default_identified_by_id`, `default_recorded_by_id`, and `default_rights_holder_id` (media rightsHolder; migration 0036). All are `INTEGER REFERENCES person(id) ON DELETE RESTRICT`. See rationale below. |
-| `preparation` | Single-name controlled vocabulary (`id`, `name` UNIQUE) for `collection_object.preparation_id`. First of the single-name vocabularies built on the generic `Vocabulary` service; see "Controlled vocabularies". Migration 0039. |
-| `habitat` | Single-name controlled vocabulary for `collecting_event.habitat_id` (was free-text `dwc:habitat`). Migration 0040. |
-| `sampling_protocol` | Single-name controlled vocabulary for `collecting_event.sampling_protocol_id` (was the hardcoded `dwc:samplingProtocol` UI list). **Seeded** with the curated method set. Migration 0040. |
-| `country` / `state_province` / `county` / `island` / `administrative_region` | The administrative-geography single-name vocabularies on `collecting_event` (migration 0041, #40). Were free-text `dwc:country`/`dwc:stateProvince`/`dwc:county`/`dwc:island`; `administrative_region` (Regierungsbezirk tier) is new and has no DwC term. Resolved name→id in the events service. |
-| `media` | One row per stored file (the bytes live content-addressed on disk; see "Media" below). `sha256` UNIQUE (de-dup). `category` (CHECK ∈ {Image, Sound, Video, Document, Sequence, Other}) is the filter key. Audubon-Core-style metadata; `rights_holder_id` is a **person FK** (ON DELETE RESTRICT), `license` is free text. Migration 0035. |
-| `media_attachment` | Links a `media` row to exactly one of a `collection_object`, `collecting_event`, or `biological_association` (exclusive-arc CHECK; all FKs ON DELETE CASCADE). Per-attachment `caption` / `is_primary` / `sort_order` (mirrors TaxonWorks' Image↔Depiction split). Migration 0035. |
-| `external_identifier` | An external resource link/ID (`source`, `value`, `label`) attached to exactly one of a `collection_object` or a `biological_association` (exclusive-arc CHECK; FKs ON DELETE CASCADE). For an association it denotes the *other party* (optional addition; the association object arc is unchanged). Migration 0037. |
-| `life_stage_record` | Reared-specimen life-stage history: per-specimen `(dwc:lifeStage, dwc:basisOfRecord, dwc:eventDate)` rows for *earlier* stages of the same individual (e.g. the wild larva). FK → `collection_object` ON DELETE CASCADE; `basisOfRecord` CHECK mirrors `collection_object`'s. No duplicate specimen/event rows. Migration 0038. |
-
-### Media storage (decided, #48)
-
-Files attached to a specimen / event / association are **copied into a managed,
-content-addressed store** (`data/media/<xx>/<sha256>.<ext>`, configured by
-`config.media_dir`; served at `/media`). This is deliberate, for *safe & persistent*
-storage:
-
-- **Copy-in, never reference-in-place** — the original can move or be deleted without
-  breaking us.
-- **Content-addressed by SHA-256** — automatic de-duplication (identical bytes → one
-  file, one `media` row) and a built-in integrity check (`media.verify_integrity`
-  re-hashes and compares).
-- **`category`** (Image / Sound / Video / Document / **Sequence** / Other) is a
-  first-class, CHECK-constrained field so media is **filterable by kind**; "Sequence"
-  covers genetic data (FASTA etc.), which Audubon Core has no native category for.
-- **Attachment is a separate row** (`media_attachment`, exclusive-arc to one record) with
-  per-attachment caption / primary, mirroring TaxonWorks' Image↔Depiction split but using
-  the project's FK-safe exclusive-arc instead of a polymorphic association.
-- **`rightsHolder` is a controlled person**, not free text — `media.rights_holder_id` FK →
-  `person` (ON DELETE RESTRICT), so delete/merge integrity applies (the same reason person
-  defaults live in the DB; `merge_persons` re-points it automatically). Both `rightsHolder`
-  and `license` are **Tier-2** fields in the media editor (a push_pin inserts the configured
-  default): the rightsHolder default is `person_defaults.default_rights_holder_id` (a person,
-  in the DB) and the licence default is `config.default_license` (a plain string).
-- **An asset's metadata belongs to the photograph, not to the record it hangs on (#63).**
-  `license` / `rights_holder_id` / `category` live on the shared `media` row and are applied
-  **only when that row is created**. Attaching byte-identical content resolves to the
-  *existing* row (that is the point of the content-addressed store), and writing the upload
-  form's values onto it silently rewrote the licence of every record already using that
-  photograph. Metadata is changed deliberately, via `update_media`. Per-usage fields
-  (`caption`, `is_primary`, `sort_order`) live on `media_attachment` and are always set.
-  Sharing one photo across several *events* is legitimate — one place, two nearby events.
-- Deleting the last attachment of a media asset removes the orphaned `media` row **and**
-  its on-disk bytes; shared content is kept while still referenced. **Commit first, unlink
-  second** (#63): `delete_attachment()` returns the orphaned relative path without touching
-  the disk, and `delete_attachment_and_file()` unlinks it *after* the transaction commits.
-  Unlinking inside the transaction is irreversible while the DB half is not — a failed commit
-  restored the `media` row pointing at bytes that were already gone, which nothing can repair;
-  an orphaned file is merely a tidy-up job. Snapshots cover the `.db` only — `data/media/` is
-  backed up separately, and a rolled-back upload can still leave an orphan file (bytes are
-  written before the row commits); an orphan-sweep is a planned maintenance action.
-- **UI is an icon + popup** (`app/ui/media_panel.py` → `build_media_button`): a compact
-  button with a **count badge** opens a popup with **batch upload** (many files at once),
-  a category filter, and per-item category / primary / delete / details (rightsHolder,
-  licence, caption). It runs in two modes: **bound** (Records — writes straight to the DB,
-  on the specimen, event, and per-association) and **staged** (Specimen Digitization — the
-  record doesn't exist yet, so files are stored and committed to the new records on Save;
-  `commit(session, target_id)`). Staged Digitize media covers the **specimen, event, and
-  each biological association** — `finalize_specimen` returns the created associations so
-  per-association staged media maps to the new ids. Service: `app/services/media.py`.
-
-### External resource identifiers (decided, #49)
-
-A specimen (or a biological association's *other party*) can carry external resource
-identifiers — e.g. an iNaturalist observation **URI** (a resolvable, API-queryable
-identifier, not merely a "link"). Stored in `external_identifier` (exclusive-arc to a
-`collection_object` *or* a `biological_association`; the association's object arc is
-**unchanged** — the URI is an optional addition denoting the other party).
-
-- **The user pastes only the URI** (`value`, NOT NULL). `source`/`label` are nullable and
-  currently unpopulated — kept on the row for flexibility (a source can be derived from the
-  URI later, at export/query time); there is deliberately **no source dropdown or
-  auto-detection** in the UI for now.
-- **UI** (`app/ui/external_id_panel.py` → `build_external_id_button`): a link-icon button
-  with a count badge opens a small modal (list + a single "Resource identifier (URI)" field;
-  **Abort / Save & close**, the standard modal pattern). Bound (Records: specimen +
-  per-association) and staged (Digitize: specimen + per-association, committed on Save).
-  Service: `app/services/external_ids.py`.
-
-### Reared specimens — life-stage history (decided, #50)
-
-A reared specimen is preserved as one stage (e.g. the adult) but was collected in the wild
-as an immature (egg/larva/pupa). We record the life-stage history **linked to the specimen,
-without duplicating specimens or events** (duplication was rejected as invasive/untidy):
-
-- The preserved stage stays on `collection_object` (`dwc:lifeStage`, `dwc:basisOfRecord`),
-  and the specimen's own `collecting_event` carries the original wild date + locality.
-- Each earlier stage is a `life_stage_record` row — `(dwc:lifeStage, dwc:basisOfRecord,
-  dwc:eventDate)` for the *same individual* (e.g. larva / HumanObservation / wild date).
-- **Export (Phase 3, not built):** the preserved specimen → a PreservedSpecimen DwC record;
-  each `life_stage_record` → a separate record (the wild larva as a **HumanObservation**,
-  sharing the specimen's locality, with its own eventDate), the two **linked** via a derived
-  `dwc:associatedOccurrences` / resourceRelationship — **no stored resource-relationship
-  table** (the FK to the specimen is the relationship). `life_stage.life_stage_facets()`
-  returns the facets (preserved first) for the export to consume.
-- **UI:** a timeline-icon button (`app/ui/life_stage_panel.py` → `build_life_stage_button`)
-  with a count badge → a small Abort/Save&close modal (lifeStage + basisOfRecord defaulting
-  `HumanObservation` + eventDate). Bound in Records, staged in Digitize (committed on Save).
-
-### Confidential / privacy flag (decided)
-
-Some records must be withheld when the dataset is exported to TaxonWorks (e.g. a
-sensitive locality, or a collector who must not be named publicly). A **local-only**
-`confidential` flag (`INTEGER NOT NULL DEFAULT 0`, named `CHECK (… IN (0,1))`; migration
-0043, native `ADD COLUMN` so STRICT/CHECK/FK on the two STRICT tables are preserved) lives
-on **three** tables, with **two different export semantics**:
-
-| Table | Confidential means (at DwC export — **Phase 3, contract only; not yet wired**) |
-|-------|------------------------------------------------------------------------------|
-| `person` | **Drop the record — never obscure it** (revised 2026-07-25, #149). A confidential person as the event's `recordedBy` withholds the specimen entirely, unconditionally: the flag is set on the rare person who must not be published, so it is obeyed, not weighed, and there is deliberately **no setting** that turns it into "export the record without the name". `identifiedBy` is *never* withheld or blanked — a determiner's name is a scientific attribution, not personal data the collection is asked to protect. **Superseded:** the former placeholder-substitution rule and its `config.confidential_person_label` are **gone** — a placeholder is a claim a downstream aggregator cannot tell from a real collector name, so a withheld name is written as *no value at all*. |
-| `collection_object` | **Drop.** The specimen is omitted from the export entirely. |
-| `collecting_event` | **Drop its specimens.** A confidential event withholds *all* its specimens from the export (you cannot keep the occurrence but blank the locality — that breaks the record). |
-
-A person additionally carries `consent_approved` (below). The **undecided middle** — neither
-`confidential` nor `consent_approved`, i.e. nobody has asked them yet — is the *only* privacy
-choice that is configurable, via `AppConfig.tw_export_nonconsent`: `"name_removed"` (default —
-export the record with that person's name removed) or `"consented_only"` (export only data
-whose collector has consented).
-
-The flag is **never pushed** to TaxonWorks (not a DwC term); it only governs what the
-exporter emits. It is **not** stored in `config.json` for the same reason person defaults
-aren't: the obscure-label *string* is config (survives a DB wipe), but the per-record flags
-are DB columns.
-
-- **UI** (progressive disclosure — only the rare sensitive record sets it):
-  - **Specimen / Event** — a compact `Confidential` checkbox sharing the card-footer line
-    with the media / external-id / life-stage icons (saves vertical space). In the shared
-    `specimen_form` (`conf_chk`) and `collecting_event_form` (footer row + `footer_slot`),
-    so it appears in both Digitize and Records; seeded from the record, round-tripped on save.
-  - **Person** — `Consented` (✅) and `Confidential` (🔒) columns in the Controlled
-    Vocabularies → People table + checkboxes in the add / edit dialogs
-    (`persons_svc.create_person` / `update_person` take `confidential=` / `consent_approved=`).
-
-**Person consent (migration 0044).** A person also carries `consent_approved` ("Consented —
-export with name"): the collector was **asked and agreed** to be published under their name.
-It is the **opposite** of `confidential` and the two are **mutually exclusive** — enforced at
-three levels: a DB CHECK (`ck_person_consent_xor_confidential`), a service guard
-(`persons._check_consent_exclusive`, friendly `ValueError`), and UI auto-uncheck (checking one
-clears the other). `consent_approved` is informational/curatorial (the consent audit trail);
-`confidential` is what drives export obscuring. ORCID is stored **verbatim** (full
-`https://orcid.org/…` URI; the form placeholder shows the URL form) — never reformatted.
-
-### Why person defaults live in the DB, not config.json
-
-`config.json` stores environment settings (TW credentials, institution code, UI prefs) that
-should survive a database wipe. Person defaults are different: they are **FK references into
-the `person` table**, so storing them outside the DB breaks referential integrity in two ways:
-
-1. **Delete**: a plain JSON string has no FK constraint. Deleting a person who is the
-   configured default silently succeeded, and `get_or_create_person` in the save path would
-   silently recreate them on the next digitizing save — making the delete a no-op.
-2. **Merge**: `merge_persons` re-points all DB FK columns from absorbed → kept via
-   `_fk_references_to_person` (dynamic `PRAGMA foreign_key_list` discovery). A JSON value is
-   invisible to that mechanism, so the absorbed name would persist as the configured default
-   after a merge, recreating the deleted row on next save.
-
-With `person_defaults` in the DB:
-- `ON DELETE RESTRICT` blocks delete at the SQLite level — no application check needed.
-- `_fk_references_to_person` discovers `person_defaults` automatically, so `merge_persons`
-  updates the default alongside all specimen records with no extra code.
-
-**Rule:** never store person name references in `config.json`. Any configurable default that
-references a DB entity belongs in the DB, not in a flat file.
-
-**Service:** `app/services/person_defaults.py` — `get_defaults(session)` returns
-`(identified_by, recorded_by)`; `set_defaults(session, *, identified_by, recorded_by)`
-updates the row. Push-pin `default_fn` closures in UI files open their own session and call
-`pd_svc.get_defaults(s)[0/1]`.
-
-### Controlled vocabularies (single-name; the generic pattern, decided)
-
-Some fields are **controlled vocabularies referenced by FK**, not free text, so they can be
-**edited and merged like persons** (rename once, re-point everywhere; fold a typo into the
-canonical value). Current single-name vocabularies (more may follow — built once, reused):
-
-| Field | Column | Table | Migration | Note |
-|-------|--------|-------|-----------|------|
-| preparations | `collection_object.preparation_id` | `preparation` | 0039 | was `dwc:preparations` TEXT |
-| disposition | `collection_object.disposition_id` | `disposition` | 0048 | was `dwc:disposition` TEXT + a **closed** CHECK; opened up (#76) so holdings like "loaned to Jeffrey" are recordable. **Seeded** with the former six values. DwC `[Not mapped]` by TW |
-| habitat | `collecting_event.habitat_id` | `habitat` | 0040 | was `dwc:habitat` TEXT |
-| samplingProtocol | `collecting_event.sampling_protocol_id` | `sampling_protocol` | 0040 | was a hardcoded UI list; table **seeded** with the curated set |
-| country | `collecting_event.country_id` | `country` | 0041, **0056/0057** | English name (OSM `name:en`); **`iso_code`** = ISO 3166-1 (`DE`). `dwc:countryCode` is **derived from it at export/label time**, not stored (0057) |
-| stateProvince | `collecting_event.state_province_id` | `state_province` | 0041, **0055/0056** | English name (OSM `name:en`); **`iso_code`** = ISO 3166-2 (`DE-BY`) |
-| administrative region | `collecting_event.administrative_region_id` | `administrative_region` | 0041 | Regierungsbezirk tier; **no DwC term** (local field); local name |
-| county | `collecting_event.county_id` | `county` | 0041 | local name (Landkreis) |
-| island | `collecting_event.island_id` | `island` | 0041 | local name |
-
-**Which fields qualify:** *open, user-coined* vocabularies where consistency tooling (merge)
-helps. **Closed standard vocabularies stay fixed CHECK-constrained lists, NOT editable tables**
-— `sex`, `basisOfRecord`, `identificationQualifier`, `license` (editability would create
-`Male`/`male` duplicates or values TW rejects). **`disposition` was on this closed list but
-moved to an editable vocab (#76, migration 0048):** it is genuinely user-coined (the user needs
-arbitrary holdings like "loaned to Jeffrey"), and DwC `disposition` is `[Not mapped]` by TW, so
-freeform values never reach TaxonWorks — the duplicate/reject risk that keeps the others closed
-doesn't apply.
-
-**A geography vocab row is identified by `(name, iso_code)`, never by name (decided 2026-07-10;
-migration 0056).** A subdivision *name* does not identify a subdivision: of the 5,420 ISO 3166-2
-subdivisions, **40 names are shared across different countries** (checked against Wikidata `P300`)
-— `Limburg` = `BE-VLI` + `NL-LI`, `Punjab` = `IN-PB` + `PK-PB`, `Central Province` = six countries.
-Under `UNIQUE(name)` a Dutch-Limburg specimen either silently reused the Belgian row or, with the
-short-lived fill-once ISO stamp, **refused to save**. Both are wrong.
-
-The rule, applied identically to `country` (ISO 3166-1) and `state_province` (ISO 3166-2):
-
-> **exact match on `(name, iso_code)` → reuse; anything else → create a new row.**
-
-**No existing row is ever mutated to carry a code it did not have, and no save is ever refused.**
-A hand-typed `Limburg` must not be silently declared Dutch by a later geocode; it stays an uncoded
-row, and the user folds it with the **merge tool** if the two really are the same place. Duplicates
-are the *expected*, cheap outcome — merge exists precisely for this.
-
-**Two asymmetric inputs refine "anything else → create" — the strict rule applies only where the
-name is actually ambiguous:**
-
-- **Name, no code.** A CSV `country` column with no `countryCode` said "Austria"; the strict
-  `(name, code)` rule answered with a *second*, uncoded Austria beside the geocoded `Austria (AT)`
-  — a duplicate on every import, for a name nothing was ambiguous about. So an uncoded input
-  **reuses the single row bearing that name when there is exactly one** (whether that row is coded
-  or not); it creates its own row only when two or more rows already share the name (`Limburg`
-  BE-VLI / NL-LI), where "which one?" is a real question and guessing would be the silent wrong
-  value. Nothing is mutated either way. (`Vocabulary.get_or_create`.)
-- **Code, no name.** A `countryCode` on a row whose `country` column is blank must not be dropped.
-  ISO 3166-1 alpha-2 is unambiguous, so the country name is **derived from the code** (pycountry —
-  `events._country_name_from_iso`) and then resolved by `(name, code)`, materialising a properly
-  named, coded row rather than a nameless one (`country.name` is NOT NULL — a code-only row is not
-  representable). **Country only:** ISO 3166-2 subdivision names are never derived, because the 40
-  shared names are the reason the strict identity exists in the first place.
-
-`UNIQUE(name)` is replaced by a unique index on **`(name, IFNULL(iso_code, ''))`**. The `IFNULL` is
-load-bearing: SQLite treats `NULL != NULL`, so a plain `UNIQUE(name, iso_code)` would let every
-hand-typed save create yet another uncoded duplicate. Result: exactly one uncoded row per name,
-plus one row per distinct code. `Vocabulary(code_attr=…)` implements the match; `display_label()`
-renders `Limburg (NL-LI)` where a bare name would be ambiguous. Existing rows keep `iso_code =
-NULL` and are **not** back-filled — 40 names are ambiguous, so a name→code backfill would be a guess.
-
-**The label's "Country, State:" prefix collapses exactly one side (decided 2026-07-10).** An
-18x7 mm label has no room for `Germany, Baden-Württemberg`, but `DE, BW` is a cipher — so **one
-of the two always stays written out**, and the *longer* name gives way
-(`label_text.format_geo_prefix`, used by both the PDF and the previews):
-
-| country / state | prints | why |
-|---|---|---|
-| Germany / Bavaria | `Germany, Bavaria:` | both short |
-| Germany / Baden-Württemberg | `Germany, BW:` | the state is longer → its subdivision suffix |
-| Greece / Peloponnese Region | `GR, Peloponnese Region:` | `GR-J` → suffix `J` is useless → the **country** collapses |
-| Sri Lanka / Central Province | `LK, Central Province:` | `LK-2` → a bare digit is useless |
-| France / Corsica Region | `FR, Corsica Region:` | `FR-2A` → a letter-digit code is not an abbreviation |
-| Germany / Baden-Württemberg (uncoded row) | `DE, Baden-Württemberg:` | no state code to collapse to |
-
-The state collapses to the **suffix** (`BY`), unambiguous precisely because the country stands
-beside it — but only when that suffix reads as an abbreviation: **≥2 characters, all letters**.
-Measured against all 5,351 ISO 3166-2 codes, that refuses 18 mixed letter-digit codes (`FR-2A`,
-`NP-P2`, `CZ-20A`, `GR-A1`, `NL-BQ1`) on top of the 353 single-character and ~49% numeric ones. A row with **no ISO code**
-cannot collapse: its name stays and the label grows rather than losing the locality. With no state,
-the old long-country rule (`format_country`) still applies, so a lone `United Kingdom` prints `GB`.
-
-**`dwc:countryCode` is not stored (0057).** Once the country row carries `iso_code`, an event
-column holding the same fact is a second source that drifts — nothing tied them, so `country =
-Germany` with `countryCode = FR` saved happily. Same rule, same reason as `dwc:taxonomicStatus`
-(0030): **derive it at export, never store it.** `label_text.format_country()` reads
-`country_obj.iso_code`; the DwC-CSV importer's `countryCode` now *resolves the country row* by
-`(name, code)` instead of populating a column. The migration first folds each event's code onto
-its country row (only where the events agree on one code) so nothing is lost.
-
-Below the first-order subdivision **there is no ISO code**, so `county` / `island` /
-`administrative_region` keep `UNIQUE(name)` and remain wrong in the same way, with no honest fix.
-`municipality` is free text and stays so — *decided*: a vocab there would invite merging
-`Biberbach` into `Biberach`, two real Bavarian places, and the geocoder's `Municipality of Tripoli`
-vs `Tripoli` is a naming problem, not a merge problem.
-
-**Geography is the exception that proves the rule (revised, #40):** the administrative levels
-*are* controlled vocabs — even though they come from geocoding, the geocoder yields
-language/spelling variants (`Deutschland` vs `Germany`) and the faceted Explore search demands
-consistency, so they're FK vocabs with merge. `municipality` + `locality` stay free text
-(too specific; municipality search is "the map's job"). **Resolution lives in the events
-service** (`_resolve_geo_fields` in `events.py` maps the name keys → `*_id` via get_or_create
-in `create`/`update_collecting_event`), so the event form keeps its geocode-input widgets +
-boundary-warning UI **unchanged** — only the service + the model-read sites resolve by FK.
-Language policy: country + stateProvince in English (Photon `lang=en`), the rest local.
-
-**Geocoding: containment vs proximity (decided 2026-07-10; `collecting_event_form._reverse_geocode`, #40).**
-The two services answer **different questions**, and the administrative hierarchy must come from
-the one that answers *containment*:
-
-- **Overpass `is_in` owns the hierarchy.** It returns the polygons that actually *contain* the
-  point. The **state is identified by its `ISO3166-2` tag**, never by `admin_level` — the level
-  differs by country (`DE-BY` sits at L4, `GR-J` at L5), so a positional rule is wrong. The
-  country relation carries `ISO3166-1`, which supplies `dwc:countryCode` from the data (see
-  "No hardcoded country codes"). English names come from `name:en`, present on country/state
-  everywhere tested; the lower tiers have none and are stored with their local `name`, which is
-  the language policy anyway. `administrative_region` (Regierungsbezirk) is an L5 that is *not*
-  itself the ISO state.
-- **Photon owns locality candidates only.** `/reverse` is a **proximity search** with an implicit
-  radius (~1 km; the `radius` param has a low ceiling — 3 km and 10 km returned the same 1.15 km
-  of results). Its `city`/`county`/`state` describe the **nearest feature**, not the query point,
-  so they are wrong whenever that feature lies across a boundary (measured: at 47.68,11.12 Photon
-  reports `Seehausen am Staffelsee`; the point is inside `Uffing am Staffelsee`). Never read the
-  hierarchy from Photon. Candidates must be **distance-filtered against the uncertainty circle**
-  using the geometry Photon returns (it carries no distance field).
-- Photon *does* return wetlands, streams, peaks and `place=locality` — the earlier claim that it
-  yields "only buildings/streets" was false — so the Overpass `around:` block that re-fetched them
-  is redundant. (It uniquely supplies a peak's `ele`.) Where nothing is within its radius it
-  returns **zero features** (open sea, steppe), which must not blank the form: Overpass still
-  answers, and Photon's hierarchy stays only as an explicit degraded fallback when Overpass fails.
-
-**What counts as a locality — allow by KEY, exclude by VALUE (decided 2026-07-12).** Two
-questions, deliberately answered by two different mechanisms in `collecting_event_form.py`:
-
-1. **May a named feature be *shown* at all?** → `_locality_eligible()` — an **allowlist of keys**
-   (`natural` `place` `water` `waterway` `leisure` `boundary` `landuse` `geological`) with a
-   **blocklist of values inside them**. Every value under an allowed key is eligible unless
-   explicitly excluded, so OSM's long tail (`natural=blowhole`, `arch`, `place=archipelago`) and
-   anything OSM adds later come along **for free** — an allowlist of *values* drops them silently.
-   Every other key (`shop` `amenity` `building` `highway` `railway` `tourism` `man_made` …) is not
-   a place at all, so a **new key can never surprise us with a supermarket**. The exclusions inside
-   the allowed keys are short and stable: individual **plants** (`natural=tree`/`tree_row`/
-   `tree_group`/`tree_stump`/`shrub` — `natural=tree` alone is ~34 M objects, the biggest single
-   noise source), `natural=coastline` (a line, not a place), the **administrative** `place=*`
-   values (they already have their own fields), and `landuse` outside `forest`/`wood`/`meadow`
-   (a named landuse polygon carries the toponym of the wood or meadow itself — *Bodener Wald*,
-   *Neuhüttenwiese* — but the rest of the key is settlement and sports).
-2. **May it be filled in *automatically*?** → `_LOCALITY_KV`, an allowlist of `(key, value)` with a
-   **priority**. Deciding which name silently lands in the record is exactly the *silent wrong
-   value* of §2, so an **eligible-but-unranked** tag is **offered in the menu and never
-   auto-filled** — the field stays empty until the user picks it. Nothing useful is dropped;
-   nothing unvetted is written.
-
-**Selection: highest priority wins; distance only breaks ties** — then the enclosing Overpass area
-as a fallback (`_apply_locality`). And **filter before capping**: the code cut to the nearest
-`_MAX_LOCALITY_POINTS` *before* applying the allowlist, so noise could evict the real locality from
-the candidate budget entirely. Measured at the **Flugplatzheide** (48.3255, 10.8995) — a protected
-heath tagged `natural=heath` **and** `boundary=protected_area` — Photon returns **29 named
-features**, of which **ten are `building=dormitory`** (C8, C9, B3 …) and four are
-`information=board` panels repeating the heath's own name. A named heath 200 m away with a dorm
-between it and the point would have vanished from *both* the menu and the auto-fill, in silence.
-After the fix: 29 features → **1 eligible** → auto-fills *Flugplatzheide*. (A dual-tagged object is
-why both of its tags must be eligible: Photon indexes it under only one of them.)
-
-**Language policy is per tier, and `name:en` is not the default (fixed 2026-07-12).** `_admin_name`
-preferred `name:en` for *every* tier, so an Augsburg lookup filed the Regierungsbezirk as **Swabia**
-instead of **Schwaben** — a tier with no English exonym any German label would use. Only **country
-and stateProvince** are English (`english=True`); admin. region / county / municipality / island are
-the **local** name, by policy and not merely because OSM often lacks a `name:en` for them.
-
-**One Overpass request per lookup — never two in parallel (measured 2026-07-10; dead end, do
-not retry).** The hierarchy and the enclosing-areas blocks look separable (`is_in` admin ≈ 2–24 s,
-areas ≈ 1.2 s), and splitting them into two concurrent requests to fill the island/locality fields
-sooner is the obvious move. It is **8× slower and fails outright** — the public instance grants an
-IP only a couple of concurrent slots, so the second request queues behind the first, times out, and
-the retry backoff compounds. Six runs, alternating, 20 s apart:
-
-| shape | median | max | succeeded |
-|---|---|---|---|
-| one combined query | **3.72 s** | 13.75 s | 6/6 |
-| two parallel queries | 29.19 s | 37.18 s | **0/6** |
-
-`is_in` is evaluated once and both blocks pivot off it, so bundling is cheaper server-side too.
-The failure is *silent-ish* in the UI: a failed admin query drops into the degraded Photon
-fallback, which sets `administrative_region = ""` (Photon has no Regierungsbezirk), so the symptom
-is a mysteriously empty admin-region field, not an error.
-
-**Progressive fill (decided).** Photon (~0.15 s) and Overpass (~3.7 s median) each write **their
-own** fields the moment they land — never one `gather` applied after the slowest returns, which
-made a locality known at 150 ms wait on a 24 s containment query. Each geocode-owned field carries
-its own spinner; the button reads "Detecting…" and disables. **All geocode-owned fields are blanked
-before a lookup starts**: with sources landing separately the previous point's values would
-otherwise sit in the form during the new lookup, and a source that finds nothing (Photon returns
-zero features at 26.015/101.883) would leave them there permanently. Empty + spinner = being looked
-up; empty after = nothing there. A locality carried over from another specimen's coordinates is the
-"silent wrong value" of §2.
-
-**Nominatim is not used** (rejected for per-IP rate limiting after 429s from firing on every pin
-drag; the manual Lookup button removed that condition, but the `ISO3166-2` tag makes its only
-remaining advantage — per-country level→field mapping — unnecessary). Its 1 req/s policy also
-rules it out for the 4-point perimeter boundary check.
-
-**Overpass retries** (`_overpass_post`): 429/502/503/504 + transport errors, backoff 1 s then 3 s,
-three attempts, under a **hard 40 s deadline** (each attempt's timeout is shrunk to the time
-remaining, or a fresh 25 s attempt started at t=26 s would run to 51 s). A 4xx is **not** retried —
-that is a bug in our query, not a busy server. Measured: `is_in` at 26.015/101.883 returned 504
-once, then answered on retry.
-
-**No mirror failover (measured 2026-07-10; dead end, do not add).** `overpass-api.de` allows only
-**2 concurrent queries per IP** (`/api/status`), and it load-balances between two backends
-(`gall.` / `lambert.openstreetmap.de`) — which is why one `is_in` costs 1.2 s or 24 s. Adding
-mirrors looks like the obvious hedge. It is not, on the Augsburg point:
-
-| endpoint | result |
-|---|---|
-| `overpass-api.de` | 1.13 s, 6 admin rows ✓ |
-| `overpass.kumi.systems` | ReadTimeout at 35 s |
-| `overpass.private.coffee` | ReadTimeout at 35 s |
-| `overpass.osm.jp` | ConnectError |
-| `overpass.osm.ch` | **HTTP 200, zero admin rows** — regional (Swiss) data only |
-
-`osm.ch` is the trap: it *succeeds* with an empty result for a German point, so a failover would
-silently report "this point lies in no administrative area" and blank the hierarchy — a silent
-wrong value (§2), which is worse than the honest failure. One endpoint, honest errors.
-
-**Errors must say why** (`_overpass_status` / `_overpass_failure_message`). "Overpass unavailable"
-gives the user nothing to act on. On failure, read `/api/status` (plain text; needs a `User-Agent`
-or Apache answers 406) and report the slot budget: *0 of 2 query slots free for this computer*
-(rate-limited — wait), or *2 of 2 free, so this looks like server load* (retry now). If the status
-page is unreachable too, **suggest** a rate limit, never assert one. The degraded Photon fallback
-also states that the fields came from the nearest feature rather than the containing areas, so the
-user knows to check them.
-
-**Boundary-crossing check — one combined `is_in` (measured 2026-07-10).** Whether the uncertainty
-*circle* crosses a boundary cannot be answered by any single query at the centre. Two dead ends are
-already in the history, do not retry them: `relation(around:r)` matches boundary relations by **way
-node** proximity, so a small circle inside an admin area returns 0 results even when it visibly
-crosses a border (`e4c27bb`); and 8 parallel Photon calls trip 503s, silently dropping points
-(`cd2b6c9`, the Basel tripoint lost France). Sampling perimeter points is therefore still required,
-and it is a **warning heuristic, not a guarantee** — 4 bearings cannot prove a circle is
-boundary-free (`74713ce`).
-
-Overpass takes **several `is_in` in one request**: `is_in(lat,lon)->.pN;
-relation(pivot.pN)[boundary=administrative][name]; convert pt ::id=id(), i="N", …; out;` per point.
-`convert` stamps the sample index onto each relation so results can be attributed back (absent tags
-come back as `""`, not null). Verified at the Basel tripoint: one request, centre + 4 perimeter →
-DE / FR / CH all detected; an interior point yields one hierarchy, no false positive. This also
-returns the **centre's** full hierarchy, so it subsumes the separate hierarchy lookup.
-
-**Cost: ~9–12 s** (a single `is_in` is ~0.9 s; five is roughly linear), and that shape has returned
-504. So it **must not block the form.** Fill from the fast calls first and let this land later —
-`is_in` is *areas*, so `relation(pivot.…)` is required (`rel.pN[…]` silently matches nothing).
-
-**REVERTED (2026-07-12). There is currently NO boundary-crossing check at all**, and that is a
-deliberate state: no warning is better than a wrong one that rewrites a good value. Both shipped
-implementations were unacceptable, in opposite ways — a third design is needed, and it must clear
-*both* bars:
-
-| implementation | correct? | affordable? |
-|---|---|---|
-| **Photon perimeter samples** (original) | **No.** `/reverse` answers *proximity*, not containment, and reports a different admin tier: at a Peloponnese point it names the L4 Decentralized Administration where containment gives the ISO region (`GR-J`, L5). Centre and perimeter could never agree → a **false crossing on every Greek lookup**, and clicking the warning **overwrote a correct `stateProvince`** (#110). It also *missed* real crossings. | Yes — a steady **3.2 s**, on a separate service costing no Overpass slot. |
-| **Overpass containment samples** (#110, PR #117) | **Yes.** Same service and same `_resolve_hierarchy` tiers as the centre; verified at the Basel tripoint (DE/CH/FR all detected) and at the Peloponnese point (no false warning). | **No.** It moved the check onto the **same 2-slot Overpass budget** as the hierarchy query: measured **0.9–12 s and wildly variable** (Overpass load-balances; the same query costs 1 s or 24 s), so a single lookup could saturate the IP's whole allowance and every geocode became slow and unpredictable. |
-
-Constraints for the next attempt (all measured; **do not re-derive**): the dead ends in the
-paragraphs above (`relation(around:r)`, 8 parallel Photon calls, two parallel Overpass queries)
-still stand; four bearings remain a **heuristic, not a guarantee**; and whatever samples the
-perimeter must answer *containment* with the **same tier rules as the centre**, or the comparison
-is meaningless. The bar the Overpass version failed is **cost**, not correctness — an offline
-boundary source (a local admin-polygon layer, cf. the planned GeoPandas habitat join) would clear
-both, since it costs no API slot at all.
-
-Two fixes from #110 are worth keeping whenever the check returns, and were lost with it:
-**a warning must set only the field it belongs to** (`_apply_snap` wrote the *whole* snapshot, so
-picking a *municipality* alternative silently overwrote `stateProvince`), and **an offered state
-should carry its ISO 3166-2 code** (containment identifies the state *by* that tag; Photon had
-none, so a state picked from a warning was stored uncoded — and `(name, iso_code)` is the vocab's
-identity).
-
-**Open (do not guess):** `county` / `municipality` have **no ISO tag** below the first-order
-subdivision. `L6`=county and lowest `L7+`=municipality held across DE/GR/KZ, but that is a
-three-country regularity, not a standard — validate it before relying on it. France already
-strains it (`L5 European Collectivity of Alsace` is not a Regierungsbezirk tier). Germany strains
-it too: a **kreisfreie Stadt** is both Kreis and Gemeinde and appears **once**, at L6 — so at
-Augsburg (48.3324519, 10.9251308) `county=Augsburg` and `municipality` is **empty**. Copying county
-→ municipality would be a guess; leave it empty until the tier can be identified from the data
-(e.g. `de:place=city` / `admin_level` + `place` tags), not from its position.
-
-The shared mechanism:
-
-- **`app/services/vocab.py` → `Vocabulary`** — generic CRUD + merge for any single-name table
-  (`id`, `name` UNIQUE), parameterised by the model. `list` / `options` / `get_or_create` /
-  `create` / `update` / `delete` / `merge_preview` / `merge`. Merge and delete-safety
-  **re-discover referencing FK columns dynamically** via `PRAGMA foreign_key_list` (same
-  mechanism as `merge_persons`), so any FK at the vocab table — present or future — is handled
-  with no hardcoded list. `delete` is blocked while referenced (and the FK is `ON DELETE
-  RESTRICT` as a DB backstop). **Optional default flag:** a vocab constructed with
-  `has_default=True` (its table needs an `is_default` column + partial-unique index) gets
-  `get_default` / `get_default_name` / `set_default` — a single flaggable **Tier-1 autofill
-  default** (mirrors repository `is_default`, #83). `preparation` uses it (migration 0052);
-  the Controlled-Vocab card shows a ★ toggle when `VocabSpec.supports_default`.
-- **`app/services/vocabularies.py`** — instances + a `VOCAB_REGISTRY` of `VocabSpec`s (display
-  metadata; `supports_default` opts a vocab into the ★ default affordance). **Adding a vocab =
-  a model + a migration + one registry entry**; it then appears in the Controlled Vocabularies
-  tab and gets a dropdown field automatically.
-- **`app/ui/vocab_field.py` → `build_vocab_field`** — the data-entry widget, the *same*
-  custom-dropdown UX as the person field (`✚ add <typed>` + existing matches, no free-text
-  escape; reuses person_field's CSS/nav). `get_value()` is the name; **`commit(session)`
-  resolves name → id (get_or_create) inside the save transaction and returns the FK** (exactly
-  like person `commit`). Used in Digitize/Records (shared `specimen_form`), Import & Assign,
-  Mounting, and — since the geography levels are vocabs too — the **collecting-event form**
-  (`country` / `stateProvince` / `admin. region` / `county` / `island`; `_VocabInput` adapts
-  the handle to the `.value` interface the form's field registry drives).
-  - **Code-bearing vocabs** (`code_attr`) additionally carry `get_code()` / `set_value(name,
-    code)`, and render the ISO code as a **pill** — on existing rows *and* on `✚ add Greece
-    GR`, because a geocoded name can be new to the vocab yet already carry a code. The widget
-    lists **`vocab.entries()`** (one row per DB row), never `options()` (a `{name: name}` dict
-    that silently collapses `Limburg` BE-VLI / NL-LI into one).
-  - The event form does **not** use `commit()` for country/state: `events._resolve_geo_fields`
-    stays the single owner of `(name, iso_code)` resolution, so every write path (Digitize,
-    Records, Import) resolves identically.
-- **DwC export** resolves `preparation_id` → `preparation.name` → `dwc:preparations` at export
-  time (mirrors `recordedBy`/`identifiedBy`; nothing denormalised on `collection_object`).
-- **Controlled Vocabularies tab** renders one card per registry entry (`_build_vocab_section`)
-  with edit / merge / delete / add — the generic mirror of the People card. **One section per
-  tab** (People, Collections/Institutions, then the registry), always on — these lists grow
-  without bound. Code-bearing vocabs show an **`ISO code` column**, editable in the add + edit
-  dialogs (the user must be able to supply a code the geocoder never found), and the **merge
-  dialog labels rows with `display_label()`** — without the code, the two `Limburg` rows are
-  indistinguishable in the very dialog that permanently deletes one. Build detail (why NiceGUI
-  tabs and not the Digitize chip bar) → design.md.
-- **Person stays separate** (not folded into `Vocabulary`): it carries extra columns
-  (`abbreviated_name`, `orcid`) and label-printing logic. `Vocabulary` is for the *single-name*
-  case only.
-- **Collections/institutions (`repository`) stay separate too** (multi-column, #56): identified
-  by `collection_full_name` (UNIQUE; `dwc:collectionCode` is optional — migration 0072, see
-  the namespace section), with `institution_full_name` and the two
-  TaxonWorks ids (institution=Repository, collection=Namespace). DwC-mapping columns carry the
-  `dwc:` prefix; the rest are local. It is the source for the identifier label's full
-  collection name (`repositories.name_map`, resolved by the code prefix `JJPC-00304`→`JJPC`)
-  and for the **default collection** (`is_default` flag, migration 0050, #83 — the home
-  collection that stamps new specimens' `repository_id` + catalog-number prefix; see the
-  namespace section). Carries an optional **contact/owner `person_id`** (FK → `person`, ON
-  DELETE RESTRICT, nullable — migration 0051, #79; a single person per collection, no roles;
-  `merge_persons`/delete re-point/block it via the dynamic PRAGMA FK discovery). Its own
-  Controlled-Vocabularies card (not the generic single-name one). Migration 0045.
-
-### Removed from original design
-
-- **`identifier` table** — dropped (migration 0006). `catalog_number` lives directly on
-  `collection_object`; `occurrenceID` is not separately stored at this stage.
-- **Denormalised rank columns** — removed (migration 0012). `dwc:family`, `dwc:genus`,
-  `dwc:specificEpithet`, etc. replaced by the DwC parent-link model.
-- **`dwc:taxonomicStatus`** — **not stored** (dropped in migration 0030). Synonymy is
-  encoded *solely* by `acceptedNameUsageID`: a taxon is a synonym iff it links to an
-  accepted name, otherwise accepted. The DwC Taxon-core `taxonomicStatus` term is **derived
-  from that link at export time**, never stored. History: dropped in 0011 as redundant,
-  restored in 0012 as a CHECK-constrained column for DwC compliance, then re-dropped in 0030
-  because storing a derived value let it drift out of sync with `acceptedNameUsageID` (one
-  row had already drifted). **Do not re-introduce the column** — derive it in the export
-  instead (`tests/test_schema_integrity.py::test_taxon_status_column_dropped` guards this).
-
-### Synonym integrity (acceptedNameUsageID is the single source)
-
-A taxon is a synonym **iff** it links to an accepted name. **Status lives *only* in
-`acceptedNameUsageID`; the name carries its own lineage.** In the atomic-name model (Epic #30)
-every name is parented under its *own* genus — a synonym sits under its own genus, independent
-of its accepted name (so *Curculio forticollis*, a synonym of *Otiorhynchus fortis*, stays
-parented under *Curculio* and composes to "Curculio forticollis"). This is what makes name
-composition uniform for valid names and synonyms, and makes a status flip (synonym ↔ valid) a
-pure **one-field toggle with no name rewrite and no re-parenting**. The tree still groups
-synonyms under their accepted name via `acceptedNameUsageID` for *display* — but until #151
-(below), a specimen determined under a synonym was invisible to search/filter/count by the
-accepted name, and to the tree's own displayed specimen totals.
-
-One invariant remains, enforced by a loud `BEFORE` trigger (migration 0031) that `RAISE`s on
-any violating write — from raw SQL too — and re-declared on any future `taxon` rebuild (DB-1
-discipline; `test_schema_integrity.py::test_synonym_integrity_triggers_present` guards it):
-
-- **`trg_taxon_accepted_is_terminal`** — `acceptedNameUsageID` must reference an accepted
-  (terminal) name, never another synonym. This is GBIF's *chained synonym* rule.
-
-> **Retired (migration 0033):** `trg_taxon_synonym_parent_matches_accepted` — the project's
-> former stricter rule that a synonym shared its accepted name's `parentNameUsageID`. It was
-> dropped when the model moved to own-lineage parenting. Do **not** re-introduce it.
-
-**Single writers (chokepoint).** Every parent / accepted-link mutation on an *existing* taxon
-goes through `app/services/taxa.py`: `synonymize()` (resolve target to terminal, flatten the
-name's own synonyms onto it — parent and name untouched), `make_accepted()` (clear the link
-only), `reparent()` (re-home an accepted name; synonyms are *not* touched, they carry their
-own lineage), and `merge_taxa()` (below). A static test
-(`test_synonym_integrity.py::test_parent_and_accepted_writes_are_centralised`) fails if any
-code outside `taxa.py` assigns these columns directly. **No fallback defaults** — required
-links are inherited or the op fails loudly, never guessed.
-
-**Search and filtering are synonym-aware (#151, decided 2026-07-26).** A determination
-legitimately freezes the name as used (§2) — the person who identified a specimen as
-*Entimus formosus* may not agree with a later synonymisation with *Entimus sastrei*, and that
-name must never be silently rewritten. But the two rows are the **same OTU**, so filtering,
-searching, or counting by *either* name must retrieve/count specimens determined under
-**both** — a search is not a determination, and hiding one name's material behind the other
-is a silent wrong value (§2) by omission.
-
-- **The single shared primitive: `taxa.expand_taxon_scope(taxon_id, children, accepted_of,
-  syn_map)`.** `taxon_id` plus every descendant in the parent/child tree, **plus the synonym
-  group of every taxon reached** (`taxa.synonym_group_ids` — the accepted name + all its
-  synonyms, whichever of the two `taxon_id` itself is). A synonym is parented under its OWN
-  lineage (own genus, possibly a completely different genus than its accepted name's — the
-  *Curculio forticollis* / *Otiorhynchus fortis* example above), so it is **never** reached by
-  the parent/child walk alone, even when its accepted name is well inside the scope; each
-  node's OTU partners are pulled in explicitly as the walk proceeds, so a genus-level filter
-  also reaches a synonym filed in an unrelated genus.
-- **Three call sites, one primitive, no drift:** `explore.py::_descendant_ids` (the taxon facet behind `query_specimens` / `checklist` /
-  `events` / `counts`), `batch_ops.py::descendant_taxon_ids` (Batch tools' "every specimen of
-  a taxon"), and — for free, since it calls the same function — the TaxonWorks sync tab's
-  taxonomy-scope picker (`tw_sync_tab.py`, "Curculioidea only"). The **verbatim** id-scope
-  (`id_scope=("verbatim",)`, matching the frozen `verbatimIdentification` text) is extended
-  the same way but narrower: it matches against every name in the searched taxon's *own*
-  synonym group only, not the full descendant expansion — mirroring how that scope has always
-  searched one node's name, never its children's.
-- **The taxonomy tree's `spec_count` rolls up too** (`taxonomy.py::_build_node`): a synonym's
-  own row still shows its own count (how many specimens are literally determined under that
-  name), and the accepted node's total now *includes* it — so the number displayed in the tree
-  finally agrees with what filtering by that accepted name in Explore actually retrieves.
-- **What does NOT change:** the drawer-order checklist (`explore.py::checklist`) still groups
-  a synonym-determined specimen under **its own** taxonomic position, as its own species row —
-  that mirrors what is physically written on the determination label (the Käfersammlung
-  layout) and is a display decision, not a retrieval one. Only *retrieval/counting* is
-  synonym-aware; *grouping-by-literal-name-used* is unchanged and stays correct.
-
-**Merging duplicate names (de-duplication, NOT synonymisation — decided 2026-07-18).**
-`taxa.merge_taxa(session, keep_id, absorb_id)` (Taxonomy tab → "Merge names") folds two rows
-that are the **same name written two ways** — a typo, or an exact/subgenus duplicate — into
-one: every reference (determinations, biological associations, dataset-record links — all FKs
-to `taxon` discovered dynamically via `PRAGMA`, plus absorb's synonyms and children, the
-latter re-homed through `reparent` and recomposed) moves onto `keep`, then `absorb` is deleted.
-`keep` keeps *its* name/lineage, so choosing which to keep chooses the surviving spelling. A
-determination's frozen `verbatimIdentification` is **not** rewritten — the name as recorded
-stands; only the live `taxon_id` moves. It is **not** a way to record synonymy: `_merge_blocker`
-refuses (loudly, and surfaced in `merge_taxa_preview.blocker`) when the two are **different
-ranks** or **either is itself a synonym** — that is `synonymize()`'s job. The UI dialog carries
-the same warning. (Because the re-points use raw SQL, `merge_taxa` `expire_all()`s before
-deleting `absorb`, or SQLAlchemy would null the NOT-NULL `taxon_id` on determinations it still
-thinks `absorb` owns — the same ORM hazard `delete_taxon` guards against.)
-
-**Preventing the duplicate at the source (Import & Assign — decided 2026-07-18).** The duplicate
-above (`Carabus arvensis` vs `Carabus (Eucarabus) arvensis`) arose because Import & Assign's
-auto-resolver matched on the *exact composed name*, and the subgenus is baked into that name yet
-optional in how a binomial is written — so a bare-binomial CSV cell dead-ended at "Add manually"
-and spawned a second row. Fix: after an exact `find_taxon_by_name` miss, the resolver falls back
-to `find_species_ignoring_subgenus` (matches on `binomial_key` — the name with any `(Subgenus)`
-stripped). A **single** subgenus-insensitive candidate resolves to it (no duplicate); **several**
-(genuinely different subgenera, or an existing duplicate) are **presented, never auto-picked**
-(the silent wrong value of §2). Subgenus placement is unstable across catalogues and often
-omitted, so it is deliberately not a matching discriminator — the binomial is the stable key.
-
-**Manual audit, not automatic.** `verify_taxon_consistency(session)` is a read-only check
-(Taxonomy-tab "Check consistency" button) that reports drift the trigger structurally cannot
-catch at write time (e.g. a raw-SQL edit that chains a synonym after the fact). Issue names
-follow GBIF's `NameUsageIssue` vocabulary (`CHAINED_SYNONYM`, `PARENT_NAME_USAGE_ID_INVALID`,
-`ACCEPTED_NAME_USAGE_ID_INVALID`). It is **not** run at startup.
-
-### Offline name sources — WCVP and user-added datasets (decided 2026-07-11, **experimental**)
-
-A *name source* is a static Darwin Core Archive (Taxon core) indexed into a read-only SQLite
-lookup table, searched from the taxon widget and imported name-by-name (or in bulk). WCVP is
-one instance (plants, ICN, downloaded from Kew); the user may **add others from a file on their
-computer** — e.g. a Coleoptera checklist (ICZN). Engine: `services/name_source.py`; registry:
-`services/datasets.py`. Marked **EXPERIMENTAL** in the UI.
-
-- **The archive describes itself; nothing is configured by hand.** `meta.xml` declares the core
-  file, its delimiter, and every field **by DwC term URI + column index** — so a field is found
-  by *term*, never by the spelling of a CSV header. This is load-bearing: Kew misspells two
-  headers (`scientfiicname`), a correctly-spelled archive writes `scientificName`, and both must
-  work. `_key()` collapses every spelling — term URI, `taxonID`, `taxonid`, `dwc:taxonID`,
-  `dwc_taxon_id`, `taxon_id` — to one lookup key (but never by blindly splitting on `_`, which
-  would turn `scientific_name` into `name`). A `default` field in meta.xml is how an archive
-  states its own **`nomenclaturalCode`** — so the code is *read*, never guessed from the taxa.
-- **Storage:** the chosen file is **copied into** `data/name_sources/<slug>/` (archive + built
-  `index.sqlite`) — never referenced in place, exactly as with the media store. Registered in
-  `config.json` (`name_sources`), because these are *files and settings*, not DB entities: no FK
-  points at them, so the person-defaults rule does not apply.
-  **WCVP lives there too** (`data/name_sources/wcvp/`) — it is a name source like any other, so
-  there is one place to look for every offline checklist and one place to back up.
-  `config.migrate_legacy_dirs()` (run once from `run.py`, before anything reads an index) moves
-  an older `data/wcvp` across: a **rename, never a re-download** — the archive is ~88 MB and the
-  index ~270 MB, and a "missing" index would otherwise send the user to fetch both again. It
-  moves only when the destination does not exist, so it can never overwrite a good install.
-- **UI shape is deliberate** (Settings → Name datasets). Adding a dataset happens *once*;
-  importing every name is a rare, heavy, one-way write. So the add flow lives in a **dialog
-  behind a small "Add dataset…" button** — a full-width drop zone shouted the least-used control
-  on the page — and it reports what it is doing (**"Indexing… N names read"**; a build that shows
-  nothing reads as a hang, and WCVP is 1.45 M rows) and ends on an explicit **"<name> installed"**
-  confirmation that says the names are now searchable and that **nothing needs importing up
-  front**. **"Import all" sits in a per-row ⋮ menu**, not beside the row as a button: there it
-  read as the *confirm* action for the install that had just finished, and it is the one action
-  that must never be clicked by accident. A registered dataset whose index is missing offers
-  Rebuild, never Import all.
-- **Last in the search chain, always:** local → TaxonWorks → WCVP → *datasets*. A user checklist
-  is the fallback when no other source knows the name, never a competitor to them. (`sources`
-  tuple in `taxon_search.py`; `"datasets"` is in the default.)
-- **Representability, not coercion (§2):** a `NameSourceSpec` carries the code, the selectable
-  ranks (**`RANKS_BY_CODE[code]`** — an ICZN source may not offer `variety`), and the status
-  partition (accepted / replaced-by-X / refused). An **unknown `taxonomicStatus` raises at build
-  time** — whether it means accepted, replaced, or unrepresentable is a decision, not a guess.
-  Refused names are still **shown** in search (greyed, no ✚ add), so the user learns the name
-  exists instead of hand-inventing it.
-- **Import walks the archive's OWN parent chain** (`lineage()` → `chain_for()` →
-  `taxa.get_or_create_from_chain()`), rather than reconstructing lineage from denormalised
-  family/genus columns the way the WCVP path must (WCVP models no rank above genus). A chain can
-  express any lineage the source has — notably **a species under its subgenus** — and it is the
-  source's own statement of placement, not our reconstruction. Own-lineage (Epic #30) is
-  preserved: a synonym keeps *its own* parents; its accepted name is built as a separate chain.
-- **A source may skip a rank the model needs — and the workaround must be loud.** The first
-  Coleoptera archive parented all 692 subspecies straight under a **subgenus**, so the chain had
-  no species row, the infraspecific name had nothing to compose from, and it silently produced
-  `Carabus (Megodontus) None germarii`. Two fixes, both kept:
-  - `compose_scientific_name` **never interpolates a missing part** — a bare-epithet name is a
-    visible fault, not a plausible-looking lie.
-  - `_species_ancestor()` recovers the species from the trinomial, **preferring the archive's own
-    species row** (it carries the authorship) and synthesising only the name otherwise, with
-    authorship left NULL rather than guessed.
-
-  **That reconstruction is a defect workaround, not a feature.** A reconstructed entry carries no
-  `source_id`, `datasets.import_all` counts them into `ImportReport.reconstructed_species`, and a
-  non-zero count is **reported to the user** ("the archive should supply those species rows"). A
-  well-formed archive reconstructs **nothing**. *(The archive was since fixed at source — it now
-  ships the 211 missing species, 10,831 taxa, all 691 subspecies under a Species — so this must
-  read 0 for it. If it ever fires again, something regressed; that is the point of the counter.)*
-- **`import_all`** creates a taxon row for every importable name (idempotent — same seam as a
-  single pick). It is warned first: a large one-way write that puts the whole checklist in the
-  Taxonomy tree whether or not specimens are held. It is **not** needed to record specimens —
-  picking a name in the search imports it and its parents on demand.
-- Removing a dataset deletes the archive + index but **not the names imported from it**: those
-  are local taxon rows now (same rule as an imported WCVP name — `docs/plant_names.md` §5).
-- The **distribution extension** (locality / threatStatus) is deliberately **ignored** for now.
-
-### Ranks are code-specific, and so is the genus group (decided 2026-07-11)
-
-**A rank belongs to a nomenclatural code, not to a global vocabulary.** TaxonWorks is the
-authority here and models the four codes as **four separate hierarchies**
-(`app/models/nomenclatural_rank/{iczn,icn,icnp,icvcn}/`, each ordered by walking
-`parent_rank`; TW @ `897f385`) — the same rank *name* can be a different rank class in each,
-and TW has no `/ranks` API route, so the source is the only authority.
-
-We deliberately model a **curated subset**, not a mirror of TW's ~60 ranks — but the *code
-split* must be right, because offering a rank the code does not have invites a silently wrong
-name (§2):
-
-| | |
-|---|---|
-| ICZN only | `superorder`, `superfamily`, `supertribe` — ICN's family group is only family/subfamily/tribe/subtribe |
-| ICN only | `section`, `subsection` (genus group) + `variety`, `subvariety`, `form`, `subform` — ICZN has **no rank below subspecies** |
-
-`taxa.TAXON_RANKS` stays the single high→low ordering (hierarchy validation indexes into it);
-**`RANKS_BY_CODE` / `ranks_for(code)`** give the selectable subset per code. Each subset is a
-**subsequence** of `TAXON_RANKS`, so index-based parent/child rank comparisons stay valid
-across codes. An unknown code offers *everything* (a new taxon before its parent is chosen);
-the editor narrows the list as soon as a parent supplies the code, and `validate()` refuses a
-rank the code lacks. A row whose stored rank is wrong for its code is still **kept in the
-dropdown and editable** — a bad state must be reachable by the tool that repairs it.
-
-**The editor asks for the parent BEFORE the rank**, because the code is inherited from the
-parent and the code is what decides which ranks exist.
-
-**The two codes write the genus group differently, and both halves matter** (`taxa.py`,
-`_ICN_GENUS_CONNECTOR`):
-
-| | subgenus row | species under it |
-|---|---|---|
-| ICZN | `Otiorhynchus (Nihus)` — brackets | `Otiorhynchus (Nihus) armadillo` — carried into the binomial |
-| ICN | `Taraxacum subg. Palustria` — connector | `Taraxacum officinale` — **not** carried; a botanical binomial is genus + epithet |
-
-So the subgenus interpolation in `compose_scientific_name` is **ICZN-only**, and a species
-under a botanical subgenus *or* `section` composes as a plain binomial (the section is
-classificatory, not part of the name). `Taraxacum sect. Ruderalia` uses the same connector
-mechanism as the existing ICN infraspecific terms (`subsp.`/`var.`/`f.`).
-
-### Parent-rank taxon rows
-
-Every TW species import creates dedicated `taxon` rows for each ancestor rank (genus,
-subgenus, tribe, subfamily, family, order) via `_ensure_parent_rows()` in
-`app/services/taxa.py`. Each ancestor row is linked to its own parent via
-`dwc:parentNameUsageID`. Every writer (TW, POWO, manual) sets the atomic `name_element`
-and **composes** `dwc:scientificName` from it + the parent chain (`compose_scientific_name`);
-rows are matched by `(composed dwc:scientificName, dwc:taxonRank)` or OTU id. A subgenus
-ancestor is therefore stored composed as `Genus (Subgenus)`, a species ancestor as
-`Genus epithet`. A reparent/rename cascades via `recompose_subtree()`. Synonyms are
-parented under their **own** lineage (own genus), never the accepted name's (Epic #30).
-
-`ensure_higher_taxa()` is a no-op in the DwC parent-link model (backfill not needed).
-
----
-
-## 5. TaxonWorks integration constraints (verified against the codebase)
-
-Verified against `SpeciesFileGroup/taxonworks` `main` @ commit `897f385` (2026-06-03).
-Re-verify if targeting a different TW release.
-
-- **The DwC importer is CREATE-ONLY; it does not upsert.**
-  `DatasetRecord::DarwinCore::Occurrence#import` calls `Specimen.create!`/`Lot.create!`
-  unconditionally (`occurrence.rb:310`) and never looks up an existing CollectionObject by
-  `occurrenceID` to update it. Re-uploading overlapping records therefore either
-  **duplicates** them or **errors** on identifier-uniqueness collision.
-  → **The push path may only carry genuinely new records (inserts).** Compute the delta;
-  never re-upload the full dataset.
-- **Identity preserved on import:** `occurrenceID` → `Identifier::Local::Import::Dwc`
-  (`occurrence.rb:378`); `catalogNumber` → `Identifier::Local::CatalogNumber`. Use
-  **`catalogNumber` within a defined namespace** as the authoritative, immutable join key
-  for diffing local vs TW. Never mutate it locally once assigned.
-- **DwC-Archive extensions are staged but `Unsupported`** (not imported). Do not rely on
-  the star-schema extension mechanism for anything.
-- **Biological associations CANNOT be imported via DwC.** `associatedTaxa` is `[Not mapped]`
-  (`occurrence.rb:948`) and extensions are `Unsupported`. They are therefore **local-master
-  with no automated push**: create them manually in the TW UI or via TW's internal CRUD API
-  as an out-of-band step. They *can* be **read back** for verification via
-  `/api/v1/biological_associations`.
-- **Read/compare endpoint:** `/api/v1/dwc_occurrences` (auth via `project_token`) returns a
-  DwC projection of all collection objects — diff target for the sync tool. It is a
-  **generated/cached projection**, so it may lag behind a fresh import; refresh/confirm
-  before diffing.
-- **Updates/deletes are not in the v1 API.** Keep sync one-directional; treat any
-  update/delete as a manual exception.
-- **No `/repositories` or `/namespaces` endpoint** (verified absent at TW `aadf21a`,
-  2024-10-07; re-check on a newer release). The two TW ids on the `repository` table —
-  `taxonworks_institution_id` (=TW **Repository**) and `taxonworks_collection_id` (=TW
-  **Namespace**) — therefore **cannot be looked up by name via the public API**. They appear
-  only as foreign-key integers on other records: `repository_id` on
-  `/api/v1/collection_objects/:id` (id only — not resolvable to a name in v1), and
-  `namespace_id` on `/api/v1/identifiers/:id` (resolvable: `extend=[namespace]` embeds
-  `id/name/short_name/institution`). So **populate these two columns by hand** (or read them
-  back off an already-uploaded record to verify) — **do not plan an automated "fetch the TW
-  ids" step** unless a future TW release adds the endpoints.
-- **TW synonym detection:** use `cached_is_valid` (reliable) and `cached_valid_taxon_name_id`
-  (reliable) from `/api/v1/taxon_names`. Do NOT use `valid_taxon_name_id` alone — it returns
-  `null` for valid names, making it ambiguous. `fetch_full_classification()` in
-  `app/services/taxonworks.py` handles this and attaches `_valid_tw_data` / `_valid_otu_id`
-  to the data dict when the name is a synonym.
-- **TW label_html** contains visual-only badge markup (rank, family context, original
-  combination). Strip `feedback-secondary`, `feedback-info`, `feedback-notice` + `feedback-thin`
-  badges before display; keep `feedback-warning` (✗/✓ synonym indicators).
-- **Beyond standard DwC terms**, TW accepts `TW:`-namespaced columns on the occurrence core
-  (`TW:DataAttribute:…`, `TW:Namespace:…`, `TW:TaxonDetermination:otu_id`, etc.).
-
----
-
-## 5b. TaxonWorks known shortcomings and gaps
-
-Verified against `occurrence.rb` @ commit `897f385` (2026-06-03). Re-verify against a
-newer release before relying on any of these being fixed or still present.
-
-### DwC importer field gaps
-
-Fields that exist in DwC and are relevant to this project but are **silently ignored** by
-TW's DwC importer (marked `[Not mapped]` in `occurrence.rb`):
-
-| DwC field | occurrence.rb line | Impact |
-|---|---|---|
-| `taxonomicStatus` | ~1513 | Synonym/accepted status not imported; managed locally only |
-| `disposition` | ~834 | Specimen disposition not imported; managed locally only |
-| `ownerInstitutionCode` | ~728 | Silently ignored; removed from local DB in migration 0015 |
-| `associatedTaxa` | ~948 | Biological associations cannot be imported via DwC at all |
-
-### basisOfRecord — only PreservedSpecimen or FossilSpecimen
-
-TW's DwC importer raises a validation error for any `basisOfRecord` value other than
-`PreservedSpecimen` or `FossilSpecimen` (`occurrence.rb:743`). Other standard DwC values
-(`HumanObservation`, `MachineObservation`, `MaterialSample`, etc.) are rejected.
-
-Note: TaxonWorks **does** have a `FieldOccurrence` model (distinct from `CollectionObject`)
-and **exports** field occurrences as `HumanObservation` in DwC. However, there is no DwC
-**import** path for `HumanObservation` → `FieldOccurrence`. Field occurrences can only be
-created via TW's internal UI or API. This is a TW limitation, not a DwC standard gap.
-
-### FieldOccurrence has no DwC import path
-
-If field sightings (specimens not collected) become relevant, they cannot be pushed to TW
-via the DwC sync path. A separate integration using TW's internal CRUD API would be needed.
-This is currently out of scope for this project (all records are preserved specimens).
-
-### sex — no fixed controlled vocabulary at import
-
-TW's importer accepts any single-word string for `sex` and dynamically creates biocuration
-classes (`occurrence.rb:786`). There is no fixed vocabulary enforced at import; the
-constraint is only that the value contains no whitespace. This means our local `sex` values
-will always be accepted, but TW may create duplicate biocuration classes if capitalisation
-varies (e.g. "Male" vs "male").
-
-### No update or delete via DwC or v1 API
-
-The DwC importer is CREATE-ONLY (`occurrence.rb:310`). The v1 REST API has no `PATCH` or
-`DELETE` for collection objects. Any correction to an already-imported record must be done
-manually in the TW UI. This constrains the sync direction to insert-only forever.
-
----
-
-## 5c. Syncing with TaxonWorks — the export contract (#149, in progress)
-
-The **TaxonWorks** tab (`app/ui/tw_sync_tab.py`) is built only when a connection is configured
-(`AppConfig.taxonworks_enabled` — a base URL *and* a token; with no token every action would
-fail at the first request, so the honest place to say "not set up" is the tab's absence).
-Services: `app/services/dwc_export.py` (eligibility + projection + writer) and
-`app/services/tw_sync.py` (name pre-flight + OTU reconciliation).
-
-**Source-of-truth correction.** §5/§5b cite `occurrence.rb:NNN`. The file is
-**`app/models/dataset_record/darwin_core/occurrence.rb`** (the per-*row* mapper, 1820 lines) —
-*not* `app/models/import_dataset/darwin_core/occurrences.rb` (238 lines, the dataset-level
-staging class). The **line numbers in §5/§5b are stale for the pinned commit `897f385`**
-(§5b cites `associatedTaxa` at ~948; at 897f385 it is at **743**). Re-grep, don't trust them.
-
-### Eligibility has two independent grounds: privacy and certainty (decided 2026-07-26)
-
-`dwc_export.export_decision` is the single owner of "may this specimen leave the building",
-read by both the comparison and the writer. It withholds on **three unrelated grounds**, and
-`ExportDecision.privacy_reasons` / `.determination_reasons` / `.identity_reasons` keep them
-apart:
-
-- **Privacy** — the three `confidential` flags + person consent (the table in "Confidential /
-  privacy flag"). Unchanged.
-- **Certainty of the current determination** — new. **A qualified identification is not
-  exported**, for *any* value in the closed set (`cf.` `aff.` `nr.` `agg.` `gr.` `?` `sp.`
-  `spp.` `indet.`): the qualifier **expresses doubt**, and the mirror is a published statement
-  of what this collection holds. **A determination above species rank is not exported either**
-  (species or below — a subspecies is *more* precise, not less), nor is a specimen with no
-  current identification. A rank the model cannot place is reported as *unplaceable*, never as
-  "not to species" — we never compared it.
-- **Identity — no catalog number** (rule 6, decided 2026-10-06). TaxonWorks itself would
-  take the row: its importer creates the CatalogNumber identifier only
-  `if attributes.dig(:catalog_number, :identifier)` (`occurrence.rb:344` @ `897f385`). That
-  is exactly the problem — its *"Is already in use"* guard (`:366`) sits inside that branch,
-  and our Compare recognises "already on TaxonWorks" by catalog number alone. A numberless
-  specimen would look not-yet-uploaded forever and be **created again by every export**.
-  The specimen row shows it in the catalog slot itself ("no number", with the consequence
-  on hover) rather than as a fourth badge. *Not built, deliberately:* matching on a locally
-  minted `occurrenceID` instead — TW stores it as `Identifier::Local::Import::Dwc` only when
-  the import dataset has a core-record-identifier namespace set and drops it silently
-  otherwise (`:378-383`), and whether `/identifiers` returns that type usably is unprobed.
-
-All three are absolute, with **no setting**, for the same reason rule 3 (a confidential collector)
-has none: the importer is CREATE-ONLY, so a record published too early can be neither
-corrected nor deleted through the API, while a record withheld today exports fine tomorrow.
-
-**The reason travels with the specimen, not in a list of its own (decided 2026-07-29, #170).**
-Ineligibility is a property of a record, so it is shown **wherever that record is browsed** —
-three badges on the shared specimen row (`record_summary.py`), one per ground, in
-`export_decision`'s own rule order. The TaxonWorks tab accordingly has **no "Why some are not
-eligible" expansion**: clicking a collection's *Not eligible* box opens the identical
-catalog-number list in Explore, where every row carries its own reason. One list, not two —
-and a page-level list of every withheld record grows without bound on a real database, while
-the badges cost nothing per row. The badge vocabulary (glyphs, the three colours, the
-one-badge-per-*ground* rule) is design.md's → "Specimen-row export badges".
-
-**`export_decision` stays the single source for those badges** — a specimen the row calls
-withheld can never be one the sync tool disagrees on. So the surfaces that need to explain
-*which* ground applies read `ExportDecision.recorded_by_state` (`""` / `confidential` /
-`blocked` / `redacted`) and `.determination_reasons`, both added for this, rather than
-re-deriving either from `reasons` by string-matching. It takes the current
-`TaxonDetermination` as an optional parameter for the same reason it already takes `event`:
-the list surfaces have outer-joined it already, and without it each row lazily re-derived it
-(measured: 20 specimens, 21 extra queries). Its default is a **sentinel, not `None`** —
-`None` is the legitimate "genuinely undetermined" value, and a `None` default would silently
-fall back to the lazy lookup for exactly the specimens that most needed the fix.
-
-**TaxonWorks could not carry the qualifier anyway** — worth recording, because the API makes it
-look like it could. Its importer folds `identificationQualifier` into the **OTU's name**
-(`otu_names` → `otu_attributes[:name]`, `dataset_record/darwin_core/occurrence.rb:1573-1576` @
-`897f385`), so `cf.` arrives as an OTU literally named `"cf."` on the protonym — measured on our
-own sandbox upload, OTU 1707966, `name: "cf."` on *Dodecastichus geniculatus*. And its
-`dwc_occurrences` projection never emits the term back: no entry in
-`CollectionObject::DwcExtensions::DWC_OCCURRENCE_MAP`, no `dwc_identification_qualifier` in
-`Shared::Dwc::TaxonDeterminationExtensions`, though the column does exist in `db/schema.rb`.
-Hence `identificationQualifier` is **not** a `tw_compare._DIFF_FIELDS` entry — it could only
-ever report a difference, never agreement (the `occurrenceID` / `stateProvince` rule again).
-
-A **further constraint for any future `TW:` column work**: `occurrence.rb:74`'s
-`OTU_ID_INCOMPATIBLE_FIELDS` lists `identificationQualifier` alongside `scientificName`,
-`scientificNameAuthorship`, `typeStatus`, `nomenclaturalCode` and the classification terms — so
-a file carrying `TW:TaxonDetermination:otu_id` may carry none of them.
-
-### The export is gated on a name pre-flight (decided)
-
-**Nothing is exported until every name it would carry is confirmed present on the currently
-configured instance.** A missing name cannot be repaired afterwards, and the failure mode is
-silent: with TW's *"restrict to existing nomenclature"* **unset** (its default), the importer
-**creates** the missing protonym *and* an OTU (`occurrence.rb:203`, strategy chosen at `:269`),
-walking the whole parent chain — so an export quietly injects names, typos included, into the
-project's nomenclature. With it set, the row errors instead. Recommend setting it.
-
-`tw_sync.check_names` classifies each name `match` / `missing` / `ambiguous` / `rank_mismatch`
-/ `error`; only `match` is exportable. Two safeguards are load-bearing:
-
-- **A false "missing" is worse than no check.** It sends the user to hand-create a name that
-  already exists — manufacturing the homonym duplicate the check exists to prevent. So a
-  **subgenus-only** difference is a match-with-note, never "missing" (placement is unstable
-  and often omitted; see `taxa.binomial_key`).
-- **Authorship is the homonym tiebreaker, not decoration.** TW disambiguates same-spelling
-  protonyms on `scientificNameAuthorship`, including whether it is parenthesised (a subsequent
-  combination) and `year_of_publication` (`occurrence.rb:126-145`). A difference is reported
-  (measured: local `Schönherr, 1826` vs TW `Schoenherr, 1826`).
-
-### OTU ids are per-instance and are verified in reverse, never compared (decided)
-
-`taxon.taxonworksOtuID` was captured from whichever instance the name was imported from. **The
-same integer denotes a different entity — or nothing — on another server.** So:
-
-- `AppConfig.tw_otu_instance` records the **host** the stored ids belong to; empty or differing
-  from `tw_base`'s host ⇒ **untrusted**. (Config, not a per-row column: nothing FKs to a TW id
-  and the app mirrors one instance at a time.)
-- A stored id is checked by asking TW *what it actually denotes here* —
-  `GET /taxon_names?otu_id[]=<id>` — giving `confirmed` / `mismatch` / `absent`. Measured: all
-  39 ids captured on `sfg.taxonworks.org` return **zero rows** against `sandbox.taxonworks.org`.
-  **Known limitation — `confirmed` does not survive a homonym (2026-07-26, deliberately not
-  fixed).** The check compares TW's `cached`, which is the bare name with **no authorship**, so
-  where two protonyms share a spelling it cannot tell which one the id denotes. Measured on
-  sandbox: `Otiorhynchini` exists twice (taxon_name 2094695 `Schoenherr, 1826`, 2743726
-  `Schönherr, 1826`); the stored id 1299727 resolves to the *Schoenherr* one while the local row
-  records *Schönherr*, and the check still says `confirmed`. Harmless while **no OTU id is
-  emitted anywhere** — the export has no such column — so this is left alone by decision.
-  **Fix it before emitting `TW:TaxonDetermination:otu_id`**, by comparing authorship too
-  (`authorship_matches`), and note that a bare `ö`/`oe` difference must stay an informational
-  note, never a `mismatch` — that transliteration difference is expected and already documented
-  above.
-- `tw_sync.reconcile_otu_ids` re-points them by name and is called **explicitly**, never as a
-  side effect of checking.
-
-**The stamp is asymmetric: hard to earn, easy to lose (decided 2026-07-26).** It is a claim about
-*every* stored id in the database, so `reconcile_otu_ids` records it **only** when nothing anywhere
-is left unvouched, while `invalidate_otu_provenance` retracts it on a **single** `absent`/`mismatch`
-verdict and **never sets it**. A manual fix (`set_stored_otu_id`) never grants it either. This was
-learned the hard way twice: stamping after a *partial* reconcile (fixed in 0068-era `2a63a10`) wrote
-a stamp claiming 39 ids were sandbox's when 28 were sfg ids resolving to nothing there — and because
-the stamp suppresses the tab's warning, the lie hid itself.
-
-**Reconciliation is scoped to `taxa_with_stored_otu_ids`, never to the export's names.** A chain
-import stamps an id on **every ancestor it walks** (`taxa._ensure_parent_rows`), so suborders,
-families, tribes and subgenera carry ids that no export ever names. Measured: 39 rows held an id and
-only 11 were determination targets, so a reconcile scoped to `taxa_to_export` could not reach 28 of
-them *by construction* — `unvouched` could never fall to zero and the tool reported a state it
-offered no way out of.
-
-**What cannot be resolved automatically is listed, not counted** (`ReconcileResult.unvouched_rows`):
-each row names the taxon, the id it still stores, why the match refused, and TaxonWorks' candidates,
-with a per-name manual fix. Choosing between homonyms is the user's judgement — which is exactly why
-`check_names` refuses to guess it — so the picker labels each candidate with its **authorship**, the
-tiebreaker (§5c). **Clearing an id is a legitimate fix:** for a name absent from this instance, an id
-captured elsewhere is a false claim about this server, where an empty column claims nothing (§2).
-
-### Verified API facts (probed 2026-07-25; do not re-derive)
-
-Parameters cross-checked three ways: the OpenAPI specs (the user's reference clone at
-`0_TaxonWorks/Reference/taxonworks_api/docs/openapi/`), `rdoc.taxonworks.org`'s
-`Queries::*::Filter` classes, and live probing.
-
-| fact | consequence |
-|---|---|
-| **Unknown query params are silently ignored** (a bogus param returns the unfiltered table) | Never trust that a filter applied. An oversized result set is treated as a *lookup failure*, never as matches — a filter that silently didn't apply would read as "not on TW" and, against a CREATE-ONLY importer, push undeletable duplicates. |
-| `name[]=<composed name>` + `name_exact=true` matches TW's `cached` exactly | The name pre-flight primitive. The **scalar `name=`** form is NOT this filter — it returned 2257 unrelated names. `rank[]`, `validity`, `otu_id[]`, `nomenclature_code` are also real params. |
-| `catalogNumber` is populated on only **1/500** `dwc_occurrences` rows | The DwC projection is **not** a usable identity source. Use `GET /identifiers?type=Identifier::Local::CatalogNumber&identifier_object_type=CollectionObject` (`identifier`, `identifier_object_id`, `namespace_id`). On sandbox 153 CatalogNumbers exist but only **11** are on CollectionObjects — 140 hang on Containers, 2 on Images. |
-| `dwc_occurrence_object_id` = the TW `collection_object_id` | Feeds the deep link `{web_base}/tasks/accessions/comprehensive?collection_object_id=N`. `taxonworks.web_base()` derives the web root from the API base (never a second config field). |
-| `per=5000` is honored; totals in `pagination-total` headers | The whole occurrence set is ~5 requests. Most rows are `AssertedDistribution`/`MaterialCitation`; filter `dwc_occurrence_object_type=CollectionObject`. |
-| **No `/preparation_types`, `/namespaces`, `/repositories`, `/biocuration_classes`** (404) | We **cannot** pre-validate preparations or the namespace mapping — they become a pre-flight checklist the user satisfies in TW by hand. `/otus`, `/people`, `/images`, `/depictions` **do** exist. |
-| `extend=[…]` is ignored on index routes — **except `/identifiers`** (measured 2026-07-26: `extend[]=namespace` embeds id/name/short_name/delimiter on the index) | Resolve related records with a second call, but check first: the claim is per-route, not global. |
-
-**The `/identifiers` catalog-number index (probed 2026-07-26; the join key is not the obvious one).**
-The identity source §5c already prescribes, now measured in detail — **do not re-derive**:
-
-| fact | consequence |
-|---|---|
-| **TaxonWorks splits the catalog number.** Local `JJPC-00001` is stored as `identifier="00001"` under namespace 6057 (`short_name="JJPC"`, `delimiter="-"`), and **`cached` = `"JJPC-00001"`** | **`cached` is the join key** against `collection_object.catalog_number`. Matching on `identifier` scored **0 overlap on all 39 specimens**. Accordingly `?identifier[]=JJPC-00001` returns **0 rows** while `?identifier[]=00001` returns 1 — the filter works, it is just not on the full form, and there is **no `cached` filter**. So pull the index and match locally. |
-| `type=` and `identifier_object_type=` filter correctly in **both** scalar and `[]` form | The whole project: 429,830 identifiers → 181 CatalogNumbers → **39 on CollectionObjects** (140 Containers, 2 Images). The entire index is **one request**, replacing one lookup per local specimen. |
-| `namespace_short_name=` / `namespace_name=` / `namespace_id[]=` all filter (`namespace_short_name=JJPC` → 28 rows, all namespace 6057) | Namespace scoping needs **no** hand-populated `repository.taxonworks_collection_id` (which is NULL). Resolve which namespace is ours *in reverse* from a catalog number known to be uploaded — the OTU-id discipline, applied again. |
-| Existence and orphans need **different scopes** | Existence is namespace-**unscoped**: a specimen filed under another namespace is still on TW, and calling it absent re-uploads it (identifier uniqueness is *per namespace*, so TW accepts that duplicate silently). The orphan sweep **is** namespace-scoped, or every other collection in the project counts as our orphan. |
-| A **local re-home never changes `catalog_number`** (only `repository_id` moves) | So "on TW under our namespace, not held here" is ambiguous: moved or deleted. A **DB-wide** catalog-number lookup separates them (`tw_compare._orphans`); scoping that lookup to the working collection reports a move as a deletion. |
-
-### The emitted file (decided)
-
-**Tab-separated, `.tsv`** — TW's default `col_sep` for a flat upload is a tab
-(`import_dataset/darwin_core.rb:315-317`); a comma file parses as **one column**, so every row
-appears to import and is garbage. Header must contain `occurrenceID`, `scientificName`,
-`basisOfRecord` or the dataset fails validation outright
-(`import_dataset/darwin_core/occurrences.rb:8-11`). `occurrenceID` is the deterministic Darwin
-Core triplet `institutionCode:collectionCode:catalogNumber`, so a re-export cannot mint a
-second TW record for one specimen.
-
-**Only columns TW actually maps are emitted** — a `[Not mapped]` column is silently dropped, so
-emitting it would make the file look like it carried data it did not. Confirmed not mapped at
-`897f385`: `lifeStage` (:912), `disposition` (:940), `otherCatalogNumbers` (:950),
-`associatedTaxa` (:743), **`municipality` (:1097) and `locality` (:1099)**, `verbatimIdentification`
-(absent entirely). Because TW keeps `verbatimLocality` verbatim (:1101) but drops the other two,
-our export **folds municipality + locality into `verbatimLocality`** (the event's own verbatim
-string wins when present) or that detail is lost.
-
-**An invalid row is refused, never silently rewritten** (the importer is CREATE-ONLY — a
-half-wrong row cannot be corrected via the API): `basisOfRecord` outside
-PreservedSpecimen/FossilSpecimen (:849), whitespace in `sex` (:892), an interval in
-`dateIdentified` (:1394 — unlike `eventDate`, which allows one), a non-integer
-`coordinateUncertaintyInMeters` (:1138), or no current determination (now also caught earlier,
-as an eligibility rule — this stays as the backstop). **`preparations` must
-match an existing TW `PreparationType` or TW errors the row** (:926) — unverifiable via API, so
-the distinct values used are listed for the user to confirm.
-
-## 6. Application structure
-
-### App tabs
-
-`app/ui/main.py` is the **page shell** — head scripts, the tab bar, the unsaved-changes
-banner, Settings — and calls one `build_…` function per tab. **Every tab's UI lives in its
-own module** (`digitize_tab.py`, `records_tab.py`, `explore.py`, `taxonomy_tab.py`,
-`labels_tab.py` — Labels *and* the Print queue —, `import_assign.py`, `bulk_import_tab.py`,
-`tw_sync_tab.py`, `batch_tab.py`, `controlled_vocab_tab.py`); the small `*_field.py` /
-`*_panel.py` / `*_form.py` files are widgets shared between tabs. Digitize, Taxonomy and
-Labels were extracted from `main.py` on 2026-10-06 as pure moves. Still inline in
-`main.py`: **Settings**, and the print queue's client-side JavaScript (it talks to
-`labels_tab.py` by event name only). A new tab gets its own module; whatever it needs from
-the page (`_refreshers`, another tab's handle) is passed in as an argument, never reached
-for through `main.py`'s scope. What the page needs back from a tab is a **handle
-dict of callables** (`_records_handle["open_specimen"]`, `_taxonomy_handle["on_shown"]`,
-`_digitize_handle["reset_layout"]`) — never the tab's internal widgets or state.
-
-| Tab | Purpose |
-|-----|---------|
-| **Digitize** | Main specimen entry form: collecting event (search/create), taxon (local-first search + TW fallback), sex, count, preparations, notes. Saves to DB. Standard/Visiting modes queue **no** labels (see "Print-queue policy by create mode"); only Mounting queues a sheet. Two layouts (see "Digitize layout modes"). |
-| **Records** | View/edit a single specimen or collecting event (search → detail edit form). The shared `specimen_form` / `collecting_event_form` widgets. Reached directly or drilled into from Explore (`open_specimen` / `open_event` handle). |
-| **Explore** | Dataset browse/query (#40): one faceted search bar (taxa / geography / collectors) drives a **drawer-order taxa checklist** (family→genus headers, species rows w/ material count + ⚠ needs-attention, expand → lots) and an **events** view; click drills into Records; CSV export. Service: `app/services/explore.py`. Map view is Phase C (not built). |
-| **Taxonomy** | Checklist tree (family → synonyms). Filter by rank. Links to TaxonPages. Rebuilds on every tab switch and on every save (via `_refreshers["taxonomy_tree"]`). |
-| **Labels** | Generate identifier label batches (4-char codes). Preview + download PDF. Reprint a whole batch if unused. Staged-codes dashboard. Also queues **plain identification labels** (no specimen) — N copies of a chosen name + determiner/date/sex/type status/qualifier. |
-| **Print queue** | Preview and print all staged labels in one grouped PDF (per queue addition; data/identifier/determination column-aligned per specimen). Saves the PDF to `printed_pdf_dir` on print, then clears the queue. |
-| **Import** | Two sub-tabs under one tab. **Import & Assign** — the row-by-row retroactive-digitisation flow (upload a DwC CSV; live-filter rows; assign taxon + per-specimen fields; save). **Bulk import** — wholesale, staged import of specimen **records** (#39), modelled on TaxonWorks' Import Dataset: upload → stage every row (writes nothing) → status grid + per-reason blocker list → import the `ready` rows, resumable via a cursor. Service: `app/services/bulk_import.py`. See "Bulk import" below. |
-| **TaxonWorks** | Sync with the TaxonWorks mirror (#149). Only present when a connection is configured (`taxonworks_enabled`). Checks every taxon name against the configured instance **before** anything is emitted, reports withheld (privacy) / refused (TW would reject) / redacted specimens, emits the DwC **TSV** for TW's DwC-A Import, and reconciles per-instance OTU ids. See §5c for the contract. |
-| **Batch tools** | Build a **collection-scoped** specimen set — by taxon (all specimens of a taxon + descendants in the working collection) or by a pasted catalog-number list — then bulk-apply one op: set disposition, or reassign to another collection (#78). Working collection defaults to the home collection; an extra click switches to another. Cross-collection specimens can **never** be listed or modified (see below). Service: `app/services/batch_ops.py`. |
-
-#### Digitize layout modes (decided)
-
-The Digitize tab offers two layouts, selectable in Settings and persisted as
-`AppConfig.digitize_layout` (`"normal"` | `"single_card"`); the toggle applies **live**
-(no page reload, so unsaved form entry survives the switch). Both render the *same* cards —
-the choice only changes width and which cards are visible (one shared card tree, no
-duplicate form):
-
-- **Normal (default):** wide page (`max-w-7xl`) with **Specimen and Identifications paired
-  side-by-side**, Collecting Event + Biological Associations full-width below — fits more on
-  one screen, less scrolling. (Chosen over a full two-column layout, which read as
-  distracting.)
-- **Single card (guided stepper):** one card at a time (Specimen → Identifications →
-  Collecting Event → Biological Associations) with a clickable step bar, Back/Next, and
-  ←/→ arrow keys. **A specimen is still one Save** — the stepper only changes which card is
-  visible and never commits per card; the single real Save lives on the last step. **Mounting
-  mode ignores the stepper** (it keeps its own multi-specimen staging layout).
-
-**Why this is a policy, not an incidental:** a specimen record is atomic (specimen + IDs +
-event + associations save together), so "commit a card and advance" can only mean *advance
-the view*, never a partial DB write. The build detail (single-source visibility function,
-arrow-key event, chip styling) is design.md's concern → "Digitize layout modes".
-
-### Service layer (`app/services/`)
-
-| Module | Responsibility |
-|--------|---------------|
-| `taxa.py` | Taxon search, TW import, parent-row creation, name composition (`compose_scientific_name`/`recompose_subtree`/`element_from_name`), `format_scientific_name()` |
-| `taxonomy.py` | Checklist tree builder, stats, filter options |
-| `taxonworks.py` | All TW API calls (async). Token hardcoded as `TW_TOKEN` at the top of the file. |
-| `events.py` | Collecting event CRUD + search |
-| `specimens.py` | `CollectionObject` + `TaxonDetermination` creation |
-| `identifiers.py` | `reserve_sequential_codes(coll_code, n)` → `(batch_id, codes_list)` — always unpack the tuple |
-| `labels.py` | WeasyPrint HTML → PDF for data (locality/date/collector), determination, and identifier labels |
-| `print_queue.py` | Stage + retrieve + clear print-queue items |
-| `dwc_import.py` | Parse DwC CSV, field aliasing, row-to-form-field mapping |
-| `media.py` | Content-addressed media store (store/dedup/verify/delete) + attachment CRUD (attach to specimen/event/association) |
-| `external_ids.py` | External resource identifier CRUD (attach to specimen/association) |
-| `life_stage.py` | Reared-specimen life-stage history CRUD + `life_stage_facets()` export projection (Phase 3) |
-| `vocab.py` | Generic single-name controlled-vocabulary service (`Vocabulary`: list/options/get_or_create/update/delete/merge, dynamic FK re-pointing) |
-| `vocabularies.py` | Vocabulary instances + `VOCAB_REGISTRY` (the Controlled Vocabularies tab renders one section per entry) |
-| `repositories.py` | Collections/institutions CRUD (multi-column vocab, #56) + `name_map` (collectionCode→full name) for the identifier label + `display_label` (the one human rendering — `JJPC — Name`, or just the name for a codeless collection) + `get_or_create_by_name` (the collection picker's save-time seam for `collection_object.repository_id`; a new collection gets a name and nothing else) + `delete_repository` guard (blocked while specimens reference it, #72) |
-| `explore.py` | Explore-tab querying (#40): `search_facets`, `query_specimens(filters)`, `checklist(filters)` (drawer-order taxa+lots), `events(filters)`, `to_csv`, `counts` |
-| `name_source.py` | The generic offline-name-source engine (DwC Archive → SQLite index → search → import chain). WCVP is one instance; user datasets are others. See "Offline name sources" below |
-| `datasets.py` | User-added name datasets (**experimental**): install from a chosen file → `data/name_sources/<slug>/`, rebuild, remove, `import_all` |
-| `bulk_import.py` | Bulk import (#39): staged wholesale import, two `kind`s — `create_occurrence_dataset` (records, the primary path: catalogNumber required, collection column, dedup on `UNIQUE(repository_id, catalogNumber)`, reuses the event/determination save + the taxon resolver) and `create_taxon_dataset` (name checklist / internal resolver). Shared: `restage` / `set_dataset_code` (resolve-once) / `import_ready` (resumable) / `retry_errored` / `progress` / `blocker_summary`. |
-| `dwc_export.py` | DwC export (#149): `export_decision` (the single owner of "may this specimen leave the building, and with which fields blanked" — read by both the comparison and the writer, so they cannot disagree), `occurrence_row` (the projection), `export_occurrences` (validate + write the TSV). See §5c. |
-| `tw_sync.py` | TaxonWorks sync (#149): `check_names` (the pre-flight gating any export), `taxa_to_export`, `otu_instance_state` / `reconcile_otu_ids` (per-instance OTU ids, verified in reverse). Read-only except `reconcile_otu_ids`. |
-| `batch_ops.py` | Batch tools (#78): `fetch_by_taxon` / `match_catalog_numbers` (both **scoped to a working `repository_id`**) + `apply_disposition` / `apply_repository`. **Cross-collection safety is structural** — `_load_in_scope` re-asserts every specimen belongs to the working collection before any write, so a bulk op can never touch a specimen held in another collection. `catalog_number` is never changed. |
-
-### Taxon search widget (`app/ui/taxon_search.py`)
-
-- **Local-first**: searches local DB (150 ms debounce), then appends TW results in parallel.
-- **Multi-token search**: query is split on whitespace; each token must appear in the name.
-  `"Sit lin"` matches `"Sitona lineatus"`.
-- **Both sections always shown** unless all TW results are already in the local DB (deduplication
-  filters them out; the TW section then says so rather than rendering empty, #152).
-- **TW deduplication is on the full composed name, never the bare epithet (fixed #152).** The
-  autocomplete payload's `name` field is only the epithet (`"formosus"`, not `"Polydrusus
-  formosus"`) — matching on it hid *every* TaxonWorks name sharing that epithet whenever any
-  local species happened to end in it (`Entimus formosus` locally silently hid `Polydrusus
-  formosus` on TW). The widget now batch-fetches each result's full `taxon_names` record
-  (`detail_cache`, already needed for the valid-name label and 🌿 code) **before** filtering, and
-  dedupes on `cached` — the composed full name — against local `dwc:scientificName`.
-- **TW pick imports the clicked name** (synonym or valid) via `fetch_full_classification(r["id"])`.
-  `get_or_create_from_tw_data` handles valid-name backfill: imports accepted name first, then
-  the synonym with `accepted_name_usage_id` set. The determination `taxon_id` is the clicked
-  name, which may be a synonym.
-- Synonyms shown with ✗ / `= Valid Name ✓` HTML in local section; TW results in tinted box
-  with `✚ add` badge.
-
----
-
-## 7. Build phases — current status
-
-**Phase 1 — Database structure.** ✅ **Complete.**
-18 migrations. 6 STRICT core tables + label/print-queue models. 44 tests. All constraints
-verified (FK enforcement, exclusive-arc CHECK, coordinate bounds).
-
-**Phase 2 — Frontend.** ✅ **Largely complete.**
-NiceGUI app with 5 tabs: Digitize, Taxonomy, Labels, Print queue, Import & Assign.
-Leaflet map view: not yet built (coordinates stored, map tab deferred).
-Biological association UI: CRUD in DB, UI not yet built.
-
-**Phase 3 — Validation, export, sync tools.** 🟡 **Started (#149).**
-- *DwC export:* ✅ **built** — `dwc_export.py` emits the occurrence **TSV** (not CSV: TW's flat
-  upload defaults to tab), gated on the name pre-flight. See §5c for the whole contract; the
-  eligibility/privacy policy is `export_decision`. No `TW:` columns are emitted yet.
-- *Sync diff:* ✅ **built** — Step 1 of #149, `tw_compare.py` + the TaxonWorks tab's
-  Collections step. Existence is answered by the `/identifiers` catalog-number index (**not**
-  `dwc_occurrences`, where `catalogNumber` is populated on 1/500 rows and which lags a fresh
-  import); `dwc_occurrences` supplies only the field values, and only for catalog numbers the
-  index says are there. The two scopes differ on purpose: existence is namespace-**un**scoped
-  (a specimen under another namespace is still on TW, and per-namespace identifier uniqueness
-  means TW would accept the re-upload silently), the orphan sweep is namespace-scoped. The
-  Export step's "already uploaded" exclusion reads the same index, so the file can never
-  re-carry a specimen TW already holds.
-- *Media compare (step 1.6):* ✅ **built** — `tw_media_compare.py`, reusing the same
-  `/identifiers` index the occurrence compare already fetched. Matches local
-  `media_attachment` files to TW `Depiction`/`Image` rows by MD5 (`media.md5_fingerprint`,
-  migration 0070 — TW's `image_file_fingerprint` is MD5 despite its OpenAPI doc claiming
-  SHA256; verified live against sandbox.taxonworks.org). Diagnostic only: TW's DwC importer
-  has no media path and there is no public API route to create an Image, so the tab can
-  only report local-only files with a deep link to TW's own upload UI and a "Prepare
-  files" button that stages them in a temp folder for drag-and-drop.
-- *Validation script:* ⬜ required DwC fields, coordinate bounds, determination completeness.
-  (Row-level validity for the export specifically is already enforced by `_validate_row`, which
-  refuses rather than rewrites — §5c.)
-- *Habitat enrichment (GeoPandas):* ⬜ uncertainty-aware spatial join against a European
-  habitat layer (EUNIS or CORINE; CRS likely EPSG:3035 / ETRS89-LAEA).
-
----
+Python · SQLite via SQLAlchemy · Alembic for every schema change · NiceGUI (on FastAPI) ·
+WeasyPrint for label PDFs (≤18×7 mm) · GeoPandas for the planned habitat join · DuckDB only
+as a possible later analytics layer (do not introduce yet).
+
+- **The browser is the UI, on purpose** — not a native window. Media and label PDFs open in
+  the browser's own viewer, and the unsaved-changes guard relies on `beforeunload`, which a
+  pywebview window does not fire. Packaging needs no native window: the launcher starts the
+  server and opens the default browser.
+- **Environment:** conda env `collection`. Do NOT touch the `phylogeny` or `catalogue` envs.
+  Dev OS is Linux; all code must stay cross-platform (Windows/macOS).
+
+## 4. Data model → `docs/data_model.md`, `docs/vocabularies_geography.md`, `docs/taxonomy.md`
+
+Schema is in production use (migrations through 0072). Rules that apply everywhere:
+
+- **DwC column naming:** SQLite columns are named `dwc:columnName` (colon, camelCase);
+  SQLAlchemy maps them to snake_case attributes; Mermaid diagrams use plain camelCase.
+- **`catalog_number` is the immutable sync join key.** Every specimen in the own (default)
+  collection must have one — DB-enforced by triggers. It is nullable **only** in a foreign
+  collection, NULL is the only spelling of "no number", it is fill-once, and a numberless
+  specimen is never exported. A browse surface must not key a row on it.
+- **Collection membership is `collection_object.repository_id`** (NOT NULL FK), the single
+  source of truth. Never re-introduce `dwc:collectionCode` / `dwc:institutionCode` columns on
+  `collection_object`; codes resolve through the repository at export. A collection is
+  identified by its **name**; its code is optional except on the default collection, which is
+  a flagged `repository` row (`repositories.get_default`), never a config string. Saves are
+  refused when no default is set. Resolution is by pick (`repository_field.py`), never by a
+  typed code — `resolve_id` is gone, do not bring it back.
+- **Derived values are never stored:** `dwc:taxonomicStatus` (from `acceptedNameUsageID`) and
+  `dwc:countryCode` (from `country.iso_code`) are derived at export. Do not re-add either.
+- **A configurable default that references a DB entity lives in the DB**, never in
+  `config.json` (person defaults, default collection, default preparation). `config.json`
+  holds environment settings and file registries only.
+- **Open, user-coined vocabularies are FK tables** on the generic `Vocabulary` service
+  (adding one = model + migration + one registry entry). **Closed standard lists stay fixed
+  CHECK lists** (`sex`, `basisOfRecord`, `identificationQualifier`, `license`).
+- **Geography rows are identified by `(name, iso_code)`**, never by name. Exact match → reuse;
+  otherwise create. No existing row is ever mutated to carry a code, and no save is refused;
+  duplicates are folded with the merge tool. `events._resolve_geo_fields` is the single owner.
+- **Geocoding:** Overpass `is_in` owns the administrative hierarchy (containment; state
+  identified by its `ISO3166-2` tag); Photon supplies locality candidates only (proximity).
+  **One** Overpass request per lookup, one endpoint, no mirror failover, no Nominatim.
+  Country and stateProvince in English, lower tiers in the local name. There is currently
+  **no boundary-crossing check** — deliberately. Read the measured dead ends before touching
+  any of this.
+- **Synonymy lives only in `acceptedNameUsageID`;** every name is parented under its **own**
+  lineage. Parent / accepted-link writes go only through `taxa.py` (`synonymize`,
+  `make_accepted`, `reparent`, `merge_taxa`). Retrieval and counting are synonym-aware through
+  the one primitive `taxa.expand_taxon_scope`. `merge_taxa` is de-duplication, not synonymy.
+- **Ranks are code-specific** (`RANKS_BY_CODE`); `dwc:nomenclaturalCode` is NOT NULL and is
+  inherited or read from the source, never guessed. Subgenus interpolation is ICZN-only.
+- **Media** is copied into a content-addressed store; asset metadata is applied only when the
+  `media` row is created; commit first, unlink second.
+- **Privacy:** `confidential` on person / specimen / event means **drop the record, never
+  obscure it**; `identifiedBy` is never withheld. The flags are never pushed to TaxonWorks.
+
+## Specimen workflows → `docs/workflows.md`
+
+- **Print-queue policy by create mode:** every create path runs through
+  `specimens.finalize_specimen`. Digitize standard, Digitize visiting and Import & Assign
+  queue **nothing**; only **Mounting** queues identifier + data + determination labels.
+- **Import & Assign reuses a collecting event only when it is 100% identical over all
+  columns** (`events.get_or_create_exact_event`); erring toward create is the safe side.
+- **Bulk import (#39)** is staged: *stage* writes nothing, *import* is resumable.
+  `catalogNumber` is required from the data; a named collection that is not set up is
+  `blocked`, never fabricated; dedup is the DB's own `UNIQUE(repository_id, catalogNumber)`.
+- **Plain identification labels** are print jobs, not records. Every reader goes through
+  `print_queue._row_det_label`; never branch on `row.collection_object` for a determination row.
+- **Label edits are print-only overrides** (`print_queue.text_override`); the record stays
+  master and identifier rows are read-only. An override is sanitised on the way in
+  (`labels.canonical_override`, idempotent); one that renders to nothing is `None`; identical
+  labels are linked by their auto text; a row with no auto text is edited alone.
+
+## 5. TaxonWorks → `docs/taxonworks.md`
+
+Verified against `SpeciesFileGroup/taxonworks` @ `897f385`. The row mapper is
+`app/models/dataset_record/darwin_core/occurrence.rb`; re-grep line numbers, do not trust
+cited ones.
+
+- **The DwC importer is CREATE-ONLY** and the v1 API has no update or delete. The push may
+  carry only genuinely new records; a record published too early cannot be corrected.
+- **Biological associations, DwC-A extensions and `HumanObservation` cannot be imported.**
+- **No `/repositories`, `/namespaces`, `/preparation_types` or `/biocuration_classes`
+  endpoint** — those TW ids and vocabularies are confirmed by hand.
+- **§5b gaps:** `taxonomicStatus`, `disposition`, `ownerInstitutionCode`, `associatedTaxa`,
+  `lifeStage`, `otherCatalogNumbers`, `municipality`, `locality` and
+  `verbatimIdentification` are not mapped; `basisOfRecord` must be PreservedSpecimen or
+  FossilSpecimen.
+- **§5c export contract (#149):**
+  - `dwc_export.export_decision` is the **single owner** of eligibility, read by the compare,
+    the writer and the specimen-row badges. Three absolute grounds, no setting: privacy,
+    certainty (any qualifier, a rank above species, or no current determination), and identity
+    (no catalog number — rule 6).
+  - **Nothing is exported until the name pre-flight passes** (`tw_sync.check_names`; only
+    `match` is exportable). A false "missing" is worse than no check.
+  - **OTU ids are per-instance**, verified in reverse and never compared; the provenance stamp
+    is hard to earn and easy to lose; reconciliation is explicit, never a side effect.
+  - **Identity is the `/identifiers` catalog-number index, joined on `cached`** — not
+    `dwc_occurrences`. Existence is namespace-unscoped; the orphan sweep is namespace-scoped.
+  - **Unknown query params are silently ignored** — an oversized result is a lookup failure,
+    never a set of matches.
+  - The file is **tab-separated `.tsv`**, emits only columns TW maps, and **refuses an invalid
+    row rather than rewriting it**. No `TW:` columns yet; fix the homonym limitation of the
+    OTU check before emitting `TW:TaxonDetermination:otu_id`.
+
+## 6. Application structure → `docs/app_structure.md`
+
+- `app/ui/main.py` is the **page shell** only. **Every tab lives in its own module**; a tab
+  gets what it needs from the page as arguments, and hands back a **handle dict of
+  callables** — never its internal widgets or state.
+- **Keep the UI layer thin;** logic lives in `app/services/` functions callable from scripts.
+- **Forms shared across tabs are defined once** (`specimen_form`, `collecting_event_form`),
+  never copied.
+- A specimen is **one atomic Save** (specimen + IDs + event + associations); layout modes and
+  the stepper only change what is visible.
+- **Data safety (#41):** committed data is durable, in-progress edits are not. Startup runs
+  checkpoint → snapshot (keep 10) → integrity check, and blocks the UI on failure.
+  Unsaved-changes detection is **value-based** (`has_content()` polled by a `ui.timer`), never
+  DOM-event-based.
+
+## 7. Build phases — status
+
+Phase 1 (schema) and Phase 2 (frontend) are complete apart from the map view. Phase 3:
+DwC export, sync diff and media compare are **built** (§5c); a standalone validation script
+and the GeoPandas habitat enrichment are **not**.
 
 ## 8. Conventions for Claude Code
 
 ### Git discipline
-**Always `git commit` before making any code changes.** Every task starts with a commit of
-the current clean working tree so there is always a rollback point. This applies to
-experiments, UI tweaks, and small changes — not just large features.
 
-- Schema changes → Alembic migration, never hand-edited DDL on a live DB.
-- **Migration discipline — never lose constraints.** A `batch_alter_table(recreate=...)`
-  (or any table rebuild) reflects columns but **silently drops STRICT typing, CHECK +
-  UNIQUE constraints, and FK `ON DELETE` actions**. Any migration that rebuilds a table MUST
-  re-declare *all* of them (STRICT, every CHECK, every UNIQUE, every FK action, server
-  DEFAULTs). This is what caused DB-1 (migrations 0021/0024); migration 0029 restored it.
-  `tests/test_schema_integrity.py` guards against recurrence — it fails loudly if any STRICT
-  table loses STRICT, a CHECK, a UNIQUE, or an FK action. Run the suite after any migration.
-  - **The models are NOT a complete schema mirror.** SQLAlchemy can't express STRICT, and
-    historically some constraints lived *only* in migration DDL: `biological_association`'s
-    exclusive-arc CHECKs (unnamed, mig 0007) and `collection_object`'s `UNIQUE(collectionCode,
-    catalogNumber)` (undeclared in
-    the model until 0029 — which is how 0029's first draft re-dropped it). Generating
-    rebuild DDL *from the models* will drop anything the model doesn't declare. Prefer
-    adding the constraint to the model so it's authoritative.
-  - **Restoring the live DB from a `.db` backup:** the DB is in WAL mode — `rm` the stale
-    `data/collection.db-wal`/`-shm` (or checkpoint) when swapping the file, or SQLite
-    replays the old WAL and the restore silently appears to do nothing.
-- Data transforms → standalone, deterministic, tested scripts. No LLM in the data path.
-- Heavily test the **sync diff** and **habitat ambiguity** logic.
-- Comment any TaxonWorks behavioural assumption with its source (`file:line` or API route).
-- Don't add dependencies casually; pin them; don't touch other conda envs.
-- Keep the UI layer thin; logic lives in service/repository functions callable from scripts.
-- `reserve_sequential_codes()` returns `(batch_id, codes_list)` — always unpack both values.
+- **Commit before making any code changes** — every task starts from a committed tree, and
+  each verified feature is committed before the next one starts.
+- Keep `main` as the fallback plus **one** working branch; no parallel feature branches.
+- When a fix does not work, revert it before the next attempt; never stack failed attempts.
+- Don't add dependencies casually; pin them.
 
-### Data safety (crash recovery + unsaved-changes guard) — decided
+### Migration discipline — never lose constraints
 
-The durability guarantee and the three mechanisms that back it (#41):
+- Schema changes go through an Alembic migration, never hand-edited DDL on a live DB.
+- A `batch_alter_table(recreate=...)` or any table rebuild **silently drops STRICT typing,
+  CHECK and UNIQUE constraints, FK `ON DELETE` actions, and triggers.** A rebuilding migration
+  MUST re-declare all of them, plus server DEFAULTs. This caused DB-1 (migrations 0021/0024,
+  restored in 0029).
+- `tests/test_schema_integrity.py` guards this; **run the suite after any migration.**
+- **The models are not a complete schema mirror** — SQLAlchemy cannot express STRICT, and some
+  constraints live only in migration DDL. Never generate rebuild DDL from the models alone;
+  prefer adding the constraint to the model.
+- **Restoring from a `.db` backup:** the DB is in WAL mode — remove the stale
+  `data/collection.db-wal` / `-shm` when swapping the file, or SQLite replays the old WAL.
+- Native `ADD COLUMN` preserves STRICT/CHECK/FK; prefer it over a rebuild.
 
-- **Committed data is durable; in-progress edits are not.** WAL + atomic transactions
-  (`database.py`) mean a crash can never leave half a specimen in the DB — committed Saves
-  survive. What is lost on a crash or page-close is whatever was typed into a form but not
-  yet Saved. This is by design (DB-is-source-of-truth, no half-records), and the guard below
-  covers that gap.
-- **Startup checks (`app/services/db_safety.py`, run from `run.py` before the UI serves).**
-  In order: WAL-checkpoint → **launch snapshot** → thorough `PRAGMA integrity_check`. On
-  anything but `ok` the page shows a blocking red banner ("integrity check FAILED") rather
-  than letting the user keep working on a damaged file (CLAUDE.md §2). The result is cached
-  in `db_safety.LAST_RESULT`; the `@ui.page` handler reads it. `integrity_check` swallows a
-  "disk image is malformed" *exception* into a reported problem so severe corruption still
-  trips the banner. Tested in `tests/test_db_safety.py`.
-- **Snapshots** land in `data/snapshots/collection-<timestamp>.db` (gitignored with `data/`),
-  one per launch, **keep last 10** (`DEFAULT_KEEP`). Checkpoint-first so each copy is
-  self-contained (the WAL caveat above). Pruned by the timestamp embedded in the filename,
-  **not** mtime — `copy2` copies the source's mtime, so mtimes are not creation order.
-- **Unsaved-changes detection + banner.** A scope-aware bottom banner ("Unsaved changes in:
-  *tab*") plus a `beforeunload` guard fire while a data-entry area has unsaved edits (in-app
-  tab switches keep the SPA alive, so they never warn). Detection is **value-based on every
-  data-entry tab** (Digitize, Records, Import & Assign — #41, #47): a per-tab `ui.timer`
-  polls the form's real field *values* via `has_content()` and pushes the scope to the client
-  via `window.tpSetScope()` only when the boolean flips. This is deliberate — **DOM
-  event-based detection only catches typed input**, missing programmatic fills (map picker,
-  Tier-2 push-pins, reverse-geocode), which would leave values in fields the app is unaware
-  of. There is no longer any `.tp-dirty-scope`/`input`/`change` head-script listener.
-  - **Digitize** — `_has_any_content()` aggregates each card's `has_content()`; clears when
-    every card is cleared.
-  - **Records** — "changed since loaded": after a specimen/event loads, a baseline of the
-    editable specimen + collecting-event field values is snapshotted (`_norm` treats None ≡
-    empty, strips strings); `has_content()` = current ≠ baseline. Editing a field back to its
-    loaded value correctly clears the banner. The determination / association sub-cards save
-    immediately on their own and are not part of this check.
-  - **Import & Assign** — `has_content()` = an assign card is open (a row staged for
-    assignment, not yet saved); it self-clears when the card hides on save.
+### Code conventions
 
-  Python also clears a scope at every deliberate reset via `window.tpClearDirty(label)`
-  (`_mark_form_clean(scope)`): after a save and after a Digitize mode switch (the timer
-  agrees on the next tick).
-- **Mode-switch confirm + per-card Clear.** Switching Digitize mode wipes the form, so it
-  first asks "Discard unsaved data?" — but only when a card actually holds content
-  (`_has_any_content()` aggregates each card's `has_content()`). Each of the four Digitize
-  cards (Specimen, Identifications, Collecting Event, Biological Associations) has a header
-  **Clear** button to reset just its own uncommitted fields.
+- `reserve_sequential_codes()` returns `(batch_id, codes_list)` — always unpack both.
+- Post-commit cleanup (success notify, wipe, `on_saved`) goes **outside** the try/except, with
+  an explicit `return` in the except.
+- Heavily test the sync diff and the habitat ambiguity logic.
+- Verify UI behaviour by driving the real forms, not by unit tests alone. Ask before any
+  action on the database, never seed test data into it, and never leave a test server running
+  on port 8080.
 
-### UI conventions
+### UI conventions (build detail → `docs/design.md`)
 
-- **Empty/blank option always last** in every `ui.select` list. Never first.
-- **Tab-to-complete on all selects**: a global JS listener (injected in `main.py`) auto-selects
-  the sole remaining dropdown item on Tab and advances focus to the next field.
-- **Cross-tab refresh**: each tab registers a refresh callable in `_refreshers` dict in
-  `main.py`; `_on_save` iterates all of them so the taxonomy tree and other views stay
-  up-to-date after every save without a page reload.
-- **NiceGUI tree updates**: use `tree._props['nodes'] = new_nodes; tree.update()` — do NOT
-  assign to `tree.nodes` directly (NiceGUI 2.x).
+- **Empty/blank option is always last** in every `ui.select`.
+- **Tab-to-complete** on all selects (global JS listener in `main.py`).
+- **Cross-tab refresh:** each tab registers a callable in `_refreshers`; `_on_save` runs all.
+- **Tree updates:** `tree._props['nodes'] = new_nodes; tree.update()` — never assign
+  `tree.nodes`.
+- **DB-backed selects must stay live — use `ui.timer`.** NiceGUI renders a page once per
+  load, so a select filled from the DB goes stale. Write a refresh function that re-queries
+  and calls `sel.set_options(new_opts)` (plain `sel.options = x` does not reach the frontend),
+  run it from `ui.timer(2.0, refresh_fn)`, and also call it directly from any write path that
+  changes that table. Do **not** use Quasar event hooks such as `popup-show`; they are not
+  reliably forwarded to Python. Not needed for forms rebuilt on each interaction or for
+  static option lists.
+- **Dialogs created per action** need
+  `dlg.on_value_change(lambda e: dlg.delete() if not e.value else None)` or their timers leak.
+- Always "label", never "sticker". ICN = 🌿, ICZN = Material Icon `pest_control`.
 
-#### DB-backed selects must stay live — use `ui.timer`
+### Field-filling policy (three tiers; template → `docs/design.md` "Auto-fill tiers")
 
-NiceGUI renders each page **once per browser page load**. Any `ui.select` whose options come
-from the database is populated at that moment and then frozen for the session. If the user
-modifies the underlying table (e.g. adds a person in the Controlled Vocabularies tab) and
-then switches back to Digitize, they will see the stale list — silently wrong data.
-
-**NiceGUI does not reliably forward Quasar component events (like `popup-show`) to Python.**
-Do not use `sel.on("popup-show", ...)` or similar event hooks for this — they appear wired
-but the Python callback is not reliably called.
-
-**The correct pattern is `ui.timer` (NiceGUI's own recommended approach for backend sync).**
-
-For every `ui.select` whose options come from the DB:
-
-1. Write a refresh function that re-queries the DB and sets `sel.options = new_opts`.
-   Preserve any free-typed current value that isn't in the new options.
-2. Create a `ui.timer(2.0, refresh_fn)` — this fires every 2 seconds and keeps the
-   select live without any event wiring.
-3. Also call `refresh_fn()` immediately from any write path that changes that table
-   (belt-and-suspenders: the timer handles the background case, the direct call handles
-   the in-session write case without a 2-second wait).
-
-```python
-# After creating the select:
-def _refresh_person_opts():
-    with session_factory() as s:
-        new_opts = persons_svc.person_options(s)
-    sel.set_options(new_opts)  # use set_options() — plain `sel.options = x` does NOT push to the frontend
-
-ui.timer(2.0, _refresh_person_opts)   # keeps it live
-
-# In the write path (e.g. controlled_vocab_tab.py after saving a person):
-if on_person_changed:
-    on_person_changed()               # calls _refresh_person_opts() immediately
-```
-
-`ui.timer` created inside a `@ui.page` handler is per-client and stops automatically
-when the client disconnects. The overhead on localhost (one DB read every 2 s) is
-negligible.
-
-For tabs that rebuild their entire form on each interaction (e.g. Records tab rebuilds
-on each specimen selection via `_load_specimen`), no timer is needed — the rebuild
-already fetches fresh options from DB at that point.
-
-This does NOT apply to static/hardcoded option lists (sex, basisOfRecord, samplingProtocol,
-etc.) defined in Python constants — those never change at runtime.
-
-### Field-filling policy (three tiers)
-
-Every form field falls into exactly one of three tiers; this must be consistent across all
-tabs (Digitize, Records, Import & Assign). **The full template — field tables, the Tier-2
-`push_pin` placement rule + implementation pattern, and the Tier-3 read-only display
-template — lives in `docs/design.md` → "Auto-fill tiers". Use it when adding any new field.**
-Summary:
-
-- **Tier 1 — auto-filled, editable.** Pre-filled with a sensible default the user can change
-  before saving (`basisOfRecord` = `"PreservedSpecimen"`; `lifeStage` = `"adult"`). The
-  constant defaults live in one place, `app/vocab.py::NEW_SPECIMEN_DEFAULTS`. **`preparations`
-  is a *data-driven* Tier-1 default:** the `preparation` row flagged `is_default` (★ in the
-  Preparations vocab card; migration 0052, `Vocabulary.get_default`) pre-fills new specimens
-  (Digitize standard/visiting, Import), or empty if none is flagged — Mounting still forces
-  `"pinned"`. **`disposition` has NO create default** — it starts empty and is set manually or
-  in bulk (Batch tools); the former hardcoded `"in collection"` was dropped.
-- **Tier 2 — one-click default.** Field starts empty; a `push_pin` button adjacent to it
-  inserts the configured default (`identifiedBy`, `recordedBy`, `dateIdentified`). Never
-  applied silently — the user must click.
-- **Tier 3 — background invisible default.** Applied silently to every saved record, never
-  shown as an editable field. The **default collection** — the `repository` row flagged
-  `is_default` (migration 0050, #83; chosen once in Settings) — supplies the specimen's
-  `repository_id` at save time (`repositories.get_default`, **not** a config string); if none
-  is flagged the save is refused. `collectionCode` / `institutionCode` are no longer stored on
-  the specimen (migration 0047, #75) — they derive from the repository.
-
-### TaxonWorks namespace: institutionCode + collectionCode (verified)
-
-Verified against `occurrence.rb` in `~/Downloads/neu/software/taxonworks/`
-(commit `897f385`, 2026-06-03):
-
-- **`ownerInstitutionCode` is `[Not mapped]`** (occurrence.rb:728) — TW silently ignores it.
-  The column was removed from the DB in migration 0015; do not re-introduce it.
-- **`institutionCode`** (occurrence.rb:657–702): TW looks up a `Repository` object by URL,
-  acronym, or name. It is also used together with `collectionCode` as a compound key to
-  resolve the catalog-number namespace (occurrence.rb:497–509).
-- **`collectionCode`** (occurrence.rb:708–718): resolves to the `Namespace` that prefixes
-  the `catalogNumber` in TW's internal identifier store.
-
-**How the namespace works in practice:**
-TW does NOT prepend `institutionCode`+`collectionCode` directly onto the catalog number.
-Instead, the DwC import dataset must be pre-configured with a mapping
-`(institutionCode, collectionCode) → TW Namespace`. TW then stores the specimen's
-catalog-number identifier as `"[namespace.short_name] [catalogNumber]"`, e.g. `"Doe ab12"`.
-The four-character code is the `catalogNumber` as-is; the namespace label comes from TW.
-
-**DB mapping (revised — migration 0047, #75):**
-- `dwc:catalogNumber` (Python: `catalog_number`) — the 4-char/sequential code; immutable once
-  assigned, never mutated.
-- **`collection_object.repository_id`** (FK → `repository`, NOT NULL, ON DELETE RESTRICT) is
-  the **single source of truth** for collection membership. `collectionCode` /
-  `institutionCode` / `ownerInstitutionCode` are **resolved from the repository at DwC export
-  time** (the exact DwC term TW reads is settled when the export tool is built; deferred) —
-  there is **no `dwc:collectionCode` or `dwc:institutionCode` column on `collection_object`
-  any more** (both dropped in 0047). The catalog-number uniqueness scope is
-  `UNIQUE(repository_id, catalogNumber)`.
-- **Re-homing** a specimen to another collection (gift/exchange) re-points `repository_id`
-  (`update_collection_object`, never blanks it — NOT NULL); the in-app equivalent of "editing
-  ownerInstitutionCode". The catalog number keeps its original code **prefix**, so after a
-  re-home the prefix may no longer match the owning repository — that's expected: the prefix
-  is frozen in the immutable identifier, membership is the FK. The identifier *label* still
-  resolves its collection name by the code **prefix** (frozen at print time; re-homing never
-  reprints the pinned label), so `labels.py` / `name_map` are unaffected.
-- **The own/home collection is a flag on the vocab, not a config string (migration 0050,
-  #83).** Exactly one `repository` row carries `is_default = 1` (partial-unique index
-  `uq_repository_one_default`; service `repositories.get_default` / `set_default`). Standard
-  digitize / Mounting / Import read that row and take **both** the catalog-number prefix
-  (`collection_code`) and the new specimen's `repository_id` from it — and **refuse to save
-  if none is set** ("No default collection set — open Settings"), never stubbing a placeholder.
-  The Settings "Default collection" picker flags an existing repository; `config.json` stores
-  **no** collection code (same DB-integrity rule as person defaults — a configurable default
-  that references a DB entity belongs in the DB, never a flat string).
-- **A collection is identified by its name, not its code (decided 2026-10-06, migration
-  0072).** A private collection ("Frank Lange collection") often has neither a collection
-  code nor an institution code, and being forced to invent them put made-up DwC values in
-  the vocabulary. So `collection_full_name` is UNIQUE + never blank; `dwc:collectionCode` is
-  nullable and unique only where present (partial index). The **default** collection must
-  have one (`ck_repository_default_has_code`) — it is the catalog-number prefix. The upgrade
-  refuses, rather than renames, when two existing collections share a name.
-- **Save-time resolution is by pick, never by typed code.** "Digitize other collection" and
-  the Records re-home field share one widget, `app/ui/repository_field.py` — the standard
-  vocabulary dropdown (existing collections + `✚ add <name>`) over an adapter onto
-  `repository`; `commit(session)` → `repositories.get_or_create_by_name`. A collection added
-  that way has a name and **nothing else**; codes are added later in Controlled
-  Vocabularies, never guessed. The old `resolve_id` (get-or-create by a freely-typed code)
-  is **gone** — do not re-introduce it. The own-collection paths use `get_default`.
-- A codeless collection cannot form an `occurrenceID`, so its specimens are refused by the
-  export's row validation — give it its codes first.
-
-For a single-collection setup, add one repository in Controlled Vocabularies and flag it as
-the default in Settings; give it a real `collection_full_name`. Its `collection_code` /
-`institution_code` (e.g. a fictional `"Doe"`) then drive catalog numbers and the identifier
-label. Configure the TW import dataset to map `(institutionCode, collectionCode) → TW
-Namespace` before import.
-
-> **Rule (revised):** never re-introduce `dwc:collectionCode` / `dwc:institutionCode` as
-> columns on `collection_object`. Membership is the `repository_id` FK; codes are resolved
-> through the repository.
-
----
+- **Tier 1 — auto-filled, editable:** `basisOfRecord` = `PreservedSpecimen`, `lifeStage` =
+  `adult` (`app/vocab.py::NEW_SPECIMEN_DEFAULTS`); `preparations` from the `preparation` row
+  flagged `is_default` (Mounting forces `pinned`). **`disposition` has no create default.**
+- **Tier 2 — one-click default:** field starts empty; a `push_pin` button inserts the
+  configured default (`identifiedBy`, `recordedBy`, `dateIdentified`). Never applied silently.
+- **Tier 3 — invisible default:** the default collection supplies `repository_id` at save.
 
 ## 9. Open questions
 
-- Exact JSON shape, filter parameters, and pagination of `/api/v1/dwc_occurrences`.
 - Whether TW's internal CRUD API exposes usable `PATCH`/`DELETE` for collection objects.
 - The regeneration/lag behaviour of the `dwc_occurrences` projection after an import.
-- Source and licence of the chosen Europe-wide habitat layer (EUNIS vs CORINE), and its CRS.
+- Source, licence and CRS of the Europe-wide habitat layer (EUNIS vs CORINE).
+- `county` / `municipality` tier identification below the ISO subdivision (see
+  `docs/vocabularies_geography.md` → "Open (do not guess)").
