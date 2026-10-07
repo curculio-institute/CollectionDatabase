@@ -31,14 +31,17 @@ from app.ui.media_panel import build_media_button
 from app.ui.external_id_panel import build_external_id_button
 from app.ui.life_stage_panel import build_life_stage_button
 from app.ui.event_completeness import confirm_incomplete_event
+from app.ui.check_panel import build_check_panel
+from app.ui.confirm_dialog import choose
 import app.services.media as media_svc
 import app.services.external_ids as extid_svc
 from app.services.biological import get_relationship_options
-from app.services.validation import validate_event_fields
+from app.services.validation import validate_event_fields, missing_event_fields
 from app.vocab import IDENTIFICATION_QUALIFIER_OPTIONS
 
 
-def build_digitize_tab(session_factory, *, refreshers, mode_state, mark_form_clean, bio_codes):
+def build_digitize_tab(session_factory, *, refreshers, mode_state, mark_form_clean, bio_codes,
+                       on_open_event):
     # Same names the code below used while it lived inline in main.py.
     _sf = session_factory
     _refreshers = refreshers
@@ -102,10 +105,15 @@ def build_digitize_tab(session_factory, *, refreshers, mode_state, mark_form_cle
         ]
         return f'<div class="rc-list">{"".join(cards)}</div>'
 
-    # max-w is set by _apply_digitize_layout (max-w-7xl normal /
+    # Form column + check panel side by side, centred as a pair. `tp-dig-root` is what
+    # main.py's CSS keys on to let sticky positioning work in this tab panel.
+    dig_root = ui.row().classes(
+        "tp-dig-root w-full justify-center items-start flex-nowrap gap-4")
+    # max-w is set by _apply_digitize_layout (max-w-7xl normal / max-w-5xl mounting /
     # max-w-4xl single-card); never hard-coded here.
-    with ui.column().classes("w-full mx-auto px-4 pt-6 pb-16 gap-4") \
-            as dig_container:
+    with dig_root:
+        dig_container = ui.column().classes("flex-1 min-w-0 px-4 pt-6 pb-16 gap-4")
+    with dig_container:
 
         # ── STEP HEADER (single-card mode only) ──────────────────
         # Clickable step chips; built + highlighted by the layout logic
@@ -258,8 +266,7 @@ def build_digitize_tab(session_factory, *, refreshers, mode_state, mark_form_cle
 
             _refreshers["person_opts"] = _refresh_person_opts
 
-            def _on_event_selected(e):
-                eid = e.value
+            def _select_event(eid):
                 if eid is None:
                     state["event_id"] = None
                     event_status.set_content("· new event")
@@ -316,7 +323,16 @@ def build_digitize_tab(session_factory, *, refreshers, mode_state, mark_form_cle
                 ce["set_readonly"](True)
                 _show_reuse_banner(eid, ev_n)
 
-            event_sel.on_value_change(_on_event_selected)
+            event_sel.on_value_change(lambda e: _select_event(e.value))
+
+            def _use_event(eid: int) -> None:
+                """Reuse an existing event (check-panel suggestion). Through the picker
+                when it lists the event, so the picker shows what is linked; directly
+                otherwise (the picker holds only the most recent events)."""
+                if eid in event_sel.options:
+                    event_sel.value = eid
+                else:
+                    _select_event(eid)
 
         # ── BIOLOGICAL ASSOCIATIONS ───────────────────────────────
         with ui.card().classes("w-full shadow-sm") as bio_card:
@@ -368,19 +384,20 @@ def build_digitize_tab(session_factory, *, refreshers, mode_state, mark_form_cle
 
                 ui.space()
 
-                def _add_assoc():
+                def _add_assoc() -> bool:
+                    """Stage the association being entered. True iff it was staged."""
                     rel_name = rel_field["get_value"]()
                     rel_id   = _rel_name_to_id.get(rel_name)
                     taxon_id = bio_obj_state["taxon_id"]
                     if not rel_id:
                         ui.notify("Select a relationship first.", type="warning")
-                        return
+                        return False
                     if not taxon_id:
                         ui.notify("Select an associated taxon first.", type="warning")
-                        return
+                        return False
                     if taxon_id == -1:
                         ui.notify("Taxon is still being imported — please wait a moment.", type="warning")
-                        return
+                        return False
                     bio_state["associations"].append({
                         "rel_id":      rel_id,
                         "rel_name":    rel_name,
@@ -397,6 +414,17 @@ def build_digitize_tab(session_factory, *, refreshers, mode_state, mark_form_cle
                     rel_field["set_value"](None)
                     bio_qual["set_value"](None)
                     _refresh_assoc_list()
+                    return True
+
+                def _assoc_pending() -> str | None:
+                    """What is entered in the add row but not staged, as display text —
+                    None when the row is empty. A relationship or taxon alone counts:
+                    half an association is still something the user meant to keep."""
+                    rel = rel_field["get_value"]() or ""
+                    taxon = bio_obj_state["label"] if bio_obj_state["taxon_id"] else ""
+                    if not (rel or taxon):
+                        return None
+                    return " — ".join(x for x in (rel, taxon) if x)
 
                 (
                     ui.button("Add association", icon="add", on_click=_add_assoc)
@@ -458,6 +486,7 @@ def build_digitize_tab(session_factory, *, refreshers, mode_state, mark_form_cle
                 on_saved=lambda: _ms_on_saved(),
                 event_id_getter=lambda: state["event_id"],
                 recorded_by_getter=lambda: ce["recby_get"](),
+                confirm_pending=lambda: _resolve_pending(),
             )
         ms_section.set_visibility(False)
 
@@ -474,7 +503,8 @@ def build_digitize_tab(session_factory, *, refreshers, mode_state, mark_form_cle
         # only before the last step (the last step shows the save bar
         # above, whose Save performs the single real commit). Buttons are
         # wired in the layout-logic block below.
-        with ui.row().classes("w-full items-center gap-3 px-1") as step_nav_row:
+        with ui.row().classes("tp-sticky-bar w-full items-center gap-3 px-1") \
+                as step_nav_row:
             back_btn = ui.button("Back", icon="chevron_left").props("flat")
             ui.space()
             next_btn = ui.button("Next") \
@@ -632,7 +662,48 @@ def build_digitize_tab(session_factory, *, refreshers, mode_state, mark_form_cle
                        for a in bio_state["associations"])
             )
 
+        async def _resolve_pending() -> bool:
+            """Stop a Save that would drop a row entered but never added.
+
+            An identification or association sitting in its add row is not part of the
+            specimen yet, so Save would discard it without a word. Ask instead: add it
+            and save, save without it, or cancel. Returns True iff the save may go on.
+            Runs BEFORE validation, so "Add at least one identification" is not shown
+            for an identification that is merely waiting to be added.
+            """
+            pending: list[tuple[str, callable]] = []
+            if _mode_state["value"] != "mounting" and det_state["has_pending"]():
+                pending.append((f"Identification: {det_state['pending_label']()}",
+                                det_state["add_pending"]))
+            assoc = _assoc_pending()
+            if assoc:
+                pending.append((f"Biological association: {assoc}", _add_assoc))
+            if not pending:
+                return True
+            try:
+                choice = await choose(
+                    title="Entered but not added",
+                    body="\n".join(text for text, _ in pending)
+                         + "\n\nSaving now would leave this out of the specimen.",
+                    options=[("skip", "Save without it", "warning"),
+                             ("add", "Add and save", "secondary")],
+                )
+            except Exception as exc:
+                ui.notify(f"Save failed: {exc}", type="negative")
+                return False
+            if choice is None:
+                return False
+            if choice == "add":
+                # A row that cannot be added (no relationship yet, taxon still
+                # importing) has already said why — stop rather than save without it.
+                for _text, add in pending:
+                    if not add():
+                        return False
+            return True
+
         async def _on_save():
+            if not await _resolve_pending():
+                return
             err = _validate()
             if err:
                 ui.notify(err, type="negative")
@@ -779,6 +850,71 @@ def build_digitize_tab(session_factory, *, refreshers, mode_state, mark_form_cle
 
         save_btn.on_click(_on_save)
 
+        # ── Check panel findings ──────────────────────────────────
+        # What the panel beside the form shows (see app/ui/check_panel.py). Read from
+        # the same sources the Save path uses, so the two cannot disagree:
+        # missing_event_fields is the Save-time "event is missing…" dialog's own check.
+        _ev_match = {"key": None, "rows": []}
+
+        def _matching_events() -> list[dict]:
+            """Existing events at the form's coordinates + date (nothing else compared).
+            Queried only when that triple changes; a number still being typed simply
+            matches nothing — validation, not this panel, reports a malformed one."""
+            f = ce["collect_fields"]()
+            try:
+                key = (float(f["decimal_latitude"]), float(f["decimal_longitude"]),
+                       (f["event_date"] or "").strip())
+            except (TypeError, ValueError):
+                key = None
+            if key is None or not key[2]:
+                _ev_match.update(key=None, rows=[])
+            elif key != _ev_match["key"]:
+                _ev_match.update(key=key, rows=_with_session(
+                    lambda s: ev_svc.find_events_at(s, *key)))
+            return _ev_match["rows"]
+
+        def _check_findings() -> list[dict]:
+            out: list[dict] = []
+            if _mode_state["value"] != "mounting" and det_state["has_pending"]():
+                out.append({
+                    "group": "Identifications", "key": "det-pending",
+                    "text": f"{det_state['pending_label']()} is entered but not added",
+                    "fix": ("Add", det_state["add_pending"]),
+                })
+            for label in missing_event_fields(
+                    ce["collect_fields"](), recorded_by=bool(ce["recby_get"]())):
+                out.append({"group": "Collecting Event", "key": f"ev-missing-{label}",
+                            "text": f"{label} is missing"})
+            # Suggest only while a NEW event is being entered; a reused event is
+            # already one of them.
+            if state["event_id"] is None:
+                for m in _matching_events():
+                    n = m["n_specimens"]
+                    out.append({
+                        "group": "Existing event at these coordinates and date",
+                        "key": f"ev-match-{m['id']}",
+                        "text": f"{m['label']} · {n} specimen{'' if n == 1 else 's'}",
+                        "on_click": lambda eid=m["id"]: on_open_event(eid),
+                        "tooltip": "Examine this event in Records",
+                        "fix": ("Use", lambda eid=m["id"]: _use_event(eid)),
+                    })
+            assoc = _assoc_pending()
+            if assoc:
+                out.append({
+                    "group": "Biological Associations", "key": "assoc-pending",
+                    "text": f"{assoc} is entered but not added",
+                    "fix": ("Add", _add_assoc),
+                })
+            return out
+
+        def _refresh_checks():
+            # Events may have been created, edited or merged elsewhere: drop the
+            # cached match so the next evaluation re-queries.
+            _ev_match["key"] = None
+            _check["refresh"]()
+
+        _refreshers["digitize_checks"] = _refresh_checks
+
         def _refresh_table():
             recent_box.set_content(_recent_html())
 
@@ -874,16 +1010,38 @@ def build_digitize_tab(session_factory, *, refreshers, mode_state, mark_form_cle
             step_header_row.set_visibility(single)
             step_nav_row.set_visibility(single and not last)
             std_save_row.set_visibility((not is_ms) and (not single or last))
+            # Single-card: the nav row / Save bar stay anchored to the bottom of the
+            # window, so a long card (Collecting Event) never scrolls them away.
+            (std_save_row.classes(add="tp-sticky-bar") if single
+             else std_save_row.classes(remove="tp-sticky-bar"))
+            _sync_next_label()
             for i, chip in enumerate(_step_chip_els):
                 (chip.classes(add="active") if i == _step_idx[0]
                  else chip.classes(remove="active"))
             back_btn.set_enabled(_step_idx[0] > 0)
 
+        def _next_adds_identification() -> bool:
+            return (_step_cards()[_step_idx[0]] is identification_card
+                    and det_state["has_pending"]())
+
+        _next_label = ["Next"]
+
+        def _sync_next_label():
+            label = ("Add identification & Next" if _next_adds_identification()
+                     else "Next")
+            if label != _next_label[0]:
+                _next_label[0] = label
+                next_btn.set_text(label)
+
         def _apply_digitize_layout():
             single = (get_config().digitize_layout == "single_card"
                       and _mode_state["value"] != "mounting")
-            dig_container.classes(remove="max-w-7xl max-w-4xl")
-            dig_container.classes(add="max-w-4xl" if single else "max-w-7xl")
+            # Mounting is a row table plus the event card — it needs no more than 5xl.
+            width = ("max-w-4xl" if single
+                     else "max-w-5xl" if _mode_state["value"] == "mounting"
+                     else "max-w-7xl")
+            dig_container.classes(remove="max-w-7xl max-w-5xl max-w-4xl")
+            dig_container.classes(add=width)
             _refresh_card_visibility()
 
         def _go_to_step(i: int):
@@ -896,8 +1054,19 @@ def build_digitize_tab(session_factory, *, refreshers, mode_state, mark_form_cle
                 return
             _go_to_step(_step_idx[0] + delta)
 
+        def _on_next():
+            # On the Identifications step, Next first adds the identification being
+            # entered — the step most often left by forgetting "Add identification".
+            # A failed add (taxon still importing) keeps the user on the step.
+            if _next_adds_identification() and not det_state["add_pending"]():
+                return
+            _step_nav(1)
+
         back_btn.on_click(lambda: _step_nav(-1))
-        next_btn.on_click(lambda: _step_nav(1))
+        next_btn.on_click(_on_next)
+        # Value-based, like the unsaved-changes poll: picking a taxon fires no event
+        # this tab sees.
+        ui.timer(0.5, _sync_next_label)
         ui.on("tp-step-nav", lambda e: _step_nav(int(e.args)))
 
         # Apply the configured layout now (also re-applied on mode switch
@@ -922,6 +1091,9 @@ def build_digitize_tab(session_factory, *, refreshers, mode_state, mark_form_cle
                 )
 
         ui.timer(1.0, _sync_dig_dirty)
+
+    with dig_root:
+        _check = build_check_panel(findings_fn=_check_findings)
 
     def _reset_layout():
         """Re-apply the configured layout from its first step (Settings changed it)."""

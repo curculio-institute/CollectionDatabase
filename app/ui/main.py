@@ -244,8 +244,35 @@ def index():
       }
       .tp-step-chip.active .tp-step-num { background:rgba(255,255,255,.25); }
       .tp-step-sep { color:var(--tp-base-soft); opacity:.45; padding:0 2px; }
+      /* Anchoring inside the Digitize tab. Quasar makes every tab panel a scroll
+         container (.q-panel-parent overflow:hidden, .q-panel.scroll overflow:auto),
+         and position:sticky then sticks to that never-scrolling box, i.e. not at all.
+         `clip` still clips the slide transition but is NOT a scroll container; the
+         panel's own overflow is lifted only for Digitize (:has), so no other tab
+         changes behaviour. Measured on a bare NiceGUI page: without these two rules
+         a sticky element scrolls away, with them it holds. */
+      .tp-main-panels { overflow:clip !important; }
+      .tp-main-panels > .q-panel.scroll:has(.tp-dig-root) { overflow:visible !important; }
+      /* Back/Next row and (single-card) Save bar: stay at the bottom of the window. */
+      .tp-sticky-bar { position:sticky; bottom:0; z-index:5;
+                       background:var(--tp-base-background);
+                       border-top:1px solid var(--tp-base-border);
+                       padding-top:.6rem; padding-bottom:.6rem; }
     </style>
     <script>
+    // --tp-header-h: height of the fixed app header, for anything that sticks below it
+    // (the Digitize check panel). The header grows/shrinks with the mode row.
+    (function(){
+      function bind(){
+        var h = document.querySelector('.q-header');
+        if (!h) { setTimeout(bind, 200); return; }
+        var set = function(){ document.documentElement.style.setProperty(
+          '--tp-header-h', h.offsetHeight + 'px'); };
+        set();
+        if (window.ResizeObserver) new ResizeObserver(set).observe(h);
+      }
+      bind();
+    })();
     document.addEventListener('keydown', function(e){
       if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
       var a = document.activeElement;
@@ -1086,7 +1113,7 @@ def index():
         ui.run_javascript(f"window.tpClearDirty && window.tpClearDirty({arg})")
 
     # ── tab panels ───────────────────────────────────────────────────────
-    with ui.tab_panels(main_tabs, value="digitize").classes("w-full"):
+    with ui.tab_panels(main_tabs, value="digitize").classes("w-full tp-main-panels"):
 
         # ================================================================
         # TAB: SPECIMEN DIGITIZATION
@@ -1098,9 +1125,16 @@ def index():
         with ui.tab_panel("digitize"):
             # _mode_state and bio_codes are passed as the same objects the header's mode
             # switch and Settings mutate in place.
+            # _records_handle is created by the Records tab below; the callback runs
+            # only on a click, long after the page is built.
+            def _digitize_open_event(ev_id):
+                _records_handle["open_event"](ev_id)
+                main_tabs.set_value("records")
+
             _digitize_handle = build_digitize_tab(
                 _sf, refreshers=_refreshers, mode_state=_mode_state,
-                mark_form_clean=_mark_form_clean, bio_codes=bio_codes)
+                mark_form_clean=_mark_form_clean, bio_codes=bio_codes,
+                on_open_event=_digitize_open_event)
 
 
         # ================================================================

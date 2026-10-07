@@ -305,6 +305,31 @@ def nearest_events(session: Session, event_id: int, n: int = 5) -> list[dict]:
     return out
 
 
+def find_events_at(session: Session, latitude: float | None, longitude: float | None,
+                   event_date: str | None) -> list[dict]:
+    """Existing events with IDENTICAL coordinates and eventDate — and nothing else.
+
+    The Digitize check panel's "this event may already exist" suggestion. Every other
+    column is deliberately ignored: this only *suggests* a candidate for the user to
+    examine, unlike ``get_or_create_exact_event``, which decides reuse on its own and so
+    demands a 100% match. An incomplete key (no date, or not both coordinates) matches
+    nothing — two blanks are not "identical".
+
+    Returns ``[{id, label, n_specimens}, …]``, most recently updated first.
+    """
+    date = (event_date or "").strip()
+    if latitude is None or longitude is None or not date:
+        return []
+    rows = (session.query(CollectingEvent)
+            .filter(CollectingEvent.decimal_latitude == float(latitude),
+                    CollectingEvent.decimal_longitude == float(longitude),
+                    CollectingEvent.event_date == date)
+            .order_by(CollectingEvent.updated_at.desc(), CollectingEvent.id.desc())
+            .all())
+    return [{"id": e.id, "label": format_event_summary(e),
+             "n_specimens": count_co_at_event(session, e.id)} for e in rows]
+
+
 def copy_and_relink_event(session: Session, co_id: int) -> int:
     """Copy the collecting event linked to co_id, relink only this specimen.
 

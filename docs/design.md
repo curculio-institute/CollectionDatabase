@@ -391,6 +391,11 @@ Both layouts use the **same cards** (`specimen_card` / `spec_visiting["card"]`,
 `identification_card`, `event_card`, `bio_card`) built once — the layout only changes the
 container width and which cards are visible. There is no duplicate card tree.
 
+The form column (`dig_container`) and the check panel sit in one centred, non-wrapping row
+(`dig_root`, class `tp-dig-root`); the form's `max-w-*` is set only by
+`_apply_digitize_layout`: `max-w-4xl` single-card, `max-w-5xl` Mounting (a row table plus
+the event card needs no more), `max-w-7xl` normal.
+
 - **Normal:** container is `max-w-7xl`; Specimen and Identifications sit in one
   `flex flex-wrap` row (each card `flex-1 min-w-[360px]`, so they pair on wide screens and
   stack when narrow). Collecting Event and Biological Associations are full-width below.
@@ -408,12 +413,71 @@ standard↔visiting). The stepper **never commits per card**; it only toggles vi
 value-based unsaved-change detection (which polls field *values*, not visibility) keeps
 working for off-screen steps.
 
+**Anchored Back/Next and Save (single-card only):** `step_nav_row` always, and
+`std_save_row` while single-card is active, carry `.tp-sticky-bar` (`position:sticky;
+bottom:0`), so a long card never scrolls them out of sight. **Sticky needs the two rules
+under `.tp-main-panels` in `main.py`**: Quasar makes every tab panel a scroll container
+(`.q-panel-parent{overflow:hidden}`, `.q-panel.scroll{overflow:auto}`), and a sticky element
+then sticks to that never-scrolling box — i.e. it just scrolls away. Measured on a bare
+NiceGUI page (header + tab panels): without the rules a `bottom:0` element sat 2400px below
+the viewport after scrolling, with them it held at the viewport edge. `overflow:clip` on the
+parent still clips the slide transition without being a scroll container; the panel's own
+overflow is lifted **only** for the panel containing `.tp-dig-root` (`:has`), so no other tab
+changes. Anything that sticks *below* the fixed header offsets by `--tp-header-h`, which a
+`ResizeObserver` in `main.py` keeps equal to the header's height.
+
+**"Add identification & Next":** on the Identifications step the Next button reads
+"Add identification & Next" whenever a taxon is staged in the add row
+(`det_state["has_pending"]`, polled by a `ui.timer` — picking a taxon fires no event the tab
+sees) and then runs the list's own `add_pending` before advancing; a failed add keeps the
+step. The separate "Add identification" button stays for further determinations. Chip clicks
+and ←/→ do **not** add — the check panel and the Save stop cover a row left behind that way.
+
 **Arrow keys:** a global `keydown` head-script emits a `tp-step-nav` event (handled by
 `ui.on("tp-step-nav", …)` → `_step_nav`) on ←/→, but only when the stepper bar is visible
 and focus is **not** in an input/textarea/select/`.q-field`/`.q-menu` (so arrows still work
 inside fields and dropdowns).
 
 ---
+
+### Check panel (`check_panel.py`) and the "entered but not added" stop
+
+A warning-edged card to the right of the Digitize form, in **every** Digitize mode and both
+layouts, after TaxonWorks' "Soft Validation" box but in this app's tokens (left border
+`--tp-warning`, group headings in the section-label style, a small solid `Add` / `Use`
+button where TW has "Fix"). It never blocks; it shows *before* Save what the Save-time
+dialogs would otherwise be the first to say.
+
+- **Generic widget, tab-owned content.** `build_check_panel(findings_fn=…)` knows nothing
+  about the form. The tab returns a list of finding dicts (`group`, `key`, `text`, optional
+  `fix=(label, fn)`, optional `on_click` + `tooltip`); a `ui.timer` polls it and the card
+  re-renders **only when `(group, key, text)` changes** (value-based, like the
+  unsaved-changes guard). A fix button re-evaluates immediately.
+- **Layout.** A 300px column, `position:sticky` below the header (see "Anchored Back/Next"
+  for why sticky works here at all). An empty panel is `visibility:hidden`, not removed, so
+  the form does not jump sideways when the first finding appears. Below 1100px there is no
+  room beside the form: the column becomes `position:fixed` over the bottom-right corner
+  (and is `display:none` while empty).
+- **Findings (`digitize_tab._check_findings`):**
+  1. *Identification entered but not added* (not in Mounting, which has no add row) — fix
+     `Add`.
+  2. *Collecting Event: X is missing* — one row per label from
+     `validation.missing_event_fields`, the **same** function as the Save-time
+     "event is missing…" dialog (#173), which stays. Shown for a reused event too.
+  3. *Existing event at these coordinates and date* — `events.find_events_at`, matching
+     **only** latitude, longitude and `eventDate` (exact stored values; an incomplete key
+     matches nothing). Shown only while a new event is being entered. **The row text is a
+     link that opens the event in Records** to examine it; `Use` reuses it through the
+     normal reuse path (read-only fields, detach-and-copy banner). The query is cached on the
+     `(lat, lon, date)` triple and dropped by the cross-tab refresher `digitize_checks`.
+  4. *Biological association entered but not added* (a relationship or a taxon alone
+     counts) — fix `Add`.
+- **Save stop.** `digitize_tab._resolve_pending` runs **first** in both Save paths (the
+  standard/visiting Save and, via `confirm_pending`, the Mounting Save): with a row from 1
+  or 4 pending it asks *Add and save / Save without it / Cancel* (`confirm_dialog.choose`).
+  "Add and save" aborts if a row cannot be added (no relationship yet, taxon still
+  importing) rather than saving without it. It runs before validation so "Add at least one
+  identification" is never shown for an identification that is merely waiting to be added.
 
 ## 4. Date input widget (date_input.py)
 

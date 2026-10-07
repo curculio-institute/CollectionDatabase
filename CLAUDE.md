@@ -195,6 +195,9 @@ cited ones.
   never copied.
 - A specimen is **one atomic Save** (specimen + IDs + event + associations); layout modes and
   the stepper only change what is visible.
+- **A row entered but not added is never dropped silently:** every Digitize Save first runs
+  `_resolve_pending` (add and save / save without it / cancel); the check panel shows the
+  same before Save. Sticky positioning in a tab needs the `.tp-main-panels` overflow rules.
 - **Data safety (#41):** committed data is durable, in-progress edits are not. Startup runs
   checkpoint → snapshot (keep 10) → integrity check, and blocks the UI on failure.
   Unsaved-changes detection is **value-based** (`has_content()` polled by a `ui.timer`), never

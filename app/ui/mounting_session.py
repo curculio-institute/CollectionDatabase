@@ -66,6 +66,9 @@ def build_mounting_session_section(
                                        # typed recordedBy, for the #173 completeness
                                        # confirm (recordedBy isn't in collect_event_fields
                                        # — it's resolved to an id only inside commit_event)
+    confirm_pending=None,   # async () -> bool: the tab's "entered but not added" stop
+                            # (an association typed into the shared card but never
+                            # staged); False cancels the save
 ) -> dict:
     """Render the Mounting Session specimen UI. Returns {"wipe": callable}."""
 
@@ -352,6 +355,8 @@ def build_mounting_session_section(
     # ── save ────────────────────────────────────────────────────────────────
 
     async def _do_save() -> None:
+        if confirm_pending is not None and not await confirm_pending():
+            return
         err = _validate()
         if err:
             ui.notify(err, type="negative")

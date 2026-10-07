@@ -54,6 +54,12 @@ duplicate form):
   visible and never commits per card; the single real Save lives on the last step. **Mounting
   mode ignores the stepper** (it keeps its own multi-specimen staging layout).
 
+**A row entered but not added is never dropped silently.** An identification or biological
+association sitting in its add row is not part of the specimen yet; Save stops and asks
+(add it and save / save without it / cancel) instead of discarding it, and the check panel
+beside the form shows it — together with missing event essentials and existing events at the
+same coordinates and date — before Save is pressed. Build detail → design.md "Check panel".
+
 **Why this is a policy, not an incidental:** a specimen record is atomic (specimen + IDs +
 event + associations save together), so "commit a card and advance" can only mean *advance
 the view*, never a partial DB write. The build detail (single-source visibility function,

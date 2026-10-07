@@ -561,14 +561,16 @@ def build_identification_list(
             "the taxon chosen above (for search, grouping & export); this only sets the "
             "frozen verbatim identification. Leave blank to use the composed name.")
 
-    def _do_add(_=None):
+    def _do_add(_=None) -> bool:
+        """Add the row being entered. True iff it was added — the stepper's "Add
+        identification & Next" and the Save stop-dialog advance only on True."""
         new_tid = add_taxon_state["taxon_id"]
         if not new_tid:
             ui.notify("Select a taxon first.", type="warning")
-            return
+            return False
         if new_tid == -1:
             ui.notify("Taxon is still importing — wait a moment.", type="warning")
-            return
+            return False
 
         if _persist:
             # Live-DB mode: always create not-current, then auto-assign.
@@ -601,7 +603,7 @@ def build_identification_list(
                     on_changed()
             except Exception as exc:
                 ui.notify(f"Failed: {exc}", type="negative")
-                return
+                return False
         else:
             # In-memory mode: append, then auto-assign.
             with session_factory() as s:
@@ -668,6 +670,7 @@ def build_identification_list(
         add_rem.value  = ""
         add_verbatim.value = ""
         _refresh()
+        return True
 
     with ui.row().classes("w-full items-center mt-2"):
         ui.space()
@@ -708,6 +711,14 @@ def build_identification_list(
             or bool(add_idby_state["get_value"]()) or bool(add_dtid.value) \
             or bool(add_sex.value) or bool(add_type["get_value"]()) \
             or bool(add_qual["get_value"]()) or bool(add_rem.value)
+
+    def _state_has_pending() -> bool:
+        """True while a taxon is staged in the add row but not yet added — the row that
+        a Save would otherwise drop without a word."""
+        return bool(add_taxon_state["taxon_id"])
+
+    def _state_pending_label() -> str:
+        return add_taxon_state["label"] or ""
 
     def _state_has_changes() -> bool:
         """Staged mode: has anything been added, edited, deleted or re-flagged?"""
@@ -779,6 +790,9 @@ def build_identification_list(
         "get_dets": _state_get_dets,
         "clear": _state_clear,
         "has_content": _state_has_content,
+        "has_pending": _state_has_pending,
+        "pending_label": _state_pending_label,
+        "add_pending": _do_add,
         "has_changes": _state_has_changes,
         "commit": _state_commit,
         "refresh_person_opts": _state_refresh_person_opts,
