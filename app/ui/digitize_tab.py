@@ -329,10 +329,17 @@ def build_digitize_tab(session_factory, *, refreshers, mode_state, mark_form_cle
                 """Reuse an existing event (check-panel suggestion). Through the picker
                 when it lists the event, so the picker shows what is linked; directly
                 otherwise (the picker holds only the most recent events)."""
-                if eid in event_sel.options:
-                    event_sel.value = eid
+                if eid in event_sel.options and event_sel.value != eid:
+                    event_sel.value = eid       # its change handler links the event
                 else:
+                    # The picker already shows this id (e.g. after Detach & copy), so
+                    # assigning it again fires no change — link directly.
                     _select_event(eid)
+                if state["event_id"] != eid:
+                    # Deleted or merged away since it was suggested: say so, and drop
+                    # the cached suggestion rather than leave a dead "Use" button.
+                    ui.notify("That event no longer exists.", type="warning")
+                    _refresh_checks()
 
         # ── BIOLOGICAL ASSOCIATIONS ───────────────────────────────
         with ui.card().classes("w-full shadow-sm") as bio_card:

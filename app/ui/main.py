@@ -1135,6 +1135,12 @@ def index():
             # _records_handle is created by the Records tab below; the callback runs
             # only on a click, long after the page is built.
             def _digitize_open_event(ev_id):
+                # Opening an event replaces whatever Records has loaded — never over
+                # an unsaved edit there.
+                if _records_handle["has_content"]():
+                    ui.notify("Records has unsaved changes — save or drop them "
+                              "before examining another event there.", type="warning")
+                    return
                 _records_handle["open_event"](ev_id)
                 main_tabs.set_value("records")
 

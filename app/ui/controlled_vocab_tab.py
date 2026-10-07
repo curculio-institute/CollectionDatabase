@@ -308,16 +308,13 @@ def build_controlled_vocab_tab(session_factory, *, on_person_changed=None) -> No
 
                 def _merge_sides(absorb_id: int) -> tuple[dict, dict, int | None]:
                     """``({id: label} of everyone, the same without the absorbed
-                    person, default keep id)``. The default is pre-selected only when
-                    exactly one other person carries the absorbed one's full name;
-                    the first row of an alphabetical list is no candidate."""
+                    person, default keep id)``. Nobody is ever pre-selected: two people
+                    can share a name, and a merge deletes one of them for good."""
                     with session_factory() as s:
                         people = persons_svc.list_persons(s)
                         labels = {p.id: _person_label(p) for p in people}
-                        names = {p.id: p.full_name for p in people}
                     others = {i: l for i, l in labels.items() if i != absorb_id}
-                    same = [i for i in others if names[i] == names.get(absorb_id)]
-                    return labels, others, (same[0] if len(same) == 1 else None)
+                    return labels, others, None
 
                 def _open_merge(row: dict) -> None:
                     absorb_id = int(row["id"])
@@ -461,6 +458,12 @@ def _build_merge_target_list(on_pick) -> dict:
         needle = (search.value or "").strip().casefold()
         hits = [(oid, lbl) for oid, lbl in shown["others"].items()
                 if needle in lbl.casefold()]
+        # The selected entry must always be visible: one that sorts beyond the cap is
+        # moved to the top instead of being armed for a merge nobody can see.
+        sel = shown["selected"]
+        if sel in [oid for oid, _ in hits[_MERGE_LIST_CAP:]]:
+            hits = ([(sel, shown["others"][sel])]
+                    + [(oid, lbl) for oid, lbl in hits if oid != sel])
         box.clear()
         with box:
             if not hits:
@@ -848,17 +851,27 @@ def _build_vocab_section(session_factory, spec) -> None:
             """``({id: label} of every row, the same without the absorbed row,
             default keep id)``.
 
-            The default is pre-selected only when exactly one other entry carries the
-            absorbed one's own name — folding "Austria (no code)" into "Austria (AT)".
-            Otherwise nothing: the first row of an alphabetical list is no candidate.
+            The default is pre-selected in ONE case only: the absorbed row has no code
+            and exactly one other row has its name and DOES have a code — folding
+            "Austria (no code)" into "Austria (AT)". Never the reverse (that would arm
+            the deletion of the coded row), and never between two coded rows: those are
+            different places that share a name (Limburg BE-VLI / NL-LI), identified by
+            ``(name, iso_code)``. Anything else is left for the user to pick.
             """
+            code_attr = vocab.code_attr
             with session_factory() as s:
                 rows = vocab.list(s)
                 labels = {o.id: vocab.merge_label(o) for o in rows}
                 names = {o.id: vocab.display(o) for o in rows}
+                codes = {o.id: getattr(o, code_attr, None) if code_attr else None
+                         for o in rows}
             others = {i: l for i, l in labels.items() if i != absorb_id}
-            same = [i for i in others if names[i] == names.get(absorb_id)]
-            return labels, others, (same[0] if len(same) == 1 else None)
+            default = None
+            if code_attr and absorb_id in names and not codes[absorb_id]:
+                same = [i for i in others if names[i] == names[absorb_id]]
+                if len(same) == 1 and codes[same[0]]:
+                    default = same[0]
+            return labels, others, default
 
         def _open_merge(row: dict) -> None:
             absorb_id = int(row["id"])

@@ -718,7 +718,12 @@ def build_identification_list(
         return bool(add_taxon_state["taxon_id"])
 
     def _state_pending_label() -> str:
-        return add_taxon_state["label"] or ""
+        """Display name of the pending row — never empty: a taxon still being
+        imported (taxon_id -1) may have no label yet, and a blank name in a warning
+        reads as a bug."""
+        if add_taxon_state["taxon_id"] == -1:
+            return add_taxon_state["label"] or "A taxon that is still importing"
+        return add_taxon_state["label"] or "An identification"
 
     def _state_has_changes() -> bool:
         """Staged mode: has anything been added, edited, deleted or re-flagged?"""

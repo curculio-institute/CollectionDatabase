@@ -1244,9 +1244,11 @@ Both sides are named with one `{id: label}` map — `_person_label` (name · abb
 ORCID) for persons, `vocab.merge_label` — the code, or **"(no code)"** in a coded
 vocab — in the header *and* the target list, from one `{id: label}` map; the "Kept" side
 once showed the bare name, so folding `Austria` into `Austria (AT)` read "Austria → Austria".
-The entry to keep is **pre-selected only when exactly one other row carries the absorbed
-row's name**; otherwise nothing is selected and Merge stays disabled (the first row of an
-alphabetical list is not a candidate).
+The entry to keep is **pre-selected in one case only**: the absorbed row has no code and
+exactly one other row has its name *and* a code (`Austria (no code)` → `Austria (AT)`).
+Never the reverse, never between two coded rows (Limburg BE-VLI / NL-LI are different
+places), never for persons. Otherwise nothing is selected and Merge stays disabled. A
+selected entry beyond the 100-row cap is moved to the top so it is always visible.
 
 ### The ISO-code pill (`.pf-code`)
 
