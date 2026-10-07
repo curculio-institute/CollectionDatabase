@@ -36,6 +36,7 @@ def test_validate_event_fields_all_valid():
 
 _COMPLETE = {
     "decimal_latitude": "48.1", "decimal_longitude": "11.5",
+    "country": "Germany", "state_province": "Bavaria",
     "municipality": "Augsburg", "event_date": "2026-06-15",
 }
 
@@ -46,7 +47,13 @@ def test_missing_event_fields_all_present():
 
 def test_missing_event_fields_empty_dict_reports_everything():
     missing = missing_event_fields({}, recorded_by=False)
-    assert missing == ["Coordinates", "Municipality", "Date", "Recorded by"]
+    assert missing == ["Coordinates", "Country", "State/province", "Municipality",
+                       "Date", "Recorded by"]
+
+
+def test_missing_event_fields_blank_country_and_state():
+    fields = {**_COMPLETE, "country": "", "state_province": "  "}
+    assert missing_event_fields(fields, recorded_by=True) == ["Country", "State/province"]
 
 
 def test_missing_event_fields_lone_latitude_is_missing_coordinates():

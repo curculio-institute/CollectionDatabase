@@ -46,7 +46,8 @@ def validate_event_fields(fields: dict) -> str | None:
 # schema-required (a real historical specimen may legitimately lack coordinates), so
 # this is a SOFT completeness check — unlike validate_event_fields above, a caller
 # shows the result as a "Save anyway?" confirmation, never a hard block.
-MISSING_FIELD_LABELS = ("Coordinates", "Municipality", "Date", "Recorded by")
+MISSING_FIELD_LABELS = ("Coordinates", "Country", "State/province", "Municipality",
+                        "Date", "Recorded by")
 
 
 def missing_event_fields(fields: dict, *, recorded_by: bool) -> list[str]:
@@ -66,8 +67,10 @@ def missing_event_fields(fields: dict, *, recorded_by: bool) -> list[str]:
     lat, lon = fields.get("decimal_latitude"), fields.get("decimal_longitude")
     if not (lat not in (None, "") and lon not in (None, "")):
         missing.append("Coordinates")
-    if not (fields.get("municipality") or "").strip():
-        missing.append("Municipality")
+    for key, label in (("country", "Country"), ("state_province", "State/province"),
+                       ("municipality", "Municipality")):
+        if not (fields.get(key) or "").strip():
+            missing.append(label)
     if not (fields.get("event_date") or "").strip():
         missing.append("Date")
     if not recorded_by:

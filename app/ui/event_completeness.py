@@ -2,8 +2,8 @@
 
 One dialog for every specimen-creation path (Digitize standard/visiting, Mounting
 Session, Import & Assign) so the wording and the fields it checks can never drift
-between them. Soft by design: none of coordinates / municipality / date / recordedBy
-is schema-required, so this only confirms — it never blocks a save.
+between them. Soft by design: none of coordinates / country / stateProvince /
+municipality / date / recordedBy is schema-required, so this only confirms — it never blocks a save.
 """
 from __future__ import annotations
 
