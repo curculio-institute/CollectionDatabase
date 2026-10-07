@@ -218,7 +218,8 @@ def build_controlled_vocab_tab(session_factory, *, on_person_changed=None) -> No
                 # Click merge on any row → dialog opens immediately.
                 # Dialog contains an inline picker for the merge target.
                 # Swap button flips which side is absorbed vs. kept.
-                _mctx: dict = {"absorb_id": None, "keep_id": None, "others": {}}
+                _mctx: dict = {"absorb_id": None, "keep_id": None, "others": {},
+                               "labels": {}}
 
                 def _person_label(p) -> str:
                     parts = [p.full_name]
@@ -247,8 +248,8 @@ def build_controlled_vocab_tab(session_factory, *, on_person_changed=None) -> No
                                 .style("color:var(--tp-secondary)")
                             merge_keep_label = ui.label("").classes("font-semibold text-sm truncate")
 
-                    # Target list — rebuilt from scratch on every dialog open
-                    merge_target_container = ui.element("div").classes("w-full mt-3")
+                    # Searchable "entry to keep" list (shared with the vocab cards)
+                    merge_targets = _build_merge_target_list(lambda pid: _select_keep(pid))
 
                     merge_swap_btn = (
                         ui.button("Swap sides", icon="swap_horiz")
@@ -277,59 +278,54 @@ def build_controlled_vocab_tab(session_factory, *, on_person_changed=None) -> No
                             .style("background:#f97316; color:white")
                         )
 
-                def _rebuild_target_list(others: dict[int, str], selected_id: int | None) -> None:
-                    """Rebuild the target-person list inside the dialog from scratch."""
-                    merge_target_container.clear()
-                    with merge_target_container:
-                        for pid, label in others.items():
-                            selected = pid == selected_id
-                            row_classes = (
-                                "w-full flex items-center gap-2 px-3 py-2 rounded cursor-pointer "
-                                + ("outline outline-1 outline-secondary bg-secondary/5" if selected else "hover:bg-slate-50 dark:hover:bg-white/5")
-                            )
-                            row = ui.element("div").classes(row_classes)
-                            with row:
-                                ui.icon("radio_button_checked" if selected else "radio_button_unchecked") \
-                                    .style("color:var(--tp-secondary); font-size:1.1rem; flex-shrink:0")
-                                ui.label(label).classes("text-sm truncate")
-                            row.on("click", lambda _, p=pid: _select_keep(p))
-
                 def _select_keep(pid: int) -> None:
                     _mctx["keep_id"] = pid
-                    _rebuild_target_list(_mctx["others"], pid)
+                    merge_targets["show"](_mctx["others"], pid)
                     _update_merge_preview()
 
                 def _update_merge_preview() -> None:
                     keep_id   = _mctx["keep_id"]
                     absorb_id = _mctx["absorb_id"]
+                    # Nothing is kept until the user picks it (see _merge_sides).
+                    merge_confirm_btn.set_enabled(keep_id is not None and absorb_id is not None)
+                    merge_swap_btn.set_enabled(keep_id is not None)
                     if keep_id is None or absorb_id is None:
-                        merge_keep_label.set_text("")
+                        merge_keep_label.set_text("— pick the person to keep below —")
                         merge_ref_label.set_text("")
                         return
                     with session_factory() as s:
                         preview = persons_svc.merge_preview(s, keep_id=keep_id, absorb_id=absorb_id)
-                    merge_keep_label.set_text(preview.keep_name)
+                    # The label the list shows (name · abbreviation · ORCID): two rows
+                    # with the same full name are exactly the case being merged.
+                    keep_label = _mctx["labels"][keep_id]
+                    merge_keep_label.set_text(keep_label)
                     noun = "reference" if preview.reference_count == 1 else "references"
                     merge_ref_label.set_text(
-                        f'{preview.reference_count} {noun} will be re-pointed to "{preview.keep_name}".'
+                        f'{preview.reference_count} {noun} will be re-pointed to "{keep_label}".'
                         if preview.reference_count
                         else "No existing references to re-point."
                     )
 
+                def _merge_sides(absorb_id: int) -> tuple[dict, dict, int | None]:
+                    """``({id: label} of everyone, the same without the absorbed
+                    person, default keep id)``. The default is pre-selected only when
+                    exactly one other person carries the absorbed one's full name;
+                    the first row of an alphabetical list is no candidate."""
+                    with session_factory() as s:
+                        people = persons_svc.list_persons(s)
+                        labels = {p.id: _person_label(p) for p in people}
+                        names = {p.id: p.full_name for p in people}
+                    others = {i: l for i, l in labels.items() if i != absorb_id}
+                    same = [i for i in others if names[i] == names.get(absorb_id)]
+                    return labels, others, (same[0] if len(same) == 1 else None)
+
                 def _open_merge(row: dict) -> None:
                     absorb_id = int(row["id"])
-                    with session_factory() as s:
-                        all_people = persons_svc.list_persons(s)
-                    others = {p.id: _person_label(p) for p in all_people if p.id != absorb_id}
-                    absorb_name = next((p.full_name for p in all_people if p.id == absorb_id), "?")
-                    default_keep = next(iter(others), None)
-
-                    _mctx["absorb_id"] = absorb_id
-                    _mctx["keep_id"]   = default_keep
-                    _mctx["others"]    = others
-
-                    merge_absorb_label.set_text(absorb_name)
-                    _rebuild_target_list(others, default_keep)
+                    labels, others, default_keep = _merge_sides(absorb_id)
+                    _mctx.update(absorb_id=absorb_id, keep_id=default_keep,
+                                 others=others, labels=labels)
+                    merge_absorb_label.set_text(labels.get(absorb_id, "?"))
+                    merge_targets["show"](others, default_keep, reset_search=True)
                     _update_merge_preview()
                     merge_dialog.open()
 
@@ -338,18 +334,12 @@ def build_controlled_vocab_tab(session_factory, *, on_person_changed=None) -> No
                     new_keep   = _mctx["absorb_id"]
                     if new_absorb is None:
                         return
-                    with session_factory() as s:
-                        all_people = persons_svc.list_persons(s)
-                    others      = {p.id: _person_label(p) for p in all_people if p.id != new_absorb}
-                    absorb_name = next((p.full_name for p in all_people if p.id == new_absorb), "?")
-                    keep_id     = new_keep if new_keep in others else next(iter(others), None)
-
-                    _mctx["absorb_id"] = new_absorb
-                    _mctx["keep_id"]   = keep_id
-                    _mctx["others"]    = others
-
-                    merge_absorb_label.set_text(absorb_name)
-                    _rebuild_target_list(others, keep_id)
+                    labels, others, _default = _merge_sides(new_absorb)
+                    keep_id = new_keep if new_keep in others else None
+                    _mctx.update(absorb_id=new_absorb, keep_id=keep_id,
+                                 others=others, labels=labels)
+                    merge_absorb_label.set_text(labels.get(new_absorb, "?"))
+                    merge_targets["show"](others, keep_id)
                     _update_merge_preview()
 
                 merge_swap_btn.on_click(_swap_merge)
@@ -443,6 +433,66 @@ def build_controlled_vocab_tab(session_factory, *, on_person_changed=None) -> No
         for spec in VOCAB_REGISTRY:
             with ui.tab_panel(spec.key).classes("p-0"):
                 _build_vocab_section(session_factory, spec)
+
+
+_MERGE_LIST_CAP = 100   # rows rendered at once; the search narrows the rest
+
+
+def _build_merge_target_list(on_pick) -> dict:
+    """The "entry to keep" picker of a merge dialog: search box + scrolling radio list.
+
+    Defined once for every merge dialog in this tab (persons, each vocabulary) — any of
+    these lists can run to hundreds of rows, so all of them filter by typing, scroll
+    inside the dialog and render at most ``_MERGE_LIST_CAP`` rows at a time.
+
+    Build it inside the dialog card. ``on_pick(id)`` is called on a row click. Returns
+    ``show(others, selected_id, reset_search=False)`` — ``others`` is ``{id: label}``.
+    """
+    shown: dict = {"others": {}, "selected": None}
+
+    search = ui.input(placeholder="Search the entry to keep…") \
+        .props("dense outlined clearable debounce=150").classes("w-full mt-3")
+    with search.add_slot("prepend"):
+        ui.icon("search")
+    box = ui.element("div").classes("w-full mt-1 overflow-y-auto") \
+        .style("max-height:16rem")
+
+    def _render() -> None:
+        needle = (search.value or "").strip().casefold()
+        hits = [(oid, lbl) for oid, lbl in shown["others"].items()
+                if needle in lbl.casefold()]
+        box.clear()
+        with box:
+            if not hits:
+                ui.label("No entry matches.").classes("text-sm px-3 py-2") \
+                    .style("color:var(--tp-base-soft)")
+            if len(hits) > _MERGE_LIST_CAP:
+                ui.label(f"Showing {_MERGE_LIST_CAP} of {len(hits)} — type to narrow.") \
+                    .classes("text-xs px-3 py-1").style("color:var(--tp-base-soft)")
+            for oid, lbl in hits[:_MERGE_LIST_CAP]:
+                selected = oid == shown["selected"]
+                row = ui.element("div").classes(
+                    "w-full flex items-center gap-2 px-3 py-2 rounded cursor-pointer "
+                    + ("outline outline-1 outline-secondary bg-secondary/5" if selected
+                       else "hover:bg-slate-50 dark:hover:bg-white/5")
+                )
+                with row:
+                    ui.icon("radio_button_checked" if selected
+                            else "radio_button_unchecked") \
+                        .style("color:var(--tp-secondary); font-size:1.1rem; flex-shrink:0")
+                    ui.label(lbl).classes("text-sm truncate")
+                row.on("click", lambda _, o=oid: on_pick(o))
+
+    search.on_value_change(lambda _: _render())
+
+    def show(others: dict, selected_id, *, reset_search: bool = False) -> None:
+        shown.update(others=others, selected=selected_id)
+        if reset_search and search.value:
+            search.value = ""       # its change handler renders
+        else:
+            _render()
+
+    return {"show": show}
 
 
 def _build_repository_card(session_factory) -> None:
@@ -752,14 +802,7 @@ def _build_vocab_section(session_factory, spec) -> None:
                         .classes("text-xs uppercase tracking-wide").style("color:var(--tp-secondary)")
                     merge_keep_label = ui.label("").classes("font-semibold text-sm truncate")
 
-            # The list can run to hundreds of rows (countries, states): filter by
-            # typing, and scroll the rest inside the dialog.
-            merge_search = ui.input(placeholder="Search the entry to keep…") \
-                .props("dense outlined clearable debounce=150").classes("w-full mt-3")
-            with merge_search.add_slot("prepend"):
-                ui.icon("search")
-            merge_target_container = ui.element("div").classes(
-                "w-full mt-1 overflow-y-auto").style("max-height:16rem")
+            merge_targets = _build_merge_target_list(lambda oid: _select_keep(oid))
             merge_swap_btn = (
                 ui.button("Swap sides", icon="swap_horiz").props("flat no-caps dense")
                 .style("color:#f97316").classes("mt-2")
@@ -774,39 +817,9 @@ def _build_vocab_section(session_factory, spec) -> None:
                     .style("background:#f97316; color:white")
                 )
 
-        _MERGE_LIST_CAP = 100   # rows rendered at once; the search narrows the rest
-
-        def _rebuild_target_list(others: dict, selected_id) -> None:
-            needle = (merge_search.value or "").strip().casefold()
-            hits = [(oid, lbl) for oid, lbl in others.items()
-                    if needle in lbl.casefold()]
-            merge_target_container.clear()
-            with merge_target_container:
-                if not hits:
-                    ui.label("No entry matches.").classes("text-sm px-3 py-2") \
-                        .style("color:var(--tp-base-soft)")
-                if len(hits) > _MERGE_LIST_CAP:
-                    ui.label(f"Showing {_MERGE_LIST_CAP} of {len(hits)} — type to narrow.") \
-                        .classes("text-xs px-3 py-1").style("color:var(--tp-base-soft)")
-                for oid, lbl in hits[:_MERGE_LIST_CAP]:
-                    selected = oid == selected_id
-                    row = ui.element("div").classes(
-                        "w-full flex items-center gap-2 px-3 py-2 rounded cursor-pointer "
-                        + ("outline outline-1 outline-secondary bg-secondary/5" if selected
-                           else "hover:bg-slate-50 dark:hover:bg-white/5")
-                    )
-                    with row:
-                        ui.icon("radio_button_checked" if selected else "radio_button_unchecked") \
-                            .style("color:var(--tp-secondary); font-size:1.1rem; flex-shrink:0")
-                        ui.label(lbl).classes("text-sm truncate")
-                    row.on("click", lambda _, o=oid: _select_keep(o))
-
-        merge_search.on_value_change(
-            lambda _: _rebuild_target_list(_mctx["others"], _mctx["keep_id"]))
-
         def _select_keep(oid) -> None:
             _mctx["keep_id"] = oid
-            _rebuild_target_list(_mctx["others"], oid)
+            merge_targets["show"](_mctx["others"], oid)
             _update_preview()
 
         def _update_preview() -> None:
@@ -853,8 +866,7 @@ def _build_vocab_section(session_factory, spec) -> None:
             _mctx.update(absorb_id=absorb_id, keep_id=default_keep, others=others,
                          labels=labels)
             merge_absorb_label.set_text(labels.get(absorb_id, "?"))
-            merge_search.value = ""
-            _rebuild_target_list(others, default_keep)
+            merge_targets["show"](others, default_keep, reset_search=True)
             _update_preview()
             merge_dialog.open()
 
@@ -867,7 +879,7 @@ def _build_vocab_section(session_factory, spec) -> None:
             _mctx.update(absorb_id=new_absorb, keep_id=keep_id, others=others,
                          labels=labels)
             merge_absorb_label.set_text(labels.get(new_absorb, "?"))
-            _rebuild_target_list(others, keep_id)
+            merge_targets["show"](others, keep_id)
             _update_preview()
 
         merge_swap_btn.on_click(_swap_merge)
