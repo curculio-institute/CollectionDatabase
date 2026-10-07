@@ -459,8 +459,13 @@ dialogs would otherwise be the first to say.
   room beside the form: the column becomes `position:fixed` over the bottom-right corner
   (and is `display:none` while empty).
 - **Findings (`digitize_tab._check_findings`):**
+  0. *Required inputs missing* — `Identifier code is missing` (standard), `Collection is
+     missing` (visiting), `Identification is missing`. They come from
+     `_required_missing`, the **one** list Save's `_validate` also refuses on, so panel and
+     validation cannot disagree. In Mounting: `Row N has no identification`
+     (`ms_state["rows_without_identification"]`).
   1. *Identification entered but not added* (not in Mounting, which has no add row) — fix
-     `Add`.
+     `Add`; it replaces "Identification is missing" while a taxon waits in the add row.
   2. *Collecting Event: X is missing* — one row per label from
      `validation.missing_event_fields`, the **same** function as the Save-time
      "event is missing…" dialog (#173), which stays. Shown for a reused event too.

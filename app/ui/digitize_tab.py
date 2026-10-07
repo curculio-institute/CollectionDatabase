@@ -578,23 +578,46 @@ def build_digitize_tab(session_factory, *, refreshers, mode_state, mark_form_cle
                 "confidential":      1 if active["conf_chk"].value else 0,
             }
 
-        def _validate() -> str | None:
+        def _required_missing() -> list[dict]:
+            """The required specimen / identification inputs still missing (standard
+            and visiting). ONE list for both readers: Save refuses on the first entry's
+            ``error``, the check panel shows every entry's ``text`` — so the panel can
+            never promise a save that the validation then refuses, or the reverse."""
+            out: list[dict] = []
             active = _active_spec[0]
             ident = active["get_identifier_fields"]()
             if active["policy"] == "visiting":
                 # Only the collection is required. A foreign collection's
                 # specimen may have no catalog number at all (migration 0072).
                 if not (active["repo_field"]["get_value"]() or "").strip():
-                    return "Choose the collection this specimen belongs to."
+                    out.append({
+                        "group": "Specimen", "key": "spec-collection",
+                        "text": "Collection is missing",
+                        "error": "Choose the collection this specimen belongs to."})
             else:  # standard
                 # Membership derives from the default collection's code
                 # (#83); institutionCode is optional metadata on the repo.
                 if not ident["collection_code"]:
-                    return "No default collection set. Open Settings to choose one."
-                if not ident["catalog_number"]:
-                    return "Select an identifier code first."
+                    out.append({
+                        "group": "Specimen", "key": "spec-default-collection",
+                        "text": "No default collection is set (Settings)",
+                        "error": "No default collection set. Open Settings to choose one."})
+                elif not ident["catalog_number"]:
+                    out.append({
+                        "group": "Specimen", "key": "spec-identifier",
+                        "text": "Identifier code is missing",
+                        "error": "Select an identifier code first."})
             if not det_state["get_dets"]():
-                return "Add at least one identification."
+                out.append({
+                    "group": "Identifications", "key": "det-missing",
+                    "text": "Identification is missing",
+                    "error": "Add at least one identification."})
+            return out
+
+        def _validate() -> str | None:
+            missing = _required_missing()
+            if missing:
+                return missing[0]["error"]
             return validate_event_fields(ce["collect_fields"]())
 
         def _clear_after_save():
@@ -875,12 +898,26 @@ def build_digitize_tab(session_factory, *, refreshers, mode_state, mark_form_cle
 
         def _check_findings() -> list[dict]:
             out: list[dict] = []
-            if _mode_state["value"] != "mounting" and det_state["has_pending"]():
-                out.append({
-                    "group": "Identifications", "key": "det-pending",
-                    "text": f"{det_state['pending_label']()} is entered but not added",
-                    "fix": ("Add", det_state["add_pending"]),
-                })
+            if _mode_state["value"] == "mounting":
+                # Mounting has no identifier field (codes are reserved at Save) and
+                # no add row; its required input is an identification per row.
+                for n in ms_state["rows_without_identification"]():
+                    out.append({"group": "Identifications", "key": f"ms-det-{n}",
+                                "text": f"Row {n} has no identification"})
+            else:
+                det_pending = det_state["has_pending"]()
+                for m in _required_missing():
+                    # An identification waiting in the add row is reported as
+                    # "entered but not added" (with its Add button), not as missing.
+                    if m["key"] == "det-missing" and det_pending:
+                        continue
+                    out.append({k: m[k] for k in ("group", "key", "text")})
+                if det_pending:
+                    out.append({
+                        "group": "Identifications", "key": "det-pending",
+                        "text": f"{det_state['pending_label']()} is entered but not added",
+                        "fix": ("Add", det_state["add_pending"]),
+                    })
             for label in missing_event_fields(
                     ce["collect_fields"](), recorded_by=bool(ce["recby_get"]())):
                 # "Coordinates" is the one plural label.

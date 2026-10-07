@@ -497,4 +497,10 @@ def build_mounting_session_section(
             or (r.get("life_stage") or None) != NEW_SPECIMEN_DEFAULTS["life_stage"]
         )
 
-    return {"wipe": wipe, "has_content": has_content}
+    def rows_without_identification() -> list[int]:
+        """1-based numbers of the rows _validate would refuse for a missing
+        identification — for the tab's check panel."""
+        return [i + 1 for i, row in enumerate(rows) if row["det"] is None]
+
+    return {"wipe": wipe, "has_content": has_content,
+            "rows_without_identification": rows_without_identification}
