@@ -787,7 +787,7 @@ def build_tw_sync_tab(session_factory, refreshers: dict | None = None,
                     wc_change_btn = ui.button("Change", icon="swap_horiz") \
                         .props("flat dense no-caps size=sm")
                 wc_select = ui.select(
-                    options={}, label="Working collection (for the Export step)",
+                    options={}, label="Working collection",
                     with_input=True,
                 ).classes("w-full").style("display:none")
 
@@ -827,6 +827,7 @@ def build_tw_sync_tab(session_factory, refreshers: dict | None = None,
                     state["checks"] = None
                     _sync_wc_label()
                     wc_select.style("display:none")
+                    _render_report()
                     _render_results()
                     _sync_download_enabled()
                     _sync_card2_wc_line()
@@ -951,7 +952,12 @@ def build_tw_sync_tab(session_factory, refreshers: dict | None = None,
                                  if scope_id is not None else None)
                     rows: list[dict] = []
                     reasons_by_repo: dict[int, tuple] = {}
-                    for r in repo_svc.list_repositories(s):
+                    # Only the working collection — TaxonWorks takes one collection
+                    # (namespace) per upload, so the report shows the one being worked
+                    # on, never every collection side by side.
+                    working = (s.get(repo_svc.Repository, state["repo_id"])
+                               if state["repo_id"] is not None else None)
+                    for r in ([working] if working is not None else []):
                         cos = _scoped_cos(s, scope_id, repo_id=r.id,
                                           expanded_scope_ids=scope_ids)
                         eligible = sum(
@@ -1088,8 +1094,7 @@ def build_tw_sync_tab(session_factory, refreshers: dict | None = None,
                     with report_col:
                         if not rows:
                             ui.label(
-                                "No collections set up yet — add one in Controlled "
-                                "Vocabularies."
+                                "Choose a working collection above."
                             ).classes("text-sm").style("color:var(--tp-base-soft)")
                             return
                         if report_state["flow_view"]:

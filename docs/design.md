@@ -1267,8 +1267,10 @@ The dropdown lists `vocab.entries()` (one item per DB row), never `options()` �
 
 ## TaxonWorks tab — the classification flow diagram
 
-Each collection's compare result is drawn as a fixed-layout SVG flow diagram
-(`tw_sync_tab.flow_diagram_svg`), with the plain `ui.table` kept as a switchable fallback:
+The Collections step shows **only the working collection** (TaxonWorks takes one namespace
+per upload); changing the working collection redraws it. That collection's compare result is
+drawn as a fixed-layout SVG flow diagram (`tw_sync_tab.flow_diagram_svg`), with the plain
+`ui.table` kept as a switchable fallback:
 
 ```
 Total ─┬─ Not eligible ── Leaked
