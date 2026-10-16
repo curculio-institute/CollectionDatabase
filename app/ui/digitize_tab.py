@@ -30,14 +30,15 @@ import app.ui.record_summary as _record_summary
 from app.ui.media_panel import build_media_button
 from app.ui.external_id_panel import build_external_id_button
 from app.ui.life_stage_panel import build_life_stage_button
-from app.ui.annotation_panel import build_annotation_button
+from app.ui.annotation_panel import (build_annotation_button,
+                                     confirm_staged_on_existing_event)
 from app.ui.event_completeness import confirm_incomplete_event
 from app.ui.check_panel import build_check_panel
 from app.ui.confirm_dialog import choose
 import app.services.media as media_svc
 import app.services.external_ids as extid_svc
 import app.services.annotations as ann_svc
-from app.services.biological import get_relationship_options
+from app.services.biological import check_staged_relationships, get_relationship_options
 from app.services.validation import validate_event_fields, missing_event_fields
 from app.vocab import IDENTIFICATION_QUALIFIER_OPTIONS
 
@@ -527,6 +528,8 @@ def build_digitize_tab(session_factory, *, refreshers, mode_state, mark_form_cle
                 event_id_getter=lambda: state["event_id"],
                 recorded_by_getter=lambda: ce["recby_get"](),
                 confirm_pending=lambda: _resolve_pending(),
+                confirm_event_annotations=lambda ev_id: confirm_staged_on_existing_event(
+                    _sf, event_ann, ev_id),
             )
         ms_section.set_visibility(False)
 
@@ -774,12 +777,21 @@ def build_digitize_tab(session_factory, *, refreshers, mode_state, mark_form_cle
             if err:
                 ui.notify(err, type="negative")
                 return
-            _live_rel_ids = {r.id for r in _with_session(get_relationship_options)}
-            for _a in bio_state["associations"]:
-                if _a["rel_id"] not in _live_rel_ids:
-                    ui.notify(f"The relationship '{_a['rel_name']}' was merged or deleted "
-                              f"— pick it again.", type="negative")
+            try:
+                _with_session(lambda s: check_staged_relationships(
+                    s, bio_state["associations"]))
+            except ValueError as exc:
+                ui.notify(str(exc), type="negative")
+                return
+            # Staged event annotations + a reused event: ask (the event form is read-only
+            # now, so they can no longer be seen or removed there).
+            try:
+                if not await confirm_staged_on_existing_event(_sf, event_ann,
+                                                              state["event_id"]):
                     return
+            except Exception as exc:
+                ui.notify(f"Save failed: {exc}", type="negative")
+                return
             # Soft completeness confirm (#173) — coordinates / municipality /
             # date / recordedBy are never schema-required, so this only asks;
             # it never blocks. Checked on every save, including a reused event.

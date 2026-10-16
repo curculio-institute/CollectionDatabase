@@ -73,6 +73,37 @@ def pending_changed(pending_items, db_items: list[dict]) -> bool:
     return key(pending_items) != key(db_items)
 
 
+async def confirm_staged_on_existing_event(session_factory, handle: dict,
+                                           event_id: Optional[int]) -> bool:
+    """Save stop (Digitize + Mounting): staged EVENT annotations about to be ADDED to an
+    existing event. Selecting that event made the form read-only and hid the button, so
+    the user can no longer see or remove them — ask instead of adding silently.
+
+    Returns True iff the save may go on; "drop" clears the staged annotations first. A new
+    event (``event_id`` None) or nothing staged asks nothing."""
+    from app.services.events import count_co_at_event
+    from app.ui.confirm_dialog import choose
+    staged = handle.get("staged_items") or []
+    if event_id is None or not staged:
+        return True
+    with session_factory() as s:
+        n_spec = count_co_at_event(s, event_id)
+    n = len(staged)
+    choice = await choose(
+        title="Add annotations to an existing event?",
+        body=(f"{n} event annotation{'s are' if n != 1 else ' is'} staged, but this save "
+              f"reuses event #{event_id}, used by {n_spec} specimen"
+              f"{'s' if n_spec != 1 else ''}. Adding them changes that event for all "
+              f"of its specimens."),
+        options=[("drop", "Save without them", "secondary"),
+                 ("add", f"Add them to event #{event_id}", "primary")])
+    if choice is None:
+        return False
+    if choice == "drop":
+        handle["clear"]()
+    return True
+
+
 def _as_items(items: list[dict]) -> list[AnnotationItem]:
     return [AnnotationItem(i["term_id"], i["value"]) for i in items]
 

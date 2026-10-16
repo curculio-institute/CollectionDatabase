@@ -112,6 +112,17 @@ def get_relationship_options(session: Session) -> list[RelationshipOption]:
     return [RelationshipOption(r.id, r.name, r.taxonworks_id) for r in rows]
 
 
+def check_staged_relationships(session: Session, associations: list[dict]) -> None:
+    """Refuse a Save whose staged association names a relationship that was merged or
+    deleted since it was staged (the live set is ``get_relationship_options``). Shared by
+    Digitize and Mounting so both stop with the same named message."""
+    live = {r.id for r in get_relationship_options(session)}
+    for a in associations:
+        if a["rel_id"] not in live:
+            raise ValueError(f"The relationship '{a['rel_name']}' was merged or deleted "
+                             f"— pick it again.")
+
+
 @dataclass(frozen=True)
 class AssociationRow:
     id: int

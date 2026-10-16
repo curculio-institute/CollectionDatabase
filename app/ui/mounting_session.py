@@ -23,6 +23,7 @@ import app.services.identifiers as id_svc
 import app.services.print_queue as pq_svc
 import app.services.repositories as repo_svc
 from app.services.dates import parse_dwc_date
+from app.services.biological import check_staged_relationships
 from app.services.validation import validate_event_fields
 from app.ui.annotation_panel import build_annotation_button
 from app.ui.event_completeness import confirm_incomplete_event
@@ -73,6 +74,9 @@ def build_mounting_session_section(
     confirm_pending=None,   # async () -> bool: the tab's "entered but not added" stop
                             # (an association typed into the shared card but never
                             # staged); False cancels the save
+    confirm_event_annotations=None,  # async (event_id) -> bool: the tab's "add staged
+                                     # event annotations to an existing event?" stop;
+                                     # False cancels the save
 ) -> dict:
     """Render the Mounting Session specimen UI. Returns {"wipe": callable}."""
 
@@ -368,6 +372,19 @@ def build_mounting_session_section(
         err = _validate()
         if err:
             ui.notify(err, type="negative")
+            return
+        try:
+            with session_factory() as s:
+                check_staged_relationships(s, bio_state["associations"])
+        except ValueError as exc:
+            ui.notify(str(exc), type="negative")
+            return
+        try:
+            if (confirm_event_annotations is not None
+                    and not await confirm_event_annotations(event_id_getter())):
+                return
+        except Exception as exc:
+            ui.notify(f"Save failed: {exc}", type="negative")
             return
         # Soft completeness confirm (#173) — checked on every save, including a
         # reused event, same as the standard Digitize path. Its own try/except so an
