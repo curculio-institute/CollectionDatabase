@@ -454,3 +454,93 @@ def test_grouped_sheet_is_standards_mode():
     from app.services import labels as L
     html = L._grouped_html([], "2026-10-16")
     assert html.lower().startswith("<!doctype html>")
+
+
+# ── Identifier label: fixed 18 x 7 mm box, text shrinks to fit (2026-10-16) ─────────
+
+_NAMES_BY_LENGTH = [
+    "JJPC",                                                            # 4
+    "Jakob Jilg Personal Collection",                                  # 30
+    "Zoologische Staatssammlung München",                              # 34
+    "Senckenberg Deutsches Entomologisches Institut",                  # 46
+    "Naturhistorisches Museum Wien, Coleoptera Collection",            # 52
+    "Muséum national d'Histoire naturelle, Entomologie, Coléoptères",  # 62
+]
+_TOO_LONG = ("Natural History Museum London, Department of Life Sciences, "
+             "Insects Division, Coleoptera Section")                    # 96
+
+
+def _id_boxes(html: str):
+    """(lbl-id box, [line boxes inside it]) for every identifier label WeasyPrint lays out."""
+    found, stack = [], [b for p in HTML(string=html).render().pages for b in [p._page_box]]
+    while stack:
+        box = stack.pop()
+        el = getattr(box, "element", None)
+        if (el is not None and "lbl-id" in (el.get("class") or "").split()
+                and box.element_tag == "div" and hasattr(box, "border_width")):
+            lines, inner = [], [box]
+            while inner:
+                b = inner.pop()
+                if isinstance(b, LineBox):
+                    lines.append(b)
+                inner.extend(getattr(b, "children", []) or [])
+            found.append((box, lines))
+            continue
+        stack.extend(getattr(box, "children", []) or [])
+    return found
+
+
+def test_identifier_label_box_is_fixed_whatever_the_name():
+    """Every identifier label is exactly 18 x 7 mm and all its text stays inside — a long
+    collection name used to widen the label (96 characters printed 39.6 mm wide)."""
+    from app.services import labels as L
+    px_mm = 25.4 / 96
+    for name in _NAMES_BY_LENGTH:
+        specs = [SpecimenLabels(id_code=c) for c in ("JJPC-00304", "JJPC-100000")]
+        html = L._grouped_html([LabelGroup("t", specs)], "2026-10-16", {"JJPC": name})
+        boxes = _id_boxes(html)
+        assert len(boxes) == 2, name
+        for box, lines in boxes:
+            assert abs(box.border_width() * px_mm - 18.0) < 0.01, name
+            assert abs(box.border_height() * px_mm - 7.0) < 0.01, name
+            right = box.border_box_x() + box.border_width() - box.border_right_width
+            bottom = box.border_box_y() + box.border_height() - box.border_bottom_width
+            for ln in lines:
+                text_right = ln.position_x + sum(c.margin_width() for c in ln.children)
+                assert text_right <= right + 1e-6, name
+                assert ln.position_y + ln.margin_height() <= bottom + 1e-6, name
+
+
+def test_identifier_name_shrinks_then_wraps_and_the_number_makes_room():
+    from app.services import labels as L
+    short = L._id_layout("JJPC-00304", "Jakob Jilg Personal Collection")
+    assert short.name_lines == ("Jakob Jilg Personal Collection",)
+    assert short.name_pt == L._NAME_MAX_PT
+    shrunk = L._id_layout("JJPC-00304", "Zoologische Staatssammlung München")
+    assert len(shrunk.name_lines) == 1 and shrunk.name_pt < L._NAME_MAX_PT
+    wrapped = L._id_layout("JJPC-00304", "Naturhistorisches Museum Wien, Coleoptera Collection")
+    assert len(wrapped.name_lines) == 2 and wrapped.name_pt == L._NAME_MIN_PT
+    assert " ".join(wrapped.name_lines) == "Naturhistorisches Museum Wien, Coleoptera Collection"
+    assert L._ID_NUM_MIN_PT <= wrapped.num_pt < short.num_pt     # number gave up height
+    assert L._id_layout("JJPC-100000", "JJPC").num_pt < short.num_pt   # and shrinks for width
+
+
+def test_identifier_refuses_what_cannot_fit():
+    """Never a wider or clipped label: a name that does not fit even on two lines at the
+    minimum size, or a character the bundled font lacks, refuses the whole sheet."""
+    import pytest
+    from app.services import labels as L
+    with pytest.raises(L.LabelDoesNotFit, match="Natural History Museum London"):
+        L._id_layout("JJPC-00304", _TOO_LONG)
+    with pytest.raises(L.LabelDoesNotFit, match="cannot print"):
+        L._id_layout("JJPC-00304", "昆虫標本館")
+    with pytest.raises(L.LabelDoesNotFit):
+        L.grouped_sheet([LabelGroup("t", [SpecimenLabels(id_code="JJPC-00304")])],
+                        "2026-10-16", {"JJPC": _TOO_LONG})
+
+
+def test_identifier_name_problem_for_the_collections_dialog():
+    from app.services import labels as L
+    assert L.identifier_name_problem("Jakob Jilg Personal Collection", "JJPC") is None
+    assert "Natural History Museum London" in L.identifier_name_problem(_TOO_LONG, "NHMUK")
+    assert L.identifier_name_problem(_TOO_LONG, None) is None   # codeless: no identifier labels

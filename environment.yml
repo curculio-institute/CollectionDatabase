@@ -12,6 +12,9 @@ dependencies:
   - pip:
       - nicegui==2.*
       - weasyprint==69.*
+      # Font advance widths for the identifier label's shrink-to-fit (labels._id_layout).
+      # Also a WeasyPrint dependency; declared because the app imports it directly.
+      - fonttools==4.*
       # Chromium label-PDF backend (app/services/pdf_backend.py). The pip package is
       # declared here; the browser binary is fetched once by run.py on first launch
       # (pdf_backend.ensure_chromium → `playwright install chromium`) — it is not a

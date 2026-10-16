@@ -658,71 +658,182 @@ def _id_number_font_pt(num: str) -> float:
     return round(max(_ID_NUM_MIN_PT, min(_ID_NUM_MAX_PT, pt)), 1)
 
 
+# ---------------------------------------------------------------------------
+# Identifier label: a FIXED box, the text shrinks to fit inside it
+# ---------------------------------------------------------------------------
+# Every identifier label is exactly 18 x _ID_LABEL_H mm whatever it says: the cut grid
+# and the pin depend on it. Before 2026-10-16 the box sized to its content, so a
+# collection name longer than ~31 characters silently WIDENED the label (a 96-character
+# name printed 39.6 mm wide) and a name line changed its height. Now the layout is
+# computed here from the bundled font's own advance widths, identically for both PDF
+# backends and the preview, and refused loudly when it cannot fit:
+#   1. the collection name shrinks from _NAME_MAX_PT to _NAME_MIN_PT on one line;
+#   2. below that it wraps onto two lines at _NAME_MIN_PT (broken at a space, balanced),
+#      and the big number gives up the height the second line needs;
+#   3. the number also shrinks for width (_id_number_font_pt), never below _ID_NUM_MIN_PT;
+#   4. anything that still does not fit raises LabelDoesNotFit naming the cause — the
+#      Collections dialog runs the same check (identifier_name_problem) when a name is saved.
+# Font-file advance widths ignore kerning, so they run 0.05-0.16 mm WIDER than the printed
+# text (measured against Chromium and WeasyPrint PDFs, 2026-10-16) — the safe direction.
+_ID_LABEL_H  = "7mm"     # outer height, = the 7 mm label limit (border-box: incl. padding)
+_ID_QR_MM    = 5.5
+_ID_GAP_MM   = 0.6
+# Text column beside the QR: 18 - 2 x 0.5 padding - 2 x 0.1 border (WeasyPrint draws a
+# real border; Chromium an inset shadow) - QR - gap.
+_ID_TEXT_COL_MM = 18.0 - 2 * 0.5 - 2 * 0.1 - _ID_QR_MM - _ID_GAP_MM     # 10.7
+_ID_FIT_MM   = _ID_TEXT_COL_MM - 0.2     # fit budget: column minus a rounding margin
+# Height budget of the name / prefix / number stack: 7 - 0.45 top - 0.3 bottom padding
+# - 0.2 border = 6.05 mm = 17.15 pt, less a margin.
+_ID_STACK_PT = 17.0
+_NAME_MAX_PT = 2.5
+_NAME_MIN_PT = 2.0
+_NAME_LH     = 1.4       # see .id-collname: the leading keeps cap tops off the clip edge
+_NAME_MAX_LINES = 2
+_PREFIX_PT   = 3.4
+_PREFIX_LS_PT = 0.3      # .id-prefix letter-spacing
+_PT_MM       = 25.4 / 72
+
+
+class LabelDoesNotFit(ValueError):
+    """A label's text cannot fit its fixed box. Refused, never clipped or widened."""
+
+
+@lru_cache(maxsize=1)
+def _regular_metrics() -> tuple[dict[int, str], object, int]:
+    """(cmap, hmtx, unitsPerEm) of the bundled regular face — what the identifier prints in."""
+    from fontTools.ttLib import TTFont
+    font = TTFont(_FONTS_DIR / "FiraSansCompressed-Regular.ttf")
+    return font.getBestCmap(), font["hmtx"], font["head"].unitsPerEm
+
+
+def _text_width_mm(text: str, pt: float, letter_spacing_pt: float = 0.0) -> float:
+    """Advance width of `text` in the label font at `pt`. A character the bundled font
+    lacks would print in some fallback font of unknown width, so it is refused."""
+    cmap, hmtx, upm = _regular_metrics()
+    missing = sorted({c for c in text if ord(c) not in cmap})
+    if missing:
+        raise LabelDoesNotFit(
+            f"the label font cannot print {' '.join(missing)!s} in {text!r}")
+    units = sum(hmtx[cmap[ord(c)]][0] for c in text)
+    return (units / upm * pt + len(text) * letter_spacing_pt) * _PT_MM
+
+
+def _name_lines(name: str) -> tuple[tuple[str, ...], float]:
+    """(lines, pt) for the collection-name line(s) — see the section note."""
+    one = _text_width_mm(name, 1.0)
+    if one * _NAME_MIN_PT <= _ID_FIT_MM:
+        pt = min(_NAME_MAX_PT, int(_ID_FIT_MM / one * 10) / 10)   # round DOWN to 0.1 pt
+        return (name,), pt
+    words = name.split()
+    best: tuple[str, str] | None = None
+    best_w = 0.0
+    for i in range(1, len(words)):
+        pair = (" ".join(words[:i]), " ".join(words[i:]))
+        w = max(_text_width_mm(p, _NAME_MIN_PT) for p in pair)
+        if best is None or w < best_w:
+            best, best_w = pair, w
+    if best is None or best_w > _ID_FIT_MM:
+        raise LabelDoesNotFit(
+            f"the collection name {name!r} does not fit the identifier label even at "
+            f"{_NAME_MIN_PT} pt on {_NAME_MAX_LINES} lines — shorten it under "
+            f"Controlled Vocabularies → Collections / Institutions")
+    return best, _NAME_MIN_PT
+
+
+@dataclass(frozen=True)
+class _IdLayout:
+    name_lines: tuple[str, ...]
+    name_pt:    float
+    num_pt:     float
+
+
+def _id_layout(code: str, collection_name: str) -> _IdLayout:
+    """Font sizes for one identifier label, or LabelDoesNotFit (see the section note)."""
+    prefix, num = _split_identifier_code(code)
+    if prefix and _text_width_mm(prefix, _PREFIX_PT, _PREFIX_LS_PT) > _ID_FIT_MM:
+        raise LabelDoesNotFit(
+            f"the collection code {prefix.rstrip('-')!r} is too long for the identifier label")
+    lines, name_pt = _name_lines(collection_name) if collection_name else ((), 0.0)
+    stack_left = (_ID_STACK_PT - len(lines) * _NAME_LH * name_pt
+                  - (_PREFIX_PT if prefix else 0.0))
+    num_pt = min(_id_number_font_pt(num), int(stack_left * 10) / 10)
+    if (num_pt < _ID_NUM_MIN_PT
+            or _text_width_mm(num, num_pt, 0.2) > _ID_FIT_MM):
+        raise LabelDoesNotFit(
+            f"the number in {code!r} does not fit the identifier label"
+            + (f" beside the collection name {collection_name!r}" if collection_name else ""))
+    return _IdLayout(lines, name_pt, num_pt)
+
+
+def identifier_name_problem(collection_name: str, collection_code: str | None) -> str | None:
+    """Why identifier labels of this collection could not print, or None if they can.
+    Checked against a 6-digit number — longer than any code the app issues today."""
+    if not collection_code or not (collection_name or "").strip():
+        return None              # codeless collections print no identifier labels
+    try:
+        _id_layout(f"{collection_code}-000000", collection_name.strip())
+    except LabelDoesNotFit as exc:
+        return str(exc)
+    return None
+
+
 def _id_label_inner(code: str, collection_name: str = "") -> str:
-    """Inner HTML for one identifier label: tiny full collection-name line, then a
-    row with the QR on the left and — to its right — the collection-code prefix
-    (``JJPC-``, small) stacked *over* the sequence number (``00304``, large + bold,
-    auto-sized to fit).
+    """Inner HTML for one identifier label: QR on the left; to its right a left-aligned
+    stack of the collection's full name (tiny, #56), the collection-code prefix
+    (``JJPC-``, small, keeps its hyphen) and the sequence number (``00304``, large).
+    The QR still encodes the whole ``JJPC-00304``.
 
-    Splitting the prefix onto its own line lets the number print big and legible
-    (redesign 2026-07-07); the QR still encodes the whole ``JJPC-00304``. The prefix
-    keeps its trailing hyphen (the DB codes are ``JJPC-00304``, so the two lines read
-    ``JJPC-`` / ``00304``). The tiny full-name line is kept (#56).
-
-    Layout follows the user's own template: **QR on the left**, and to its right a
-    centred stack of three lines — full collection name (small) / ``JJPC-`` / the big
-    number. The number is auto-sized (``_id_number_font_pt``) so a longer code shrinks
-    to fit rather than overflow. Self-contained so it renders identically in the Labels
-    batch sheet AND the Print-queue grouped cell.
+    Sizes come from `_id_layout` — the box is fixed, the text shrinks (and the name may
+    wrap) to fit it; raises LabelDoesNotFit rather than print a wider or clipped label.
+    Self-contained so it renders identically in the PDF and the Print-queue preview.
     """
     prefix, num = _split_identifier_code(code)     # ('JJPC-', '00304')
+    layout = _id_layout(code, collection_name)
     qr = _qr_data_url(code)
     name_html = (
-        f'<div class="id-collname">{_e(collection_name)}</div>'
-        if collection_name else ""
+        f'<div class="id-collname" style="font-size:{layout.name_pt}pt">'
+        + "<br>".join(_e(line) for line in layout.name_lines) + '</div>'
+        if layout.name_lines else ""
     )
     prefix_html = f'<div class="id-prefix">{_e(prefix)}</div>' if prefix else ""
-    num_pt = _id_number_font_pt(num)
     return (
         f'<div class="id-label">'
         f'<img class="id-qr" src="{qr}">'
         f'<div class="id-text">{name_html}{prefix_html}'
-        f'<div class="id-number" style="font-size:{num_pt}pt">{_e(num)}</div></div>'
+        f'<div class="id-number" style="font-size:{layout.num_pt}pt">{_e(num)}</div></div>'
         f'</div>'
     )
 
 
 # Shared CSS for the identifier label — the self-contained block inside the grouped
-# cell. QR left; a left-aligned name / prefix / number stack right. The block sizes
-# to its content (no min-height floor) so the border hugs the QR/text with no dead
-# vertical space — important for borderless labels, where any slack reads as a large
-# gap between one row's number and the next row's text.
-_ID_TEXT_CSS = """
-.id-label {
-    display: flex; flex-direction: row; align-items: center; gap: 0.6mm;
-    width: 100%;
+# cell. QR left; a left-aligned name / prefix / number stack right, vertically centred
+# in the fixed-height band (.lbl-id height: _ID_LABEL_H). The text column has an
+# explicit width: a table cell grows to its content's min-content width, so without it
+# an over-long line widened the whole label instead of being contained.
+_ID_TEXT_CSS = f"""
+.id-label {{
+    display: flex; flex-direction: row; align-items: center; gap: {_ID_GAP_MM}mm;
+    width: 100%; height: 100%;
     font-family: 'Fira Sans Compressed', 'Fira Sans Condensed', 'Arial Narrow', sans-serif;
     font-weight: 400;
-}
-.id-qr { width: 5.5mm; height: 5.5mm; flex-shrink: 0; image-rendering: pixelated; }
-/* left-aligned so the name / prefix / number hug the QR instead of floating in the
-   centre of the wide column. */
-.id-text { flex: 1; min-width: 0; text-align: left; line-height: 1.0; overflow: hidden; }
+}}
+.id-qr {{ width: {_ID_QR_MM}mm; height: {_ID_QR_MM}mm; flex-shrink: 0; image-rendering: pixelated; }}
+.id-text {{ flex: 0 0 {_ID_TEXT_COL_MM:.1f}mm; width: {_ID_TEXT_COL_MM:.1f}mm;
+           text-align: left; line-height: 1.0; overflow: hidden; }}
 /* All regular weight (not bold): at these micro sizes bold thickens/fills the digit
    counters on a real printer; regular stays cleaner (decided 2026-07-07). */
-.id-collname {
+.id-collname {{
     /* line-height 1.4 (not the id-text default 1.0) gives the caps top clearance:
        Chromium seats a line-height:1.0 first line's glyph tops right at the label's
-       overflow:hidden edge and clips them ("Jilg Private Collection" lost its tops);
-       the extra leading drops the glyphs clear. WeasyPrint had clearance already, so
-       this only adds a hair of space there. (measured 2026-07-20) */
-    line-height: 1.4;
-    font-size: 2.5pt; font-weight: 400; letter-spacing: 0;
-    white-space: nowrap; overflow: hidden;
-}
-.id-prefix { font-size: 3.4pt; font-weight: 400; letter-spacing: 0.3pt; }
-/* font-size is set inline per label (auto-sized to fit; see _id_number_font_pt). */
-.id-number { font-weight: 400; letter-spacing: 0.2pt; white-space: nowrap; }
+       overflow:hidden edge and clipped them (measured 2026-07-20). font-size is set
+       inline per label (shrink-to-fit; see _id_layout). */
+    line-height: {_NAME_LH};
+    font-weight: 400; letter-spacing: 0;
+    white-space: nowrap;
+}}
+.id-prefix {{ font-size: {_PREFIX_PT}pt; font-weight: 400; letter-spacing: {_PREFIX_LS_PT}pt; white-space: nowrap; }}
+/* font-size is set inline per label (auto-sized to fit; see _id_layout). */
+.id-number {{ font-weight: 400; letter-spacing: 0.2pt; white-space: nowrap; }}
 """
 
 
@@ -835,7 +946,7 @@ def _grouped_css(borders: dict[str, str] | None = None,
 }}
 .lbl-id {{
     {bi} padding: {_PAD_TOP} {_PAD_LR_ID} {_PAD_BOT};
-    overflow: hidden;
+    height: {_ID_LABEL_H}; overflow: hidden;
 }}
 """
 

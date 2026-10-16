@@ -8,6 +8,7 @@ talks to this code by event name only.
 """
 from __future__ import annotations
 
+import html as _html
 import json
 from datetime import datetime
 from nicegui import ui
@@ -233,7 +234,14 @@ def build_labels_tab(session_factory, *, refreshers, records_handle, main_tabs):
                     return
                 # The REAL label sheet (same builder as the print PDF), editable and
                 # scoped. What is shown is exactly what prints.
-                preview_box.set_content(_with_session(pq_svc.preview_sheet))
+                try:
+                    sheet = _with_session(pq_svc.preview_sheet)
+                except lbl_svc.LabelDoesNotFit as exc:
+                    preview_box.set_content(
+                        '<div class="pq-prev-empty">The sheet cannot be laid out: '
+                        f'{_html.escape(str(exc))}.</div>')
+                    return
+                preview_box.set_content(sheet)
                 # Fit the A4 page to the preview width once it's in the DOM.
                 ui.timer(0.05, lambda: ui.run_javascript(
                     "window._pqFit && window._pqFit()"), once=True)
@@ -246,9 +254,14 @@ def build_labels_tab(session_factory, *, refreshers, records_handle, main_tabs):
                 now = datetime.now()
                 stamp_human = now.strftime("%Y-%m-%d %H:%M")
                 stamp_file  = now.strftime("%Y%m%d-%H%M%S")
-                pdf = _with_session(
-                    lambda s: pq_svc.build_pdf(s, stamp_human)
-                )
+                try:
+                    pdf = _with_session(
+                        lambda s: pq_svc.build_pdf(s, stamp_human)
+                    )
+                except lbl_svc.LabelDoesNotFit as exc:
+                    # Nothing printed, the queue is kept.
+                    ui.notify(f"Not printed: {exc}.", type="negative", multi_line=True)
+                    return
                 # Archive every printed sheet to disk for reprint/audit
                 # before clearing the queue.
                 archive = printed_pdf_dir() / f"labels_{stamp_file}.pdf"

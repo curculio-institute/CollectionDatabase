@@ -1069,15 +1069,24 @@ external-id buttons; returns `{button, refresh, has_content, commit, clear, stag
 CatalogNumber format: `"collectionCode" + "-" + 5-digit zero-padded ascending number`
 (e.g. `JJPC-00001`, `JJPC-03963`). Generated via `id_svc.reserve_sequential_codes()`.
 
-Code label layout (18 × 7 mm min; follows the user's own template): the **QR on the left**,
-and to its right a **centred stack of three lines** — the full collection name (tiny), the
-collection-code **prefix with its hyphen** (`JJPC-`, since the DB codes are `JJPC-00304`),
-and the sequence **number** (large + bold). The number is **auto-sized** (`_id_number_font_pt`,
-condensed-font digit advance measured at 0.182 mm/pt/char) so a longer code (6+ digits, e.g.
-`000023`) shrinks to fit the fixed text column instead of overflowing; 4–5 digit codes hit the
-~10.5 pt cap. The whole label uses the condensed label font (Fira Sans Compressed). The QR
-encodes the whole `JJPC-00304`. Built by `labels._id_label_inner` + `_ID_TEXT_CSS`, shared
-verbatim by the Labels-tab batch sheet and the print-queue grouped cell.
+Code label layout (a **fixed 18 × 7 mm box**; follows the user's own template): the **QR on
+the left**, and to its right a left-aligned stack — the full collection name (tiny), the
+collection-code **prefix with its hyphen** (`JJPC-`, since the DB codes are `JJPC-00304`), and
+the sequence **number** (large, regular weight). The QR encodes the whole `JJPC-00304`. The
+box never changes size; the text shrinks to fit it (`labels._id_layout`, from the bundled
+font's own advance widths, identical for both PDF backends and the preview):
+
+1. the collection name shrinks from 2.5 pt to 2.0 pt on one line (≈ 37 characters);
+2. below that it wraps onto two lines at 2.0 pt, broken at a space, and the number gives up
+   the height of the second line (10.1 → 8.0 pt; ≈ 65 characters);
+3. the number also shrinks for width (6+ digits, `_id_number_font_pt`), never below 6.5 pt;
+4. anything that still does not fit raises `LabelDoesNotFit` naming the cause — the sheet is
+   refused (preview shows the message, Print keeps the queue), never widened or clipped. The
+   Collections dialog runs the same check (`identifier_name_problem`) and asks before saving
+   such a name ("Save anyway" — the name is a record, not a label).
+
+Before 2026-10-16 the box sized to its content: a name over ~31 characters silently widened
+the label (96 characters → 39.6 mm). Built by `labels._id_label_inner` + `_ID_TEXT_CSS`.
 
 **Cutting layout + borders.** All label sheets tile with a small `_LABEL_GAP` between
 labels (`border-collapse: separate`), so each label keeps its **own complete border** and

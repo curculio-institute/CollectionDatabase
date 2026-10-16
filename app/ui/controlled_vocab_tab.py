@@ -3,9 +3,11 @@ from __future__ import annotations
 
 from nicegui import ui
 
+import app.services.labels as lbl_svc
 import app.services.persons as persons_svc
 import app.services.repositories as repo_svc
 from app.services.vocabularies import VOCAB_REGISTRY
+from app.ui.confirm_dialog import confirm
 from app.ui.merge_target_list import build_merge_target_list
 from app.ui.person_field import build_person_field
 from app.ui.tw_vocab_section import build_annotation_terms_section, build_relationships_section
@@ -442,6 +444,20 @@ def build_controlled_vocab_tab(session_factory, *, on_person_changed=None) -> No
                 _build_vocab_section(session_factory, spec)
 
 
+async def _label_fit_ok(name: str | None, code: str | None) -> bool:
+    """True to go on saving a collection. A name its identifier labels cannot fit is
+    allowed (the name is a record, not a label) but only after the user has seen that
+    those labels will be refused until it is shortened (labels._id_layout)."""
+    problem = lbl_svc.identifier_name_problem((name or "").strip(), (code or "").strip() or None)
+    if problem is None:
+        return True
+    return await confirm(
+        title="Too long for identifier labels",
+        body=(f"{problem[0].upper()}{problem[1:]}.\n\nYou can save it anyway, but identifier "
+              "labels for this collection will be refused until the name is shortened."),
+        action_label="Save anyway", action_color="warning")
+
+
 def _build_repository_card(session_factory) -> None:
     """Collections / institutions card (#56). A multi-column controlled vocabulary
     keyed by collectionCode — the source for the identifier label's full collection
@@ -523,9 +539,11 @@ def _build_repository_card(session_factory) -> None:
                 e_twi = ui.input("TW institution id").classes("flex-1")
                 e_twc = ui.input("TW collection id").classes("flex-1")
 
-            def _save_edit():
+            async def _save_edit():
                 if not (e_cname.value or "").strip():
                     ui.notify("A collection needs a name.", type="warning")
+                    return
+                if not await _label_fit_ok(e_cname.value, e_ccode.value):
                     return
                 try:
                     with session_factory() as s:
@@ -584,9 +602,11 @@ def _build_repository_card(session_factory) -> None:
             a_twi = ui.input("TW institution id")
             a_twc = ui.input("TW collection id")
 
-        def _add():
+        async def _add():
             if not (a_cname.value or "").strip():
                 ui.notify("A collection needs a name.", type="warning")
+                return
+            if not await _label_fit_ok(a_cname.value, a_ccode.value):
                 return
             try:
                 with session_factory() as s:
