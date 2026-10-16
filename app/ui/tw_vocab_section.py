@@ -48,11 +48,20 @@ def _chip(row, host: str, detail: dict) -> tuple[str, str]:
     return _STATE_CHIP[state]
 
 
+_GONE = "This entry no longer exists — it was deleted elsewhere. The list will refresh."
+
+
 def _build_section(session_factory, *, terms: bool) -> None:
     ui.add_head_html(CHIP_CSS)
     model = AnnotationTerm if terms else BiologicalRelationship
     kinds = (links.KEYWORD, links.PREDICATE) if terms else (links.RELATIONSHIP,)
     detail: dict[int, links.VerifyOutcome] = {}   # latest Verify, this session only
+
+    def _get(s, row_id: int):
+        row = s.get(model, row_id)
+        if row is None:
+            raise ValueError(_GONE)
+        return row
 
     with ui.card().classes("w-full shadow-sm"):
         with ui.row().classes("items-center gap-2 mb-1 w-full"):
@@ -163,7 +172,7 @@ def _build_section(session_factory, *, terms: bool) -> None:
 
         def _unlink(row: dict) -> None:
             detail.pop(int(row["id"]), None)
-            _write(lambda s: links.unlink(s, s.get(model, int(row["id"]))),
+            _write(lambda s: links.unlink(s, _get(s, int(row["id"]))),
                    f"'{row['name']}' is local only now.")
 
         def _delete(row: dict) -> None:
@@ -205,7 +214,7 @@ def _build_section(session_factory, *, terms: bool) -> None:
                                                    **(create or {}))
                                    if terms else bio.create_relationship(s, c.name))
                         else:
-                            row = s.get(model, row_id)
+                            row = _get(s, row_id)
                         warning[0] = links.link(s, row, c)   # host comes from the fetch (c.host)
                     if not _write(fn, f"Linked to TaxonWorks '{c.name}'."):
                         return
@@ -263,7 +272,7 @@ def _build_section(session_factory, *, terms: bool) -> None:
                                 def _resolve(_, o=o, choice=choice, rbox=rbox):
                                     # The outcome carries the observed host + TW name.
                                     if _write(lambda s: links.resolve_name_difference(
-                                            s, s.get(model, o.row_id), o, choice)):
+                                            s, _get(s, o.row_id), o, choice)):
                                         detail.pop(o.row_id, None)
                                         rbox.clear()
                                         with rbox:
@@ -279,14 +288,30 @@ def _build_section(session_factory, *, terms: bool) -> None:
             verify_btn.props("loading")
             outcomes: list[links.VerifyOutcome] = []
             try:
-                # The session spans the fetches on purpose: verify() applies its result
-                # to the rows it reads; commit only once every kind has been checked.
+                host = tw_svc.configured_host()
+                if not host:
+                    ui.notify("No TaxonWorks API base URL set — Settings → TaxonWorks "
+                              "connection.", type="negative", multi_line=True)
+                    return
+                # Every network fetch first, with NO session open: an uncommitted write
+                # held across an await would lock the database for the whole app.
+                fetched = {}
+                for kind in kinds:
+                    fetched[kind] = await links.fetch_candidates(kind)
+                if any(c.host != host for cs in fetched.values() for c in cs):
+                    ui.notify("The configured TaxonWorks host changed during the fetch — "
+                              "try again.", type="negative", multi_line=True)
+                    return
                 with session_factory() as s:
                     for kind in kinds:
-                        outcomes += await links.verify(s, kind)
+                        outcomes += links.apply_verification(s, kind, fetched[kind],
+                                                             host=host)
                     s.commit()
             except tw_svc.TaxonWorksUnreachable as exc:
                 ui.notify(str(exc), type="negative", multi_line=True, timeout=8000)
+                return
+            except Exception as exc:
+                ui.notify(f"Verify failed: {exc}", type="negative", multi_line=True)
                 return
             finally:
                 verify_btn.props(remove="loading")
@@ -309,10 +334,15 @@ def _build_section(session_factory, *, terms: bool) -> None:
         # ── edit dialog ─────────────────────────────────────────────────────
         def _open_edit(row: dict) -> None:
             rid = int(row["id"])
-            with session_factory() as s:
-                obj = s.get(model, rid)
-                name0, linked = obj.name, obj.tw_id is not None
-                colour0 = (obj.css_color or "") if terms else ""
+            try:
+                with session_factory() as s:
+                    obj = _get(s, rid)
+                    name0, linked = obj.name, obj.tw_id is not None
+                    colour0 = (obj.css_color or "") if terms else ""
+            except ValueError as exc:
+                ui.notify(str(exc), type="warning", multi_line=True)
+                _refresh()
+                return
             with ui.dialog() as dlg, ui.card().classes("w-96"):
                 ui.label("Edit term" if terms else "Edit relationship") \
                     .classes("section-label mb-2")
@@ -355,11 +385,17 @@ def _build_section(session_factory, *, terms: bool) -> None:
         # ── merge dialog ────────────────────────────────────────────────────
         def _open_merge(row: dict) -> None:
             absorb_id = int(row["id"])
-            with session_factory() as s:
-                absorb = s.get(model, absorb_id)
-                absorb_name, absorb_linked = absorb.name, absorb.tw_id is not None
-                others = {r.id: r.name for r in links.rows_of_kind(s, links.kind_of(absorb))
-                          if r.id != absorb_id}
+            try:
+                with session_factory() as s:
+                    absorb = _get(s, absorb_id)
+                    absorb_name, absorb_linked = absorb.name, absorb.tw_id is not None
+                    others = {r.id: r.name
+                              for r in links.rows_of_kind(s, links.kind_of(absorb))
+                              if r.id != absorb_id}
+            except ValueError as exc:
+                ui.notify(str(exc), type="warning", multi_line=True)
+                _refresh()
+                return
             chosen: dict = {"keep": None}
             with ui.dialog() as dlg, ui.card().classes("w-[500px]"):
                 ui.label("Merge").classes("section-label mb-2")
@@ -395,9 +431,13 @@ def _build_section(session_factory, *, terms: bool) -> None:
                                        "Refused — different values on: "
                                        + "; ".join(p.conflicts[:5]))
                         else:
-                            p = bio.relationship_vocab.merge_preview(
-                                s, keep_id=oid, absorb_id=absorb_id)
-                            msg = f"{p.reference_count} association(s) re-pointed."
+                            try:
+                                p = bio.relationship_vocab.merge_preview(
+                                    s, keep_id=oid, absorb_id=absorb_id)
+                            except ValueError as exc:
+                                ok, msg = False, str(exc)
+                            else:
+                                msg = f"{p.reference_count} association(s) re-pointed."
                 info.set_text(msg)
                 confirm.set_enabled(ok)
 
