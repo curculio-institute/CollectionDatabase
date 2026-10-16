@@ -1,7 +1,7 @@
 # Annotations: tags, data attributes and TaxonWorks-linked vocabularies
 
-Status: approved 2026-10-16 (revised 2026-10-16; supersedes the 2026-10-14 draft, which
-made TaxonWorks the master of the terms). Status: implemented on `feature/annotations`.
+Status: approved 2026-10-16, implemented on `feature/annotations` (revised 2026-10-16;
+supersedes the 2026-10-14 draft, which made TaxonWorks the master of the terms).
 
 ## Goal
 

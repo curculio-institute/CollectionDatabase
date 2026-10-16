@@ -1236,7 +1236,8 @@ Two build constraints, both learned the hard way:
 ### Merge dialogs (Persons and the generic vocabulary cards)
 
 **Any merge list can get long**, so the "entry to keep" picker is one shared builder,
-`controlled_vocab_tab._build_merge_target_list` (search box, scrolls inside the dialog, at
+`merge_target_list.build_merge_target_list` (`app/ui/merge_target_list.py`; also serves
+annotation terms and biological relationships) (search box, scrolls inside the dialog, at
 most 100 rows rendered) — used by the Persons dialog and every vocabulary card. The Taxonomy
 "Merge names" dialog picks both sides with the taxon search widget and needs no list.
 

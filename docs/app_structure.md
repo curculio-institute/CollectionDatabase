@@ -95,10 +95,16 @@ arrow-key event, chip styling) is design.md's concern → "Digitize layout modes
 | `tw_links.py` | The single owner of link / fetch / unlink / verify for TW keywords, data-attribute predicates and biological relationships. `tw_host` is stamped from the fetch, never assumed. The launch sync is gone; verification is explicit. |
 | `annotation_export.py` | `TW:Tag` / `TW:DataAttribute` columns for the DwC export, plus the term pre-flight that blocks the download. |
 | `tw_annotation_compare.py` | Compare for annotations (TaxonWorks tab). |
-| `app/ui/annotation_panel.py` | The `sell`-icon footer button + popup (staged / deferred / bound). |
-| `app/ui/annotation_chips.py` | Annotation chips on record sheets (see design.md "Annotation chips"). |
-| `app/ui/tw_vocab_section.py` | The two Controlled Vocabularies sub-tabs (Tags & data attributes, Biological relationships). |
-| `app/ui/merge_target_list.py` | Shared merge-target picker. |
+| `biological.py` | Biological-association CRUD plus the biological-relationship vocabulary: `relationship_vocab`, `create_` / `rename_` / `merge_relationships` (merge refuses a linked absorbed entry). The launch sync is removed; linking and verifying live in `tw_links.py`. |
+
+### UI modules for annotations (`app/ui/`)
+
+| Module | Role |
+|--------|------|
+| `annotation_panel.py` | The `sell`-icon footer button + popup (staged / deferred / bound). |
+| `annotation_chips.py` | Annotation chips on record sheets (see design.md "Annotation chips"). |
+| `tw_vocab_section.py` | The two Controlled Vocabularies sub-tabs (Tags & data attributes, Biological relationships). |
+| `merge_target_list.py` | Shared merge-target picker. |
 
 ### Data safety (crash recovery + unsaved-changes guard) — decided
 
