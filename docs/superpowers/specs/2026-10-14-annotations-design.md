@@ -1,6 +1,6 @@
 # Annotations: tags, data attributes and TaxonWorks-linked vocabularies
 
-Status: design, awaiting review (revised 2026-10-16; supersedes the 2026-10-14 draft, which
+Status: approved 2026-10-16 (revised 2026-10-16; supersedes the 2026-10-14 draft, which
 made TaxonWorks the master of the terms). No code written.
 
 ## Goal
@@ -120,7 +120,15 @@ Display only — never exported, never compared as a finding. Named after TW's c
 
 Gains `tw_name` and `tw_host` beside the existing `taxonworksID` (which is the link's
 `tw_id`). Native `ADD COLUMN`; no rebuild. UNIQUE on `taxonworksID` among non-NULL values
-(partial unique index) for the same reason as above.
+(partial unique index) for the same reason as above; the migration refuses, naming the
+rows, if two existing rows already share an id.
+
+**The `tw_name` ↔ `tw_id` coupling is two triggers here, not a CHECK.** SQLite tests an
+`ADD COLUMN … CHECK` against every existing row, and a linked row has no `tw_name` until
+the backfill below runs — measured (SQLite 3.53): the coupling CHECK is refused. So
+`trg_br_tw_link_ins` / `trg_br_tw_link_upd` `RAISE(ABORT)` instead (the 0072 precedent);
+the single-column CHECKs (`tw_name` no tab/CR/LF, `tw_host` needs an id) are plain
+column CHECKs, which pass on the all-NULL new column.
 
 **Existing rows:** the migration copies the current `name` into `tw_name` for rows that
 have a `taxonworksID` and leaves `tw_host` **NULL — not verified.** The host those ids were
@@ -144,6 +152,11 @@ and sandbox have been configured in the past. Today's host is not evidence.
 - `annotation_term_vocab` — CRUD + merge through the existing `Vocabulary` machinery where
   it fits (delete refused while referenced, merge re-points FKs); the extra columns make it
   a custom card like `person` / `repository`, not a generic single-name entry.
+- **Merge rules (terms and relationships):** both sides must be the same kind; the
+  **absorbed** entry must be local only (unlink it first) — a link is never silently
+  discarded or transferred. A record carrying both terms keeps one annotation: a tag, or a
+  data attribute with the same value, is folded; **different values refuse the merge**,
+  naming the records.
 - `allowed_terms(session, target)` — terms offered for `specimen` / `event` / `association`.
 - `set_annotations(session, target, target_id, items)` — replace the record's annotation
   set inside the caller's transaction (the record's one atomic Save).
@@ -213,6 +226,11 @@ management UI today).
   (Records) modes as `external_id_panel.py`. Popup: allowed tags as checkboxes; data
   attributes as pick + value. Local-only terms carry their badge. A term no longer allowed
   still shows if already attached (marked) but cannot be newly added.
+- **Staged (Digitize) annotations are added on Save, never a replacement set** — the same
+  as staged event media, which also lands on a reused event. Adding a data attribute the
+  record already has with another value refuses the Save, naming both values; the same
+  value is a no-op. Deferred (Records) edits replace the record's set. Saved association
+  rows in Records use the bound mode, like the media and identifier buttons beside them.
 - Record sheets (specimen, event): one "Annotations" line — tags as chips, data attributes
   as `name: value`. Hidden when empty.
 - **Colour:** a term with a `css_color` renders its chip (tag) or its name (data attribute)
@@ -270,7 +288,10 @@ columns for CollectionObject and CollectingEvent, linked terms only"; full reaso
 ## Compare
 
 Annotation divergence cannot be repaired by exporting again (CREATE-ONLY), so Compare is
-the only place it surfaces. `tw_compare.compare_repository` gains an annotations pass.
+the only place it surfaces. The pass is its own module, `tw_annotation_compare.py`, built
+like `tw_media_compare.py` (fetch functions + a pure `compare_annotations` + a
+`run_annotation_compare` entry point), reusing the same catalog `index` and
+`tw_media_compare.specimens_on_tw` (which already excludes ambiguous catalog numbers).
 
 **Specimens.** For every specimen on TaxonWorks (its TW CollectionObject id is
 `TwCatalogEntry.tw_object_id`), fetch tags and data attributes **by object** —
@@ -291,18 +312,31 @@ annotations on terms that are not linked locally are seen too.
 - **Every response is re-verified:** each returned row must carry the requested object type
   and one of the requested ids; otherwise it is a lookup failure, never a set of matches
   (§5c "unknown query params are silently ignored"; mirrors `_verify_filter_applied`).
-- Biological-association annotations: `annotations_associations_not_compared = True` on
-  `CompareResult`, stated in the report — the same pattern as `media_not_compared`.
+- Only terms whose link is **verified on the configured host** are compared: a `tw_id`
+  from another instance names something else. Linked-but-unverified terms are listed as
+  not compared, never joined.
+- Biological-association annotations: `associations_not_compared = True` on
+  `AnnotationCompareResult`, stated in the report — the same pattern as
+  `media_not_compared`.
+- `/data_attributes`' `api_index` has **no `ORDER BY`** (`data_attributes_controller.rb:50`),
+  so pages are not stable: rows are de-duplicated by id and a pull whose distinct ids fall
+  short of `pagination-total` is a lookup failure. A TW `ImportAttribute` has no predicate
+  id; it is reported as an unlinked term under its `import_predicate`.
 - Results show as an "Annotations" group on the Compare page; each row links to the local
   record and the TW object, like `diverged` rows.
 
-**Collecting events — open, verify before planning.** Neither the catalog index nor
-`dwc_occurrences` yields the TW collecting-event id of a specimen. Comparing event
-annotations needs a batchable source for it (probably the CollectionObject's
-`collecting_event_id` via `GET /api/v1/collection_objects` with an id-array filter). Verify
-the route and filter against the source at `897f385` before writing the plan. If no
-batchable route exists, event annotations are declared not compared
-(`annotations_events_not_compared = True`), never guessed.
+**Collecting events — verified 2026-10-16 @ `897f385`.**
+`GET /api/v1/collection_objects?collection_object_id[]=…` (`config/routes/api_v1.rb:115` →
+`collection_objects_controller.rb#api_index:378`) filters by id through the base filter's
+`model_id_facet` (`lib/queries/query/filter.rb:679`, in `shared_and_clauses`; the class's
+own `collection_object_id_facet` is commented out, `lib/queries/collection_object/
+filter.rb:482`, because the base one covers it), and each row carries
+`collecting_event_id` (`app/views/collection_objects/api/v1/_attributes.json.jbuilder:1`).
+So event annotations are compared **per specimen**: the local specimen's event annotations
+against its TW CollectionObject's event (each imported row created its own TW event, so a
+local event shared by many specimens maps to many TW events). Every response is
+re-verified (requested ids only). A TW specimen with no event, against local event
+annotations, reports them as missing on TaxonWorks.
 
 ## Testing
 
@@ -322,7 +356,8 @@ batchable route exists, event annotations are declared not compared
 - Pre-flight: ok; renamed; deleted; wrong host; name collision (another term's name ignoring
   case); URI collision (incl. the lower-cased predicate case); tab in name.
 - Compare: each finding category; response re-verification rejects an unfiltered reply;
-  associations (and events, if unresolved) reported as not compared.
+  associations reported as not compared; unverified terms listed, not joined; event
+  annotations per specimen; duplicate ids across `/data_attributes` pages de-duplicated.
 - UI driven with Playwright on a spare port against a DB copy — **ask the user first**.
 
 ## Out of scope (follow-ups)
