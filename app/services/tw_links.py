@@ -21,6 +21,7 @@ Verified against SpeciesFileGroup/taxonworks @ 897f385:
 """
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 
 import httpx
@@ -66,6 +67,7 @@ class VerifyOutcome:
     tw_name: str | None           # TW's current name (None when not found)
     color_warning: str | None
     host: str                     # the host the verifying fetch ran against
+    tw_id: int | None = None      # the row's link id the outcome was computed for
 
 
 def kind_of(row) -> str:
@@ -213,23 +215,35 @@ def apply_verification(session: Session, kind: str, candidates: list[TwTerm], *,
             else:
                 row.tw_host, state = None, "name_differs"
         row.updated_at = _utcnow()
-        out.append(VerifyOutcome(row.id, row.name, state, tw_name, warning, host))
+        out.append(VerifyOutcome(row.id, row.name, state, tw_name, warning, host,
+                                 row.tw_id))
     session.flush()
     return out
 
 
-async def verify(session: Session, kind: str) -> list[VerifyOutcome]:
-    """Only on user request: one fetch from the configured host, then
-    ``apply_verification``. Raises ``TaxonWorksUnreachable`` naming the cause."""
+async def fetch_for_verify(kinds) -> tuple[str, dict[str, list[TwTerm]]]:
+    """The network half of Verify, with no session open: reads the configured host ONCE,
+    fetches every kind (concurrently), and refuses — ``TaxonWorksUnreachable`` naming
+    the cause — when no host is set or any fetched term carries another host (the setting
+    changed mid-fetch). Feed the result to ``apply_verification`` per kind in one short
+    session."""
+    kinds = list(dict.fromkeys(kinds))
     host = tw.configured_host()
     if not host:
         raise TaxonWorksUnreachable(
             "No TaxonWorks API base URL set — Settings → TaxonWorks connection.")
-    candidates = await fetch_candidates(kind)
-    if any(c.host != host for c in candidates):
+    lists = await asyncio.gather(*(fetch_candidates(k) for k in kinds))
+    if any(c.host != host for terms in lists for c in terms):
         raise TaxonWorksUnreachable(
             "The configured TaxonWorks host changed during the fetch — try again.")
-    return apply_verification(session, kind, candidates, host=host)
+    return host, dict(zip(kinds, lists))
+
+
+async def verify(session: Session, kind: str) -> list[VerifyOutcome]:
+    """Only on user request: ``fetch_for_verify`` for one kind, then
+    ``apply_verification``. Raises ``TaxonWorksUnreachable`` naming the cause."""
+    host, fetched = await fetch_for_verify([kind])
+    return apply_verification(session, kind, fetched[kind], host=host)
 
 
 def _local_name_taken(session: Session, row, name: str) -> bool:
@@ -253,6 +267,10 @@ def resolve_name_difference(session: Session, row, outcome: VerifyOutcome,
         raise ValueError("the row is not linked")
     if not outcome.host:
         raise ValueError("the outcome carries no host")
+    if outcome.tw_id is None or row.tw_id != outcome.tw_id:
+        # A stale outcome (the row was unlinked and relinked since) must not stamp another
+        # term's name / host onto the new link.
+        raise ValueError(f"'{row.name}' has been relinked since this check — verify again.")
     if choice == "unlink":
         unlink(session, row)
         return

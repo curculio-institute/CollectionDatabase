@@ -234,7 +234,7 @@ def test_apply_verification_outcomes(session):
 
 
 def _outcome(t, tw_name="New name", state="name_differs", host=SFG):
-    return VerifyOutcome(t.id, t.name, state, tw_name, None, host)
+    return VerifyOutcome(t.id, t.name, state, tw_name, None, host, t.tw_id)
 
 
 @pytest.mark.parametrize("choice,name,tw_name,host_set", [
@@ -258,6 +258,9 @@ def test_resolve_refuses_other_outcomes_and_unlinked_rows(session):
                                                                 "N", None, SFG), "keep_local")
     with pytest.raises(ValueError, match="no host"):
         links.resolve_name_difference(session, t, _outcome(t, host=""), "keep_local")
+    with pytest.raises(ValueError, match="relinked"):         # no id: cannot be matched
+        links.resolve_name_difference(session, t, VerifyOutcome(t.id, t.name, "name_differs",
+                                                                "N", None, SFG), "keep_local")
     local = make_term(session, name="Local")
     with pytest.raises(ValueError, match="not linked"):
         links.resolve_name_difference(session, local, _outcome(local), "keep_local")
@@ -268,6 +271,58 @@ def test_use_tw_name_refuses_a_local_name_clash(session):
     t = make_term(session, name="Old", tw_id=2, tw_name="Old")
     with pytest.raises(ValueError, match="already exists"):
         links.resolve_name_difference(session, t, _outcome(t), "use_tw")
+
+
+@pytest.mark.parametrize("choice", ["use_tw", "keep_local", "unlink"])
+def test_resolve_refuses_a_stale_outcome_after_relink(session, choice):
+    """Unlink + relink to another id, then answer the OLD outcome: refused, row unchanged."""
+    t = make_term(session, name="Old", tw_id=2, tw_name="Old")
+    stale = _outcome(t)                                      # computed for tw_id 2
+    links.unlink(session, t)
+    links.link(session, t, TwTerm(KEYWORD, 7, "Other", None, None, SANDBOX))
+    before = (t.name, t.tw_id, t.tw_name, t.tw_host)
+    with pytest.raises(ValueError, match="relinked"):
+        links.resolve_name_difference(session, t, stale, choice)
+    assert (t.name, t.tw_id, t.tw_name, t.tw_host) == before == ("Old", 7, "Other", SANDBOX)
+
+
+def test_apply_verification_records_the_id(session):
+    t = make_term(session, tw_id=1764, tw_name="Adventive")
+    (o,) = links.apply_verification(session, KEYWORD,
+                                    [TwTerm(KEYWORD, 1764, "Adventive", host=SFG)], host=SFG)
+    assert o.tw_id == 1764 and o.row_id == t.id
+
+
+def test_fetch_for_verify_fetches_every_kind_once(cfg, monkeypatch):
+    seen = []
+
+    def handler(request):
+        seen.append((request.url.path, request.url.params.get("type")))
+        if request.url.path.endswith("/biological_relationships"):
+            return _page([{"id": 11, "name": "feeds on"}], total=1)
+        typ = request.url.params["type"]
+        return _page([{**_kw(1 if typ == "Keyword" else 2, typ), "type": typ}], total=1)
+    _serve(monkeypatch, handler)
+    host, got = asyncio.run(links.fetch_for_verify([KEYWORD, PREDICATE, RELATIONSHIP, KEYWORD]))
+    assert host == SFG
+    assert {k: [(t.id, t.name) for t in v] for k, v in got.items()} == {
+        KEYWORD: [(1, "Keyword")], PREDICATE: [(2, "Predicate")],
+        RELATIONSHIP: [(11, "feeds on")]}
+    assert len(seen) == 3                                       # duplicates fetched once
+
+
+def test_fetch_for_verify_refuses_a_host_change_mid_fetch(cfg, monkeypatch):
+    hosts = iter([SFG, SANDBOX, SANDBOX])
+    monkeypatch.setattr(tw, "configured_host", lambda: next(hosts))
+    _serve(monkeypatch, lambda r: _page([_kw(1764, "Adventive")], total=1))
+    with pytest.raises(TaxonWorksUnreachable, match="host changed"):
+        asyncio.run(links.fetch_for_verify([KEYWORD]))
+
+
+def test_fetch_for_verify_refuses_no_host(cfg, monkeypatch):
+    monkeypatch.setattr(tw, "configured_host", lambda: "")
+    with pytest.raises(TaxonWorksUnreachable, match="No TaxonWorks API base URL"):
+        asyncio.run(links.fetch_for_verify([KEYWORD]))
 
 
 def test_verify_end_to_end(cfg, monkeypatch, session):
