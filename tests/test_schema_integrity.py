@@ -364,3 +364,22 @@ def test_relationship_link_triggers_present(engine):
             "SELECT name, tbl_name FROM sqlite_master WHERE type='trigger'").fetchall())
     for name in ("trg_br_tw_link_ins", "trg_br_tw_link_upd"):
         assert live.get(name) == "biological_relationship", f"lost trigger {name}"
+
+
+def test_annotation_partial_unique_indexes_present(engine):
+    # Migration 0073: partial UNIQUE indexes live outside the table DDL, so a rebuild of
+    # annotation / biological_relationship drops them silently unless re-created.
+    expected = {
+        "uq_annotation_specimen_term": "collection_object_id IS NOT NULL",
+        "uq_annotation_event_term": "collecting_event_id IS NOT NULL",
+        "uq_annotation_association_term": "biological_association_id IS NOT NULL",
+        "uq_br_taxonworks_id": '"taxonworksID" IS NOT NULL',
+    }
+    with engine.connect() as conn:
+        idx = dict(conn.exec_driver_sql(
+            "SELECT name, sql FROM sqlite_master WHERE type='index' "
+            "AND sql IS NOT NULL").fetchall())
+    for name, where in expected.items():
+        assert name in idx, f"lost index {name}"
+        assert "UNIQUE" in idx[name], f"{name} is no longer UNIQUE"
+        assert "WHERE " + where in idx[name], f"{name} lost its partial predicate"

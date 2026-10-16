@@ -1,6 +1,6 @@
 from __future__ import annotations
 from typing import Optional, List
-from sqlalchemy import Integer, String, ForeignKey, CheckConstraint  # CheckConstraint used by BiologicalAssociation
+from sqlalchemy import Integer, String, ForeignKey, CheckConstraint, Index, text  # CheckConstraint used by BiologicalAssociation
 from sqlalchemy.orm import Mapped, mapped_column, relationship, synonym
 from .base import Base, TimestampMixin
 
@@ -39,6 +39,8 @@ class BiologicalRelationship(Base, TimestampMixin):
             name="ck_br_tw_name_clean"),
         CheckConstraint('tw_host IS NULL OR "taxonworksID" IS NOT NULL',
                         name="ck_br_tw_host_needs_id"),
+        Index("uq_br_taxonworks_id", "taxonworksID", unique=True,
+              sqlite_where=text('"taxonworksID" IS NOT NULL')),
     )
 
 
