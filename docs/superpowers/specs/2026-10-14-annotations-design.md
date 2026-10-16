@@ -329,6 +329,17 @@ batchable route exists, event annotations are declared not compared
 
 - Annotations as Explore facets; in Bulk import and Import & Assign.
 - Pushing biological associations (and their relationship links) to TW via the API.
+- **Controlled value lists for data attributes** (code + written-out name, e.g. habitat type
+  `G1.6` = `Fagus woodland`) — deferred 2026-10-16. Decided already: a **standard habitat
+  code belongs in its own data attribute** (e.g. "EUNIS habitat"), not in the generic
+  `collecting_event.habitat_id` vocabulary, which stays the descriptive field note
+  (`dwc:habitat`). Sketch: `annotation_value(term_id, code, name)`, a `value_mode`
+  (`free` / `controlled`) on `annotation_term`, `annotation.value_id` with a composite FK so
+  a value can only come from its own term's list; export emits the code (TW stores a data
+  attribute value as a plain string). **Cost of deferring:** the `annotation.value` CHECK
+  must change, which in SQLite means rebuilding `annotation` — that migration must
+  re-declare every constraint (CLAUDE.md migration discipline). Relevant to the planned
+  GeoPandas habitat join (EUNIS vs CORINE still open).
 - Possible existing bug, separate issue: the export emits `fieldNumber` without
   `TW:Namespace:fieldNumber`; `occurrence.rb:448` then looks up a namespace with a NULL name
   and fails the row ("Namespace not found"). Not verified live.
