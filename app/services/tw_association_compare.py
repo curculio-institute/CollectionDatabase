@@ -27,7 +27,7 @@ OTU ids are never compared (§5c): the other side is compared by taxon name.
 from __future__ import annotations
 
 from collections import defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import httpx
 from sqlalchemy import func, select
@@ -47,7 +47,6 @@ from app.services.tw_compare import CatalogIndex
 
 _TIMEOUT = httpx.Timeout(25.0)
 _PER_PAGE = 500
-_BATCH = 100        # collection-object ids per request — keeps the GET URL short
 
 
 def _client() -> httpx.AsyncClient:
@@ -289,6 +288,7 @@ class AssociationAnnotationFinding:
 class AssociationCompareResult:
     checked_specimens: int
     confirmed_count: int
+    confirmed_with_notes: tuple[AssociationRow, ...]
     to_add: tuple[AssociationRow, ...]
     only_on_tw: tuple[AssociationRow, ...]
     host_differs: tuple[AssociationRow, ...]
@@ -311,11 +311,6 @@ def _current_taxon(co: CollectionObject) -> Taxon | None:
     return None
 
 
-def _display(session: Session, t: Taxon) -> str:
-    return " ".join(x for x in (taxa.compose_scientific_name(session, t),
-                                (t.scientific_name_authorship or "").strip()) if x)
-
-
 @dataclass(frozen=True)
 class _Local:
     a: BiologicalAssociation
@@ -332,20 +327,20 @@ def _local_entry(session: Session, a: BiologicalAssociation, anchor_co_id: int,
     notes: tuple[str, ...] = ()
     if anchor_is_subject and a.object_taxon is not None:
         t = a.object_taxon
-        return _Local(a, anchor_co_id, True, t, _display(session, t), "taxon", notes)
+        return _Local(a, anchor_co_id, True, t, taxa.compose_full_name(session, t), "taxon", notes)
     if anchor_is_subject and a.object_field_occurrence is not None:
         det = fo_svc.current_determination(session, a.object_field_occurrence)
         t = det.taxon if det is not None else None
         if det is not None and det.identification_qualifier:
             notes = (f"identified with qualifier '{det.identification_qualifier}'",)
         return _Local(a, anchor_co_id, True, t,
-                      _display(session, t) if t else "no current identification",
+                      taxa.compose_full_name(session, t) if t else "no current identification",
                       "field occurrence", notes)
     co = a.object_collection_object if anchor_is_subject else a.subject_collection_object
     t = _current_taxon(co)
     label = f"specimen {co.catalog_number or '(no catalog number)'}"
     return _Local(a, anchor_co_id, anchor_is_subject, t,
-                  f"{label} ({_display(session, t)})" if t else label, "specimen", notes)
+                  f"{label} ({taxa.compose_full_name(session, t)})" if t else label, "specimen", notes)
 
 
 def _verified(rel, host: str) -> bool:
@@ -412,9 +407,7 @@ def compare_associations(session: Session, *, repository_id: int,
     # ── local associations touching this collection (sub-selects: no IN-list limit)
     local_rows = (session.query(BiologicalAssociation)
                   .filter((BiologicalAssociation.subject_collection_object_id.in_(repo_ids))
-                          | (BiologicalAssociation.object_collection_object_id.in_(repo_ids))
-                          | ((BiologicalAssociation.subject_taxon_id.isnot(None))
-                             & BiologicalAssociation.object_collection_object_id.is_(None)))
+                          | (BiologicalAssociation.object_collection_object_id.in_(repo_ids)))
                   .order_by(BiologicalAssociation.id).all())
     not_on_tw = numberless = taxon_subject = 0
     locals_by_anchor: dict[int, list[_Local]] = defaultdict(list)
@@ -453,6 +446,7 @@ def compare_associations(session: Session, *, repository_id: int,
             anns_by_ba[an.biological_association_id].append(an)
 
     confirmed = 0
+    confirmed_notes: list[AssociationRow] = []
     to_add: list[AssociationRow] = []
     only: list[AssociationRow] = []
     differs: list[AssociationRow] = []
@@ -519,13 +513,18 @@ def compare_associations(session: Session, *, repository_id: int,
                         continue
                     if t.relationship_id != e.a.biological_relationship.tw_id:
                         continue
-                    verdict, _notes = host_verdict(name, e.taxon.scientific_name_authorship,
-                                                   tw_name)
+                    verdict, pair_notes = host_verdict(
+                        name, e.taxon.scientific_name_authorship, tw_name)
                     if verdict != tier:
                         continue
                     paired_l.add(e.a.id)
                     paired_t.add(t.id)
                     confirmed += 1
+                    combined = e.notes + pair_notes
+                    if combined:
+                        confirmed_notes.append(replace(
+                            local_row(e, tw_id=t.id, tw_host=_other(t, anchor_subject).label),
+                            notes=combined))
                     before = []
                     ann_cmp._diff(before, cat, t.id, "association", anns_by_ba.get(e.a.id, []),
                                   tw_tags.get(t.id, []), tw_data.get(t.id, []), verified_terms)
@@ -559,6 +558,7 @@ def compare_associations(session: Session, *, repository_id: int,
 
     return AssociationCompareResult(
         checked_specimens=len(specimens), confirmed_count=confirmed,
+        confirmed_with_notes=tuple(confirmed_notes),
         to_add=tuple(to_add), only_on_tw=tuple(only), host_differs=tuple(differs),
         cant_compare=tuple(cant), annotation_findings=tuple(ann_findings),
         unverified_terms=unverified_terms, not_on_tw_count=not_on_tw,

@@ -674,7 +674,8 @@ def build_tw_sync_tab(session_factory, refreshers: dict | None = None,
         for title, rows in (("To add on TaxonWorks", assoc_result.to_add),
                             ("Only on TaxonWorks", assoc_result.only_on_tw),
                             ("Host differs", assoc_result.host_differs),
-                            ("Can't compare", assoc_result.cant_compare)):
+                            ("Can't compare", assoc_result.cant_compare),
+                            ("Confirmed with notes", assoc_result.confirmed_with_notes)):
             if not rows:
                 continue
             with ui.expansion(f"{title} ({len(rows)})").classes("w-full"):
@@ -727,6 +728,7 @@ def build_tw_sync_tab(session_factory, refreshers: dict | None = None,
             ui.label("Association tags/data attributes not compared — link not verified on "
                      "this instance: " + ", ".join(assoc_result.unverified_terms)) \
                 .classes("text-xs mt-1").style(soft)
+
     def _render_media_results(media_result) -> None:
         """#149 step 1.6. Diagnostic only — TaxonWorks has no import path for media at
         all (module docstring, `tw_media_compare.py`), so the only actions offered are

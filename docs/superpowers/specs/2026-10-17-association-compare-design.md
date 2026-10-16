@@ -67,7 +67,7 @@ Not compared, each reported as a count with its reason:
 - associations whose specimen is not on TaxonWorks yet (export it first);
 - associations on specimens without a catalog number;
 - associations on catalog numbers held by more than one TaxonWorks record (listed by number);
-- associations with a taxon subject (the app does not create them).
+- associations with a taxon subject on this collection's specimens (the app does not create them).
 
 ### Matching a local association to a TaxonWorks one
 
@@ -108,7 +108,7 @@ The rule mirrors the export's name pre-flight (`tw_sync.check_names`, §5c):
 
 | Group | Meaning | Shown per row |
 |---|---|---|
-| **Confirmed** | matched | counted only, not listed |
+| **Confirmed** | matched | counted; a confirmed pair with notes (subgenus placement, authorship missing on one side or spelled differently, a qualified host) is listed under *Confirmed with notes* |
 | **To add on TaxonWorks** | local association with no match | catalog number, relationship, host as recorded locally and its kind (taxon / field occurrence / specimen + catalog number), notes, **its tags and data attributes**, link *open in TaxonWorks* |
 | **Only on TaxonWorks** | TaxonWorks association with no match | catalog number, TaxonWorks relationship name, TaxonWorks' full label for the other side (incl. any anatomical part), its tags / data attributes, link |
 | **Host differs** | exactly one unmatched `L` and one unmatched `T` left on the same anchor, same direction and same verified relationship, names differ | both hosts side by side, the reason (name / authorship), link |

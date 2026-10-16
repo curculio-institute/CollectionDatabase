@@ -223,8 +223,9 @@ TYPHA = TwName(1655474, "Typha", "L.", "genus")
 
 
 def _rel(session, name="collected from", tw_id=92, host=SFG):
-    # get-or-create: save_biological_association commits, so rows outlive a test and
-    # UNIQUE(taxonworksID) would collide on the next one; reset the link state each time.
+    # get-or-create: migration 0013 seeds relationship rows ("collected from" with
+    # taxonworksID 92, "[legacy] is vector of" with 60), so a fresh insert would collide
+    # on name / UNIQUE(taxonworksID); reset the link state each time.
     r = session.query(BiologicalRelationship).filter_by(name=name).one_or_none()
     if r is None:
         r = BiologicalRelationship(name=name, created_at=_utcnow(), updated_at=_utcnow())
@@ -350,7 +351,7 @@ def test_field_occurrence_host_uses_its_current_identification(session):
     assert r.confirmed_count == 1
 
 
-def test_qualified_host_matches_with_note(session):
+def test_qualified_host_that_matches_is_listed_with_its_note(session):
     ev = make_event(session)
     co = make_specimen(session, "ANNX-00308", event_id=ev.id)
     fo = fo_svc.create_field_occurrence(session, collecting_event_id=ev.id,
@@ -359,9 +360,28 @@ def test_qualified_host_matches_with_note(session):
     bio.save_biological_association(session, collection_object_id=co.id,
                                     biological_relationship_id=_rel(session).id,
                                     object_field_occurrence_id=fo.id)
-    r = _cmp(session, co)
-    (row,) = r.to_add
+    r = _cmp(session, co, [_tw(9)])
+    assert r.confirmed_count == 1
+    (row,) = r.confirmed_with_notes
     assert any("cf." in n for n in row.notes)
+    assert row.local_id is not None and row.tw_id == 9
+    assert row.tw_host == "rhizome: Typha L."
+
+
+def test_confirmed_pair_with_missing_authorship_is_listed_with_note(session):
+    co = make_specimen(session, "ANNX-00318")
+    _on(session, co, _rel(session), _plant(session, "Typha", None))
+    r = _cmp(session, co, [_tw(9)])
+    assert r.confirmed_count == 1
+    (row,) = r.confirmed_with_notes
+    assert any("authorship not compared" in n for n in row.notes)
+
+
+def test_exact_confirmed_pair_stays_count_only(session):
+    co = make_specimen(session, "ANNX-00319")
+    _on(session, co, _rel(session), _plant(session))
+    r = _cmp(session, co, [_tw(9)])
+    assert r.confirmed_count == 1 and r.confirmed_with_notes == ()
 
 
 def test_no_current_identification_cannot_be_compared(session):
@@ -428,10 +448,15 @@ def test_association_between_two_specimens_on_tw_is_compared_once(session):
                                       object_collection_object_id=b.id,
                                       created_at=_utcnow(), updated_at=_utcnow()))
     session.flush()
-    r = _cmp(session, a, [], specimens=[(a.catalog_number, a.id, 501),
-                                        (b.catalog_number, b.id, 502)])
-    assert len(r.to_add) == 1
-    assert r.to_add[0].catalog_number == "ANNX-00314"      # anchored on the subject
+    t = TwAssociation(9, 60, "parasitoid of",
+                      TwSide("CollectionObject", 501, 9001, "CO 501"),
+                      TwSide("CollectionObject", 502, 5, "CO 502"))
+    r = _cmp(session, a, [t], specimens=[(a.catalog_number, a.id, 501),
+                                         (b.catalog_number, b.id, 502)],
+             names={5: TwName(2, "Otiorhynchus crypticus", None, "species")})
+    # compared once, anchored on the subject — not repeated from the object's side
+    assert r.confirmed_count == 1
+    assert r.to_add == () and r.only_on_tw == ()
 
 
 def test_counts_of_what_was_not_compared(session):
@@ -447,6 +472,11 @@ def test_counts_of_what_was_not_compared(session):
     session.add(BiologicalAssociation(biological_relationship_id=rel.id,
                                       subject_taxon_id=species(session).id,
                                       object_collection_object_id=co.id,
+                                      created_at=_utcnow(), updated_at=_utcnow()))
+    # a taxon-subject association with a taxon object (no specimen): not this collection's
+    session.add(BiologicalAssociation(biological_relationship_id=rel.id,
+                                      subject_taxon_id=species(session).id,
+                                      object_taxon_id=typha.id,
                                       created_at=_utcnow(), updated_at=_utcnow()))
     session.flush()
     r = _cmp(session, co)
