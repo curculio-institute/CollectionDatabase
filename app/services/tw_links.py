@@ -145,6 +145,9 @@ def link(session: Session, row, tw_term: TwTerm) -> str | None:
         raise ValueError("This term did not come from a TaxonWorks fetch — refusing to "
                          "record a link that was never confirmed on a host.")
     _require_clean_tw_name(tw_term.name)
+    if row.tw_id is not None and row.tw_id != tw_term.id:
+        raise ValueError(f"'{row.name}' is already linked to TaxonWorks '{row.tw_name}' "
+                         f"— unlink it first.")
     holder = linked_holder(session, kind, tw_term.id, exclude=row)
     if holder is not None:
         raise ValueError(f"TaxonWorks {_NOUN[kind]} '{tw_term.name}' is already linked to "

@@ -150,6 +150,19 @@ def test_link_refuses_an_id_held_by_another_term(session):
         links.link(session, second, TwTerm(KEYWORD, 1764, "Adventive", host=SFG))
 
 
+def test_link_refuses_relinking_to_another_id(session):
+    t = make_term(session, name="Adventive", tw_id=1764, tw_name="Adventive", tw_host=SFG)
+    with pytest.raises(ValueError, match="already linked to TaxonWorks 'Adventive'.*unlink"):
+        links.link(session, t, TwTerm(KEYWORD, 99, "Endemic", host=SFG))
+    assert (t.tw_id, t.tw_name) == (1764, "Adventive")
+
+
+def test_link_to_the_same_id_is_a_refresh(session):
+    t = make_term(session, name="Adventive", tw_id=1764, tw_name="Old", tw_host=SANDBOX)
+    links.link(session, t, TwTerm(KEYWORD, 1764, "Adventive", None, "#ff8800", SFG))
+    assert (t.tw_id, t.tw_name, t.tw_host) == (1764, "Adventive", SFG)
+
+
 def test_link_refuses_the_wrong_kind(session):
     t = make_term(session)                         # a tag
     with pytest.raises(ValueError):

@@ -218,6 +218,12 @@ management UI today).
 - **Verify** button at the top of each sub-tab: one fetch, updates every chip; rows with a
   differing name offer *use TW name* / *keep local name* / *unlink*. Nothing is decided
   silently.
+- **Link safety:** the chip shows the TW name when it differs (`TaxonWorks ✓ as 'Endemic'`).
+  A linked entry cannot be re-linked — unlink first (enforced in `tw_links.link`; a chip
+  click on a linked row only explains this). Linking an unlinked entry whose name differs
+  from the picked TW term asks *Keep local name* / *Use TaxonWorks name* (Cancel aborts).
+- **Confirmations and hints:** Unlink and Delete ask first (Delete is still refused while in
+  use); every row action and the chip carry a real tooltip.
 
 ### Entering annotations
 

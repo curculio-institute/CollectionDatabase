@@ -16,6 +16,7 @@ import app.services.biological as bio
 import app.services.taxonworks as tw_svc
 import app.services.tw_links as links
 from app.models import AnnotationTerm, BiologicalRelationship
+from app.ui.confirm_dialog import choose, confirm
 from app.ui.annotation_chips import CSS as CHIP_CSS, chip_html, swatch_html
 from app.ui.merge_target_list import build_merge_target_list
 
@@ -37,6 +38,27 @@ def build_relationships_section(session_factory) -> None:
     _build_section(session_factory, terms=False)
 
 
+def chip_label(state_label: str, local_name: str, tw_name: str | None,
+               linked: bool) -> str:
+    """A linked entry whose TaxonWorks name differs from the local one says so on the
+    chip: the export uses the TW name, so the mismatch must not be invisible."""
+    if linked and tw_name is not None and tw_name != local_name:
+        return f"{state_label} as '{tw_name}'"
+    return state_label
+
+
+def chip_tooltip(linked: bool, tw_name: str | None) -> str:
+    if linked:
+        return f"Linked to TaxonWorks '{tw_name}' — unlink first to change"
+    return "Click to link to a TaxonWorks term"
+
+
+def needs_name_choice(local_name: str, picked_name: str) -> bool:
+    """Ask Keep local / Use TaxonWorks name when the picked TW name differs
+    (case-sensitive, after strip)."""
+    return (local_name or "").strip() != (picked_name or "").strip()
+
+
 def _chip(row, host: str, detail: dict) -> tuple[str, str]:
     state = links.link_state(row, host)
     outcome = detail.get(row.id)
@@ -45,7 +67,8 @@ def _chip(row, host: str, detail: dict) -> tuple[str, str]:
             return f'name differs: "{outcome.tw_name}"', "negative"
         if outcome.state == "not_found":
             return "not found on this instance", "negative"
-    return _STATE_CHIP[state]
+    label, color = _STATE_CHIP[state]
+    return chip_label(label, row.name, row.tw_name, row.tw_id is not None), color
 
 
 _GONE = "This entry no longer exists — it was deleted elsewhere. The list will refresh."
@@ -89,6 +112,8 @@ def _build_section(session_factory, *, terms: bool) -> None:
                         label, color = _chip(r, host, detail)
                         row = {"id": r.id, "name": r.name, "chip": label,
                                "chip_color": color, "linked": r.tw_id is not None,
+                               "tw_name": r.tw_name or "",
+                               "chip_tip": chip_tooltip(r.tw_id is not None, r.tw_name),
                                "link_kind": kind}
                         if terms:
                             row.update(kind=_KIND_LABEL[r.kind], css_color=r.css_color or "",
@@ -125,22 +150,27 @@ def _build_section(session_factory, *, terms: bool) -> None:
         table.add_slot("body-cell-chip", """
             <q-td :props="props">
               <q-badge :color="props.row.chip_color" :label="props.row.chip"
-                       class="cursor-pointer" @click="$parent.$emit('link', props.row)" />
+                       class="cursor-pointer" @click="$parent.$emit('link', props.row)">
+                <q-tooltip>{{ props.row.chip_tip }}</q-tooltip>
+              </q-badge>
             </q-td>""")
         table.add_slot("body-cell-actions", """
             <q-td :props="props">
               <q-btn v-if="!props.row.linked" flat dense round icon="link" size="xs"
-                     title="Link to TaxonWorks" @click="$parent.$emit('link', props.row)" />
+                     @click="$parent.$emit('link', props.row)">
+                <q-tooltip>Link to a TaxonWorks term</q-tooltip></q-btn>
               <q-btn v-else flat dense round icon="link_off" size="xs"
-                     title="Unlink — the entry becomes local only"
-                     @click="$parent.$emit('unlink', props.row)" />
+                     @click="$parent.$emit('unlink', props.row)">
+                <q-tooltip>Unlink — becomes local only (asks first)</q-tooltip></q-btn>
               <q-btn flat dense round icon="edit" size="xs"
-                     @click="$parent.$emit('edit', props.row)" />
+                     @click="$parent.$emit('edit', props.row)">
+                <q-tooltip>Edit</q-tooltip></q-btn>
               <q-btn flat dense round icon="merge_type" size="sm" style="color:#f97316"
-                     title="Merge with another entry"
-                     @click="$parent.$emit('merge', props.row)" />
+                     @click="$parent.$emit('merge', props.row)">
+                <q-tooltip>Merge into another entry</q-tooltip></q-btn>
               <q-btn flat dense round icon="delete" size="xs" color="negative"
-                     @click="$parent.$emit('delete', props.row)" />
+                     @click="$parent.$emit('delete', props.row)">
+                <q-tooltip>Delete (asks first; refused while in use)</q-tooltip></q-btn>
             </q-td>""")
 
         def _refresh() -> None:
@@ -170,12 +200,31 @@ def _build_section(session_factory, *, terms: bool) -> None:
             _write(lambda s: ann.update_term(s, int(args["id"]),
                                              **{args["field"]: bool(args["value"])}))
 
-        def _unlink(row: dict) -> None:
+        def _usage(rid: int) -> str:
+            with session_factory() as s:
+                if terms:
+                    return f"{ann.term_usage(s, rid)} record(s)"
+                return (f"{bio.relationship_vocab._count_references(s, rid)} "
+                        f"association(s)")
+
+        async def _unlink(row: dict) -> None:
+            tail = ("is no longer exported" if terms else "is no longer linked")
+            if not await confirm(
+                    title="Unlink from TaxonWorks?",
+                    body=(f"'{row['name']}' is linked to TaxonWorks '{row['tw_name']}' and "
+                          f"used on {_usage(int(row['id']))}. Unlinked, it stays here but "
+                          f"{tail}, and re-linking needs a fresh TaxonWorks fetch."),
+                    action_label="Unlink", action_color="warning"):
+                return
             detail.pop(int(row["id"]), None)
             _write(lambda s: links.unlink(s, _get(s, int(row["id"]))),
                    f"'{row['name']}' is local only now.")
 
-        def _delete(row: dict) -> None:
+        async def _delete(row: dict) -> None:
+            if not await confirm(title="Delete?",
+                                 body=f"Delete '{row['name']}'? This cannot be undone.",
+                                 action_label="Delete"):
+                return
             if terms:
                 _write(lambda s: ann.delete_term(s, int(row["id"])), "Deleted.")
             else:
@@ -205,8 +254,23 @@ def _build_section(session_factory, *, terms: bool) -> None:
                 box = ui.element("div").classes("w-full mt-1 overflow-y-auto") \
                     .style("max-height:20rem")
 
-                def _pick(c: links.TwTerm) -> None:
+                async def _pick(c: links.TwTerm) -> None:
                     warning: list[str | None] = [None]
+                    rename_to: str | None = None
+                    if row_id is not None:
+                        with session_factory() as s:
+                            cur = s.get(model, row_id)
+                            local = cur.name if cur is not None else None
+                        if local is not None and needs_name_choice(local, c.name):
+                            ans = await choose(
+                                title="Names differ",
+                                body=f"Local name '{local}', TaxonWorks name '{c.name}'.",
+                                options=[("keep", "Keep local name", "secondary"),
+                                         ("use", "Use TaxonWorks name", "primary")])
+                            if ans is None:
+                                return
+                            if ans == "use":
+                                rename_to = c.name
 
                     def fn(s):
                         if row_id is None:
@@ -215,6 +279,11 @@ def _build_section(session_factory, *, terms: bool) -> None:
                                    if terms else bio.create_relationship(s, c.name))
                         else:
                             row = _get(s, row_id)
+                            if rename_to is not None:
+                                if terms:
+                                    ann.update_term(s, row_id, name=rename_to)
+                                else:
+                                    bio.rename_relationship(s, row_id, rename_to)
                         warning[0] = links.link(s, row, c)   # host comes from the fetch (c.host)
                     if not _write(fn, f"Linked to TaxonWorks '{c.name}'."):
                         return
@@ -454,7 +523,14 @@ def _build_section(session_factory, *, terms: bool) -> None:
             dlg.on_value_change(lambda e: dlg.delete() if not e.value else None)
             dlg.open()
 
-        table.on("link", lambda e: _open_link(e.args["link_kind"], int(e.args["id"])))
+        async def _link_clicked(row: dict) -> None:
+            if row["linked"]:
+                ui.notify(f"Linked to TaxonWorks '{row['tw_name']}'. Unlink it first to "
+                          f"link another term.", type="info")
+                return
+            await _open_link(row["link_kind"], int(row["id"]))
+
+        table.on("link", lambda e: _link_clicked(e.args))
         table.on("unlink", lambda e: _unlink(e.args))
         table.on("edit", lambda e: _open_edit(e.args))
         table.on("merge", lambda e: _open_merge(e.args))
