@@ -451,6 +451,7 @@ async def _label_fit_ok(name: str | None, code: str | None) -> bool:
     problem = lbl_svc.identifier_name_problem((name or "").strip(), (code or "").strip() or None)
     if problem is None:
         return True
+    problem = problem.split(" — shorten it")[0]     # the hint points at this very dialog
     return await confirm(
         title="Too long for identifier labels",
         body=(f"{problem[0].upper()}{problem[1:]}.\n\nYou can save it anyway, but identifier "

@@ -8,7 +8,6 @@ talks to this code by event name only.
 """
 from __future__ import annotations
 
-import html as _html
 import json
 from datetime import datetime
 from nicegui import ui
@@ -66,6 +65,11 @@ def build_labels_tab(session_factory, *, refreshers, records_handle, main_tabs):
                 "determination": _pqcfg.label_border_determination,
                 "identifier":    _pqcfg.label_border_identifier,
             }, paper=_pqcfg.paper_format) + "</style>")
+            # A sheet that cannot be laid out (labels.LabelDoesNotFit) is explained here,
+            # outside the scaled A4 preview, where the message can wrap.
+            refusal_lbl = ui.label("").classes("text-sm text-negative mt-1") \
+                .style("white-space:normal")
+            refusal_lbl.set_visibility(False)
             with ui.element("div").classes("pq-sheet-wrap mt-1"):
                 with ui.element("div").classes("pq-sheet-scale"):
                     preview_box = ui.html("").classes("w-full")
@@ -226,6 +230,7 @@ def build_labels_tab(session_factory, *, refreshers, records_handle, main_tabs):
                     f"{summary.n_identifier} id)"
                     if summary.total else "empty"
                 )
+                refusal_lbl.set_visibility(False)
                 if not summary.total:
                     preview_box.set_content(
                         '<div class="pq-prev-empty">Nothing queued yet — labels are '
@@ -237,9 +242,9 @@ def build_labels_tab(session_factory, *, refreshers, records_handle, main_tabs):
                 try:
                     sheet = _with_session(pq_svc.preview_sheet)
                 except lbl_svc.LabelDoesNotFit as exc:
-                    preview_box.set_content(
-                        '<div class="pq-prev-empty">The sheet cannot be laid out: '
-                        f'{_html.escape(str(exc))}.</div>')
+                    refusal_lbl.set_text(f"The sheet cannot be printed: {exc}.")
+                    refusal_lbl.set_visibility(True)
+                    preview_box.set_content("")
                     return
                 preview_box.set_content(sheet)
                 # Fit the A4 page to the preview width once it's in the DOM.
