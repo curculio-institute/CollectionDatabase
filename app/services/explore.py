@@ -17,12 +17,13 @@ import io
 from collections import defaultdict
 from dataclasses import dataclass, field
 
-from sqlalchemy import func, and_, or_, false, exists
+from sqlalchemy import func, and_, or_, false, true, exists
 from sqlalchemy.orm import Session, joinedload, aliased
 
 from app.models import (
     CollectionObject, CollectingEvent, TaxonDetermination, Taxon, Person,
     Country, StateProvince, County, Island, AdministrativeRegion, Repository,
+    Annotation, AnnotationTerm, BiologicalAssociation,
 )
 from app.services import dwc_export, repositories
 from app.services.taxa import (
@@ -89,6 +90,26 @@ class Facet:
     key: object        # taxon_id / vocab_id / person full_name (None for a NULL facet)
     tag: str           # category tag shown in the dropdown, e.g. "Genus", "Country"
     null: bool = False # a "missing value" facet — matches records where this field IS NULL (#141)
+    # Annotation facets only (display): the term's colour and whether it is local-only
+    # (no TaxonWorks link). Ignored by the filter; plain JSON values for saved searches.
+    css_color: str | None = None
+    local: bool = False
+
+
+_ANN_TAG = {"tag": "Tag", "data_attribute": "Data attribute"}
+
+
+def chip_dict(f: Facet) -> dict:
+    """The JSON-serialisable chip a facet becomes in a search group / saved search.
+    ``key`` of an ``annotation_value`` facet is a ``[term_id, value]`` list so it survives
+    a JSON round trip unchanged."""
+    chip = {"kind": f.kind, "label": f.label, "key": f.key, "tag": f.tag}
+    if f.null:
+        chip["null"] = True
+    if f.kind in ("annotation_term", "annotation_value"):
+        chip["css_color"] = f.css_color
+        chip["local"] = f.local
+    return chip
 
 
 def search_facets(session: Session, term: str, limit: int = 25) -> list[Facet]:
@@ -111,6 +132,7 @@ def search_facets(session: Session, term: str, limit: int = 25) -> list[Facet]:
         out.append(Facet("collection", "NULL", None, "Collection", null=True))
         out.append(Facet("disposition", "NULL", None, "Disposition", null=True))
         out.append(Facet("species_null", "NULL", None, "Species", null=True))
+        out.append(Facet("annotations", "NULL", None, "Annotations", null=True))
         return out
 
     # Taxa (accepted + synonyms) — tag with the rank.
@@ -151,6 +173,25 @@ def search_facets(session: Session, term: str, limit: int = 25) -> list[Facet]:
             | Repository.institution_full_name.ilike(f"%{tok}%"))
     for r in rq.order_by(Repository.collection_full_name).limit(limit).all():
         out.append(Facet("collection", repositories.display_label(r), r.id, "Collection"))
+
+    # Annotation terms (tags, data attributes = "has this attribute, any value") and the
+    # distinct STORED data-attribute values ("Altitude = 350 m") — never free text.
+    aq = session.query(AnnotationTerm)
+    for tok in toks:
+        aq = aq.filter(AnnotationTerm.name.ilike(f"%{tok}%"))
+    for t in aq.order_by(AnnotationTerm.name, AnnotationTerm.kind).limit(limit).all():
+        out.append(Facet("annotation_term", t.name, t.id, _ANN_TAG[t.kind],
+                         css_color=t.css_color, local=t.tw_id is None))
+    hay = AnnotationTerm.name + " " + Annotation.value
+    vq = (session.query(AnnotationTerm, Annotation.value)
+          .join(Annotation, Annotation.term_id == AnnotationTerm.id)
+          .filter(AnnotationTerm.kind == "data_attribute")
+          .distinct())
+    for tok in toks:
+        vq = vq.filter(hay.ilike(f"%{tok}%"))
+    for t, value in vq.order_by(AnnotationTerm.name, Annotation.value).limit(limit).all():
+        out.append(Facet("annotation_value", f"{t.name} = {value}", [t.id, value],
+                         "Data attribute", css_color=t.css_color, local=t.tw_id is None))
 
     return out
 
@@ -268,6 +309,32 @@ def _apply_filters(session: Session, q, filters: list[dict], idx: dict[int, Taxo
         return [t.id for t in idx.values()
                 if ((t.taxon_rank or "") in _SPECIES_GROUP_RANKS) == in_species_group]
 
+    def _annotated(cond=lambda a: true()):
+        """An annotation satisfying ``cond`` sits on the specimen, on its collecting
+        event, or on one of its biological associations (specimen = subject) — the one
+        meaning of an annotation facet in every view (spec "Explore facets")."""
+        a1, a2, a3 = aliased(Annotation), aliased(Annotation), aliased(Annotation)
+        ba = aliased(BiologicalAssociation)
+        return or_(
+            exists().where(and_(a1.collection_object_id == CollectionObject.id, cond(a1))),
+            exists().where(and_(a2.collecting_event_id == CollectionObject.collecting_event_id,
+                                cond(a2))),
+            exists().where(and_(a3.biological_association_id == ba.id,
+                                ba.subject_collection_object_id == CollectionObject.id,
+                                cond(a3))),
+        )
+
+    def _annotation_cond(f):
+        """The per-annotation condition of an annotation facet, or None if not one."""
+        if f["kind"] == "annotation_term":
+            tid = int(f["key"])
+            return lambda a: a.term_id == tid
+        if f["kind"] == "annotation_value":
+            tid, value = f["key"]
+            tid = int(tid)
+            return lambda a: and_(a.term_id == tid, a.value == value)
+        return None
+
     def _clause(f):
         kind = f["kind"]
         key = f.get("key")
@@ -285,7 +352,11 @@ def _apply_filters(session: Session, q, filters: list[dict], idx: dict[int, Taxo
                 return CollectionObject.disposition_id.is_(None)
             if kind == "species_null":             # identified only to genus-and-above
                 return TaxonDetermination.taxon_id.in_(_rank_ids(in_species_group=False))
+            if kind == "annotations":              # no annotation anywhere
+                return ~_annotated()
             return None
+        if (cond := _annotation_cond(f)) is not None:
+            return _annotated(cond)
         if kind == "taxon":
             ids = _descendant_ids(int(key), children, accepted_of, syn_map)
             # Which determinations the taxon filter searches (#137): the CURRENT one
@@ -373,7 +444,11 @@ def _apply_filters(session: Session, q, filters: list[dict], idx: dict[int, Taxo
                 return CollectionObject.disposition_id.isnot(None)
             if kind == "species_null":             # has a species-level determination
                 return TaxonDetermination.taxon_id.in_(_rank_ids(in_species_group=True))
+            if kind == "annotations":              # at least one annotation anywhere
+                return _annotated()
             return None
+        if (cond := _annotation_cond(f)) is not None:
+            return ~_annotated(cond)               # NOT EXISTS in all three places
         if kind == "taxon":
             ids = _descendant_ids(int(key), children, accepted_of, syn_map)
             negs = []                              # NOT(current OR past OR verbatim)
