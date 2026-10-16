@@ -384,9 +384,32 @@ annotations, reports them as missing on TaxonWorks.
   annotations per specimen; duplicate ids across `/data_attributes` pages de-duplicated.
 - UI driven with Playwright on a spare port against a DB copy — **ask the user first**.
 
+## Explore facets (added 2026-10-16, user request)
+
+Tags and data attributes are searchable in Explore's search bar, as facets like taxa,
+places and people (`explore.search_facets` / `_apply_filters`).
+
+- **Suggestions:** every annotation term whose name matches the typed tokens — a tag as
+  "<name> · Tag", a data attribute as "<name> · Data attribute" (has the attribute, any
+  value); a "local" badge on unlinked terms; the chip in the term's colour. Plus **value
+  facets** "<name> = <value>" for distinct STORED data-attribute values that match the
+  tokens (never free text).
+- **Matching — anywhere, the same in every view:** a specimen matches when the annotation is
+  on the specimen itself, on its collecting event, or on one of its biological associations
+  (where the specimen is the subject). Like every existing facet, a chip filters specimens;
+  the Taxa / Specimens / Events / Dashboard / CSV views only present that result (Events =
+  the events of the matching specimens). No per-target or per-view meaning (user decision
+  2026-10-16; per-target chips are a possible later addition).
+- **NOT groups** negate NULL-safely ("NOT Adventive" = no Adventive on the specimen, its
+  event or its associations). **NULL:** typing `NULL` adds "Annotations: none" — no
+  annotation anywhere on the specimen, its event or its associations; its negation = has at
+  least one.
+- Facets are stored as plain dicts, so saved searches keep working.
+
 ## Out of scope (follow-ups)
 
-- Annotations as Explore facets; in Bulk import and Import & Assign.
+- Annotations in Bulk import and Import & Assign.
+- Per-target annotation facets ("Adventive · on event") — not needed for now (2026-10-16).
 - Pushing biological associations (and their relationship links) to TW via the API.
 - **Controlled value lists for data attributes** (code + written-out name, e.g. habitat type
   `G1.6` = `Fagus woodland`) — deferred 2026-10-16. Decided already: a **standard habitat
