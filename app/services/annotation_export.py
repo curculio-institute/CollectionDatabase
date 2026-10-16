@@ -24,6 +24,7 @@ from dataclasses import dataclass
 from sqlalchemy.orm import Session
 
 from app.models import Annotation, CollectionObject
+from app.services import tw_links
 
 _PREFIX = {"tag": "Tag", "data_attribute": "DataAttribute"}
 _CLASS_ORDER = {"CollectionObject": 0, "CollectingEvent": 1}
@@ -124,3 +125,55 @@ def annotation_columns(session: Session, cos: Iterable[CollectionObject], *,
     return AnnotationPlan(
         columns=ordered, cells=cells, blocked=tuple(sorted(blocked.items())),
         local_only=tuple(sorted((name, len(ids)) for name, ids in local.items())))
+
+
+@dataclass(frozen=True)
+class TermCheck:
+    header: str
+    local_name: str
+    ok: bool
+    reason: str | None = None
+
+
+def evaluate_terms(columns, candidates_by_kind: dict) -> list[TermCheck]:
+    """Pure: the four pre-flight rules against one fresh fetch per kind. Any failure
+    blocks the Download — a refused export is the safe side of a CREATE-ONLY importer."""
+    out: list[TermCheck] = []
+    for c in columns:
+        kind = c.link_kind
+        cands = candidates_by_kind.get(kind, [])
+        mine = next((t for t in cands if t.id == c.tw_id), None)
+        reason = None
+        if any(ch in c.tw_name for ch in ("\t", "\n", "\r")):
+            reason = "its TaxonWorks name contains a tab or line break"
+        elif mine is None:
+            reason = (f"no TaxonWorks {kind} has id {c.tw_id} on this instance — run "
+                      f"Verify again")
+        elif mine.name != c.tw_name:
+            reason = f"renamed on TaxonWorks to '{mine.name}' — run Verify again"
+        else:
+            # TW resolves the header's selector by `uri` first, then by name ILIKE, in the
+            # project (occurrence.rb:1672 tags / :1695 data attributes); a predicate
+            # selector is lower-cased before the lookup (darwin_core.rb:82).
+            uri_selector = c.tw_name.lower() if kind == "predicate" else c.tw_name
+            for t in cands:
+                if t.id == c.tw_id:
+                    continue
+                if t.uri and t.uri == uri_selector:
+                    reason = (f"TaxonWorks would read the column as {kind} '{t.name}' "
+                              f"(id {t.id}), whose URI equals the name")
+                    break
+                if t.name.casefold() == c.tw_name.casefold():
+                    reason = (f"TaxonWorks would read the column as {kind} '{t.name}' "
+                              f"(id {t.id}) — the same name ignoring case")
+                    break
+        out.append(TermCheck(c.header, c.local_name, reason is None, reason))
+    return out
+
+
+async def check_terms(columns) -> list[TermCheck]:
+    """One fresh fetch per kind the columns use, then ``evaluate_terms``. Raises
+    ``TaxonWorksUnreachable`` naming the cause."""
+    kinds = sorted({c.link_kind for c in columns})
+    candidates = {k: await tw_links.fetch_candidates(k) for k in kinds}
+    return evaluate_terms(columns, candidates)
