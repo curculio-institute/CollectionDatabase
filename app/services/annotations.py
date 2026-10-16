@@ -102,6 +102,20 @@ def clean_value(value: str | None) -> str:
         raise ValueError("A data attribute needs a value.")
     if any(ch in clean for ch in _FORBIDDEN):
         raise ValueError(f"Value {clean!r} contains a tab or line break.")
+    # TaxonWorks' DwC importer rewrites every cell: ``normalize_value!`` strips leading /
+    # trailing whitespace (incl. NBSP) and squeezes repeated spaces
+    # (SpeciesFileGroup/taxonworks@897f385 app/models/dataset_record/darwin_core.rb:91-94).
+    # A value it would rewrite would show as a permanent value_differs in Compare, so it is
+    # refused here rather than normalised silently (CLAUDE.md §2).
+    odd = sorted({ch for ch in clean if ch.isspace() and ch != " "})
+    if odd:
+        names = ", ".join("non-breaking space (U+00A0)" if ch == "\u00a0"
+                          else f"U+{ord(ch):04X}" for ch in odd)
+        raise ValueError(f"Value {clean!r} contains a {names} — use a plain space; "
+                         f"TaxonWorks would rewrite it.")
+    if "  " in clean:
+        raise ValueError(f"Value {clean!r} contains repeated spaces — TaxonWorks would "
+                         f"squeeze them to one, so the published value would differ.")
     return clean
 
 

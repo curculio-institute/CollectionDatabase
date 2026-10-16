@@ -39,6 +39,22 @@ def test_clean_value():
             ann.clean_value(bad)
 
 
+@pytest.mark.parametrize("bad, why", [
+    ("G1  6", "repeated spaces"),
+    ("G1\u00a06", "non-breaking space"),
+    ("G1\u20036", "U\\+2003"),
+])
+def test_clean_value_refuses_what_taxonworks_would_rewrite(bad, why):
+    """TW's normalize_value! squeezes spaces / strips NBSP — a value it rewrites would be
+    a permanent value_differs, so it is refused (not normalised) and named."""
+    with pytest.raises(ValueError, match=why):
+        ann.clean_value(bad)
+
+
+def test_clean_value_strips_edge_nbsp_and_keeps_single_spaces():
+    assert ann.clean_value("\u00a0G1 6 ") == "G1 6"
+
+
 # ── terms ──────────────────────────────────────────────────────────────────────
 
 def test_create_term_refuses_case_insensitive_duplicate(session):
