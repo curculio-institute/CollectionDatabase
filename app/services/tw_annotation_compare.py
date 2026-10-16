@@ -136,6 +136,14 @@ async def fetch_data_attributes(object_type: str, ids: list[int]) -> dict[int, l
                         or row.get("attribute_subject_id") not in wanted):
                     raise _foreign(what, row.get("attribute_subject_type"),
                                    row.get("attribute_subject_id"))
+                if (row.get("type") != "ImportAttribute"
+                        and not isinstance(row.get("controlled_vocabulary_term_id"), int)):
+                    raise TaxonWorksUnreachable(
+                        f"{what} returned a {row.get('type')} (#{row.get('id')}) without a "
+                        f"predicate id.")
+                if row.get("value") is None:
+                    raise TaxonWorksUnreachable(
+                        f"{what} returned data attribute #{row.get('id')} without a value.")
 
             rows = await tw.fetch_all_pages(
                 client, "/data_attributes",
@@ -165,13 +173,22 @@ async def fetch_event_ids(co_ids: list[int]) -> dict[int, int | None]:
             def check(row: dict, wanted=wanted, what=what) -> None:
                 if row.get("id") not in wanted:
                     raise _foreign(what, "CollectionObject", row.get("id"))
+                if "collecting_event_id" not in row:
+                    raise TaxonWorksUnreachable(
+                        f"{what} returned CollectionObject #{row.get('id')} without a "
+                        f"collecting_event_id key — cannot tell 'no event' from 'not sent'.")
+                ev = row["collecting_event_id"]
+                if ev is not None and (not isinstance(ev, int) or isinstance(ev, bool)):
+                    raise TaxonWorksUnreachable(
+                        f"{what} returned a non-integer collecting_event_id ({ev!r}) for "
+                        f"CollectionObject #{row.get('id')}.")
 
             rows = await tw.fetch_all_pages(
                 client, "/collection_objects", {"collection_object_id[]": batch},
                 what=what, check_row=check, per_page=_PER_PAGE)
             for r in rows:
                 ev = r.get("collecting_event_id")
-                out[r["id"]] = ev if isinstance(ev, int) else None
+                out[r["id"]] = ev
             missing = sorted(wanted - {r["id"] for r in rows})
             if missing:
                 raise TaxonWorksUnreachable(
@@ -218,7 +235,7 @@ def _diff(findings: list, cat: str, tw_object_id: int, target: str, local: list,
         values = tw_values.get(twid)
         if not values:
             add("data_attribute", "missing_on_tw", term.name, local_value=value)
-        elif value not in values:
+        elif len(values) > 1 or values[0] != value:
             add("data_attribute", "value_differs", term.name, local_value=value,
                 tw_value=" | ".join(sorted(values)))
     for twid, values in tw_values.items():
@@ -248,7 +265,7 @@ def compare_annotations(session: Session, specimens: list[tuple[str, int, int]],
               co_tags.get(tw_id, []), co_data.get(tw_id, []), verified)
         local_event = (ann.annotations_for(session, "event", co.collecting_event_id)
                        if co.collecting_event_id else [])
-        tw_event = event_of.get(tw_id)
+        tw_event = event_of[tw_id]
         _diff(findings, cat, tw_id, "event", local_event,
               ev_tags.get(tw_event, []) if tw_event else [],
               ev_data.get(tw_event, []) if tw_event else [], verified)

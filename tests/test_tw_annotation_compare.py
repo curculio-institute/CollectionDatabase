@@ -134,3 +134,39 @@ def test_empty_input_never_touches_the_network(cfg, monkeypatch):
     _serve(monkeypatch, lambda r: pytest.fail("no request expected"))
     assert asyncio.run(cmp.fetch_tags("CollectionObject", [])) == {}
     assert asyncio.run(cmp.fetch_event_ids([])) == {}
+
+
+def test_multi_value_on_tw_is_a_difference(session):
+    da = make_term(session, "data_attribute", "Altitude", tw_id=3, tw_name="Altitude",
+                   tw_host=SFG)
+    co = make_specimen(session, "ANNX-00205")
+    ann.set_annotations(session, "specimen", co.id, [AnnotationItem(da.id, "350 m")])
+    result = _run(session, [(co.catalog_number, co.id, 501)],
+                  co_data={501: [TwDatum(3, "Altitude", "350 m"),
+                                 TwDatum(3, "Altitude", "400 m")]},
+                  event_of={501: None})
+    assert [(f.category, f.tw_value) for f in result.findings] == [
+        ("value_differs", "350 m | 400 m")]
+
+
+def test_fetch_event_ids_absent_key_refused_null_accepted(cfg, monkeypatch):
+    _serve(monkeypatch, lambda r: httpx.Response(200, json=[{"id": 501}]))
+    with pytest.raises(TaxonWorksUnreachable, match="collecting_event_id"):
+        asyncio.run(cmp.fetch_event_ids([501]))
+    _serve(monkeypatch, lambda r: httpx.Response(200, json=[
+        {"id": 501, "collecting_event_id": None}]))
+    assert asyncio.run(cmp.fetch_event_ids([501])) == {501: None}
+    _serve(monkeypatch, lambda r: httpx.Response(200, json=[
+        {"id": 501, "collecting_event_id": "9"}]))
+    with pytest.raises(TaxonWorksUnreachable, match="non-integer"):
+        asyncio.run(cmp.fetch_event_ids([501]))
+
+
+def test_fetch_data_attributes_refuses_malformed_internal_attribute(cfg, monkeypatch):
+    base = {"id": 1, "attribute_subject_type": "CollectionObject",
+            "attribute_subject_id": 501, "type": "InternalAttribute",
+            "controlled_vocabulary_term_id": 3, "value": "x"}
+    for bad in ({"controlled_vocabulary_term_id": None}, {"value": None}):
+        _serve(monkeypatch, lambda r, bad=bad: httpx.Response(200, json=[{**base, **bad}]))
+        with pytest.raises(TaxonWorksUnreachable):
+            asyncio.run(cmp.fetch_data_attributes("CollectionObject", [501]))
