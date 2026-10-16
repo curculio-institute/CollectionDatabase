@@ -17,7 +17,7 @@ import app.services.taxonworks as tw_svc
 import app.services.tw_links as links
 from app.models import AnnotationTerm, BiologicalRelationship
 from app.ui.confirm_dialog import choose, confirm
-from app.ui.annotation_chips import CSS as CHIP_CSS, chip_html, swatch_html
+from app.ui.annotation_chips import add_chip_css, chip_html, swatch_html
 from app.ui.merge_target_list import build_merge_target_list
 
 _KIND_LABEL = {"tag": "Tag", "data_attribute": "Data attribute"}
@@ -75,7 +75,7 @@ _GONE = "This entry no longer exists — it was deleted elsewhere. The list will
 
 
 def _build_section(session_factory, *, terms: bool) -> None:
-    ui.add_head_html(CHIP_CSS)
+    add_chip_css()
     model = AnnotationTerm if terms else BiologicalRelationship
     kinds = (links.KEYWORD, links.PREDICATE) if terms else (links.RELATIONSHIP,)
     detail: dict[int, links.VerifyOutcome] = {}   # latest Verify, this session only

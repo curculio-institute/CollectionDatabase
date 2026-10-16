@@ -23,7 +23,7 @@ from nicegui import ui
 
 import app.services.annotations as ann_svc
 from app.services.annotations import AnnotationItem
-from app.ui.annotation_chips import CSS as CHIP_CSS, chip_html
+from app.ui.annotation_chips import add_chip_css, chip_html
 
 
 def collect_items(work: dict, terms: dict) -> list[dict]:
@@ -54,6 +54,17 @@ def add_pending_pick(work: dict, pick_id, value) -> None:
         work[pick_id] = value
 
 
+def collect_with_pending(work: dict, pick_id, value, terms: dict) -> tuple[dict, list[dict]]:
+    """Save & close: fold the pending pick into a COPY of ``work`` and validate it.
+
+    Returns ``(new_work, items)``; raises ``ValueError`` (naming the term) with ``work``
+    untouched, so a refused value stays in its add row where the user can fix or clear
+    it — never an entry in ``work`` that has no visible row."""
+    trial = dict(work)
+    add_pending_pick(trial, pick_id, value)
+    return trial, collect_items(trial, terms)
+
+
 def pending_changed(pending_items, db_items: list[dict]) -> bool:
     """Deferred mode: are the held edits different from what the record has?"""
     if pending_items is None:
@@ -77,9 +88,12 @@ def build_annotation_button(
     on_change: Optional[Callable[[], None]] = None,
     tooltip: str = "Annotations",
 ) -> dict:
-    ui.add_head_html(CHIP_CSS)
+    add_chip_css()
     staged_items: list[dict] = staged_store if staged_store is not None else []
     pending: dict = {"items": None}          # deferred: None = untouched since load
+    # What the record has, read when the button is built and on every refresh() (a bound
+    # write ends in refresh()), so the deferred dirty-poll compares without a DB session.
+    snapshot: dict = {"items": []}
 
     def _tid() -> Optional[int]:
         return target_id_getter() if target_id_getter else None
@@ -97,7 +111,7 @@ def build_annotation_button(
             return list(staged_items)
         if deferred and pending["items"] is not None:
             return list(pending["items"])
-        return _db_items()
+        return list(snapshot["items"])
 
     btn = ui.button(icon="sell", on_click=lambda: _open()).props("flat dense round") \
         .tooltip(tooltip)
@@ -106,6 +120,8 @@ def build_annotation_button(
     badge.set_visibility(False)
 
     def refresh() -> None:
+        if not staged:
+            snapshot["items"] = _db_items()
         n = len(_current())
         badge.set_text(str(n))
         badge.set_visibility(n > 0)
@@ -137,6 +153,8 @@ def build_annotation_button(
         return True
 
     def _open() -> None:
+        if not staged:
+            snapshot["items"] = _db_items()      # the popup starts from what is stored now
         current = _current()
         with session_factory() as s:
             allowed = {t.id for t in ann_svc.allowed_terms(s, target)}
@@ -223,14 +241,20 @@ def build_annotation_button(
             _render_da()
 
             def _save_close() -> None:
-                if da_pending["pick"] is not None:
-                    add_pending_pick(work, da_pending["pick"].value, da_pending["val"].value)
+                # Fold the pending pick into a COPY: a refused value must leave the
+                # dialog as the user sees it (the pick still in its add row), not an
+                # entry in ``work`` that has no row and so cannot be removed.
+                pick, val = da_pending["pick"], da_pending["val"]
                 try:
-                    items = collect_items(work, terms)
+                    trial, items = collect_with_pending(
+                        work, pick.value if pick is not None else None,
+                        val.value if val is not None else None, terms)
                 except ValueError as exc:
                     ui.notify(str(exc), type="warning", multi_line=True)
                     return
                 if _apply(items):
+                    work.clear()
+                    work.update(trial)
                     dlg.close()
 
             with ui.row().classes("w-full justify-end gap-2 mt-2"):
@@ -254,7 +278,7 @@ def build_annotation_button(
     def has_changes() -> bool:
         if not deferred:
             return False
-        return pending_changed(pending["items"], _db_items())
+        return pending_changed(pending["items"], snapshot["items"])
 
     def clear() -> None:
         staged_items.clear()

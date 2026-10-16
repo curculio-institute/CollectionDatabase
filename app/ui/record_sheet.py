@@ -27,7 +27,7 @@ import app.services.media as media_svc
 import app.services.external_ids as extid_svc
 import app.services.life_stage as ls_svc
 import app.services.annotations as ann_svc
-from app.ui.annotation_chips import CSS as CHIP_CSS, annotations_html
+from app.ui.annotation_chips import add_chip_css, annotations_html
 import app.services.print_queue as pq_svc
 from app.services import dwc_export
 from app.services.taxa import format_scientific_name
@@ -96,7 +96,7 @@ def build_specimen_sheet(session_factory, co_id: int, *, on_edit, on_open_event=
     """Render the read-only specimen sheet into the current container."""
     ui.add_head_html(rs.CSS)
     ui.add_head_html(CSS)
-    ui.add_head_html(CHIP_CSS)
+    add_chip_css()
     add_map_assets()
 
     with session_factory() as s:
@@ -269,7 +269,7 @@ def build_event_sheet(session_factory, ev_id: int, *, on_edit, on_open_specimen=
     import app.services.events as ev_svc
     ui.add_head_html(rs.CSS)
     ui.add_head_html(CSS)
-    ui.add_head_html(CHIP_CSS)
+    add_chip_css()
     add_map_assets()
 
     with session_factory() as s:

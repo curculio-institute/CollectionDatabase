@@ -23,6 +23,17 @@ CSS = """<style>
 </style>"""
 
 
+def add_chip_css() -> None:
+    """Add :data:`CSS` to the page head once per client — every builder calls this, so a
+    rebuilt card or dialog does not append the same ``<style>`` again."""
+    from nicegui import ui
+    client = ui.context.client
+    if getattr(client, "_ann_chip_css_added", False):
+        return
+    ui.add_head_html(CSS)
+    client._ann_chip_css_added = True
+
+
 def text_color(css_color: str) -> str:
     """``#000`` or ``#fff``, whichever reads on this background (WCAG relative luminance,
     threshold 0.179 — the point where black and white give equal contrast)."""
