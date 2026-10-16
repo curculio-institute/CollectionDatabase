@@ -9,6 +9,8 @@ dialog with use TW name / keep local name / unlink per entry.
 """
 from __future__ import annotations
 
+from typing import Awaitable, Callable
+
 from nicegui import ui
 
 import app.services.annotations as ann
@@ -174,8 +176,10 @@ def _build_section(session_factory, *, terms: bool) -> None:
             </q-td>""")
 
         def _refresh() -> None:
-            table.rows = _rows()
-            table.update()
+            rows = _rows()
+            if rows != table.rows:          # the 2 s poll pushes only a real change
+                table.rows = rows
+                table.update()
 
         ui.timer(2.0, _refresh)
 
@@ -200,15 +204,17 @@ def _build_section(session_factory, *, terms: bool) -> None:
             _write(lambda s: ann.update_term(s, int(args["id"]),
                                              **{args["field"]: bool(args["value"])}))
 
-        def _usage(rid: int) -> str:
+        def _usage_count(rid: int) -> int:
             with session_factory() as s:
-                if terms:
-                    return f"{ann.term_usage(s, rid)} record(s)"
-                return (f"{bio.relationship_vocab._count_references(s, rid)} "
-                        f"association(s)")
+                return (ann.term_usage(s, rid) if terms
+                        else bio.relationship_usage(s, rid))
+
+        def _usage(rid: int) -> str:
+            return f"{_usage_count(rid)} record(s)"
 
         async def _unlink(row: dict) -> None:
-            tail = ("is no longer exported" if terms else "is no longer linked")
+            tail = ("is no longer exported" if terms
+                    else "is no longer matched to a TaxonWorks relationship")
             if not await confirm(
                     title="Unlink from TaxonWorks?",
                     body=(f"'{row['name']}' is linked to TaxonWorks '{row['tw_name']}' and "
@@ -221,8 +227,16 @@ def _build_section(session_factory, *, terms: bool) -> None:
                    f"'{row['name']}' is local only now.")
 
         async def _delete(row: dict) -> None:
+            n = _usage_count(int(row["id"]))
+            if n:
+                # The service refuses this delete; say so instead of asking first.
+                ui.notify(f"Cannot delete '{row['name']}': still used by {n} record(s). "
+                          f"Merge it into another entry instead.",
+                          type="warning", multi_line=True, timeout=8000)
+                return
             if not await confirm(title="Delete?",
-                                 body=f"Delete '{row['name']}'? This cannot be undone.",
+                                 body=f"Delete '{row['name']}'? It is not used by any "
+                                      f"record. This cannot be undone.",
                                  action_label="Delete"):
                 return
             if terms:
@@ -246,7 +260,22 @@ def _build_section(session_factory, *, terms: bool) -> None:
                 ui.label(f"From {host}. Picking a term links it and confirms it at once.") \
                     .classes("text-xs").style("color:var(--tp-base-soft)")
 
+                picking = {"busy": False}    # one pick at a time; set for good on success
+
                 async def _pick(c: links.TwTerm, kind: str) -> None:
+                    # A second click while a pick is in flight (or after it succeeded and
+                    # the dialog is closing) would create / link a second entry.
+                    if picking["busy"]:
+                        return
+                    picking["busy"] = True
+                    done = False
+                    try:
+                        done = await _do_pick(c, kind)
+                    finally:
+                        if not done:
+                            picking["busy"] = False
+
+                async def _do_pick(c: links.TwTerm, kind: str) -> bool:
                     warning: list[str | None] = [None]
                     rename_to: str | None = None
                     if row_id is not None:
@@ -260,7 +289,7 @@ def _build_section(session_factory, *, terms: bool) -> None:
                                 options=[("keep", "Keep local name", "secondary"),
                                          ("use", "Use TaxonWorks name", "primary")])
                             if ans is None:
-                                return
+                                return False
                             if ans == "use":
                                 rename_to = c.name
 
@@ -278,14 +307,15 @@ def _build_section(session_factory, *, terms: bool) -> None:
                                     bio.rename_relationship(s, row_id, rename_to)
                         warning[0] = links.link(s, row, c)   # host comes from the fetch (c.host)
                     if not _write(fn, f"Linked to TaxonWorks '{c.name}'."):
-                        return
+                        return False
                     if row_id is not None:
                         detail.pop(row_id, None)
                     if warning[0]:
                         ui.notify(warning[0], type="warning", multi_line=True, timeout=8000)
                     dlg.close()
+                    return True
 
-                def _panel(kind: str) -> callable:
+                def _panel(kind: str) -> Callable[[], Awaitable[None]]:
                     """Build one kind's search + list; return its async ``load``."""
                     search = ui.input(placeholder="Search TaxonWorks…") \
                         .props("dense outlined clearable debounce=150").classes("w-full mt-2")
@@ -332,14 +362,15 @@ def _build_section(session_factory, *, terms: bool) -> None:
                         _note("Loading from TaxonWorks…")
                         try:
                             cands = await links.fetch_candidates(kind)
-                        except tw_svc.TaxonWorksUnreachable as exc:
-                            _note(str(exc), "var(--q-negative)")
-                            return
                         except Exception as exc:
-                            _note(f"Could not load: {exc}", "var(--q-negative)")
+                            if not (dlg.is_deleted or box.is_deleted):
+                                _note(str(exc) if isinstance(exc, tw_svc.TaxonWorksUnreachable)
+                                      else f"Could not load: {exc}", "var(--q-negative)")
                             return
                         finally:
                             state["loading"] = False
+                        if dlg.is_deleted or box.is_deleted:
+                            return              # closed mid-fetch: nothing left to render
                         with session_factory() as s:
                             state["held"] = {r.tw_id: r.name
                                              for r in links.rows_of_kind(s, kind)
@@ -350,7 +381,7 @@ def _build_section(session_factory, *, terms: bool) -> None:
                     search.on_value_change(lambda _: _render())
                     return load
 
-                loaders: dict[str, callable] = {}
+                loaders: dict[str, Callable[[], Awaitable[None]]] = {}
                 if len(kinds_shown) > 1:
                     with ui.tabs(value=kinds_shown[0]).props("dense align=left") as tabs:
                         for k in kinds_shown:
@@ -404,20 +435,9 @@ def _build_section(session_factory, *, terms: bool) -> None:
             verify_btn.props("loading")
             outcomes: list[links.VerifyOutcome] = []
             try:
-                host = tw_svc.configured_host()
-                if not host:
-                    ui.notify("No TaxonWorks API base URL set — Settings → TaxonWorks "
-                              "connection.", type="negative", multi_line=True)
-                    return
                 # Every network fetch first, with NO session open: an uncommitted write
                 # held across an await would lock the database for the whole app.
-                fetched = {}
-                for kind in kinds:
-                    fetched[kind] = await links.fetch_candidates(kind)
-                if any(c.host != host for cs in fetched.values() for c in cs):
-                    ui.notify("The configured TaxonWorks host changed during the fetch — "
-                              "try again.", type="negative", multi_line=True)
-                    return
+                host, fetched = await links.fetch_for_verify(kinds)
                 with session_factory() as s:
                     for kind in kinds:
                         outcomes += links.apply_verification(s, kind, fetched[kind],
@@ -438,8 +458,7 @@ def _build_section(session_factory, *, terms: bool) -> None:
                 if o.color_warning:
                     ui.notify(f"{o.name}: {o.color_warning}", type="warning", multi_line=True)
             ok = sum(o.state == "verified" for o in outcomes)
-            ui.notify(f"{ok} of {len(outcomes)} link(s) confirmed on "
-                      f"{tw_svc.configured_host()}.",
+            ui.notify(f"{ok} of {len(outcomes)} link(s) confirmed on {host}.",
                       type="positive" if ok == len(outcomes) else "warning")
             differs = [o for o in outcomes if o.state == "name_differs"]
             if differs:

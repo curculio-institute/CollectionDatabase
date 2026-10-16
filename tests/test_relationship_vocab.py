@@ -50,3 +50,18 @@ def test_merge_repoints_and_deletes(session):
     absorb = _rel(session, "feeds-on")
     bio.merge_relationships(session, keep_id=keep.id, absorb_id=absorb.id)
     assert session.get(BiologicalRelationship, absorb.id) is None
+
+
+def test_relationship_usage_counts_what_delete_refuses_on(session):
+    from app.models import BiologicalAssociation
+    from tests.annotation_helpers import make_specimen, species
+    rel = _rel(session, "feeds on")
+    assert bio.relationship_usage(session, rel.id) == 0
+    co = make_specimen(session, "U-1")
+    session.add(BiologicalAssociation(
+        biological_relationship_id=rel.id, subject_collection_object_id=co.id,
+        object_taxon_id=species(session).id, created_at=_utcnow(), updated_at=_utcnow()))
+    session.flush()
+    assert bio.relationship_usage(session, rel.id) == 1
+    with pytest.raises(ValueError, match="still used by 1"):
+        bio.relationship_vocab.delete(session, rel.id)

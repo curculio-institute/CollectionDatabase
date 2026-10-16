@@ -302,6 +302,10 @@ class Vocabulary:
                     refs.append((table, fk[3]))
         return refs
 
+    def usage(self, session: Session, obj_id: int) -> int:
+        """How many rows reference this entry — the count ``delete`` refuses on."""
+        return self._count_references(session, obj_id)
+
     def _count_references(self, session: Session, obj_id: int) -> int:
         total = 0
         for table, col in self._fk_references(session):

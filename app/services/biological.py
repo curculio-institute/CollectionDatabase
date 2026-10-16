@@ -48,6 +48,11 @@ def rename_relationship(session: Session, rel_id: int, name: str) -> BiologicalR
         session, rel_id, name=_clean_relationship_name(session, name, exclude_id=rel_id))
 
 
+def relationship_usage(session: Session, rel_id: int) -> int:
+    """How many records use this relationship — deleting it is refused while > 0."""
+    return relationship_vocab.usage(session, rel_id)
+
+
 def merge_relationships(session: Session, keep_id: int, absorb_id: int) -> None:
     """De-duplicate two relationships (spec "Merge rules"): the absorbed one must be
     local only — a merge never discards or moves a TaxonWorks link."""
