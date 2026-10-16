@@ -206,7 +206,6 @@ async def fetch_all_pages(client: httpx.AsyncClient, path: str, params: dict, *,
     base, token = _base(), _token()        # read ONCE: one pull, one server, one token
     tracker = PaginationTracker()
     seen: dict[int, dict] = {}
-    repeated = False
     page = 1
     while True:
         r = await get_with_retry(client, f"{base}{path}", {
@@ -225,6 +224,7 @@ async def fetch_all_pages(client: httpx.AsyncClient, path: str, params: dict, *,
             raise TaxonWorksUnreachable(
                 f"{what} returned {len(body)} rows on a page of {per_page} — the paging "
                 f"parameters were not honoured. Treated as a lookup failure.")
+        repeated = False
         for row in body:
             check_row(row)
             rid = row.get("id")
@@ -233,14 +233,16 @@ async def fetch_all_pages(client: httpx.AsyncClient, path: str, params: dict, *,
             repeated = repeated or rid in seen
             seen[rid] = row
         tracker.record_page(r, body)
+        if tracker.total is None and repeated:
+            # Checked on the page itself: without a total, full repeating pages would
+            # otherwise never end the loop (a server ignoring `page`).
+            raise TaxonWorksUnreachable(
+                f"{what} repeated rows (page {page}) and gave no pagination total to "
+                f"check completeness against. Treated as a lookup failure; try again.")
         if tracker.is_complete(body, per_page):
             break
         page += 1
     tracker.check_complete(what=what)
-    if tracker.total is None and repeated:
-        raise TaxonWorksUnreachable(
-            f"{what} repeated rows across pages and gave no pagination total to check "
-            f"completeness against. Treated as a lookup failure; try again.")
     if tracker.total is not None and len(seen) < tracker.total:
         raise TaxonWorksUnreachable(
             f"{what} returned {len(seen)} distinct rows of {tracker.total} — its pages "

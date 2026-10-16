@@ -297,13 +297,28 @@ def test_get_with_retry_wraps_non_transport_httpx_errors(cfg):
     async def run():
         async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
             return await tw.get_with_retry(client, "https://x/api/v1/y", {})
-    with pytest.raises(TaxonWorksUnreachable):
+    with pytest.raises(TaxonWorksUnreachable, match="TooManyRedirects"):
         asyncio.run(run())
 
 
 def test_get_with_retry_wraps_invalid_url(cfg):
     async def run():
-        async with httpx.AsyncClient() as client:
-            return await tw.get_with_retry(client, "https://exa mple.org:99999999/y", {})
-    with pytest.raises(TaxonWorksUnreachable):
+        # MockTransport: even a bug here could not touch the network.
+        async with httpx.AsyncClient(transport=httpx.MockTransport(
+                lambda r: httpx.Response(200))) as client:
+            return await tw.get_with_retry(client, "http://[::1/y", {})
+    with pytest.raises(TaxonWorksUnreachable, match="InvalidURL"):
         asyncio.run(run())
+
+
+def test_fetch_all_pages_endless_identical_pages_refused_on_page_2(cfg):
+    """A server that ignores `page` and has no total must not loop forever."""
+    seen = []
+
+    def handler(request):
+        seen.append(int(request.url.params["page"]))
+        assert len(seen) <= 5, "fetch_all_pages kept requesting pages"
+        return _page([_kw(1, "A"), _kw(2, "B")])
+    with pytest.raises(TaxonWorksUnreachable, match="repeated rows"):
+        _pull(handler)
+    assert seen == [1, 2]
