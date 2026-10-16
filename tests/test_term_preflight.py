@@ -56,3 +56,36 @@ def test_predicate_uri_is_compared_against_the_lower_cased_selector():
 def test_a_tab_in_the_name_fails():
     c = _check(_col(tw_name="Adv\tentive"), [TwTerm(KEYWORD, 1764, "Adv\tentive")])
     assert not c.ok and "tab" in c.reason
+
+
+# ── check_terms: fetch behaviour ──────────────────────────────────────────────
+
+def test_check_terms_fetches_once_per_used_kind(monkeypatch):
+    import asyncio
+    from app.services import annotation_export as ae
+    from app.services import tw_links
+    calls = []
+
+    async def fake(kind):
+        calls.append(kind)
+        return [TwTerm(KEYWORD, 1764, "Adventive")]
+
+    monkeypatch.setattr(tw_links, "fetch_candidates", fake)
+    cols = [_col(), _col(tw_id=1764), _col()]
+    checks = asyncio.run(ae.check_terms(cols))
+    assert calls == [KEYWORD]                      # once, and not for the unused predicate
+    assert len(checks) == 3 and all(c.ok for c in checks)
+
+
+def test_check_terms_propagates_unreachable(monkeypatch):
+    import asyncio
+    from app.services import annotation_export as ae
+    from app.services import tw_links
+    from app.services.taxonworks import TaxonWorksUnreachable
+
+    async def boom(kind):
+        raise TaxonWorksUnreachable("no route to host")
+
+    monkeypatch.setattr(tw_links, "fetch_candidates", boom)
+    with pytest.raises(TaxonWorksUnreachable, match="no route"):
+        asyncio.run(ae.check_terms([_col()]))

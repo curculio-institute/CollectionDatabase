@@ -172,6 +172,9 @@ def update_term(session: Session, term_id: int, *, name=_UNSET, kind=_UNSET,
         n = term_usage(session, t.id)
         if n:
             raise ValueError(f"'{t.name}' is used by {n} record(s); its kind cannot change.")
+        if name is _UNSET and name_taken(session, kind, t.name, exclude_id=t.id):
+            raise ValueError(f"A {_KIND_NOUN[kind]} named '{t.name}' already exists — "
+                             f"rename '{t.name}' before changing its kind.")
         t.kind = kind
     if name is not _UNSET:
         clean = _clean_name(name)
@@ -340,21 +343,26 @@ def set_annotations(session: Session, target: str, target_id: int,
     term must be offered (spec: "allow" switches filter the picker only)."""
     items = _unique_items(items)
     existing = {a.term_id: a for a in annotations_for(session, target, target_id)}
+    # Validate EVERY item before touching anything: a refusal leaves the set unchanged.
+    plan = []
+    for it in items:
+        term = _term(session, it.term_id)
+        value = _value_for(term, it.value)
+        if term.id not in existing:
+            _require_allowed(term, target)
+        plan.append((term, value))
     wanted = {it.term_id for it in items}
     for term_id, a in existing.items():
         if term_id not in wanted:
             session.delete(a)
     session.flush()
-    for it in items:
-        term = _term(session, it.term_id)
-        value = _value_for(term, it.value)
+    for term, value in plan:
         a = existing.get(term.id)
         if a is not None:
             if a.value != value:
                 a.value = value
                 a.updated_at = _utcnow()
             continue
-        _require_allowed(term, target)
         _insert(session, target, target_id, term, value)
     session.flush()
 

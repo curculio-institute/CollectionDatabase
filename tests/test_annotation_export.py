@@ -110,3 +110,17 @@ def test_column_order_is_stable(session):
     headers = [c.header for c in export_occurrences(session, [co], host=SFG).annotation_columns]
     assert headers == ["TW:Tag:CollectionObject:A tag", "TW:Tag:CollectionObject:B tag",
                        "TW:DataAttribute:CollectionObject:Altitude"]
+
+
+def test_header_collision_blocks_both_terms(session):
+    """Two linked, verified tags with different tw_id but the same tw_name would write
+    one column twice — both are blocked and no file is written."""
+    t1 = make_term(session, name="Adventive A", tw_id=1, tw_name="Adventive", tw_host=SFG)
+    t2 = make_term(session, name="Adventive B", tw_id=2, tw_name="Adventive", tw_host=SFG)
+    a = _tagged(session, "ANNX-00130", t1)
+    ann.set_annotations(session, "specimen", a.id,
+                        [AnnotationItem(t1.id), AnnotationItem(t2.id)])
+    result = export_occurrences(session, [a], host=SFG)
+    assert result.tsv == ""
+    assert {n for n, _ in result.annotation_blocked} == {"Adventive A", "Adventive B"}
+    assert all("shares the export column" in r for _, r in result.annotation_blocked)

@@ -116,6 +116,29 @@ def test_tag_with_value_and_duplicate_term_refused(session):
                             [AnnotationItem(t.id), AnnotationItem(t.id)])
 
 
+def test_refused_set_annotations_leaves_the_existing_set_unchanged(session):
+    keep = make_term(session, name="Keep")
+    drop = make_term(session, name="Drop")
+    other = make_term(session, name="NotOffered", specimen=False)
+    co = make_specimen(session, "ANNX-00006")
+    ann.set_annotations(session, "specimen", co.id,
+                        [AnnotationItem(keep.id), AnnotationItem(drop.id)])
+    with pytest.raises(ValueError, match="not offered"):
+        ann.set_annotations(session, "specimen", co.id,
+                            [AnnotationItem(keep.id), AnnotationItem(other.id)])
+    session.flush()
+    assert {a.term_id for a in ann.annotations_for(session, "specimen", co.id)} \
+        == {keep.id, drop.id}
+
+
+def test_kind_change_onto_a_taken_name_is_refused_by_name(session):
+    make_term(session, "data_attribute", "Habitat")
+    tag = make_term(session, "tag", "Habitat")
+    with pytest.raises(ValueError, match="Habitat"):
+        ann.update_term(session, tag.id, kind="data_attribute")
+    assert tag.kind == "tag"
+
+
 def test_add_annotations_is_additive_and_idempotent(session):
     tag = make_term(session, event=True)
     da = make_term(session, "data_attribute", "EUNIS habitat", event=True)

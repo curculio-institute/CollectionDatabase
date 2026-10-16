@@ -93,7 +93,7 @@ as a possible later analytics layer (do not introduce yet).
 
 ## 4. Data model → `docs/data_model.md`, `docs/vocabularies_geography.md`, `docs/taxonomy.md`
 
-Schema is in production use (migrations through 0072). Rules that apply everywhere:
+Schema is in production use (migrations through 0073). Rules that apply everywhere:
 
 - **DwC column naming:** SQLite columns are named `dwc:columnName` (colon, camelCase);
   SQLAlchemy maps them to snake_case attributes; Mermaid diagrams use plain camelCase.
