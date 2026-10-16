@@ -284,6 +284,19 @@ The identity source §5c already prescribes, now measured in detail — **do not
 | Existence and orphans need **different scopes** | Existence is namespace-**unscoped**: a specimen filed under another namespace is still on TW, and calling it absent re-uploads it (identifier uniqueness is *per namespace*, so TW accepts that duplicate silently). The orphan sweep **is** namespace-scoped, or every other collection in the project counts as our orphan. |
 | A **local re-home never changes `catalog_number`** (only `repository_id` moves) | So "on TW under our namespace, not held here" is ambiguous: moved or deleted. A **DB-wide** catalog-number lookup separates them (`tw_compare._orphans`); scoping that lookup to the working collection reports a move as a deletion. |
 
+**Annotation compare (verified @ `897f385`, 2026-10-16).** Tags and data attributes are read
+**by object**: `/tags?tag_object_type=…&tag_object_id[]=…` (`api_v1.rb:179`) and
+`/data_attributes?attribute_subject_type=…&attribute_subject_id[]=…` (`api_v1.rb:151`),
+every row re-checked against the requested type and ids. `/data_attributes` (and
+`/controlled_vocabulary_terms`) page **without an ORDER BY** (`data_attributes_controller.rb:50`),
+so rows are de-duplicated by id and fewer distinct ids than `pagination-total` is a lookup
+failure (`taxonworks.fetch_all_pages`). A TW `ImportAttribute` has no predicate id and is
+reported as an unlinked term under its `import_predicate`. A specimen's TW event comes from
+`/collection_objects?collection_object_id[]=…` (base filter `model_id_facet`,
+`lib/queries/query/filter.rb:679`; field `collecting_event_id`); each imported row created
+its own TW event, so event annotations are compared **per specimen**. Only terms whose link
+is verified on the configured host are compared; joins are on `tw_id`, never on names.
+
 ### The emitted file (decided)
 
 **Tab-separated, `.tsv`** — TW's default `col_sep` for a flat upload is a tab
