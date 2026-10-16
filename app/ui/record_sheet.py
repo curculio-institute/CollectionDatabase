@@ -26,6 +26,8 @@ import app.services.biological as bio_svc
 import app.services.media as media_svc
 import app.services.external_ids as extid_svc
 import app.services.life_stage as ls_svc
+import app.services.annotations as ann_svc
+from app.ui.annotation_chips import CSS as CHIP_CSS, annotations_html
 import app.services.print_queue as pq_svc
 from app.services import dwc_export
 from app.services.taxa import format_scientific_name
@@ -94,6 +96,7 @@ def build_specimen_sheet(session_factory, co_id: int, *, on_edit, on_open_event=
     """Render the read-only specimen sheet into the current container."""
     ui.add_head_html(rs.CSS)
     ui.add_head_html(CSS)
+    ui.add_head_html(CHIP_CSS)
     add_map_assets()
 
     with session_factory() as s:
@@ -168,12 +171,19 @@ def build_specimen_sheet(session_factory, co_id: int, *, on_edit, on_open_event=
                     s, target_kind="field_occurrence", target_id=a.object_field_occurrence_id)
             a_ext = [{"value": e.value, "label": e.label} for e in ext_rows]
             assocs.append({"rel": a.rel_name, "label": a.object_label,
-                           "qualifier": a.identification_qualifier, "ext_ids": a_ext})
+                           "qualifier": a.identification_qualifier, "ext_ids": a_ext,
+                           "annotations": annotations_html(
+                               ann_svc.views_for(s, "association", a.id))})
             media += _media_items(s, "biological_association", a.id, "Biological association")
         life_stages = [{"stage": r.life_stage, "basis": r.basis_of_record, "date": r.event_date}
                        for r in ls_svc.list_life_stages(s, co_id)]
         ext_ids = [{"value": e.value, "label": e.label} for e in
                    extid_svc.list_identifiers(s, target_kind="collection_object", target_id=co_id)]
+
+        annotations = {
+            "Specimen": annotations_html(ann_svc.views_for(s, "specimen", co_id)),
+            "Event": annotations_html(ann_svc.views_for(s, "event", ev.id)) if ev else "",
+        }
 
         place = format_place(ev) if ev else ""
         ev_data = {
@@ -214,7 +224,8 @@ def build_specimen_sheet(session_factory, co_id: int, *, on_edit, on_open_event=
 
     _render_specimen(ident, curatorial, det_hist, assocs, life_stages, ext_ids, media,
                      place, ev_data, on_edit=on_edit, on_open_event=on_open_event,
-                     on_reprint=_reprint, already_queued=already_queued)
+                     on_reprint=_reprint, already_queued=already_queued,
+                     annotations=annotations)
 
 
 def sp_svc_count(session, ev_id: int) -> int:
@@ -258,6 +269,7 @@ def build_event_sheet(session_factory, ev_id: int, *, on_edit, on_open_specimen=
     import app.services.events as ev_svc
     ui.add_head_html(rs.CSS)
     ui.add_head_html(CSS)
+    ui.add_head_html(CHIP_CSS)
     add_map_assets()
 
     with session_factory() as s:
@@ -289,13 +301,15 @@ def build_event_sheet(session_factory, ev_id: int, *, on_edit, on_open_specimen=
         media = _media_items(s, "collecting_event", ev_id, "Event")
         specimens = [_co_summary(s, co) for co in ev.collection_objects]
         nearby = ev_svc.nearest_events(s, ev_id, n=5)
+        ann_html = annotations_html(ann_svc.views_for(s, "event", ev_id))
 
     _render_event(place, ev_data, detail, media, specimens, nearby,
-                  on_edit=on_edit, on_open_specimen=on_open_specimen, on_open_event=on_open_event)
+                  on_edit=on_edit, on_open_specimen=on_open_specimen, on_open_event=on_open_event,
+                  annotations=ann_html)
 
 
 def _render_event(place, ev, detail, media, specimens, nearby, *,
-                  on_edit, on_open_specimen, on_open_event) -> None:
+                  on_edit, on_open_specimen, on_open_event, annotations: str = "") -> None:
     # ── locality banner ──
     with ui.card().classes("w-full shadow-sm"):
         with ui.row().classes("items-start gap-3 w-full no-wrap"):
@@ -341,6 +355,10 @@ def _render_event(place, ev, detail, media, specimens, nearby, *,
                 with ui.card().classes("w-full shadow-sm"):
                     ui.html('<div class="rsheet-hd">Location</div>')
                     _coord_map(ev["lat"], ev["lon"], ev["unc"])
+            if annotations:
+                with ui.card().classes("w-full shadow-sm"):
+                    ui.html('<div class="rsheet-hd">Annotations</div>')
+                    ui.html(annotations)
             if any(detail.values()):
                 with ui.card().classes("w-full shadow-sm"):
                     ui.html('<div class="rsheet-hd">Details</div>')
@@ -362,7 +380,7 @@ def _render_event(place, ev, detail, media, specimens, nearby, *,
 
 def _render_specimen(ident, curatorial, det_hist, assocs, life_stages, ext_ids, media,
                      place, ev, *, on_edit, on_open_event, on_reprint=None,
-                     already_queued=False) -> None:
+                     already_queued=False, annotations: dict | None = None) -> None:
     # ── identity banner ──
     with ui.card().classes("w-full shadow-sm"):
         with ui.row().classes("items-start gap-3 w-full no-wrap"):
@@ -437,6 +455,12 @@ def _render_specimen(ident, curatorial, det_hist, assocs, life_stages, ext_ids, 
                 with ui.card().classes("w-full shadow-sm"):
                     ui.html('<div class="rsheet-hd">In the collection</div>')
                     _grid(curatorial)
+            shown = {k: v for k, v in (annotations or {}).items() if v}
+            if shown:
+                with ui.card().classes("w-full shadow-sm"):
+                    ui.html('<div class="rsheet-hd">Annotations</div>')
+                    for label, html in shown.items():
+                        ui.html(f'<div class="rsheet-muted">{label}</div>{html}')
 
 
 def _grid(fields: dict) -> None:
@@ -470,7 +494,7 @@ def _ecology_block(assocs, life_stages, ext_ids) -> None:
             f'rel="noopener">{_html.escape(e["label"] or e["value"])}</a></div>'
             for e in a["ext_ids"])
         ui.html(f'<div class="rsheet-det">{_html.escape(a["rel"])}{q} '
-                f'<em>{_html.escape(a["label"])}</em>{links}</div>')
+                f'<em>{_html.escape(a["label"])}</em>{links}{a.get("annotations", "")}</div>')
     if life_stages:
         chain = " → ".join(
             _html.escape(" ".join(x for x in (r["stage"], r["date"]) if x)) for r in life_stages)
