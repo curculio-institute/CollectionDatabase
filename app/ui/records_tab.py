@@ -29,6 +29,7 @@ from app.ui.collecting_event_form import build_collecting_event_form
 from app.ui.specimen_form import build_specimen_form
 from app.ui.event_reuse import build_event_share_banner
 from app.ui.media_panel import build_media_button
+from app.ui.annotation_panel import build_annotation_button
 import app.services.media as media_svc
 from app.ui.external_id_panel import build_external_id_button
 from app.ui.life_stage_panel import build_life_stage_button
@@ -541,7 +542,11 @@ def build_records_tab(session_factory, *, on_saved: callable | None = None) -> N
             _sub["media"] = build_media_button(
                 session_factory, target_kind="collection_object",
                 target_id_getter=lambda: co_id, tooltip="Specimen media", deferred=True)
+            _sub["ann"] = build_annotation_button(
+                session_factory, target="specimen", target_id_getter=lambda: co_id,
+                deferred=True, tooltip="Specimen annotations")
             return (
+                _sub["ann"]["button"],
                 _sub["ls"]["button"],
                 _sub["ext"]["button"],
                 _sub["media"]["button"],
@@ -634,6 +639,7 @@ def build_records_tab(session_factory, *, on_saved: callable | None = None) -> N
                     ],
                 )
 
+            _ev_ann: dict = {"h": None}   # the event's annotation handle (None: no event)
             if ev_id is None:
                 ui.label("No collecting event linked.").classes("text-sm italic") \
                     .style("color:var(--tp-base-soft)")
@@ -645,6 +651,10 @@ def build_records_tab(session_factory, *, on_saved: callable | None = None) -> N
                     if ev_id:
                         _media_btn(session_factory, target_kind="collecting_event",
                                    target_id=ev_id, tooltip="Event media")
+                        _ev_ann["h"] = build_annotation_button(
+                            session_factory, target="event",
+                            target_id_getter=lambda: ev_id, deferred=True,
+                            tooltip="Event annotations")
                 ev_ce = build_collecting_event_form(
                     session_factory, default_recby_fn=_default_recby,
                     footer_slot=_ev_footer)
@@ -723,6 +733,10 @@ def build_records_tab(session_factory, *, on_saved: callable | None = None) -> N
                                              target_kind="field_occurrence",
                                              target_id=a["fo_id"],
                                              tooltip="Observation resource identifier (iNaturalist URL)")
+                                build_annotation_button(
+                                    session_factory, target="association",
+                                    target_id_getter=lambda aid=a["id"]: aid,
+                                    tooltip="Association annotations (stay local)")
                                 _media_btn(session_factory,
                                            target_kind="biological_association",
                                            target_id=a["id"], tooltip="Association media")
@@ -731,8 +745,8 @@ def build_records_tab(session_factory, *, on_saved: callable | None = None) -> N
                                 # attached to it. Say so rather than showing dead buttons.
                                 ui.icon("schedule", size="xs") \
                                     .style("color:var(--tp-base-soft)") \
-                                    .tooltip("Saved with the specimen — attach media or a "
-                                             "resource identifier afterwards")
+                                    .tooltip("Saved with the specimen — attach media, a "
+                                             "resource identifier or annotations afterwards")
                             (
                                 ui.button("", icon="close")
                                 .props("flat dense round size=xs")
@@ -872,6 +886,7 @@ def build_records_tab(session_factory, *, on_saved: callable | None = None) -> N
                         _assoc_commit(s)
                         _sub["ls"]["commit"](s, co_id)
                         _sub["ext"]["commit"](s, co_id)
+                        _sub["ann"]["commit"](s, co_id)
                         _media_orphans = _sub["media"]["commit"](s, co_id) or []
                         ev_fields = _collect_ev_fields()
                         # Only write the shared event if the user unlocked it; in
@@ -884,6 +899,8 @@ def build_records_tab(session_factory, *, on_saved: callable | None = None) -> N
                                 **event_ids,
                                 **ev_fields,
                             )
+                            if _ev_ann["h"] is not None:
+                                _ev_ann["h"]["commit"](s, ev_id)
             except Exception as exc:
                 ui.notify(f"Save failed: {exc}", type="negative")
                 return
@@ -940,6 +957,9 @@ def build_records_tab(session_factory, *, on_saved: callable | None = None) -> N
                                 or _assoc_has_changes()
                                 or _sub["ls"]["has_changes"]()
                                 or _sub["ext"]["has_changes"]()
+                                or _sub["ann"]["has_changes"]()
+                                or (_ev_ann["h"] is not None
+                                    and _ev_ann["h"]["has_changes"]())
                                 or _sub["media"]["has_changes"]())
 
     # ── Event form ─────────────────────────────────────────────────────────────
@@ -980,9 +1000,15 @@ def build_records_tab(session_factory, *, on_saved: callable | None = None) -> N
 
             # Shared widget (same form as Digitize); seeded from the snapshot.
             # Event media shares the form's Confidential footer line.
+            _ev_ann: dict = {"h": None}
+
             def _ev_footer():
                 _media_btn(session_factory, target_kind="collecting_event",
                            target_id=ev_id, tooltip="Event media")
+                _ev_ann["h"] = build_annotation_button(
+                    session_factory, target="event",
+                    target_id_getter=lambda: ev_id, deferred=True,
+                    tooltip="Event annotations")
             ev_ce = build_collecting_event_form(
                 session_factory, default_recby_fn=_default_recby,
                 footer_slot=_ev_footer)
@@ -1004,6 +1030,7 @@ def build_records_tab(session_factory, *, on_saved: callable | None = None) -> N
                             **event_ids,
                             **ev_ce["collect_fields"](),
                         )
+                        _ev_ann["h"]["commit"](s, ev_id)
             except Exception as exc:
                 ui.notify(f"Save failed: {exc}", type="negative")
                 return
@@ -1036,7 +1063,8 @@ def build_records_tab(session_factory, *, on_saved: callable | None = None) -> N
                 "sampling_protocol": ev_ce["protocol_get"](),
             })
         _ev_baseline = {"v": _ev_values()}
-        _dirty["fn"] = lambda: _ev_values() != _ev_baseline["v"]
+        _dirty["fn"] = lambda: (_ev_values() != _ev_baseline["v"]
+                                or _ev_ann["h"]["has_changes"]())
 
     def _has_content() -> bool:
         return bool(_dirty["fn"]) and _dirty["fn"]()

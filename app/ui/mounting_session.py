@@ -18,11 +18,13 @@ from __future__ import annotations
 from nicegui import ui
 
 import app.services as svc
+import app.services.annotations as ann_svc
 import app.services.identifiers as id_svc
 import app.services.print_queue as pq_svc
 import app.services.repositories as repo_svc
 from app.services.dates import parse_dwc_date
 from app.services.validation import validate_event_fields
+from app.ui.annotation_panel import build_annotation_button
 from app.ui.event_completeness import confirm_incomplete_event
 import app.services.person_defaults as pd_svc
 from app.ui.date_input import attach_date_validation, append_today_pin
@@ -49,6 +51,7 @@ def _empty_row() -> dict:
         "preparations": "pinned",
         "life_stage":   NEW_SPECIMEN_DEFAULTS["life_stage"],
         "det":          None,
+        "annotations":  [],
     }
 
 
@@ -66,6 +69,7 @@ def build_mounting_session_section(
                                        # typed recordedBy, for the #173 completeness
                                        # confirm (recordedBy isn't in collect_event_fields
                                        # — it's resolved to an id only inside commit_event)
+    commit_event_annotations=None,   # (session, event_id) -> None: the shared event card's staged annotations
     confirm_pending=None,   # async () -> bool: the tab's "entered but not added" stop
                             # (an association typed into the shared card but never
                             # staged); False cancels the save
@@ -320,6 +324,10 @@ def build_mounting_session_section(
                                 .props("flat dense round size=xs")
                                 .tooltip("Copy identification to all rows below")
                             )
+                    build_annotation_button(
+                        session_factory, target="specimen", staged=True,
+                        staged_store=row.setdefault("annotations", []),
+                        tooltip="Annotations for this row's specimen (on Save)")
                     ui.space()
                     # remove row
                     (
@@ -446,7 +454,7 @@ def build_mounting_session_section(
                         # (occurrence) + determination labels — so a freshly mounted
                         # specimen gets all its labels, with the identifier kept
                         # beside its data label for matching while cutting.
-                        svc.finalize_specimen(
+                        created = svc.finalize_specimen(
                             s,
                             collection_object_id=co.id,
                             code=code,
@@ -455,6 +463,20 @@ def build_mounting_session_section(
                             source=pq_svc.SOURCE_MOUNTING,
                             associations=bio_state["associations"],
                         )
+                        if row.get("annotations"):
+                            ann_svc.add_annotations(
+                                s, "specimen", co.id,
+                                [ann_svc.AnnotationItem(i["term_id"], i["value"])
+                                 for i in row["annotations"]])
+                        for assoc, ba in zip(bio_state["associations"], created):
+                            if assoc.get("annotation_items"):
+                                ann_svc.add_annotations(
+                                    s, "association", ba.id,
+                                    [ann_svc.AnnotationItem(i["term_id"], i["value"])
+                                     for i in assoc["annotation_items"]])
+
+                    if commit_event_annotations is not None and event_id is not None:
+                        commit_event_annotations(s, event_id)
 
             n = len(rows)
 
@@ -495,6 +517,7 @@ def build_mounting_session_section(
             or r.get("n") != NEW_SPECIMEN_DEFAULTS["individual_count"]
             or (r.get("preparations") or "") != "pinned"
             or (r.get("life_stage") or None) != NEW_SPECIMEN_DEFAULTS["life_stage"]
+            or bool(r.get("annotations"))
         )
 
     def rows_without_identification() -> list[int]:

@@ -30,11 +30,13 @@ import app.ui.record_summary as _record_summary
 from app.ui.media_panel import build_media_button
 from app.ui.external_id_panel import build_external_id_button
 from app.ui.life_stage_panel import build_life_stage_button
+from app.ui.annotation_panel import build_annotation_button
 from app.ui.event_completeness import confirm_incomplete_event
 from app.ui.check_panel import build_check_panel
 from app.ui.confirm_dialog import choose
 import app.services.media as media_svc
 import app.services.external_ids as extid_svc
+import app.services.annotations as ann_svc
 from app.services.biological import get_relationship_options
 from app.services.validation import validate_event_fields, missing_event_fields
 from app.vocab import IDENTIFICATION_QUALIFIER_OPTIONS
@@ -136,6 +138,8 @@ def build_digitize_tab(session_factory, *, refreshers, mode_state, mark_form_cle
         spec_extid_v = {}
         spec_ls = {}
         spec_ls_v = {}
+        spec_ann = {}
+        spec_ann_v = {}
         # Persistent backing lists for the staged footer controllers. The footer is
         # rebuilt whenever the form re-renders (layout toggle, field edits); without a
         # persistent store each rebuild would bind a FRESH empty list and silently drop
@@ -145,12 +149,16 @@ def build_digitize_tab(session_factory, *, refreshers, mode_state, mark_form_cle
         _sm_items, _sm_items_v = [], []          # specimen media (standard / visiting)
         _se_items, _se_items_v = [], []          # specimen ext-ids
         _sl_items, _sl_items_v = [], []          # specimen life-stage
+        _sa_items, _sa_items_v = [], []          # specimen annotations
 
-        def _mk_spec_footer(media_holder, extid_holder, ls_holder,
-                            media_store, extid_store, ls_store):
+        def _mk_spec_footer(media_holder, extid_holder, ls_holder, ann_holder,
+                            media_store, extid_store, ls_store, ann_store):
             # Staged controllers, rendered bottom-right of the specimen card.
             ls_holder.update(build_life_stage_button(
                 _sf, staged=True, staged_store=ls_store))
+            ann_holder.update(build_annotation_button(
+                _sf, target="specimen", staged=True, staged_store=ann_store,
+                tooltip="Specimen annotations (added on Save)"))
             extid_holder.update(build_external_id_button(
                 _sf, target_kind="collection_object", staged=True,
                 staged_store=extid_store,
@@ -167,8 +175,8 @@ def build_digitize_tab(session_factory, *, refreshers, mode_state, mark_form_cle
             spec = build_specimen_form(
                 _sf, identifier_policy="standard",
                 footer_slot=lambda: _mk_spec_footer(
-                    spec_media, spec_extid, spec_ls,
-                    _sm_items, _se_items, _sl_items))
+                    spec_media, spec_extid, spec_ls, spec_ann,
+                    _sm_items, _se_items, _sl_items, _sa_items))
             specimen_card = spec["card"]
             specimen_card.classes(remove="w-full", add="flex-1 min-w-[360px]")
             # Visiting-collection variant: free-text identity, pure data
@@ -178,8 +186,8 @@ def build_digitize_tab(session_factory, *, refreshers, mode_state, mark_form_cle
             spec_visiting = build_specimen_form(
                 _sf, identifier_policy="visiting",
                 footer_slot=lambda: _mk_spec_footer(
-                    spec_media_v, spec_extid_v, spec_ls_v,
-                    _sm_items_v, _se_items_v, _sl_items_v))
+                    spec_media_v, spec_extid_v, spec_ls_v, spec_ann_v,
+                    _sm_items_v, _se_items_v, _sl_items_v, _sa_items_v))
             spec_visiting["card"].set_visibility(False)
             spec_visiting["card"].classes(remove="w-full",
                                           add="flex-1 min-w-[360px]")
@@ -210,6 +218,10 @@ def build_digitize_tab(session_factory, *, refreshers, mode_state, mark_form_cle
         def _active_ls() -> dict:
             """The staged life-stage controller for the active specimen card."""
             return spec_ls_v if _active_spec[0] is spec_visiting else spec_ls
+
+        def _active_ann() -> dict:
+            """The staged annotation controller for the active specimen card."""
+            return spec_ann_v if _active_spec[0] is spec_visiting else spec_ann
 
         # ── COLLECTING EVENT ─────────────────────────────────────
         with ui.card().classes("w-full shadow-sm") as event_card:
@@ -245,6 +257,8 @@ def build_digitize_tab(session_factory, *, refreshers, mode_state, mark_form_cle
             # Event media (staged; committed to the event on Save). Built
             # into the form's footer so it shares the Confidential line.
             event_media: dict = {}
+            event_ann: dict = {}
+            _ea_items: list = []
             _em_items: list = []   # persistent staged store (survives form re-renders)
 
             def _event_footer():
@@ -252,6 +266,9 @@ def build_digitize_tab(session_factory, *, refreshers, mode_state, mark_form_cle
                     _sf, target_kind="collecting_event", staged=True,
                     staged_store=_em_items,
                     tooltip="Event media (attached on Save)"))
+                event_ann.update(build_annotation_button(
+                    _sf, target="event", staged=True, staged_store=_ea_items,
+                    tooltip="Event annotations (added on Save — also to a reused event)"))
 
             ce = build_collecting_event_form(
                 _sf,
@@ -459,6 +476,11 @@ def build_digitize_tab(session_factory, *, refreshers, mode_state, mark_form_cle
                             # (committed on Save).
                             a.setdefault("media_items", [])
                             a.setdefault("extid_items", [])
+                            a.setdefault("annotation_items", [])
+                            build_annotation_button(
+                                _sf, target="association", staged=True,
+                                staged_store=a["annotation_items"],
+                                tooltip="Association annotations (on Save; stay local)")
                             build_external_id_button(
                                 _sf, target_kind="field_occurrence",
                                 staged=True, staged_store=a["extid_items"],
@@ -489,6 +511,7 @@ def build_digitize_tab(session_factory, *, refreshers, mode_state, mark_form_cle
                 _sf,
                 collect_event_fields=lambda: ce["collect_fields"](),
                 commit_event=lambda s: ce["commit"](s),
+                commit_event_annotations=lambda s, ev_id: event_ann["commit"](s, ev_id),
                 bio_state=bio_state,
                 on_saved=lambda: _ms_on_saved(),
                 event_id_getter=lambda: state["event_id"],
@@ -687,8 +710,11 @@ def build_digitize_tab(session_factory, *, refreshers, mode_state, mark_form_cle
                 or _active_media()["has_content"]()
                 or _active_extid()["has_content"]()
                 or _active_ls()["has_content"]()
+                or _active_ann()["has_content"]()
                 or event_media["has_content"]()
+                or event_ann["has_content"]()
                 or any(a.get("media_items") or a.get("extid_items")
+                       or a.get("annotation_items")
                        for a in bio_state["associations"])
             )
 
@@ -832,9 +858,16 @@ def build_digitize_tab(session_factory, *, refreshers, mode_state, mark_form_cle
                         _active_media()["commit"](session, co.id)
                         _active_extid()["commit"](session, co.id)
                         _active_ls()["commit"](session, co.id)
+                        _active_ann()["commit"](session, co.id)
                         if co.collecting_event_id:
                             event_media["commit"](session, co.collecting_event_id)
+                            event_ann["commit"](session, co.collecting_event_id)
                         for _assoc, _ba in zip(bio_state["associations"], created_assocs):
+                            if _assoc.get("annotation_items"):
+                                ann_svc.add_annotations(
+                                    session, "association", _ba.id,
+                                    [ann_svc.AnnotationItem(i["term_id"], i["value"])
+                                     for i in _assoc["annotation_items"]])
                             for _it in _assoc.get("media_items", []):
                                 media_svc.attach_stored(
                                     session,
@@ -867,6 +900,7 @@ def build_digitize_tab(session_factory, *, refreshers, mode_state, mark_form_cle
             spec_media["clear"](); spec_media_v["clear"]()   # staged media committed
             spec_extid["clear"](); spec_extid_v["clear"]()
             spec_ls["clear"](); spec_ls_v["clear"]()
+            spec_ann["clear"](); spec_ann_v["clear"](); event_ann["clear"]()
             event_media["clear"]()
             _refresh_table()
             _clear_after_save()
@@ -965,6 +999,7 @@ def build_digitize_tab(session_factory, *, refreshers, mode_state, mark_form_cle
             recent_box.set_content(_recent_html())
 
         def _ms_on_saved():
+            event_ann["clear"]()
             event_sel.set_options(_event_opts())
             _refresh_table()
             _mark_form_clean("Specimen Digitization")
@@ -993,6 +1028,7 @@ def build_digitize_tab(session_factory, *, refreshers, mode_state, mark_form_cle
             spec_media["clear"](); spec_media_v["clear"](); event_media["clear"]()
             spec_extid["clear"](); spec_extid_v["clear"]()
             spec_ls["clear"](); spec_ls_v["clear"]()
+            spec_ann["clear"](); spec_ann_v["clear"](); event_ann["clear"]()
             event_sel.value = None
             state["event_id"] = None
             event_status.set_content("· new event")
