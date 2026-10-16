@@ -166,7 +166,7 @@ _RETRY_BACKOFF = (0.5, 1.5)
 async def get_with_retry(client: httpx.AsyncClient, url: str, params: dict) -> httpx.Response:
     """One GET, retried on a transient failure (rate limit, 502/503/504, timeout) — a
     passing hiccup on this shared public server must not read as a real failure. Any
-    other error, or the last failed attempt, raises ``TaxonWorksUnreachable`` naming the
+    other error (including any other ``httpx`` error), or the last failed attempt, raises ``TaxonWorksUnreachable`` naming the
     cause (``explain_tw_error``). Same discipline as ``tw_media_compare._get_page``."""
     last_exc: Exception | None = None
     for attempt in range(_MAX_ATTEMPTS):
@@ -181,6 +181,10 @@ async def get_with_retry(client: httpx.AsyncClient, url: str, params: dict) -> h
                 last_exc = exc
             else:
                 raise explain_tw_error(exc) from exc
+        except (httpx.HTTPError, httpx.InvalidURL) as exc:
+            # InvalidURL, TooManyRedirects, DecodingError, ... — never transient, and
+            # nothing may escape as a raw httpx exception.
+            raise explain_tw_error(exc) from exc
         if attempt < _MAX_ATTEMPTS - 1:
             await asyncio.sleep(_RETRY_BACKOFF[min(attempt, len(_RETRY_BACKOFF) - 1)])
     raise explain_tw_error(last_exc) from last_exc
@@ -199,28 +203,44 @@ async def fetch_all_pages(client: httpx.AsyncClient, path: str, params: dict, *,
     back on two pages while another is skipped. Counting received rows would call that
     complete; the distinct ids are counted against ``pagination-total`` instead."""
     _require_configured()
+    base, token = _base(), _token()        # read ONCE: one pull, one server, one token
     tracker = PaginationTracker()
     seen: dict[int, dict] = {}
+    repeated = False
     page = 1
     while True:
-        r = await get_with_retry(client, f"{_base()}{path}", {
-            **params, "per": per_page, "page": page, "project_token": _token()})
-        body = r.json()
+        r = await get_with_retry(client, f"{base}{path}", {
+            **params, "per": per_page, "page": page, "project_token": token})
+        try:
+            body = r.json()
+        except ValueError as exc:
+            raise TaxonWorksUnreachable(
+                f"{what} did not return JSON (page {page}) — treated as a lookup "
+                f"failure, not as an empty result.") from exc
         if not isinstance(body, list) or not all(isinstance(x, dict) for x in body):
             raise TaxonWorksUnreachable(
                 f"{what} did not return a list of rows — treated as a lookup failure, "
                 f"not as an empty result.")
+        if len(body) > per_page:
+            raise TaxonWorksUnreachable(
+                f"{what} returned {len(body)} rows on a page of {per_page} — the paging "
+                f"parameters were not honoured. Treated as a lookup failure.")
         for row in body:
             check_row(row)
             rid = row.get("id")
             if not isinstance(rid, int):
                 raise TaxonWorksUnreachable(f"{what} returned a row without an id.")
+            repeated = repeated or rid in seen
             seen[rid] = row
         tracker.record_page(r, body)
         if tracker.is_complete(body, per_page):
             break
         page += 1
     tracker.check_complete(what=what)
+    if tracker.total is None and repeated:
+        raise TaxonWorksUnreachable(
+            f"{what} repeated rows across pages and gave no pagination total to check "
+            f"completeness against. Treated as a lookup failure; try again.")
     if tracker.total is not None and len(seen) < tracker.total:
         raise TaxonWorksUnreachable(
             f"{what} returned {len(seen)} distinct rows of {tracker.total} — its pages "

@@ -4,7 +4,8 @@ A local term (tag, data-attribute term) or biological relationship may carry ONE
 a TaxonWorks keyword / predicate / biological relationship: ``tw_id`` + ``tw_name`` (TW's
 name as last fetched) + ``tw_host`` (the host the link was CONFIRMED on; NULL = not
 verified). The link is hard to earn and easy to lose: ``tw_host`` is written only when a
-fetch from that host returned this id with this name; anything else clears it. Nothing
+fetch from that host returned this id with this name (the host travels on the fetched
+``TwTerm`` / ``VerifyOutcome``, never as a caller-supplied argument); anything else clears it. Nothing
 here runs on its own — every fetch is a user action (the launch sync is gone).
 
 Verified against SpeciesFileGroup/taxonworks @ 897f385:
@@ -54,6 +55,7 @@ class TwTerm:
     name: str
     uri: str | None = None
     css_color: object = None      # raw, unvalidated — see annotations.tw_css_color
+    host: str = ""                # the host the fetch ran against; "" = not from a fetch
 
 
 @dataclass(frozen=True)
@@ -63,6 +65,7 @@ class VerifyOutcome:
     state: str                    # verified | name_differs | not_found
     tw_name: str | None           # TW's current name (None when not found)
     color_warning: str | None
+    host: str                     # the host the verifying fetch ran against
 
 
 def kind_of(row) -> str:
@@ -94,7 +97,10 @@ def _check_named(row: dict, what: str) -> None:
 
 
 async def fetch_candidates(kind: str) -> list[TwTerm]:
-    """The TaxonWorks list for one kind, complete or not at all."""
+    """The TaxonWorks list for one kind, complete or not at all. Every term is stamped
+    with the host the pull ran against (read once, with the base URL), so ``link`` and
+    ``apply_verification`` earn ``tw_host`` from the fetch itself, not from a caller."""
+    host = tw.configured_host()
     if kind in _CVT_TYPE:
         expected = _CVT_TYPE[kind]
         what = f"the TaxonWorks {expected} listing"
@@ -110,14 +116,14 @@ async def fetch_candidates(kind: str) -> list[TwTerm]:
             rows = await tw.fetch_all_pages(client, "/controlled_vocabulary_terms",
                                             {"type": expected}, what=what, check_row=check)
         terms = [TwTerm(kind, r["id"], str(r["name"]).strip(), r.get("uri") or None,
-                        r.get("css_color")) for r in rows]
+                        r.get("css_color"), host) for r in rows]
     elif kind == RELATIONSHIP:
         what = "the TaxonWorks biological relationship listing"
         async with _client() as client:
             rows = await tw.fetch_all_pages(client, "/biological_relationships", {},
                                             what=what,
                                             check_row=lambda r: _check_named(r, what))
-        terms = [TwTerm(kind, r["id"], str(r["name"]).strip()) for r in rows]
+        terms = [TwTerm(kind, r["id"], str(r["name"]).strip(), host=host) for r in rows]
     else:
         raise ValueError(f"unknown link kind {kind!r}")
     return sorted(terms, key=lambda t: t.name.casefold())
@@ -129,14 +135,15 @@ def _require_clean_tw_name(name: str) -> None:
                          f"cannot become an export column.")
 
 
-def link(session: Session, row, tw_term: TwTerm, host: str) -> str | None:
+def link(session: Session, row, tw_term: TwTerm) -> str | None:
     """Link ``row`` to a term picked from a FRESH fetch, so it is verified at once.
     Returns a colour warning (annotation terms only) or None."""
     kind = kind_of(row)
     if tw_term.kind != kind:
         raise ValueError(f"cannot link a {_NOUN[kind]} to a TaxonWorks {_NOUN[tw_term.kind]}")
-    if not host:
-        raise ValueError("No TaxonWorks API base URL set — Settings → TaxonWorks connection.")
+    if not tw_term.host:
+        raise ValueError("This term did not come from a TaxonWorks fetch — refusing to "
+                         "record a link that was never confirmed on a host.")
     _require_clean_tw_name(tw_term.name)
     holder = linked_holder(session, kind, tw_term.id, exclude=row)
     if holder is not None:
@@ -144,7 +151,7 @@ def link(session: Session, row, tw_term: TwTerm, host: str) -> str | None:
                          f"'{holder.name}'.")
     row.tw_id = tw_term.id
     row.tw_name = tw_term.name
-    row.tw_host = host
+    row.tw_host = tw_term.host
     warning = None
     if isinstance(row, AnnotationTerm):
         row.css_color, warning = ann.tw_css_color(tw_term.css_color)
@@ -170,12 +177,20 @@ def link_state(row, host: str) -> str:
     return "not_verified"
 
 
-def apply_verification(session: Session, kind: str, candidates: list[TwTerm],
+def apply_verification(session: Session, kind: str, candidates: list[TwTerm], *,
                        host: str) -> list[VerifyOutcome]:
     """Per linked row: same id + same name -> confirmed on ``host``; same id, other name
     -> unconfirmed, user decides (``resolve_name_difference``); id unknown here ->
     unconfirmed, link kept. The colour of an annotation term follows TW whenever the id
     was found (spec "Term colour")."""
+    # `host` is consulted only for an empty list (nothing to read it from); otherwise every
+    # candidate must carry it, so a link is confirmed only on the host that answered.
+    if not host:
+        raise ValueError("No TaxonWorks host to verify against.")
+    for c in candidates:
+        if c.host != host:
+            raise ValueError(f"candidate {c.name!r} carries host {c.host!r}, expected "
+                             f"{host!r} — refusing to verify against a mixed or unstamped list.")
     by_id = {c.id: c for c in candidates}
     out: list[VerifyOutcome] = []
     for row in rows_of_kind(session, kind):
@@ -195,7 +210,7 @@ def apply_verification(session: Session, kind: str, candidates: list[TwTerm],
             else:
                 row.tw_host, state = None, "name_differs"
         row.updated_at = _utcnow()
-        out.append(VerifyOutcome(row.id, row.name, state, tw_name, warning))
+        out.append(VerifyOutcome(row.id, row.name, state, tw_name, warning, host))
     session.flush()
     return out
 
@@ -208,7 +223,10 @@ async def verify(session: Session, kind: str) -> list[VerifyOutcome]:
         raise TaxonWorksUnreachable(
             "No TaxonWorks API base URL set — Settings → TaxonWorks connection.")
     candidates = await fetch_candidates(kind)
-    return apply_verification(session, kind, candidates, host)
+    if any(c.host != host for c in candidates):
+        raise TaxonWorksUnreachable(
+            "The configured TaxonWorks host changed during the fetch — try again.")
+    return apply_verification(session, kind, candidates, host=host)
 
 
 def _local_name_taken(session: Session, row, name: str) -> bool:
@@ -220,12 +238,22 @@ def _local_name_taken(session: Session, row, name: str) -> bool:
     return session.query(q.exists()).scalar()
 
 
-def resolve_name_difference(session: Session, row, choice: str, tw_name: str,
-                            host: str) -> None:
-    """The user's answer to ``name_differs`` — nothing is decided silently."""
+def resolve_name_difference(session: Session, row, outcome: VerifyOutcome,
+                            choice: str) -> None:
+    """The user's answer to a ``name_differs`` outcome — nothing is decided silently. The
+    host and TW's name come from the outcome (i.e. from the fetch), never from the caller."""
+    if outcome.state != "name_differs" or outcome.tw_name is None:
+        raise ValueError("only a 'name_differs' outcome can be resolved")
+    if outcome.row_id != row.id:
+        raise ValueError("the outcome belongs to a different row")
+    if row.tw_id is None:
+        raise ValueError("the row is not linked")
+    if not outcome.host:
+        raise ValueError("the outcome carries no host")
     if choice == "unlink":
         unlink(session, row)
         return
+    tw_name = outcome.tw_name
     _require_clean_tw_name(tw_name)
     if choice == "use_tw":
         if _local_name_taken(session, row, tw_name):
@@ -235,6 +263,6 @@ def resolve_name_difference(session: Session, row, choice: str, tw_name: str,
     elif choice != "keep_local":
         raise ValueError(f"unknown choice {choice!r}")
     row.tw_name = tw_name
-    row.tw_host = host
+    row.tw_host = outcome.host
     row.updated_at = _utcnow()
     session.flush()
