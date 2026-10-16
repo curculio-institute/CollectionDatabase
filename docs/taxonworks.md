@@ -311,6 +311,18 @@ as an eligibility rule — this stays as the backstop). **`preparations` must
 match an existing TW `PreparationType` or TW errors the row** (:926) — unverifiable via API, so
 the distinct values used are listed for the user to confirm.
 
+**Annotation columns (decided 2026-10-16, spec `superpowers/specs/2026-10-14-annotations-design.md`).**
+Only `TW:Tag:<Class>:<tw_name>` and `TW:DataAttribute:<Class>:<tw_name>` for `CollectionObject`
+and `CollectingEvent` (`darwin_core.rb:22`, `:32`), only for **linked, verified** terms the
+batch actually uses, header = the TW name (never the local name). Tag cell `true` / empty,
+data attribute value / empty (`occurrence.rb:1672`, `:1695`). Event annotations repeat on
+every row of the event — safe only while no row makes TW reuse an event (no `eventID`): on
+reuse TW silently drops event data attributes (`occurrence.rb:469`). A linked term whose
+link is not confirmed on the configured host **blocks** the file; local-only terms are listed
+as information; association annotations are never exported. A **term pre-flight** runs beside
+the name pre-flight (id exists on this host with this name; the name resolves to exactly this
+id under TW's own `uri`-then-`ILIKE` lookup, predicate selectors lower-cased — `darwin_core.rb:82`).
+
 ### TaxonWorks namespace: institutionCode + collectionCode (verified)
 
 Verified against `occurrence.rb` in `~/Downloads/neu/software/taxonworks/`

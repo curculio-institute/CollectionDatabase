@@ -27,7 +27,8 @@ from sqlalchemy.orm import Session
 
 from app.config import get_config
 from app.models import CollectingEvent, CollectionObject, Person
-from app.services import taxa
+from app.services import annotation_export, taxa
+from app.services import taxonworks as tw_svc
 
 
 # ── Eligibility ──────────────────────────────────────────────────────────────────
@@ -351,6 +352,14 @@ class ExportResult:
     refused: tuple[RowProblem, ...]
     preparations_used: tuple[str, ...]
     row_count: int
+    # Annotation columns (spec 2026-10-14 "Export"): the TW:Tag / TW:DataAttribute
+    # columns this batch emits, the linked terms that BLOCK it (unconfirmed link — the
+    # file is then empty: a linked term means "this should reach TaxonWorks", and a link
+    # that cannot be confirmed is a blocker, never a silent omission), and the local-only
+    # terms the rows carry (information only, never exported).
+    annotation_columns: tuple = ()
+    annotation_blocked: tuple[tuple[str, str], ...] = ()
+    annotation_local_only: tuple[tuple[str, int], ...] = ()
 
 
 def _s(value: object) -> str:
@@ -613,7 +622,8 @@ def _validate_row(row: dict[str, str]) -> list[RowProblem]:
     return problems
 
 
-def _write_tsv(rows: list[dict[str, str]]) -> str:
+def _write_tsv(rows: list[dict[str, str]],
+               headers: tuple[str, ...] = DWC_COLUMNS) -> str:
     """Serialise rows to the complete TSV file content.
 
     import_dataset/darwin_core.rb:315-317 — TW's default `col_sep` for a flat
@@ -623,13 +633,14 @@ def _write_tsv(rows: list[dict[str, str]]) -> str:
     """
     buf = io.StringIO()
     writer = csv.writer(buf, delimiter="\t", quoting=csv.QUOTE_MINIMAL, lineterminator="\n")
-    writer.writerow(DWC_COLUMNS)
+    writer.writerow(headers)
     for row in rows:
-        writer.writerow([row[c] for c in DWC_COLUMNS])
+        writer.writerow([row[c] for c in headers])
     return buf.getvalue()
 
 
-def export_occurrences(session: Session, cos: Iterable[CollectionObject]) -> ExportResult:
+def export_occurrences(session: Session, cos: Iterable[CollectionObject], *,
+                       host: str | None = None) -> ExportResult:
     """Run `export_decision` per specimen, validate the eligible rows, and write
     the TSV. Withheld specimens (policy) never reach validation; refused rows
     (eligible but invalid for TW) never reach the file — both are reported so
@@ -640,6 +651,7 @@ def export_occurrences(session: Session, cos: Iterable[CollectionObject]) -> Exp
     refused: list[RowProblem] = []
     preparations_used: set[str] = set()
     rows: list[dict[str, str]] = []
+    written_cos: list[CollectionObject] = []
 
     for co in cos:
         decision = export_decision(co)
@@ -658,14 +670,27 @@ def export_occurrences(session: Session, cos: Iterable[CollectionObject]) -> Exp
         if row["preparations"]:
             preparations_used.add(row["preparations"])
         rows.append(row)
+        written_cos.append(co)
         written.append(row["catalogNumber"])
 
+    plan = annotation_export.annotation_columns(
+        session, written_cos,
+        host=tw_svc.configured_host() if host is None else host)
+    headers = DWC_COLUMNS + tuple(c.header for c in plan.columns)
+    for co, row in zip(written_cos, rows):
+        for c in plan.columns:
+            row[c.header] = ""
+        row.update(plan.cells.get(co.id, {}))
+
     return ExportResult(
-        tsv=_write_tsv(rows),
+        tsv="" if plan.blocked else _write_tsv(rows, headers),
         written=tuple(written),
         withheld=tuple(withheld),
         redacted=tuple(redacted),
         refused=tuple(refused),
         preparations_used=tuple(sorted(preparations_used)),
         row_count=len(written),
+        annotation_columns=plan.columns,
+        annotation_blocked=plan.blocked,
+        annotation_local_only=plan.local_only,
     )

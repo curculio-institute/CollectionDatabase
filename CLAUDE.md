@@ -182,8 +182,9 @@ cited ones.
   - **Unknown query params are silently ignored** — an oversized result is a lookup failure,
     never a set of matches.
   - The file is **tab-separated `.tsv`**, emits only columns TW maps, and **refuses an invalid
-    row rather than rewriting it**. No `TW:` columns yet; fix the homonym limitation of the
-    OTU check before emitting `TW:TaxonDetermination:otu_id`.
+    row rather than rewriting it**. `TW:` columns: only `TW:Tag:` / `TW:DataAttribute:` for CollectionObject and
+    CollectingEvent, linked + verified terms only, behind a term pre-flight. Fix the homonym
+    limitation of the OTU check before emitting `TW:TaxonDetermination:otu_id`.
 
 ## 6. Application structure → `docs/app_structure.md`
 
