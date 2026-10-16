@@ -377,6 +377,16 @@ def build_digitize_tab(session_factory, *, refreshers, mode_state, mark_form_cle
             rel_field = build_choice_field(
                 list(_rel_name_to_id.keys()), "Relationship", classes="w-full mb-2")
 
+            def _refresh_rel_options() -> None:
+                """Relationships can be created / renamed / merged / deleted in
+                Controlled Vocabularies: re-query so this card never offers a stale one."""
+                fresh = {r.name: r.id for r in _with_session(get_relationship_options)}
+                _rel_name_to_id.clear()
+                _rel_name_to_id.update(fresh)
+                rel_field["set_options"](list(fresh.keys()))
+
+            ui.timer(2.0, _refresh_rel_options)
+
             # Object taxon search — bio_codes list is read on each keystroke
             bio_obj_state = build_taxon_search(
                 _sf,
@@ -764,6 +774,12 @@ def build_digitize_tab(session_factory, *, refreshers, mode_state, mark_form_cle
             if err:
                 ui.notify(err, type="negative")
                 return
+            _live_rel_ids = {r.id for r in _with_session(get_relationship_options)}
+            for _a in bio_state["associations"]:
+                if _a["rel_id"] not in _live_rel_ids:
+                    ui.notify(f"The relationship '{_a['rel_name']}' was merged or deleted "
+                              f"— pick it again.", type="negative")
+                    return
             # Soft completeness confirm (#173) — coordinates / municipality /
             # date / recordedBy are never schema-required, so this only asks;
             # it never blocks. Checked on every save, including a reused event.

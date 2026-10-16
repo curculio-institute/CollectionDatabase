@@ -119,7 +119,18 @@ def build_choice_field(
             inp.props("clearable")
         clear_btn.set_visibility(not ro)
 
+    def set_options(new_options: list[str]) -> None:
+        """Replace the offered list (a live DB-backed list). A chosen value that is no
+        longer offered is cleared, so a stale pick can never be saved."""
+        new = [o for o in new_options if o]
+        if new == _opts:
+            return
+        _opts[:] = new
+        if _value[0] is not None and _value[0] not in _opts and not _ro[0]:
+            _clear(notify=False)
+
     return {
+        "set_options":  set_options,
         "get_value":    lambda: _value[0],
         "set_value":    lambda v: (_enter_selected(v.strip(), notify=False)
                                    if v and v.strip() else _clear(notify=False)),

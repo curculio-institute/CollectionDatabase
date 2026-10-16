@@ -46,6 +46,22 @@ def collect_items(work: dict, terms: dict) -> list[dict]:
     return items
 
 
+def add_pending_pick(work: dict, pick_id, value) -> None:
+    """A data attribute picked (and maybe valued) but not added with "+": fold it into the
+    working copy so Save & close cannot drop it silently (CLAUDE.md §6). ``value`` is left
+    raw — ``collect_items`` validates it and names the term."""
+    if pick_id is not None:
+        work[pick_id] = value
+
+
+def pending_changed(pending_items, db_items: list[dict]) -> bool:
+    """Deferred mode: are the held edits different from what the record has?"""
+    if pending_items is None:
+        return False
+    key = lambda items: sorted((i["term_id"], i["value"] or "") for i in items)
+    return key(pending_items) != key(db_items)
+
+
 def _as_items(items: list[dict]) -> list[AnnotationItem]:
     return [AnnotationItem(i["term_id"], i["value"]) for i in items]
 
@@ -160,9 +176,20 @@ def build_annotation_button(
             ui.label("Data attributes").classes("text-sm font-medium")
             da_box = ui.column().classes("w-full gap-1")
 
+            da_pending: dict = {"pick": None, "val": None}   # the add row's live widgets
+
             def _render_da() -> None:
                 da_box.clear()
+                da_pending["pick"] = da_pending["val"] = None
                 with da_box:
+                    for tid in [i for i in work if i not in terms]:
+                        with ui.row().classes("items-center gap-2 w-full no-wrap"):
+                            ui.label(f"deleted term #{tid}").classes("text-sm italic") \
+                                .style("color:var(--tp-base-soft)")
+                            ui.button(icon="delete",
+                                      on_click=lambda _, i=tid: (work.pop(i, None), _render_da())) \
+                                .props("flat dense round size=sm color=grey") \
+                                .tooltip("Remove — this term no longer exists")
                     for tid in [i for i in work if terms.get(i, {}).get("kind") == "data_attribute"]:
                         t = terms[tid]
                         with ui.row().classes("items-center gap-2 w-full no-wrap"):
@@ -182,6 +209,7 @@ def build_annotation_button(
                             pick = ui.select(free, label="Add data attribute") \
                                 .props("dense clearable").classes("w-48")
                             val = ui.input("Value").props("dense").classes("flex-1")
+                            da_pending["pick"], da_pending["val"] = pick, val
 
                             def _add_da() -> None:
                                 if pick.value is None:
@@ -195,6 +223,8 @@ def build_annotation_button(
             _render_da()
 
             def _save_close() -> None:
+                if da_pending["pick"] is not None:
+                    add_pending_pick(work, da_pending["pick"].value, da_pending["val"].value)
                 try:
                     items = collect_items(work, terms)
                 except ValueError as exc:
@@ -217,14 +247,14 @@ def build_annotation_button(
                 ann_svc.add_annotations(session, target, target_id, _as_items(staged_items))
             return
         if deferred and pending["items"] is not None:
+            # Not cleared here: the caller's transaction may still fail after this
+            # step. The Records page reloads (and rebuilds this button) after a good save.
             ann_svc.set_annotations(session, target, target_id, _as_items(pending["items"]))
-            pending["items"] = None
 
     def has_changes() -> bool:
-        if not deferred or pending["items"] is None:
+        if not deferred:
             return False
-        key = lambda items: sorted((i["term_id"], i["value"] or "") for i in items)
-        return key(pending["items"]) != key(_db_items())
+        return pending_changed(pending["items"], _db_items())
 
     def clear() -> None:
         staged_items.clear()

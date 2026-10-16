@@ -2186,7 +2186,8 @@ def build_tw_sync_tab(session_factory, refreshers: dict | None = None,
 
                         # ── summary counts ──
                         with ui.row().classes("gap-3 items-center flex-wrap"):
-                            if result.annotation_blocked:
+                            if (result.annotation_blocked
+                                    or any(not c.ok for c in (state["term_checks"] or []))):
                                 ui.badge("0 ready to export — blocked by annotation terms") \
                                     .props("color=negative")
                             else:
