@@ -29,14 +29,16 @@ another instance names something else. Joins are on ``tw_id``, never on names.
 """
 from __future__ import annotations
 
+import asyncio
 from collections import defaultdict
 from dataclasses import dataclass
 
 import httpx
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 import app.services.taxonworks as tw
-from app.models import CollectionObject
+from app.models import Annotation, AnnotationTerm, CollectionObject
 from app.services import annotations as ann
 from app.services import tw_media_compare
 from app.services.taxonworks import TaxonWorksUnreachable
@@ -258,13 +260,33 @@ def compare_annotations(session: Session, specimens: list[tuple[str, int, int]],
     verified = {t.id: t for t in terms if t.tw_id is not None and t.tw_host == host}
     unverified = tuple(sorted({t.name for t in terms
                                if t.tw_id is not None and t.tw_host != host}))
+    # Batch-loaded (like annotation_export.annotation_columns), not 3 queries per
+    # specimen; same order as annotations_for (tags first, then by name).
+    co_ids = sorted({co_id for _cat, co_id, _tw in specimens})
+    event_of_co = dict(session.query(CollectionObject.id, CollectionObject.collecting_event_id)
+                       .filter(CollectionObject.id.in_(co_ids))) if co_ids else {}
+    ev_ids = sorted({e for e in event_of_co.values() if e is not None})
+    by_co: dict[int, list] = defaultdict(list)
+    by_ev: dict[int, list] = defaultdict(list)
+
+    def _ordered(q):
+        return (q.join(AnnotationTerm, Annotation.term_id == AnnotationTerm.id)
+                .order_by(AnnotationTerm.kind.desc(), func.lower(AnnotationTerm.name)))
+    if co_ids:
+        for a in _ordered(session.query(Annotation).filter(
+                Annotation.collection_object_id.in_(co_ids))):
+            by_co[a.collection_object_id].append(a)
+    if ev_ids:
+        for a in _ordered(session.query(Annotation).filter(
+                Annotation.collecting_event_id.in_(ev_ids))):
+            by_ev[a.collecting_event_id].append(a)
+
     findings: list[AnnotationFinding] = []
     for cat, co_id, tw_id in specimens:
-        co = session.get(CollectionObject, co_id)
-        _diff(findings, cat, tw_id, "specimen", ann.annotations_for(session, "specimen", co_id),
+        _diff(findings, cat, tw_id, "specimen", by_co.get(co_id, []),
               co_tags.get(tw_id, []), co_data.get(tw_id, []), verified)
-        local_event = (ann.annotations_for(session, "event", co.collecting_event_id)
-                       if co.collecting_event_id else [])
+        local_ev = event_of_co[co_id]
+        local_event = by_ev.get(local_ev, []) if local_ev else []
         tw_event = event_of[tw_id]
         _diff(findings, cat, tw_id, "event", local_event,
               ev_tags.get(tw_event, []) if tw_event else [],
@@ -274,6 +296,17 @@ def compare_annotations(session: Session, specimens: list[tuple[str, int, int]],
         ambiguous_catalog_numbers=tuple(ambiguous))
 
 
+async def _gather(*coros):
+    """``asyncio.gather`` that lets every fetch finish, then raises the FIRST failure (in
+    argument order) — a lookup failure is never half-reported, and no task is left
+    running with an unretrieved exception."""
+    results = await asyncio.gather(*coros, return_exceptions=True)
+    for res in results:
+        if isinstance(res, BaseException):
+            raise res
+    return results
+
+
 async def run_annotation_compare(session: Session, *, repository_id: int, index: CatalogIndex,
                                  host: str | None = None) -> AnnotationCompareResult:
     """I/O + computation — the entry point the TaxonWorks tab calls."""
@@ -281,12 +314,15 @@ async def run_annotation_compare(session: Session, *, repository_id: int, index:
     specimens, ambiguous = tw_media_compare.specimens_on_tw(
         session, repository_id=repository_id, index=index)
     tw_ids = [tw_id for _cat, _co, tw_id in specimens]
-    co_tags = await fetch_tags("CollectionObject", tw_ids)
-    co_data = await fetch_data_attributes("CollectionObject", tw_ids)
-    event_of = await fetch_event_ids(tw_ids)
+    # Independent fetches run concurrently; the event pulls need the event ids first.
+    co_tags, co_data, event_of = await _gather(
+        fetch_tags("CollectionObject", tw_ids),
+        fetch_data_attributes("CollectionObject", tw_ids),
+        fetch_event_ids(tw_ids))
     ev_ids = sorted({e for e in event_of.values() if e})
-    ev_tags = await fetch_tags("CollectingEvent", ev_ids)
-    ev_data = await fetch_data_attributes("CollectingEvent", ev_ids)
+    ev_tags, ev_data = await _gather(
+        fetch_tags("CollectingEvent", ev_ids),
+        fetch_data_attributes("CollectingEvent", ev_ids))
     return compare_annotations(session, specimens, host=host, co_tags=co_tags,
                                co_data=co_data, event_of=event_of, ev_tags=ev_tags,
                                ev_data=ev_data, ambiguous=ambiguous)
