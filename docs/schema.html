@@ -115,6 +115,8 @@
   <a href="#taxon_determination">taxon_determination</a><span class="sep">·</span>
   <a href="#biological_relationship">biological_relationship</a><span class="sep">·</span>
   <a href="#biological_association">biological_association</a><span class="sep">·</span>
+  <a href="#annotation_term">annotation_term</a><span class="sep">·</span>
+  <a href="#annotation">annotation</a><span class="sep">·</span>
   <a href="#constraints">constraints</a>
 </nav>
 
@@ -273,6 +275,8 @@ erDiagram
         INTEGER id PK
         TEXT name
         INTEGER taxonworksID
+        TEXT tw_name
+        TEXT tw_host
     }
 
     biological_association {
@@ -315,6 +319,26 @@ erDiagram
         TEXT source
     }
 
+    annotation_term {
+        INTEGER id PK
+        TEXT kind "tag | data_attribute"
+        TEXT name
+        INTEGER tw_id "optional TW link"
+        TEXT tw_name
+        TEXT tw_host
+        TEXT css_color
+    }
+
+    annotation {
+        INTEGER id PK
+        INTEGER collection_object_id FK "arc: exactly one"
+        INTEGER collecting_event_id FK "arc: exactly one"
+        INTEGER biological_association_id FK "arc: exactly one"
+        INTEGER term_id FK
+        TEXT term_kind FK
+        TEXT value
+    }
+
     life_stage_record {
         INTEGER id PK
         INTEGER collection_object_id FK
@@ -344,6 +368,10 @@ erDiagram
     collection_object |o--o{ external_identifier : "identifies (arc)"
     biological_association |o--o{ external_identifier : "other party (arc)"
     field_occurrence |o--o{ external_identifier : "identifies (arc)"
+    annotation_term ||--o{ annotation : "term of"
+    collection_object |o--o{ annotation : "annotates (arc)"
+    collecting_event |o--o{ annotation : "annotates (arc)"
+    biological_association |o--o{ annotation : "annotates (arc)"
     collection_object ||--o{ life_stage_record : "earlier life stages"
     preparation |o--o{ collection_object : "prepared as"
     disposition |o--o{ collection_object : "held as"
@@ -536,13 +564,16 @@ erDiagram
   <h2>biological_relationship</h2>
   <div class="desc">The type of association (e.g. <em>collected_on</em>, <em>feeds_on</em>).
     Seed rows inserted by migration 0001.
-    <code>taxonworksID</code> stores the TW internal ID once looked up in TaxonWorks.</div>
+    The optional TaxonWorks link is set only through the Controlled Vocabularies tab
+    (migration 0073; the old launch sync is gone).</div>
   <table>
     <thead><tr><th>Type</th><th>Column</th><th>Notes</th></tr></thead>
     <tbody>
       <tr><td><span class="badge badge-INTEGER">INTEGER</span></td><td class="col-local">id</td><td><span class="tag tag-PK">PK</span></td></tr>
       <tr><td><span class="badge badge-TEXT">TEXT</span></td><td class="col-local">name</td><td><span class="tag tag-NN">NN</span> <span class="tag tag-UQ">UQ</span></td></tr>
-      <tr><td><span class="badge badge-INTEGER">INTEGER</span></td><td class="col-local">taxonworksID</td><td>nullable until matched</td></tr>
+      <tr><td><span class="badge badge-INTEGER">INTEGER</span></td><td class="col-local">taxonworksID</td><td>optional TaxonWorks link id; partial UNIQUE where set (0073)</td></tr>
+      <tr><td><span class="badge badge-TEXT">TEXT</span></td><td class="col-local">tw_name</td><td>TW name as last fetched; set exactly when taxonworksID is set &mdash; triggers trg_br_tw_link_ins/_upd; no tab/CR/LF</td></tr>
+      <tr><td><span class="badge badge-TEXT">TEXT</span></td><td class="col-local">tw_host</td><td>host the link was confirmed on; NULL = not verified; needs taxonworksID</td></tr>
       <tr><td><span class="badge badge-TEXT">TEXT</span></td><td class="col-local">created_at / updated_at</td><td></td></tr>
     </tbody>
   </table>
@@ -671,6 +702,49 @@ erDiagram
       <tr><td><span class="badge badge-INTEGER">INTEGER</span></td><td class="col-local">field_occurrence_id</td><td><span class="tag tag-FK">FK</span> <span class="tag tag-ARC">ARC</span> (migration 0062)</td></tr>
       <tr><td><span class="badge badge-TEXT">TEXT</span></td><td class="col-local">value</td><td>NOT NULL — the URI / identifier (the user pastes this)</td></tr>
       <tr><td><span class="badge badge-TEXT">TEXT</span></td><td class="col-local">source / label / remarks</td><td>optional; source currently unpopulated (kept for future flexibility)</td></tr>
+      <tr><td><span class="badge badge-TEXT">TEXT</span></td><td class="col-local">created_at / updated_at</td><td></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<div class="table-card" id="annotation_term">
+  <h2>annotation_term</h2>
+  <div class="desc">Local controlled vocabulary of tags and data-attribute terms, each with an optional
+    link to one TaxonWorks keyword / predicate. Migration 0073.</div>
+  <table>
+    <thead><tr><th>Type</th><th>Column</th><th>Notes</th></tr></thead>
+    <tbody>
+      <tr><td><span class="badge badge-INTEGER">INTEGER</span></td><td class="col-local">id</td><td><span class="tag tag-PK">PK</span></td></tr>
+      <tr><td><span class="badge badge-TEXT">TEXT</span></td><td class="col-local">kind</td><td><span class="tag tag-NN">NN</span> CHECK IN (tag, data_attribute)</td></tr>
+      <tr><td><span class="badge badge-TEXT">TEXT</span></td><td class="col-local">name</td><td><span class="tag tag-NN">NN</span> not blank; UNIQUE (kind, name)</td></tr>
+      <tr><td><span class="badge badge-INTEGER">INTEGER</span></td><td class="col-local">allow_specimen / allow_event / allow_association</td><td><span class="tag tag-NN">NN</span> 0/1, default 0 &mdash; filters only what the picker offers</td></tr>
+      <tr><td><span class="badge badge-INTEGER">INTEGER</span></td><td class="col-local">tw_id</td><td>optional TaxonWorks link; UNIQUE (kind, tw_id)</td></tr>
+      <tr><td><span class="badge badge-TEXT">TEXT</span></td><td class="col-local">tw_name</td><td>NOT NULL iff tw_id; no tab/CR/LF</td></tr>
+      <tr><td><span class="badge badge-TEXT">TEXT</span></td><td class="col-local">tw_host</td><td>host the link was confirmed on; needs tw_id</td></tr>
+      <tr><td><span class="badge badge-TEXT">TEXT</span></td><td class="col-local">css_color</td><td>CHECK NULL or #rgb / #rrggbb</td></tr>
+      <tr><td><span class="badge badge-TEXT">TEXT</span></td><td class="col-local">created_at / updated_at</td><td>UNIQUE (id, kind) is the composite-FK target</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<div class="table-card" id="annotation">
+  <h2>annotation</h2>
+  <div class="desc">One tag / data attribute on exactly one specimen, collecting event or biological
+    association (<code>ck_annotation_exclusive_arc</code>; arc FKs ON DELETE CASCADE). Composite FK
+    (<code>term_id</code>, <code>term_kind</code>) &rarr; annotation_term(id, kind) ON DELETE RESTRICT, so a
+    used term can neither be deleted nor change kind. <code>ck_annotation_value_by_kind</code>: a tag has no
+    value, a data attribute must have a non-blank one without tab/CR/LF. One per (record, term) via the partial
+    UNIQUE indexes <code>uq_annotation_{specimen,event,association}_term</code>. Migration 0073.</div>
+  <table>
+    <thead><tr><th>Type</th><th>Column</th><th>Notes</th></tr></thead>
+    <tbody>
+      <tr><td><span class="badge badge-INTEGER">INTEGER</span></td><td class="col-local">id</td><td><span class="tag tag-PK">PK</span></td></tr>
+      <tr><td><span class="badge badge-INTEGER">INTEGER</span></td><td class="col-local">collection_object_id</td><td><span class="tag tag-FK">FK</span> <span class="tag tag-ARC">ARC</span> ON DELETE CASCADE</td></tr>
+      <tr><td><span class="badge badge-INTEGER">INTEGER</span></td><td class="col-local">collecting_event_id</td><td><span class="tag tag-FK">FK</span> <span class="tag tag-ARC">ARC</span> ON DELETE CASCADE</td></tr>
+      <tr><td><span class="badge badge-INTEGER">INTEGER</span></td><td class="col-local">biological_association_id</td><td><span class="tag tag-FK">FK</span> <span class="tag tag-ARC">ARC</span> ON DELETE CASCADE</td></tr>
+      <tr><td><span class="badge badge-INTEGER">INTEGER</span></td><td class="col-local">term_id</td><td><span class="tag tag-NN">NN</span> <span class="tag tag-FK">FK</span> (composite)</td></tr>
+      <tr><td><span class="badge badge-TEXT">TEXT</span></td><td class="col-local">term_kind</td><td><span class="tag tag-NN">NN</span> <span class="tag tag-FK">FK</span> (composite); CHECK IN (tag, data_attribute)</td></tr>
+      <tr><td><span class="badge badge-TEXT">TEXT</span></td><td class="col-local">value</td><td>NULL for a tag; required for a data attribute</td></tr>
       <tr><td><span class="badge badge-TEXT">TEXT</span></td><td class="col-local">created_at / updated_at</td><td></td></tr>
     </tbody>
   </table>
@@ -858,6 +932,10 @@ erDiagram
       <tr><td><span class="tag tag-FK">FK</span></td><td class="col-local">media_attachment</td><td><code>media_id</code> → media, and each arc FK (<code>collection_object_id</code> / <code>collecting_event_id</code> / <code>biological_association_id</code>) → its table, all ON DELETE CASCADE</td></tr>
       <tr><td><span class="tag tag-FK">FK</span></td><td class="col-local">person_defaults</td><td><code>default_rights_holder_id</code> → person ON DELETE RESTRICT (Tier-2 default for media rightsHolder; migration 0036)</td></tr>
       <tr><td><span class="tag tag-FK">FK</span></td><td class="col-local">external_identifier</td><td>each arc FK (<code>collection_object_id</code> / <code>biological_association_id</code>) → its table, ON DELETE CASCADE</td></tr>
+      <tr><td><span class="tag tag-UQ">UQ</span></td><td class="col-local">biological_relationship</td><td>partial UNIQUE index <code>uq_br_taxonworks_id</code> on <code>taxonworksID</code> WHERE NOT NULL (migration 0073)</td></tr>
+      <tr><td><span class="tag tag-UQ">UQ</span></td><td class="col-local">annotation_term</td><td>UNIQUE (<code>kind</code>, <code>tw_id</code>) &mdash; one term per TaxonWorks keyword / predicate; UNIQUE (<code>kind</code>, <code>name</code>); UNIQUE (<code>id</code>, <code>kind</code>) is the composite-FK target (migration 0073)</td></tr>
+      <tr><td><span class="tag tag-UQ">UQ</span></td><td class="col-local">annotation</td><td>partial UNIQUE indexes <code>uq_annotation_specimen_term</code> / <code>uq_annotation_event_term</code> / <code>uq_annotation_association_term</code> on (arc FK, <code>term_id</code>) WHERE the arc FK IS NOT NULL &mdash; one annotation per record and term (migration 0073)</td></tr>
+      <tr><td><span class="tag tag-FK">FK</span></td><td class="col-local">annotation</td><td><code>(term_id, term_kind)</code> &rarr; annotation_term(id, kind) ON DELETE RESTRICT, no ON UPDATE action; arc FKs &rarr; collection_object / collecting_event / biological_association ON DELETE CASCADE (migration 0073)</td></tr>
       <tr><td><span class="tag tag-FK">FK</span></td><td class="col-local">life_stage_record</td><td><code>collection_object_id</code> → collection_object ON DELETE CASCADE</td></tr>
     </tbody>
   </table>
@@ -880,6 +958,7 @@ erDiagram
     <tbody>
       <tr><td class="col-local">trg_co_default_requires_catalog_number</td><td class="col-local">collection_object</td><td>a specimen in the default (own) collection must have a <code>catalogNumber</code> — creating one without, or re-homing a numberless one into it, is refused (INSERT + UPDATE; migration 0072)</td></tr>
       <tr><td class="col-local">trg_repository_default_requires_catalog_numbers</td><td class="col-local">repository</td><td>a collection holding numberless specimens cannot be flagged <code>is_default</code> (UPDATE; migration 0072)</td></tr>
+      <tr><td class="col-local">trg_br_tw_link_ins / trg_br_tw_link_upd</td><td class="col-local">biological_relationship</td><td><code>tw_name</code> is set exactly when <code>taxonworksID</code> is set (INSERT + UPDATE; a trigger rather than a CHECK because SQLite tests an ADD COLUMN CHECK against existing rows; migration 0073)</td></tr>
       <tr><td class="col-local">trg_taxon_accepted_is_terminal</td><td class="col-local">taxon</td><td><code>acceptedNameUsageID</code> must reference an accepted (terminal) name, never another synonym — GBIF "chained synonym" rule (INSERT + UPDATE)</td></tr>
     </tbody>
   </table>

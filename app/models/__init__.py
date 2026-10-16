@@ -20,6 +20,7 @@ from .repository import Repository
 from .saved_search import SavedSearch
 from .field_occurrence import FieldOccurrence
 from .import_dataset import ImportDataset, ImportDatasetRecord
+from .annotation import AnnotationTerm, Annotation
 
 __all__ = [
     "Base",
@@ -52,4 +53,5 @@ __all__ = [
     "FieldOccurrence",
     "ImportDataset",
     "ImportDatasetRecord",
+    "AnnotationTerm", "Annotation",
 ]

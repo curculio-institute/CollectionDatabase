@@ -1,7 +1,7 @@
 from __future__ import annotations
 from typing import Optional, List
 from sqlalchemy import Integer, String, ForeignKey, CheckConstraint  # CheckConstraint used by BiologicalAssociation
-from sqlalchemy.orm import Mapped, mapped_column, relationship
+from sqlalchemy.orm import Mapped, mapped_column, relationship, synonym
 from .base import Base, TimestampMixin
 
 
@@ -9,8 +9,8 @@ class BiologicalRelationship(Base, TimestampMixin):
     """The kind of association (e.g. 'collected_on', 'feeds_on').
 
     Seed rows are inserted by the initial Alembic migration.
-    taxonworksID stores the TW internal ID for the relationship type, used
-    when creating biological associations via the TW API.
+    taxonworksID is the optional TaxonWorks link id (see tw_links.py); it is set only by an
+    explicit link in the Controlled Vocabularies tab.
     """
 
     __tablename__ = "biological_relationship"
@@ -20,9 +20,25 @@ class BiologicalRelationship(Base, TimestampMixin):
     taxonworks_id: Mapped[Optional[int]] = mapped_column(
         "taxonworksID", Integer, nullable=True
     )
+    # The optional TaxonWorks link (migration 0073), same rules as annotation_term:
+    # tw_name = TW's name as last fetched; tw_host = confirmed on that host (NULL = not
+    # verified). The tw_name <-> taxonworksID coupling is two triggers (see 0073).
+    tw_name: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    tw_host: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    # One name for the link id across both linkable vocabularies (tw_links.py).
+    tw_id = synonym("taxonworks_id")
 
     associations: Mapped[List["BiologicalAssociation"]] = relationship(
         "BiologicalAssociation", back_populates="biological_relationship"
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "tw_name IS NULL OR (length(trim(tw_name)) > 0 AND instr(tw_name, char(9)) = 0 "
+            "AND instr(tw_name, char(10)) = 0 AND instr(tw_name, char(13)) = 0)",
+            name="ck_br_tw_name_clean"),
+        CheckConstraint('tw_host IS NULL OR "taxonworksID" IS NOT NULL',
+                        name="ck_br_tw_host_needs_id"),
     )
 
 

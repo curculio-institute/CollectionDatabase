@@ -37,6 +37,7 @@ STRICT_TABLES = sorted({
     "habitat", "sampling_protocol",  # 0040
     "country", "state_province", "administrative_region", "county", "island",  # 0041
     "disposition",  # 0048
+    "annotation_term", "annotation",  # 0073
 })
 
 # Tables whose constraints were dropped + restored — checked in extra detail below.
@@ -352,3 +353,14 @@ def test_date_identified_interval_check_present(engine):
     assert "ck_td_date_identified_no_interval" in sql, (
         "taxon_determination lost its dateIdentified interval CHECK"
     )
+
+
+def test_relationship_link_triggers_present(engine):
+    # Migration 0073: SQLite tests an ADD COLUMN CHECK against existing rows, and a linked
+    # relationship has no tw_name until the backfill runs — so the tw_name <-> taxonworksID
+    # coupling is two triggers. A rebuild of biological_relationship would drop them.
+    with engine.connect() as conn:
+        live = dict(conn.exec_driver_sql(
+            "SELECT name, tbl_name FROM sqlite_master WHERE type='trigger'").fetchall())
+    for name in ("trg_br_tw_link_ins", "trg_br_tw_link_upd"):
+        assert live.get(name) == "biological_relationship", f"lost trigger {name}"
