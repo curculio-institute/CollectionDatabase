@@ -75,7 +75,7 @@ def _build_section(session_factory, *, terms: bool) -> None:
                 "An optional TaxonWorks link is set here only — never on launch."
             ).classes("text-sm").style("color:var(--tp-base-soft)")
             ui.space()
-            verify_btn = ui.button("Verify", icon="verified") \
+            verify_btn = ui.button("Verify", icon="cloud_sync") \
                 .props("flat no-caps color=secondary") \
                 .tooltip("Fetch the TaxonWorks list once and re-check every link")
         ui.separator().classes("mb-3")
