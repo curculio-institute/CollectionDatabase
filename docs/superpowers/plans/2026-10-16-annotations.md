@@ -3704,7 +3704,7 @@ def _build_section(session_factory, *, terms: bool) -> None:
                                    if terms else bio.create_relationship(s, c.name))
                         else:
                             row = s.get(model, row_id)
-                        warning[0] = links.link(s, row, c, host)
+                        warning[0] = links.link(s, row, c)   # host comes from the fetch (c.host)
                     if not _write(fn, f"Linked to TaxonWorks '{c.name}'."):
                         return
                     if row_id is not None:
@@ -3746,7 +3746,6 @@ def _build_section(session_factory, *, terms: bool) -> None:
 
         # ── verify + name-differs resolution ────────────────────────────────
         def _open_name_differs(outcomes: list[links.VerifyOutcome]) -> None:
-            host = tw_svc.configured_host()
             with ui.dialog() as dlg, ui.card().classes("w-[580px]"):
                 ui.label("Renamed on TaxonWorks").classes("section-label")
                 ui.label("Choose per entry — nothing is decided for you.") \
@@ -3760,8 +3759,9 @@ def _build_section(session_factory, *, terms: bool) -> None:
                                                   ("keep_local", "Keep local name"),
                                                   ("unlink", "Unlink")):
                                 def _resolve(_, o=o, choice=choice, rbox=rbox):
+                                    # The outcome carries the observed host + TW name.
                                     if _write(lambda s: links.resolve_name_difference(
-                                            s, s.get(model, o.row_id), choice, o.tw_name, host)):
+                                            s, s.get(model, o.row_id), o, choice)):
                                         detail.pop(o.row_id, None)
                                         rbox.clear()
                                         with rbox:
