@@ -105,6 +105,32 @@ The DwC importer is CREATE-ONLY (`occurrence.rb:310`). The v1 REST API has no `P
 `DELETE` for collection objects. Any correction to an already-imported record must be done
 manually in the TW UI. This constrains the sync direction to insert-only forever.
 
+### Anatomical parts cannot be fetched (v1 API)
+
+`config/routes/api_v1.rb` has **no `anatomical_parts` route** (checked at `897f385` and on
+`development`, 2026-10-17). An `AnatomicalPart` (e.g. the leaf of a host plant, with an origin
+chain to an OTU, field occurrence or specimen — `app/models/anatomical_part.rb`) is reachable
+only as one side of a biological association: `GET /api/v1/biological_associations` returns
+its type and id, and with `extend[]=object` an `object_label` built as
+`"<part name>: <OTU label>"` (`app/helpers/anatomical_parts_helper.rb`,
+`label_for_anatomical_part`). That label is a display string, not data: the part name, its
+origin chain and its OTU id are not exposed, and `AnatomicalPart` has no `taxonomy`, so
+`extend[]=taxonomy` gives nothing for that side. The association filter does accept
+`anatomical_part_id[]` (`lib/queries/biological_association/filter.rb`).
+
+### Wishlist (what we would ask TaxonWorks for)
+
+Requests that would close a gap this project works around. Each points at the entry that
+records the gap; the evidence stays there, not here.
+
+| Request | Gap it closes |
+|---|---|
+| A v1 `anatomical_parts` endpoint (name, URI, origin chain, `cached_otu_id`) | "Anatomical parts cannot be fetched" — associations on anatomical parts can only be compared by display label |
+| Import of biological associations (e.g. `associatedTaxa`, or a DwC resource-relationship extension) | `associatedTaxa` in "DwC importer field gaps" — associations are entered by hand |
+| A DwC import path for `HumanObservation` → `FieldOccurrence` | "FieldOccurrence has no DwC import path" |
+| `PATCH` / `DELETE` for collection objects in the v1 API | "No update or delete via DwC or v1 API" |
+| `field_occurrence` as a Source-filter subquery, like `collection_object` | `lib/queries/query/filter.rb` `SUBQUERIES[:source]` lists `collection_object` but not `field_occurrence` (`development`, 2026-10-17), so sources cited on field occurrences cannot be reached from a field-occurrence filter. A bibliography modal reported to miss such citations (2026-10-17) may have this cause — not reproduced. |
+
 
 ## 5c. Syncing with TaxonWorks — the export contract (#149, in progress)
 
