@@ -1,0 +1,240 @@
+"""One link / verify mechanism for the three linkable vocabularies (spec "tw_links.py").
+
+A local term (tag, data-attribute term) or biological relationship may carry ONE link to
+a TaxonWorks keyword / predicate / biological relationship: ``tw_id`` + ``tw_name`` (TW's
+name as last fetched) + ``tw_host`` (the host the link was CONFIRMED on; NULL = not
+verified). The link is hard to earn and easy to lose: ``tw_host`` is written only when a
+fetch from that host returned this id with this name; anything else clears it. Nothing
+here runs on its own — every fetch is a user action (the launch sync is gone).
+
+Verified against SpeciesFileGroup/taxonworks @ 897f385:
+* ``GET /api/v1/controlled_vocabulary_terms?type=Keyword|Predicate`` — paged,
+  project-scoped (``config/routes/api_v1.rb:142``; ``controlled_vocabulary_terms_controller
+  .rb#api_index``; ``type`` filter ``lib/queries/controlled_vocabulary_term/filter.rb:29``).
+  Fields ``id, type, name, definition, uri, uri_relation, css_color``
+  (``app/views/controlled_vocabulary_terms/api/v1/_attributes.json.jbuilder:1``).
+* ``GET /api/v1/biological_relationships`` — paged, ordered by name
+  (``biological_relationships_controller.rb#api_index:20``); fields ``id, name,
+  inverted_name, …`` (``app/views/biological_relationships/api/v1/_attributes.json.jbuilder``).
+  Biological relationships have no colour column (``db/schema.rb``).
+"""
+from __future__ import annotations
+
+from dataclasses import dataclass
+
+import httpx
+from sqlalchemy import func
+from sqlalchemy.orm import Session
+
+import app.services.taxonworks as tw
+from app.models import AnnotationTerm, BiologicalRelationship
+from app.models.base import _utcnow
+from app.services import annotations as ann
+from app.services.taxonworks import TaxonWorksUnreachable
+
+KEYWORD = "keyword"
+PREDICATE = "predicate"
+RELATIONSHIP = "relationship"
+_CVT_TYPE = {KEYWORD: "Keyword", PREDICATE: "Predicate"}
+_TERM_KIND = {"tag": KEYWORD, "data_attribute": PREDICATE}
+_KIND_TERM = {v: k for k, v in _TERM_KIND.items()}
+_NOUN = {KEYWORD: "keyword", PREDICATE: "predicate", RELATIONSHIP: "relationship"}
+_TIMEOUT = httpx.Timeout(25.0)
+
+
+def _client() -> httpx.AsyncClient:
+    """Factory, so tests can substitute an ``httpx.MockTransport``."""
+    return httpx.AsyncClient(timeout=_TIMEOUT)
+
+
+@dataclass(frozen=True)
+class TwTerm:
+    kind: str
+    id: int
+    name: str
+    uri: str | None = None
+    css_color: object = None      # raw, unvalidated — see annotations.tw_css_color
+
+
+@dataclass(frozen=True)
+class VerifyOutcome:
+    row_id: int
+    name: str                     # the local name
+    state: str                    # verified | name_differs | not_found
+    tw_name: str | None           # TW's current name (None when not found)
+    color_warning: str | None
+
+
+def kind_of(row) -> str:
+    if isinstance(row, BiologicalRelationship):
+        return RELATIONSHIP
+    if isinstance(row, AnnotationTerm):
+        return _TERM_KIND[row.kind]
+    raise TypeError(f"not a linkable vocabulary row: {row!r}")
+
+
+def rows_of_kind(session: Session, kind: str) -> list:
+    if kind == RELATIONSHIP:
+        return (session.query(BiologicalRelationship)
+                .order_by(func.lower(BiologicalRelationship.name)).all())
+    return ann.list_terms(session, _KIND_TERM[kind])
+
+
+def linked_holder(session: Session, kind: str, tw_id: int, exclude=None):
+    """The local row of this kind already linked to ``tw_id``, if any."""
+    for row in rows_of_kind(session, kind):
+        if row.tw_id == tw_id and row is not exclude:
+            return row
+    return None
+
+
+def _check_named(row: dict, what: str) -> None:
+    if not isinstance(row.get("id"), int) or not str(row.get("name") or "").strip():
+        raise TaxonWorksUnreachable(f"{what} returned a row without an id or name.")
+
+
+async def fetch_candidates(kind: str) -> list[TwTerm]:
+    """The TaxonWorks list for one kind, complete or not at all."""
+    if kind in _CVT_TYPE:
+        expected = _CVT_TYPE[kind]
+        what = f"the TaxonWorks {expected} listing"
+
+        def check(row: dict) -> None:
+            if row.get("type") != expected:
+                raise TaxonWorksUnreachable(
+                    f"{what} returned a {row.get('type')!r} row — the type filter did not "
+                    f"apply. Treated as a lookup failure.")
+            _check_named(row, what)
+
+        async with _client() as client:
+            rows = await tw.fetch_all_pages(client, "/controlled_vocabulary_terms",
+                                            {"type": expected}, what=what, check_row=check)
+        terms = [TwTerm(kind, r["id"], str(r["name"]).strip(), r.get("uri") or None,
+                        r.get("css_color")) for r in rows]
+    elif kind == RELATIONSHIP:
+        what = "the TaxonWorks biological relationship listing"
+        async with _client() as client:
+            rows = await tw.fetch_all_pages(client, "/biological_relationships", {},
+                                            what=what,
+                                            check_row=lambda r: _check_named(r, what))
+        terms = [TwTerm(kind, r["id"], str(r["name"]).strip()) for r in rows]
+    else:
+        raise ValueError(f"unknown link kind {kind!r}")
+    return sorted(terms, key=lambda t: t.name.casefold())
+
+
+def _require_clean_tw_name(name: str) -> None:
+    if not name.strip() or any(ch in name for ch in ("\t", "\n", "\r")):
+        raise ValueError(f"TaxonWorks name {name!r} contains a tab or line break and "
+                         f"cannot become an export column.")
+
+
+def link(session: Session, row, tw_term: TwTerm, host: str) -> str | None:
+    """Link ``row`` to a term picked from a FRESH fetch, so it is verified at once.
+    Returns a colour warning (annotation terms only) or None."""
+    kind = kind_of(row)
+    if tw_term.kind != kind:
+        raise ValueError(f"cannot link a {_NOUN[kind]} to a TaxonWorks {_NOUN[tw_term.kind]}")
+    if not host:
+        raise ValueError("No TaxonWorks API base URL set — Settings → TaxonWorks connection.")
+    _require_clean_tw_name(tw_term.name)
+    holder = linked_holder(session, kind, tw_term.id, exclude=row)
+    if holder is not None:
+        raise ValueError(f"TaxonWorks {_NOUN[kind]} '{tw_term.name}' is already linked to "
+                         f"'{holder.name}'.")
+    row.tw_id = tw_term.id
+    row.tw_name = tw_term.name
+    row.tw_host = host
+    warning = None
+    if isinstance(row, AnnotationTerm):
+        row.css_color, warning = ann.tw_css_color(tw_term.css_color)
+    row.updated_at = _utcnow()
+    session.flush()
+    return warning
+
+
+def unlink(session: Session, row) -> None:
+    """The row becomes local only. An annotation term keeps its colour as a local one."""
+    row.tw_id = None
+    row.tw_name = None
+    row.tw_host = None
+    row.updated_at = _utcnow()
+    session.flush()
+
+
+def link_state(row, host: str) -> str:
+    if row.tw_id is None:
+        return "local_only"
+    if row.tw_host and row.tw_host == host:
+        return "verified"
+    return "not_verified"
+
+
+def apply_verification(session: Session, kind: str, candidates: list[TwTerm],
+                       host: str) -> list[VerifyOutcome]:
+    """Per linked row: same id + same name -> confirmed on ``host``; same id, other name
+    -> unconfirmed, user decides (``resolve_name_difference``); id unknown here ->
+    unconfirmed, link kept. The colour of an annotation term follows TW whenever the id
+    was found (spec "Term colour")."""
+    by_id = {c.id: c for c in candidates}
+    out: list[VerifyOutcome] = []
+    for row in rows_of_kind(session, kind):
+        if row.tw_id is None:
+            continue
+        cand = by_id.get(row.tw_id)
+        warning = None
+        if cand is None:
+            row.tw_host = None
+            state, tw_name = "not_found", None
+        else:
+            if isinstance(row, AnnotationTerm):
+                row.css_color, warning = ann.tw_css_color(cand.css_color)
+            tw_name = cand.name
+            if cand.name == row.tw_name:
+                row.tw_host, state = host, "verified"
+            else:
+                row.tw_host, state = None, "name_differs"
+        row.updated_at = _utcnow()
+        out.append(VerifyOutcome(row.id, row.name, state, tw_name, warning))
+    session.flush()
+    return out
+
+
+async def verify(session: Session, kind: str) -> list[VerifyOutcome]:
+    """Only on user request: one fetch from the configured host, then
+    ``apply_verification``. Raises ``TaxonWorksUnreachable`` naming the cause."""
+    host = tw.configured_host()
+    if not host:
+        raise TaxonWorksUnreachable(
+            "No TaxonWorks API base URL set — Settings → TaxonWorks connection.")
+    candidates = await fetch_candidates(kind)
+    return apply_verification(session, kind, candidates, host)
+
+
+def _local_name_taken(session: Session, row, name: str) -> bool:
+    if isinstance(row, AnnotationTerm):
+        return ann.name_taken(session, row.kind, name, exclude_id=row.id)
+    q = session.query(BiologicalRelationship).filter(
+        func.lower(BiologicalRelationship.name) == name.strip().lower(),
+        BiologicalRelationship.id != row.id)
+    return session.query(q.exists()).scalar()
+
+
+def resolve_name_difference(session: Session, row, choice: str, tw_name: str,
+                            host: str) -> None:
+    """The user's answer to ``name_differs`` — nothing is decided silently."""
+    if choice == "unlink":
+        unlink(session, row)
+        return
+    _require_clean_tw_name(tw_name)
+    if choice == "use_tw":
+        if _local_name_taken(session, row, tw_name):
+            raise ValueError(f"A local entry named '{tw_name}' already exists — merge or "
+                             f"rename it first.")
+        row.name = tw_name.strip()
+    elif choice != "keep_local":
+        raise ValueError(f"unknown choice {choice!r}")
+    row.tw_name = tw_name
+    row.tw_host = host
+    row.updated_at = _utcnow()
+    session.flush()

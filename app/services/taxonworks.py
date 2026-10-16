@@ -146,6 +146,89 @@ class PaginationTracker:
             )
 
 
+def configured_host() -> str:
+    """The host part (netloc) of the configured API base URL, e.g. ``sfg.taxonworks.org``
+    for ``https://sfg.taxonworks.org/api/v1``; ``""`` when no base URL is set.
+
+    The one value every TaxonWorks link is scoped to (annotation terms, relationships —
+    spec "The TaxonWorks link"), the same netloc the OTU provenance check compares
+    (``tw_sync.otu_instance_state``). Scheme and path are irrelevant to which instance
+    issued an id."""
+    base = get_config().tw_base.strip().rstrip("/")
+    return urlsplit(base).netloc if base else ""
+
+
+_RETRY_STATUS = (429, 502, 503, 504)
+_MAX_ATTEMPTS = 3
+_RETRY_BACKOFF = (0.5, 1.5)
+
+
+async def get_with_retry(client: httpx.AsyncClient, url: str, params: dict) -> httpx.Response:
+    """One GET, retried on a transient failure (rate limit, 502/503/504, timeout) — a
+    passing hiccup on this shared public server must not read as a real failure. Any
+    other error, or the last failed attempt, raises ``TaxonWorksUnreachable`` naming the
+    cause (``explain_tw_error``). Same discipline as ``tw_media_compare._get_page``."""
+    last_exc: Exception | None = None
+    for attempt in range(_MAX_ATTEMPTS):
+        try:
+            r = await client.get(url, params=params)
+            r.raise_for_status()
+            return r
+        except (httpx.TimeoutException, httpx.TransportError) as exc:
+            last_exc = exc
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code in _RETRY_STATUS:
+                last_exc = exc
+            else:
+                raise explain_tw_error(exc) from exc
+        if attempt < _MAX_ATTEMPTS - 1:
+            await asyncio.sleep(_RETRY_BACKOFF[min(attempt, len(_RETRY_BACKOFF) - 1)])
+    raise explain_tw_error(last_exc) from last_exc
+
+
+async def fetch_all_pages(client: httpx.AsyncClient, path: str, params: dict, *, what: str,
+                          check_row, per_page: int = 500) -> list[dict]:
+    """Every row of a paged index route, de-duplicated by ``id``.
+
+    ``check_row(row)`` re-verifies each row against the filter that was asked for and
+    raises ``TaxonWorksUnreachable`` when it does not match — unknown query params are
+    silently ignored (CLAUDE.md §5c), so a result is never self-evidently filtered.
+
+    Some index routes page **without an ORDER BY** (``data_attributes_controller.rb:50``,
+    ``controlled_vocabulary_terms_controller.rb:133`` @ 897f385), so the same row can come
+    back on two pages while another is skipped. Counting received rows would call that
+    complete; the distinct ids are counted against ``pagination-total`` instead."""
+    _require_configured()
+    tracker = PaginationTracker()
+    seen: dict[int, dict] = {}
+    page = 1
+    while True:
+        r = await get_with_retry(client, f"{_base()}{path}", {
+            **params, "per": per_page, "page": page, "project_token": _token()})
+        body = r.json()
+        if not isinstance(body, list) or not all(isinstance(x, dict) for x in body):
+            raise TaxonWorksUnreachable(
+                f"{what} did not return a list of rows — treated as a lookup failure, "
+                f"not as an empty result.")
+        for row in body:
+            check_row(row)
+            rid = row.get("id")
+            if not isinstance(rid, int):
+                raise TaxonWorksUnreachable(f"{what} returned a row without an id.")
+            seen[rid] = row
+        tracker.record_page(r, body)
+        if tracker.is_complete(body, per_page):
+            break
+        page += 1
+    tracker.check_complete(what=what)
+    if tracker.total is not None and len(seen) < tracker.total:
+        raise TaxonWorksUnreachable(
+            f"{what} returned {len(seen)} distinct rows of {tracker.total} — its pages "
+            f"are not stably ordered, so rows were repeated and others possibly skipped. "
+            f"Treated as a lookup failure; try again.")
+    return list(seen.values())
+
+
 def taxonpages_url(otu_id: int) -> str:
     return f"{get_config().taxonpages_base.rstrip('/')}/#/otus/{otu_id}"
 
