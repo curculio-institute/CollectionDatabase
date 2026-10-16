@@ -40,6 +40,8 @@ Re-grep line numbers before citing them in code.
 | When a row **reuses an existing collecting event**, only that row's *new* event **tags** are added; its event **data attributes are dropped** | `occurrence.rb:469` |
 | Biological associations cannot be imported via DwC at all | CLAUDE.md §5 |
 | Keyword/predicate listing with `id`, `name`, `uri`, `definition`: `GET /api/v1/controlled_vocabulary_terms?type=Keyword` (or `Predicate`), paged, project-scoped | `config/routes/api_v1.rb:142`; `controlled_vocabulary_terms_controller.rb#api_index`; `lib/queries/controlled_vocabulary_term/filter.rb` |
+| Every controlled-vocabulary term has a `css_color` (string, nullable); the API listing returns it (`json.extract! … :css_color`). **No format validation** — any string, not necessarily a hex colour | `db/schema.rb:640`; `app/views/controlled_vocabulary_terms/api/v1/_attributes.json.jbuilder:1` (rendered by `api/v1/index.json.jbuilder` from `api_index`); `app/models/controlled_vocabulary_term.rb` (validations `:40–50`, none on `css_color`) |
+| Biological relationships have **no** colour column | `db/schema.rb`, `create_table "biological_relationships"` |
 | Relationship listing with `id`, `name`, `inverted_name`: `GET /api/v1/biological_relationships` (no show endpoint) | `app/services/taxonworks.py::fetch_biological_relationships` |
 | Tags readable via `GET /api/v1/tags`, filters `keyword_id`, `tag_object_type`, `tag_object_id` (scalars or arrays) | `config/routes/api_v1.rb:179`; `lib/queries/tag/filter.rb` (`PARAMS`, `*_facet`) |
 | Data attributes readable via `GET /api/v1/data_attributes`, filters `controlled_vocabulary_term_id`, `attribute_subject_type`, `attribute_subject_id` | `config/routes/api_v1.rb:151`; `lib/queries/data_attribute/filter.rb` |
@@ -91,10 +93,28 @@ configured host; after switching instances every link reads as unconfirmed until
 | `name` | TEXT NOT NULL, the local name, trimmed non-empty; UNIQUE(`kind`, `name`) |
 | `allow_specimen`, `allow_event`, `allow_association` | INTEGER NOT NULL DEFAULT 0 CHECK IN (0,1) |
 | `tw_id`, `tw_name`, `tw_host` | the link, as above |
+| `css_color` | TEXT, nullable — the chip colour; CHECK NULL or `#rgb` / `#rrggbb` (hex digits, either case). Ownership: see "Term colour" below |
 | | UNIQUE(`kind`, `tw_id`) — two local terms never link to the same TW term (export would emit the same column twice); UNIQUE(`id`, `kind`) as the composite-FK target |
 
 The "allow" switches filter **what the picker offers** only. Turning one off later never
 removes or hides existing annotations and does not affect export.
+
+#### Term colour (`css_color`)
+
+Display only — never exported, never compared as a finding. Named after TW's column.
+
+- **Linked term → TaxonWorks owns the colour.** Linking copies the picked term's
+  `css_color`; every Verify overwrites it with the current TW value (TW blank → NULL). It
+  is **not editable locally** while linked — a local edit would be wiped by the next Verify.
+  This is TW → local display data only; nothing is ever written to TW.
+- **Local-only term → the user owns it.** Entered as text, `#rgb` or `#rrggbb`; no colour
+  picker. Anything else is refused with a message naming the value. Empty = no colour.
+- **Unlink keeps the last colour** as a local one.
+- **A TW value that is not `#rgb` / `#rrggbb` is never converted** (TW does not validate the
+  column, so it may hold `red` or garbage): the stored colour becomes NULL and the link /
+  Verify result says so — "TaxonWorks colour 'red' not usable". The link itself is unaffected.
+- No colour on `biological_relationship`: TW has none to mirror and nothing renders a
+  relationship as a chip (follow-up if wanted).
 
 ### `biological_relationship` (existing table)
 
@@ -135,9 +155,11 @@ and sandbox have been configured in the past. Today's host is not evidence.
   `relationship`. Paged; an oversized or short page is a **lookup failure**, never "the full
   list". Errors go through `taxonworks.explain_tw_error` and say which failure it is.
 - `link(session, row, tw_term, host)` — store `tw_id`, `tw_name`, `tw_host` from a term
-  picked out of a fresh fetch (so it is verified at once). Refused if another local term of
-  that kind already holds the id.
-- `unlink(session, row)` — clear all three; the term becomes local only.
+  picked out of a fresh fetch (so it is verified at once), and for annotation terms its
+  `css_color` (rules under "Term colour"). Refused if another local term of that kind
+  already holds the id.
+- `unlink(session, row)` — clear all three; the term becomes local only and keeps its
+  colour.
 - `verify(session, kind)` (async) — **only on user request.** One fetch from the configured
   host, then per linked row:
   - same id, same name → confirmed: `tw_host` = configured host;
@@ -147,6 +169,8 @@ and sandbox have been configured in the past. Today's host is not evidence.
     or **unlink**;
   - id unknown on this host → `tw_host` cleared, state `not found on this instance`; the
     link is never removed automatically.
+  - for annotation terms whose id was found, `css_color` := the TW value (unusable value →
+    NULL and reported), whatever the name outcome.
 - `link_state(row)` → persisted: `local_only` / `verified` / `not_verified`. The latest
   verify adds `name_differs` / `not_found` as detail on a `not_verified` row for the
   session; after a reload it reads `not verified` until verified again. Every non-verified
@@ -169,7 +193,10 @@ management UI today).
 
 - **Table:** name; type (tags/data attributes only); the three allow switches (tags/data
   attributes only); a **link chip** — `local only` (grey), `TaxonWorks ✓`, `not verified`,
-  `name differs: "…"`, `not found on this instance`; edit / merge / delete actions.
+  `name differs: "…"`, `not found on this instance`; a colour swatch (tags/data attributes
+  only); edit / merge / delete actions.
+- **Edit dialog colour:** a plain text input (`#rgb` / `#rrggbb`) with a live swatch, no
+  picker. Read-only with the note "from TaxonWorks" while the term is linked.
 - **Link dialog** (from the chip or the edit dialog): fetches the TW list of the matching
   kind, searchable; a TW term already linked to another local term is shown disabled with
   that term's name; pick → linked and verified. **Unlink** makes the term local only.
@@ -188,6 +215,11 @@ management UI today).
   still shows if already attached (marked) but cannot be newly added.
 - Record sheets (specimen, event): one "Annotations" line — tags as chips, data attributes
   as `name: value`. Hidden when empty.
+- **Colour:** a term with a `css_color` renders its chip (tag) or its name (data attribute)
+  in that colour — in the record sheets, the footer popup and the vocabulary table; text on
+  a coloured chip is black or white by the colour's luminance. No colour = the neutral chip.
+  (Inspired by the Curculionoidea TaxonWorks contributor docs, which colour keyword chips
+  from TW's `css_color`.)
 - Digitize standard, visiting and Mounting; Records. Not Import & Assign / Bulk import.
 
 ## Export
@@ -280,6 +312,9 @@ batchable route exists, event annotations are declared not compared
 - `tw_links`: link refuses a TW id held by another term; verify with a faked API — confirm,
   name differs (all three resolutions), not found (host cleared, link kept), short /
   oversized page as failure, error message names the cause.
+- Colour: CHECK accepts `#abc` / `#AABBCC`, rejects `red`, `#abcd`, `abc`; link copies the TW
+  colour; verify overwrites it (also on a name difference); TW blank → NULL; TW `red` →
+  NULL and reported; local edit refused while linked; unlink keeps the colour.
 - Removed launch sync: no relationship row changes on startup.
 - Export: columns only for used linked terms, header = `tw_name`, `true`/value cells, event
   annotations on every row, local-only absent and listed, association annotations absent,
