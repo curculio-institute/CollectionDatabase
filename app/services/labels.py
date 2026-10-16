@@ -959,7 +959,7 @@ def _grouped_html(groups: list[LabelGroup], printed_at: str,
                   paper: str | None = None) -> str:
     body = "".join(_group_html(g, names, editable) for g in groups if g.specimens)
     stamp = f'<div class="printed-at">Printed: {_e(printed_at)}</div>'
-    return (f"<html><head><style>{_grouped_css(borders, backend, paper)}</style></head>"
+    return (f"<!doctype html><html><head><style>{_grouped_css(borders, backend, paper)}</style></head>"
             f'<body>{stamp}<div class="sheet">{body}</div></body></html>')
 
 

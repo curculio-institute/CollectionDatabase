@@ -57,12 +57,14 @@ _RETRY_BACKOFF_S = (3, 10, 30)  # waited before attempts 2, 3, 4
 #     is drawn at its enclosing pixel rect); on the table instead, lanes survive but
 #     rows 2+ of a multi-row grid stay wrong. (`scale(1)`, `rotate(0)`, `translateZ(0)`
 #     and `will-change` do not anchor at all.)
-# Side effect, known: the finer grid also un-rounds the line height, so text lines sit
-# 0.13 mm further apart and a 3-line determination label is 5.9 mm tall, not 5.56 mm.
-# That exposes an older fact rather than causing it: the sheet has no doctype, so
-# Chromium renders it in quirks mode, where a table does not inherit `line-height` —
-# the labels print with the font's `normal` line height, not the designed 1.41 mm that
-# WeasyPrint and the (standards-mode) on-screen preview both use.
+# The finer grid also un-rounds the line height, which exposed that the sheet had no
+# doctype: Chromium rendered it in quirks mode, where a table does not inherit
+# `line-height`, so labels printed with the font's `normal` line height (a 3-line
+# determination label 5.9 mm tall). `labels._grouped_html` now emits `<!doctype html>`.
+# Measured 2026-10-16 (same sheets, Chromium vs WeasyPrint): line pitch 1.39-1.46 mm vs
+# 1.41 mm, 3-line determination label 4.96-5.03 mm vs 5.18 mm, top clearance spread
+# 0.07 mm, all cut lanes 0.4 mm, the 450-label grid still 2 pages. Chromium sets the
+# first baseline ~0.2 mm higher than WeasyPrint (font-metric difference; nothing clips).
 _PRINT_GRID = 4
 
 

@@ -445,3 +445,12 @@ def test_label_css_carries_no_transform_workaround():
     from app.services import labels as L
     assert "transform" not in L._grouped_css(backend="chromium")
     assert "transform" not in L._grouped_css(backend="weasyprint")
+
+
+def test_grouped_sheet_is_standards_mode():
+    """Without a doctype Chromium renders the sheet in quirks mode, where a table does not
+    inherit `line-height` — labels then print with the font's `normal` line height instead
+    of the designed _LINE_H (see pdf_backend._PRINT_GRID)."""
+    from app.services import labels as L
+    html = L._grouped_html([], "2026-10-16")
+    assert html.lower().startswith("<!doctype html>")
