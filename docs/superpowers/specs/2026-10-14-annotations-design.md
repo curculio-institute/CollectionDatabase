@@ -222,6 +222,10 @@ management UI today).
   A linked entry cannot be re-linked — unlink first (enforced in `tw_links.link`; a chip
   click on a linked row only explains this). Linking an unlinked entry whose name differs
   from the picked TW term asks *Keep local name* / *Use TaxonWorks name* (Cancel aborts).
+- **Add from TaxonWorks** (terms) opens one dialog with a *Tags* tab (keywords) and a *Data
+  attributes* tab (predicates), each with its own search and list, fetched lazily on first
+  view; the new term's kind is the tab it is picked in, not the Type select (which only
+  governs *Add local*). Linking an existing row shows one list of its own kind.
 - **Confirmations and hints:** Unlink and Delete ask first (Delete is still refused while in
   use); every row action and the chip carry a real tooltip.
 

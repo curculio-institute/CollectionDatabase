@@ -231,30 +231,22 @@ def _build_section(session_factory, *, terms: bool) -> None:
                 _write(lambda s: bio.relationship_vocab.delete(s, int(row["id"])), "Deleted.")
 
         # ── link dialog ─────────────────────────────────────────────────────
-        async def _open_link(kind: str, row_id: int | None,
-                             create: dict | None = None) -> None:
-            """Link an existing row (``row_id``) or create one from a TW term (``create``
-            holds the new term's allow flags)."""
+        def _open_link(kinds_shown: tuple[str, ...], row_id: int | None,
+                       create: dict | None = None) -> None:
+            """Link an existing row (``row_id``; one list of its own kind) or create one
+            from a TW term picked in the Tags / Data attributes tab (``create`` holds the
+            new term's allow flags). Each kind's candidates are fetched lazily, the first
+            time its panel is shown."""
             host = tw_svc.configured_host()
-            try:
-                cands = await links.fetch_candidates(kind)
-            except tw_svc.TaxonWorksUnreachable as exc:
-                ui.notify(str(exc), type="negative", multi_line=True, timeout=8000)
-                return
-            with session_factory() as s:
-                held = {r.tw_id: r.name for r in links.rows_of_kind(s, kind)
-                        if r.tw_id is not None and r.id != row_id}
+            tab_label = {links.KEYWORD: "Tags", links.PREDICATE: "Data attributes"}
 
             with ui.dialog() as dlg, ui.card().classes("w-[540px]"):
-                ui.label(f"Link to a TaxonWorks {kind}").classes("section-label mb-1")
+                ui.label("Link to a TaxonWorks term" if len(kinds_shown) > 1 else
+                         f"Link to a TaxonWorks {kinds_shown[0]}").classes("section-label mb-1")
                 ui.label(f"From {host}. Picking a term links it and confirms it at once.") \
                     .classes("text-xs").style("color:var(--tp-base-soft)")
-                search = ui.input(placeholder="Search TaxonWorks…") \
-                    .props("dense outlined clearable debounce=150").classes("w-full mt-2")
-                box = ui.element("div").classes("w-full mt-1 overflow-y-auto") \
-                    .style("max-height:20rem")
 
-                async def _pick(c: links.TwTerm) -> None:
+                async def _pick(c: links.TwTerm, kind: str) -> None:
                     warning: list[str | None] = [None]
                     rename_to: str | None = None
                     if row_id is not None:
@@ -293,36 +285,91 @@ def _build_section(session_factory, *, terms: bool) -> None:
                         ui.notify(warning[0], type="warning", multi_line=True, timeout=8000)
                     dlg.close()
 
-                def _render() -> None:
-                    needle = (search.value or "").strip().casefold()
-                    hits = [c for c in cands if needle in c.name.casefold()]
-                    box.clear()
-                    with box:
-                        if not hits:
-                            ui.label("No TaxonWorks term matches.").classes("text-sm px-3 py-2") \
-                                .style("color:var(--tp-base-soft)")
-                        for c in hits[:200]:
-                            holder = held.get(c.id)
-                            el = ui.element("div").classes(
-                                "w-full flex items-center gap-2 px-3 py-2 rounded "
-                                + ("opacity-50" if holder else
-                                   "cursor-pointer hover:bg-slate-50 dark:hover:bg-white/5"))
-                            with el:
-                                colour, _w = ann.tw_css_color(c.css_color)
-                                ui.html(chip_html(c.name, colour))
-                                ui.label(f"id {c.id}").classes("text-xs") \
-                                    .style("color:var(--tp-base-soft)")
-                                if holder:
-                                    ui.label(f"linked to '{holder}'").classes("text-xs ml-auto")
-                            if not holder:
-                                el.on("click", lambda _, c=c: _pick(c))
+                def _panel(kind: str) -> callable:
+                    """Build one kind's search + list; return its async ``load``."""
+                    search = ui.input(placeholder="Search TaxonWorks…") \
+                        .props("dense outlined clearable debounce=150").classes("w-full mt-2")
+                    box = ui.element("div").classes("w-full mt-1 overflow-y-auto") \
+                        .style("max-height:20rem")
+                    state: dict = {"cands": None, "held": {}, "loading": False}
 
-                search.on_value_change(lambda _: _render())
-                _render()
+                    def _note(text: str, color: str = "var(--tp-base-soft)") -> None:
+                        box.clear()
+                        with box:
+                            ui.label(text).classes("text-sm px-3 py-2").style(f"color:{color}")
+
+                    def _render() -> None:
+                        if state["cands"] is None:
+                            return
+                        needle = (search.value or "").strip().casefold()
+                        hits = [c for c in state["cands"] if needle in c.name.casefold()]
+                        if not hits:
+                            _note("No TaxonWorks term matches.")
+                            return
+                        box.clear()
+                        with box:
+                            for c in hits[:200]:
+                                holder = state["held"].get(c.id)
+                                el = ui.element("div").classes(
+                                    "w-full flex items-center gap-2 px-3 py-2 rounded "
+                                    + ("opacity-50" if holder else
+                                       "cursor-pointer hover:bg-slate-50 dark:hover:bg-white/5"))
+                                with el:
+                                    colour, _w = ann.tw_css_color(c.css_color)
+                                    ui.html(chip_html(c.name, colour))
+                                    ui.label(f"id {c.id}").classes("text-xs") \
+                                        .style("color:var(--tp-base-soft)")
+                                    if holder:
+                                        ui.label(f"linked to '{holder}'") \
+                                            .classes("text-xs ml-auto")
+                                if not holder:
+                                    el.on("click", lambda _, c=c: _pick(c, kind))
+
+                    async def load() -> None:
+                        if state["cands"] is not None or state["loading"]:
+                            return
+                        state["loading"] = True
+                        _note("Loading from TaxonWorks…")
+                        try:
+                            cands = await links.fetch_candidates(kind)
+                        except tw_svc.TaxonWorksUnreachable as exc:
+                            _note(str(exc), "var(--q-negative)")
+                            return
+                        except Exception as exc:
+                            _note(f"Could not load: {exc}", "var(--q-negative)")
+                            return
+                        finally:
+                            state["loading"] = False
+                        with session_factory() as s:
+                            state["held"] = {r.tw_id: r.name
+                                             for r in links.rows_of_kind(s, kind)
+                                             if r.tw_id is not None and r.id != row_id}
+                        state["cands"] = cands
+                        _render()
+
+                    search.on_value_change(lambda _: _render())
+                    return load
+
+                loaders: dict[str, callable] = {}
+                if len(kinds_shown) > 1:
+                    with ui.tabs(value=kinds_shown[0]).props("dense align=left") as tabs:
+                        for k in kinds_shown:
+                            ui.tab(k, label=tab_label[k]).props("no-caps")
+                    with ui.tab_panels(tabs, value=kinds_shown[0]).classes("w-full"):
+                        for k in kinds_shown:
+                            with ui.tab_panel(k).classes("p-0"):
+                                loaders[k] = _panel(k)
+
+                    async def _on_tab(e) -> None:
+                        await loaders[e.value]()
+                    tabs.on_value_change(_on_tab)
+                else:
+                    loaders[kinds_shown[0]] = _panel(kinds_shown[0])
                 with ui.row().classes("w-full justify-end mt-2"):
                     ui.button("Cancel", on_click=dlg.close).props("flat no-caps")
             dlg.on_value_change(lambda e: dlg.delete() if not e.value else None)
             dlg.open()
+            ui.timer(0.05, loaders[kinds_shown[0]], once=True)
 
         # ── verify + name-differs resolution ────────────────────────────────
         def _open_name_differs(outcomes: list[links.VerifyOutcome]) -> None:
@@ -528,7 +575,7 @@ def _build_section(session_factory, *, terms: bool) -> None:
                 ui.notify(f"Linked to TaxonWorks '{row['tw_name']}'. Unlink it first to "
                           f"link another term.", type="info")
                 return
-            await _open_link(row["link_kind"], int(row["id"]))
+            _open_link((row["link_kind"],), int(row["id"]))
 
         table.on("link", lambda e: _link_clicked(e.args))
         table.on("unlink", lambda e: _unlink(e.args))
@@ -564,11 +611,18 @@ def _build_section(session_factory, *, terms: bool) -> None:
                 if _write(fn, "Added."):
                     add_name.value = ""
 
-            async def _add_from_tw() -> None:
-                kind = _LINK_KIND[add_kind.value] if terms else links.RELATIONSHIP
-                await _open_link(kind, None, create=_flags() if terms else None)
+            def _add_from_tw() -> None:
+                # Terms: the dialog has a Tags and a Data attributes tab; the kind comes
+                # from the tab a term is picked in, not from the Type select.
+                _open_link((links.KEYWORD, links.PREDICATE) if terms
+                           else (links.RELATIONSHIP,), None,
+                           create=_flags() if terms else None)
 
             ui.button("Add local", icon="add", on_click=_add_local) \
                 .props("flat no-caps color=secondary")
+        with ui.row().classes("w-full items-center gap-2"):
             ui.button("Add from TaxonWorks", icon="cloud_download", on_click=_add_from_tw) \
                 .props("flat no-caps color=secondary")
+            if terms:
+                ui.label("Pick tags or data attributes in the dialog.").classes("text-xs") \
+                    .style("color:var(--tp-base-soft)")
