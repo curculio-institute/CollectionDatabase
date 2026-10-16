@@ -16,6 +16,23 @@ import html as _html
 from nicegui import ui
 
 import app.ui.record_summary as rs
+from app.ui.annotation_chips import add_chip_css, chip_html
+
+
+def facet_value_html(kind: str, label: str, key=None, css_color: str | None = None,
+                     local: bool = False) -> str:
+    """The value part of a suggestion row / chip. Annotation facets show the term as a
+    chip in its colour (with a "local" badge when unlinked); everything else is the plain
+    escaped label."""
+    if kind == "annotation_term":
+        return chip_html(label, css_color, local_only=local)
+    if kind == "annotation_value" and isinstance(key, (list, tuple)) and len(key) == 2:
+        value = str(key[1])
+        suffix = f" = {value}"
+        name = label[:-len(suffix)] if label.endswith(suffix) else label
+        return (f'<span class="ann-da">{chip_html(name, css_color, local_only=local)}'
+                f'= {_html.escape(value)}</span>')
+    return f"<span>{_html.escape(label)}</span>"
 
 
 def _iso_end(d: str) -> str:
@@ -293,6 +310,7 @@ def _carry(accum: list[tuple[int, int]], years: list[int]) -> list[int]:
 def build_explore_panel(session_factory, *, on_open_specimen, on_open_event) -> dict:
     ui.add_head_html(_CSS)
     ui.add_head_html(rs.CSS)
+    add_chip_css()                       # annotation facets render as coloured term chips
     # ECharts renders to canvas, so it can't inherit the app's `.dark` CSS theme — its
     # legend/axis text stays dark and is unreadable in dark mode. Re-theme every chart
     # instance from the current theme, and again whenever the theme toggles.
@@ -365,15 +383,12 @@ def build_explore_panel(session_factory, *, on_open_specimen, on_open_event) -> 
                 item = ui.element("div").classes("ex-item")
                 with item:
                     ui.html(f'<span class="ex-tag">{_html.escape(f.tag)}</span>'
-                            f'<span>{_html.escape(f.label)}</span>')
+                            + facet_value_html(f.kind, f.label, f.key, f.css_color, f.local))
                 item.on("click", lambda _, fc=f, gg=g: _add_chip(gg, fc))
         drop.style("display:block")
 
     def _add_chip(g, f):
-        chip = {"kind": f.kind, "label": f.label, "key": f.key, "tag": f.tag}
-        if getattr(f, "null", False):
-            chip["null"] = True
-        g["facets"].append(chip)
+        g["facets"].append(ex_svc.chip_dict(f))
         state["dash_dates"] = None       # a changed filter re-applies the smart date default
         _render_groups()
         _refresh()
@@ -548,7 +563,9 @@ def build_explore_panel(session_factory, *, on_open_specimen, on_open_event) -> 
                         chip = ui.element("div").classes("ex-chip")
                         with chip:
                             ui.html(f'<span class="ex-tag">{_html.escape(f["tag"])}</span>'
-                                    f'<span>{_html.escape(f["label"])}</span>')
+                                    + facet_value_html(f["kind"], f["label"], f.get("key"),
+                                                       f.get("css_color"),
+                                                       bool(f.get("local"))))
                             ui.html('<span class="ex-x" title="Remove">✕</span>').on(
                                 "click", lambda _, gg=g, idx=i: _remove_chip(gg, idx))
                     # The operator shows from the FIRST chip — NOT applies to a single
