@@ -210,7 +210,7 @@ management UI today).
   only); edit / merge / delete actions.
 - **Edit dialog colour:** a plain text input (`#rgb` / `#rrggbb`) with a live swatch, no
   picker. Read-only with the note "from TaxonWorks" while the term is linked.
-- **Link dialog** (from the chip or the edit dialog): fetches the TW list of the matching
+- **Link dialog** (from the chip or the row's Link action): fetches the TW list of the matching
   kind, searchable; a TW term already linked to another local term is shown disabled with
   that term's name; pick → linked and verified. **Unlink** makes the term local only.
 - **Add:** a local term by name, or **from TaxonWorks** — creates the term with the TW name,
@@ -226,8 +226,9 @@ management UI today).
   attributes* tab (predicates), each with its own search and list, fetched lazily on first
   view; the new term's kind is the tab it is picked in, not the Type select (which only
   governs *Add local*). Linking an existing row shows one list of its own kind.
-- **Confirmations and hints:** Unlink and Delete ask first (Delete is still refused while in
-  use); every row action and the chip carry a real tooltip.
+- **Confirmations and hints:** Unlink asks first. Delete of an unused entry asks first; an
+  entry still in use shows the refusal with its usage count instead of asking (the service
+  refuses it anyway). Every row action and the chip carry a real tooltip.
 
 ### Entering annotations
 
@@ -241,6 +242,19 @@ management UI today).
   record already has with another value refuses the Save, naming both values; the same
   value is a no-op. Deferred (Records) edits replace the record's set. Saved association
   rows in Records use the bound mode, like the media and identifier buttons beside them.
+- **Save stop — event annotations on a reused event** (Digitize and Mounting): selecting an
+  existing event makes its form read-only and hides the annotation button, so staged event
+  annotations could no longer be seen or removed. When any are staged and the save targets
+  an existing event, Save asks (same shape as the "Entered but not added" stop): *Add
+  annotations to an existing event?* naming the count, the event id and how many specimens
+  use it — *Save without them* (clears them, saves) / *Add them to event #id*; Cancel aborts
+  the save. A new event asks nothing.
+- **Values TaxonWorks would rewrite are refused** (`annotations.clean_value`, service only;
+  the DB CHECK is unchanged): TW's importer runs `normalize_value!` on every cell — strips
+  edge whitespace incl. NBSP and squeezes repeated spaces (taxonworks@897f385
+  `app/models/dataset_record/darwin_core.rb:91-94`) — so such a value would be a permanent
+  `value_differs` in Compare. A value with repeated spaces, a non-breaking space or any
+  other non-ASCII whitespace is refused, naming it; nothing is normalised silently.
 - Record sheets (specimen, event): one "Annotations" line — tags as chips, data attributes
   as `name: value`. Hidden when empty.
 - **Colour:** a term with a `css_color` renders its chip (tag) or its name (data attribute)
