@@ -335,7 +335,7 @@ def build_explore_panel(session_factory, *, on_open_specimen, on_open_event) -> 
     # default; the user can add past determinations and/or the frozen verbatim text.
     state = {"groups": [{"op": "and", "facets": []}], "view": "taxa",
              "dash_compare": False, "dash_dates": None, "id_scope": {"current"}}
-    _PLACEHOLDER = "Search taxa, localities, collectors, collections — or type NULL for missing values…"
+    _PLACEHOLDER = "Search taxa, localities, collectors, collections, tags — or type NULL for missing values…"
 
     def _all_facets():
         return [f for g in state["groups"] for f in g["facets"]]

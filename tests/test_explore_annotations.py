@@ -167,3 +167,38 @@ def test_suggestion_html_shows_term_colour_and_local_badge():
     html = facet_value_html("annotation_value", "Altitude = 350 m", [3, "350 m"], None, False)
     assert ">Altitude<" in html and "350 m" in html and "local" not in html
     assert facet_value_html("taxon", "A<b>", 1) == "<span>A&lt;b&gt;</span>"
+
+
+def test_association_matches_its_subject_never_its_object_specimen(session):
+    from app.models import BiologicalAssociation
+    tag = make_term(session, "tag", "Reared", specimen=False, association=True)
+    _assoc(session, make_specimen(session, "EXA-0"))           # ensures the relationship row
+    rel = session.query(BiologicalRelationship).filter_by(name="feeds on").one()
+    a = make_specimen(session, "EXA-A")
+    b = make_specimen(session, "EXA-B")
+    ba = BiologicalAssociation(biological_relationship_id=rel.id,
+                               subject_collection_object_id=a.id,
+                               object_collection_object_id=b.id,
+                               created_at=_utcnow(), updated_at=_utcnow())
+    session.add(ba)
+    session.flush()
+    ann.set_annotations(session, "association", ba.id, [AnnotationItem(tag.id)])
+    chip = _chip(_facet(session, "reared", "annotation_term", "Reared"))
+    assert _cats(session, [chip]) == {"EXA-A"}
+    assert _cats(session, [{"op": "not", "facets": [chip]}]) == {"EXA-0", "EXA-B"}
+
+
+def test_value_facets_are_capped_per_term(session):
+    da = make_term(session, "data_attribute", "Depth")
+    other = make_term(session, "data_attribute", "Depth class")
+    for i in range(8):
+        co = make_specimen(session, f"EXD-{i}")
+        ann.set_annotations(session, "specimen", co.id, [AnnotationItem(da.id, f"{i} cm"),
+                                                         AnnotationItem(other.id, f"c{i}")])
+    vals = [f for f in ex.search_facets(session, "depth") if f.kind == "annotation_value"]
+    per_term = {}
+    for f in vals:
+        per_term[f.key[0]] = per_term.get(f.key[0], 0) + 1
+    assert per_term == {da.id: 5, other.id: 5}
+    # a value-specific search still reaches a value beyond the first five
+    assert _facet(session, "7 cm", "annotation_value", "Depth = 7 cm")

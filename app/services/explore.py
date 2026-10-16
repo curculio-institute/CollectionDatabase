@@ -97,6 +97,7 @@ class Facet:
 
 
 _ANN_TAG = {"tag": "Tag", "data_attribute": "Data attribute"}
+_VALUES_PER_TERM = 5   # value facets offered per data-attribute term
 
 
 def chip_dict(f: Facet) -> dict:
@@ -189,7 +190,17 @@ def search_facets(session: Session, term: str, limit: int = 25) -> list[Facet]:
           .distinct())
     for tok in toks:
         vq = vq.filter(hay.ilike(f"%{tok}%"))
-    for t, value in vq.order_by(AnnotationTerm.name, Annotation.value).limit(limit).all():
+    # At most _VALUES_PER_TERM values per term, so typing just a term's name does not push
+    # every other suggestion out of the dropdown; typing part of a value narrows further.
+    per_term: dict[int, int] = defaultdict(int)
+    n_values = 0
+    for t, value in vq.order_by(AnnotationTerm.name, Annotation.value).all():
+        if n_values >= limit:
+            break
+        if per_term[t.id] >= _VALUES_PER_TERM:
+            continue
+        per_term[t.id] += 1
+        n_values += 1
         out.append(Facet("annotation_value", f"{t.name} = {value}", [t.id, value],
                          "Data attribute", css_color=t.css_color, local=t.tw_id is None))
 
