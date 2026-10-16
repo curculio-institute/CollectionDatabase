@@ -1265,6 +1265,18 @@ The dropdown lists `vocab.entries()` (one item per DB row), never `options()` â€
 
 ---
 
+## Annotation chips (`annotation_chips.py`)
+
+Annotations show as chips on the condensed record sheets; the footer button that edits them
+is the `sell` icon (`annotation_panel.py`, same bound / staged structure as the media button).
+
+- **Colour:** the chip background is the term's `css_color`; text is black or white by the
+  background's luminance.
+- **No colour:** a neutral chip.
+- **Unlinked terms** carry a small "local" badge; a term linked to TaxonWorks does not.
+
+---
+
 ## TaxonWorks tab â€” the classification flow diagram
 
 The Collections step shows **only the working collection** (TaxonWorks takes one namespace

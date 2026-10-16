@@ -131,6 +131,9 @@ Schema is in production use (migrations through 0072). Rules that apply everywhe
   the one primitive `taxa.expand_taxon_scope`. `merge_taxa` is de-duplication, not synonymy.
 - **Ranks are code-specific** (`RANKS_BY_CODE`); `dwc:nomenclaturalCode` is NOT NULL and is
   inherited or read from the source, never guessed. Subgenus interpolation is ICZN-only.
+- **Annotations:** local `annotation_term` vocabulary with an optional ONE TaxonWorks link;
+  `tw_host` is earned by a fetch, never assumed; `tw_links.py` is the single owner of link /
+  verify for terms and relationships.
 - **Media** is copied into a content-addressed store; asset metadata is applied only when the
   `media` row is created; commit first, unlink second.
 - **Privacy:** `confidential` on person / specimen / event means **drop the record, never

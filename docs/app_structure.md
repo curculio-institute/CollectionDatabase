@@ -91,6 +91,14 @@ arrow-key event, chip styling) is design.md's concern → "Digitize layout modes
 | `dwc_export.py` | DwC export (#149): `export_decision` (the single owner of "may this specimen leave the building, and with which fields blanked" — read by both the comparison and the writer, so they cannot disagree), `occurrence_row` (the projection), `export_occurrences` (validate + write the TSV). See §5c. |
 | `tw_sync.py` | TaxonWorks sync (#149): `check_names` (the pre-flight gating any export), `taxa_to_export`, `otu_instance_state` / `reconcile_otu_ids` (per-instance OTU ids, verified in reverse). Read-only except `reconcile_otu_ids`. |
 | `batch_ops.py` | Batch tools (#78): `fetch_by_taxon` / `match_catalog_numbers` (both **scoped to a working `repository_id`**) + `apply_disposition` / `apply_repository`. **Cross-collection safety is structural** — `_load_in_scope` re-asserts every specimen belongs to the working collection before any write, so a bulk op can never touch a specimen held in another collection. `catalog_number` is never changed. |
+| `annotations.py` | Annotations: the local `annotation_term` vocabulary (tags and data attributes, allowed targets), colour and value validation, `set`/`add` annotations on specimens, events and associations, term merge rules. |
+| `tw_links.py` | The single owner of link / fetch / unlink / verify for TW keywords, data-attribute predicates and biological relationships. `tw_host` is stamped from the fetch, never assumed. The launch sync is gone; verification is explicit. |
+| `annotation_export.py` | `TW:Tag` / `TW:DataAttribute` columns for the DwC export, plus the term pre-flight that blocks the download. |
+| `tw_annotation_compare.py` | Compare for annotations (TaxonWorks tab). |
+| `app/ui/annotation_panel.py` | The `sell`-icon footer button + popup (staged / deferred / bound). |
+| `app/ui/annotation_chips.py` | Annotation chips on record sheets (see design.md "Annotation chips"). |
+| `app/ui/tw_vocab_section.py` | The two Controlled Vocabularies sub-tabs (Tags & data attributes, Biological relationships). |
+| `app/ui/merge_target_list.py` | Shared merge-target picker. |
 
 ### Data safety (crash recovery + unsaved-changes guard) — decided
 
