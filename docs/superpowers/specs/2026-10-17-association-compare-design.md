@@ -40,7 +40,7 @@ read-only. Re-grep line numbers before citing them in code.
 |---|---|
 | `GET /api/v1/biological_associations/basic` returns, per association: `id`, `subject{id,type,label,…}`, `object{id,type,label,…}`, `subject_otu_id`, `object_otu_id`, `relationship` (**name only**), ordered by `biological_associations.id` | `config/routes/api_v1.rb:127`; `biological_associations_controller.rb` `api_index_basic`; `app/views/biological_associations/api/v1/basic.json.jbuilder` |
 | `GET /api/v1/biological_associations` returns `biological_relationship_id`, `biological_association_subject_type/_id`, `biological_association_object_type/_id` | `api_v1.rb:128`; `api/v1/_base_attributes.json.jbuilder` |
-| Both accept the association filter, incl. `collection_object_id[]` and `collection_object_as_subject_or_as_object=true` | `lib/queries/biological_association/filter.rb` `PARAMS` |
+| Both accept the association filter; `collection_object_id[]` alone matches the specimen as subject **or** object (`collection_object_as_subject_or_as_object` only applies to a nested collection-object query — not used) | `lib/queries/biological_association/filter.rb` (`attr_accessor :collection_object_id` comment; `subject_object_facet` unions subjects and objects) |
 | An anatomical-part side carries the **part's** id and type, but `*_otu_id` is the OTU at the top of its origin chain | probe: JJPC-00102 → association 321383, object `AnatomicalPart 687`, label `"rhizome: Typha L."`, `object_otu_id 1471869` |
 | `GET /api/v1/otus?otu_id[]=…` returns rows with `id`, `taxon_name_id` | probe: 1471869 → 1655474, 734711 → 835937 |
 | `GET /api/v1/taxon_names?taxon_name_id[]=…` returns `id`, `cached` (no authorship), `cached_author_year`, `rank` | probe: 1655474 → `Typha`, `L.`, genus |
@@ -142,8 +142,7 @@ compared", rather than as *To add* or *Only on TaxonWorks*.
 ## Fetching (all read-only, through `taxonworks.get_with_retry` / `fetch_all_pages`)
 
 1. `/biological_associations/basic` and `/biological_associations`, each with
-   `collection_object_id[]` = a batch of ≤ 100 anchor ids and
-   `collection_object_as_subject_or_as_object=true`, all pages.
+   `collection_object_id[]` = a batch of ≤ 100 anchor ids (subject or object), all pages.
 2. `/otus?otu_id[]=` for the distinct `*_otu_id` of the other sides, batched.
 3. `/taxon_names?taxon_name_id[]=` for the distinct `taxon_name_id`s, batched.
 4. `/tags` and `/data_attributes` with `BiologicalAssociation` and the TaxonWorks association
