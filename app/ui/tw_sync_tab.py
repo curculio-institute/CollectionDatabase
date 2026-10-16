@@ -94,13 +94,14 @@ from nicegui import ui
 from sqlalchemy.orm import selectinload
 
 import app.services.identifiers as id_svc
+import app.services.tw_annotation_compare as tw_annotation_compare
 import app.services.repositories as repo_svc
 import app.services.taxonworks as tw_svc
 import app.services.tw_compare as tw_compare
 import app.services.tw_media_compare as tw_media_compare
 from app.config import get_config, save_config
 from app.models import CollectingEvent, CollectionObject, Taxon, TaxonDetermination
-from app.services import dwc_export, taxa as taxa_svc, tw_sync
+from app.services import annotation_export, dwc_export, taxa as taxa_svc, tw_sync
 from app.services.batch_ops import descendant_taxon_ids
 from app.ui.taxon_search import build_taxon_search
 
@@ -474,7 +475,7 @@ def build_tw_sync_tab(session_factory, refreshers: dict | None = None,
     # Export step's button for a *different* one. `repo_id`/`repo_code` is the Export
     # step's working collection.
     state: dict = {
-        "result": None, "checks": None, "repo_id": None, "repo_code": "",
+        "result": None, "checks": None, "term_checks": None, "repo_id": None, "repo_code": "",
         "compare": {}, "checking_repo": None,
         # The last reconcile's `UnvouchedTaxon` rows — the names still holding an id
         # this instance would not vouch for, kept so the list stays on screen and can
@@ -602,6 +603,60 @@ def build_tw_sync_tab(session_factory, refreshers: dict | None = None,
                         f"{tw_svc.web_base()}/tasks/nomenclature/new_taxon_name",
                         new_tab=True,
                     ).classes("text-xs")
+
+    _ANN_CATEGORY = {
+        "missing_on_tw": "Missing on TaxonWorks — add it there by hand (an export cannot "
+                         "update a record already uploaded)",
+        "only_on_tw": "Only on TaxonWorks",
+        "value_differs": "Value differs",
+        "unlinked_on_tw": "On TaxonWorks under a term not linked here",
+    }
+
+    def _render_annotation_results(ann_result) -> None:
+        """Spec "Compare": diagnostic only — annotation divergence cannot be repaired by
+        exporting again (CREATE-ONLY)."""
+        if ann_result is None:
+            ui.label("Annotations were not checked.").classes("text-xs mt-2") \
+                .style("color:var(--tp-base-soft)")
+            return
+        ui.label("Annotations").classes("text-sm font-semibold mt-3")
+        if not ann_result.findings:
+            ui.label(f"No differences across {ann_result.checked_count} specimen(s) on "
+                     f"TaxonWorks.").classes("text-xs").style("color:var(--tp-base-soft)")
+        for category, title in _ANN_CATEGORY.items():
+            rows = [f for f in ann_result.findings if f.category == category]
+            if not rows:
+                continue
+            with ui.expansion(f"{title} ({len(rows)})").classes("w-full"):
+                for f in rows:
+                    vals = " · ".join(x for x in (
+                        f"here: {f.local_value}" if f.local_value else "",
+                        f"TaxonWorks: {f.tw_value}" if f.tw_value else "") if x)
+                    with ui.row().classes("items-center gap-2"):
+                        ui.label(f"{id_svc.catalog_label(f.catalog_number)} · {f.target} · "
+                                 f"{f.name}" + (f" — {vals}" if vals else "")) \
+                            .classes("text-xs")
+                        # Both ends, like `diverged` rows (spec "Compare"): the local record
+                        # via the same Explore hand-off the other result groups use, and
+                        # the TW object in its comprehensive editor.
+                        ui.button("show here", icon="open_in_new",
+                                  on_click=lambda _, c=f.catalog_number: _open_catalog_numbers(
+                                      [c], f"Annotation difference — {c}")) \
+                            .props("flat dense no-caps size=sm")
+                        ui.link("open in TaxonWorks", tw_compare.edit_url(f.tw_object_id),
+                                new_tab=True).classes("text-xs")
+        if ann_result.unverified_terms:
+            ui.label("Not compared — link not verified on this instance: "
+                     + ", ".join(ann_result.unverified_terms)).classes("text-xs mt-1") \
+                .style("color:var(--tp-base-soft)")
+        if ann_result.ambiguous_catalog_numbers:
+            ui.label("Not compared — catalog number held by more than one TaxonWorks "
+                     "record: " + ", ".join(ann_result.ambiguous_catalog_numbers)) \
+                .classes("text-xs mt-1").style("color:var(--tp-base-soft)")
+        if ann_result.associations_not_compared:
+            ui.label("Annotations on biological associations are not compared — "
+                     "TaxonWorks cannot import associations.").classes("text-xs mt-1") \
+                .style("color:var(--tp-base-soft)")
 
     def _render_media_results(media_result) -> None:
         """#149 step 1.6. Diagnostic only — TaxonWorks has no import path for media at
@@ -825,6 +880,7 @@ def build_tw_sync_tab(session_factory, refreshers: dict | None = None,
                     # matches what is shown.
                     state["result"] = None
                     state["checks"] = None
+                    state["term_checks"] = None
                     _sync_wc_label()
                     wc_select.style("display:none")
                     _render_report()
@@ -1728,6 +1784,7 @@ def build_tw_sync_tab(session_factory, refreshers: dict | None = None,
                                 .style("color:var(--tp-base-soft)")
 
                         _render_media_results(data.get("media"))
+                        _render_annotation_results(data.get("annotations"))
 
                         _render_blocking_names(checks)
 
@@ -1835,6 +1892,19 @@ def build_tw_sync_tab(session_factory, refreshers: dict | None = None,
                                 f"occurrence and name results below are unaffected.",
                                 type="warning", multi_line=True, timeout=8000,
                             )
+
+                        _status(f"Checking {row['collection']} — comparing annotations…")
+                        ann_result = None
+                        try:
+                            with session_factory() as s:
+                                ann_result = await tw_annotation_compare.run_annotation_compare(
+                                    s, repository_id=repo_id, index=index)
+                        except tw_svc.TaxonWorksUnreachable as ann_exc:
+                            ui.notify(
+                                f"Annotation comparison failed ({ann_exc}) — the occurrence, "
+                                f"name and media results below are unaffected.",
+                                type="warning", multi_line=True, timeout=8000,
+                            )
                     except tw_svc.TaxonWorksUnreachable as exc:
                         ui.notify(str(exc), type="negative", multi_line=True,
                                   timeout=8000)
@@ -1845,6 +1915,7 @@ def build_tw_sync_tab(session_factory, refreshers: dict | None = None,
 
                     state["compare"][repo_id] = {
                         "result": cmp_result, "checks": checks, "media": media_result,
+                        "annotations": ann_result,
                         "label": row["collection"],
                     }
                     _status(f"Checked {row['collection']}.")
@@ -1986,6 +2057,12 @@ def build_tw_sync_tab(session_factory, refreshers: dict | None = None,
                             # the one place in this tab a session spans an `await`,
                             # and it is the service's own requirement, not this UI's.
                             checks = await tw_sync.check_names(s, taxa_list)
+                            # Term pre-flight (spec "Term pre-flight"): beside the name
+                            # pre-flight; nothing exports until both pass.
+                            term_checks = (
+                                await annotation_export.check_terms(result.annotation_columns)
+                                if result.annotation_columns and not result.annotation_blocked
+                                else [])
                     except tw_svc.TaxonWorksUnreachable as exc:
                         ui.notify(str(exc), type="negative", multi_line=True,
                                   timeout=8000)
@@ -1996,6 +2073,7 @@ def build_tw_sync_tab(session_factory, refreshers: dict | None = None,
 
                     state["result"] = result
                     state["checks"] = checks
+                    state["term_checks"] = term_checks
                     state["already_uploaded_n"] = already_n
                     scope_note = (
                         f" (scope: {scope_state.get('label') or 'whole collection'})"
@@ -2021,24 +2099,29 @@ def build_tw_sync_tab(session_factory, refreshers: dict | None = None,
 
                 def _sync_download_enabled() -> None:
                     checks = state["checks"]
-                    if checks is None:
+                    result = state["result"]
+                    if checks is None or result is None:
                         download_btn.set_enabled(False)
                         download_tip.set_text("Run Check collection first")
                         return
                     blocking_n = sum(1 for c in checks if c.blocks_export)
-                    if blocking_n:
+                    term_n = (len(result.annotation_blocked)
+                              + sum(1 for c in (state["term_checks"] or []) if not c.ok))
+                    if blocking_n or term_n:
                         download_btn.set_enabled(False)
-                        download_tip.set_text(
-                            f"{blocking_n} name(s) are not on TaxonWorks yet — add "
-                            f"them there first"
-                        )
+                        reasons = []
+                        if blocking_n:
+                            reasons.append(f"{blocking_n} name(s) are not on TaxonWorks yet")
+                        if term_n:
+                            reasons.append(f"{term_n} annotation term(s) cannot be exported")
+                        download_tip.set_text(" · ".join(reasons))
                     else:
                         download_btn.set_enabled(True)
                         download_tip.set_text("Download the spreadsheet")
 
                 def _download() -> None:
                     result = state["result"]
-                    if result is None:
+                    if result is None or result.annotation_blocked or not result.tsv:
                         return
                     filename = f"taxonworks_export_{datetime.now():%Y%m%d_%H%M}.tsv"
                     ui.download(
@@ -2103,8 +2186,12 @@ def build_tw_sync_tab(session_factory, refreshers: dict | None = None,
 
                         # ── summary counts ──
                         with ui.row().classes("gap-3 items-center flex-wrap"):
-                            ui.badge(f"{result.row_count} ready to export") \
-                                .props("color=primary")
+                            if result.annotation_blocked:
+                                ui.badge("0 ready to export — blocked by annotation terms") \
+                                    .props("color=negative")
+                            else:
+                                ui.badge(f"{result.row_count} ready to export") \
+                                    .props("color=primary")
                             ui.badge(
                                 f"{state.get('already_uploaded_n', 0)} already on "
                                 f"TaxonWorks (excluded)"
@@ -2117,6 +2204,30 @@ def build_tw_sync_tab(session_factory, refreshers: dict | None = None,
                                 .props("color=warning")
 
                         _render_blocking_names(checks)
+
+                        # ── annotation terms — blockers first, then information ──
+                        bad_terms = list(result.annotation_blocked) + [
+                            (c.local_name, c.reason) for c in (state["term_checks"] or [])
+                            if not c.ok]
+                        if bad_terms:
+                            ui.label(f"Annotation terms blocking export ({len(bad_terms)})") \
+                                .classes("text-sm font-semibold text-red-600 mt-3")
+                            for name, reason in bad_terms:
+                                ui.label(f"{name} — {reason}").classes("text-xs")
+                            ui.label("Fix them in Controlled Vocabularies → Tags & data "
+                                     "attributes (Verify), then run Check again.") \
+                                .classes("text-xs text-red-600")
+                        elif result.annotation_columns:
+                            ui.label(
+                                f"{len(result.annotation_columns)} annotation column(s): "
+                                + ", ".join(c.header for c in result.annotation_columns)
+                            ).classes("text-xs mt-2").style("color:var(--tp-base-soft)")
+                        if result.annotation_local_only:
+                            ui.label(
+                                "Local-only annotations (not exported): "
+                                + "; ".join(f"{n} on {k} specimen(s)"
+                                            for n, k in result.annotation_local_only)
+                            ).classes("text-xs mt-1").style("color:var(--tp-base-soft)")
 
                         # ── advisory notes — collapsed, default closed ──
                         advisory = [
@@ -2199,6 +2310,8 @@ def build_tw_sync_tab(session_factory, refreshers: dict | None = None,
                     for line in (
                         "Biological associations — associatedTaxa is [Not mapped].",
                         "Media / depictions.",
+                        "Annotations on biological associations, and annotation terms "
+                        "that are local only.",
                         "Life-stage history.",
                         "Disposition.",
                         "Other catalog numbers (otherCatalogNumbers).",
