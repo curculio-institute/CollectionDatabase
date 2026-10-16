@@ -68,6 +68,13 @@ use; a per-host link set is not part of the design.
 returned this id with this name (the same discipline as the OTU provenance stamp,
 `docs/taxonworks.md`). Nothing ever writes a host it did not observe.
 
+**"Host" means the network location of the configured TaxonWorks base URL** —
+`urlsplit(cfg.tw_base).netloc`, e.g. `sfg.taxonworks.org` for
+`https://sfg.taxonworks.org/api/v1` — the same value the OTU check compares
+(`tw_sync.py`). It is not the full URL: the path and scheme are irrelevant to which
+instance issued an id. A link is confirmed only while its `tw_host` equals the current
+configured host; after switching instances every link reads as unconfirmed until re-checked.
+
 ### `annotation_term`
 
 | Column | Rule |
