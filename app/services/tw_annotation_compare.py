@@ -57,7 +57,7 @@ def _client() -> httpx.AsyncClient:
 class AnnotationFinding:
     catalog_number: str
     tw_object_id: int
-    target: str                    # specimen | event
+    target: str                    # specimen | event | association
     kind: str                      # tag | data_attribute
     category: str                  # missing_on_tw | only_on_tw | value_differs | unlinked_on_tw
     name: str
@@ -71,7 +71,6 @@ class AnnotationCompareResult:
     findings: tuple[AnnotationFinding, ...]
     unverified_terms: tuple[str, ...]        # linked, not verified here: not compared
     ambiguous_catalog_numbers: tuple[str, ...] = ()
-    associations_not_compared: bool = True   # stated in the report, like media_not_compared
 
 
 @dataclass(frozen=True)

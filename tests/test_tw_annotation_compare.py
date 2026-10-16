@@ -60,7 +60,6 @@ def test_each_finding_category_for_a_specimen(session):
     ]
     differs = next(f for f in result.findings if f.category == "value_differs")
     assert (differs.local_value, differs.tw_value) == ("350 m", "400 m")
-    assert result.associations_not_compared is True
     _ = tag_tw_only
 
 

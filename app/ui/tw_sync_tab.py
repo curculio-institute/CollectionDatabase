@@ -653,10 +653,6 @@ def build_tw_sync_tab(session_factory, refreshers: dict | None = None,
             ui.label("Not compared — catalog number held by more than one TaxonWorks "
                      "record: " + ", ".join(ann_result.ambiguous_catalog_numbers)) \
                 .classes("text-xs mt-1").style("color:var(--tp-base-soft)")
-        if ann_result.associations_not_compared:
-            ui.label("Annotations on biological associations are not compared — "
-                     "TaxonWorks cannot import associations.").classes("text-xs mt-1") \
-                .style("color:var(--tp-base-soft)")
 
     def _render_media_results(media_result) -> None:
         """#149 step 1.6. Diagnostic only — TaxonWorks has no import path for media at

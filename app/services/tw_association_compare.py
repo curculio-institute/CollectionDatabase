@@ -26,14 +26,24 @@ OTU ids are never compared (§5c): the other side is compared by taxon name.
 """
 from __future__ import annotations
 
+from collections import defaultdict
 from dataclasses import dataclass
 
 import httpx
+from sqlalchemy import func, select
+from sqlalchemy.orm import Session
 
 import app.services.taxonworks as tw
+from app.models import (Annotation, AnnotationTerm, BiologicalAssociation, CollectionObject,
+                        Taxon)
+from app.services import annotations as ann
+from app.services import field_occurrence as fo_svc
 from app.services import taxa
+from app.services import tw_annotation_compare as ann_cmp
+from app.services import tw_media_compare
 from app.services.taxonworks import TaxonWorksUnreachable
-from app.services.tw_annotation_compare import _batches, _foreign, _gather
+from app.services.tw_annotation_compare import AnnotationFinding, _batches, _foreign, _gather
+from app.services.tw_compare import CatalogIndex
 
 _TIMEOUT = httpx.Timeout(25.0)
 _PER_PAGE = 500
@@ -248,3 +258,331 @@ def host_verdict(local_name: str, local_authorship: str | None,
     else:
         return "differs", (f"authorship: here '{la}', TaxonWorks '{ta}'",)
     return verdict, tuple(notes)
+
+
+# ── Result shapes ────────────────────────────────────────────────────────────────
+
+@dataclass(frozen=True)
+class AssociationRow:
+    catalog_number: str
+    tw_specimen_id: int                 # for the "open in TaxonWorks" specimen link
+    relationship: str
+    host: str                           # the other side, as recorded on its side
+    host_kind: str                      # taxon | field occurrence | specimen | TW type
+    local_id: int | None = None
+    tw_id: int | None = None
+    tw_host: str | None = None          # Host differs: TaxonWorks' side
+    reason: str = ""
+    notes: tuple[str, ...] = ()
+    annotations: tuple[str, ...] = ()   # display lines (To add / Only on TaxonWorks)
+
+
+@dataclass(frozen=True)
+class AssociationAnnotationFinding:
+    catalog_number: str
+    tw_specimen_id: int
+    association: str                    # "collected from → Typha L."
+    finding: AnnotationFinding          # target "association", tw_object_id = TW association
+
+
+@dataclass(frozen=True)
+class AssociationCompareResult:
+    checked_specimens: int
+    confirmed_count: int
+    to_add: tuple[AssociationRow, ...]
+    only_on_tw: tuple[AssociationRow, ...]
+    host_differs: tuple[AssociationRow, ...]
+    cant_compare: tuple[AssociationRow, ...]
+    annotation_findings: tuple[AssociationAnnotationFinding, ...]
+    unverified_terms: tuple[str, ...]
+    not_on_tw_count: int
+    numberless_count: int
+    taxon_subject_count: int
+    ambiguous_catalog_numbers: tuple[str, ...]
+
+
+# ── Local side ───────────────────────────────────────────────────────────────────
+
+def _current_taxon(co: CollectionObject) -> Taxon | None:
+    # Same one-line `is_current == 1` scan tw_compare / tw_sync each keep privately.
+    for det in co.determinations:
+        if det.is_current == 1:
+            return det.taxon
+    return None
+
+
+def _display(session: Session, t: Taxon) -> str:
+    return " ".join(x for x in (taxa.compose_scientific_name(session, t),
+                                (t.scientific_name_authorship or "").strip()) if x)
+
+
+@dataclass(frozen=True)
+class _Local:
+    a: BiologicalAssociation
+    anchor_co_id: int
+    anchor_is_subject: bool
+    taxon: Taxon | None
+    host: str
+    host_kind: str
+    notes: tuple[str, ...]
+
+
+def _local_entry(session: Session, a: BiologicalAssociation, anchor_co_id: int,
+                 anchor_is_subject: bool) -> _Local:
+    notes: tuple[str, ...] = ()
+    if anchor_is_subject and a.object_taxon is not None:
+        t = a.object_taxon
+        return _Local(a, anchor_co_id, True, t, _display(session, t), "taxon", notes)
+    if anchor_is_subject and a.object_field_occurrence is not None:
+        det = fo_svc.current_determination(session, a.object_field_occurrence)
+        t = det.taxon if det is not None else None
+        if det is not None and det.identification_qualifier:
+            notes = (f"identified with qualifier '{det.identification_qualifier}'",)
+        return _Local(a, anchor_co_id, True, t,
+                      _display(session, t) if t else "no current identification",
+                      "field occurrence", notes)
+    co = a.object_collection_object if anchor_is_subject else a.subject_collection_object
+    t = _current_taxon(co)
+    label = f"specimen {co.catalog_number or '(no catalog number)'}"
+    return _Local(a, anchor_co_id, anchor_is_subject, t,
+                  f"{label} ({_display(session, t)})" if t else label, "specimen", notes)
+
+
+def _verified(rel, host: str) -> bool:
+    return rel.tw_id is not None and rel.tw_host == host
+
+
+# ── TaxonWorks side ──────────────────────────────────────────────────────────────
+
+def _tw_anchor_is_subject(t: TwAssociation, tw_co_ids: set[int]) -> bool:
+    """The anchor is the subject when the subject is one of our specimens, else the
+    object (fetch_associations verified one of them is)."""
+    return t.subject.type == "CollectionObject" and t.subject.id in tw_co_ids
+
+
+def _other(t: TwAssociation, anchor_is_subject: bool) -> TwSide:
+    return t.object if anchor_is_subject else t.subject
+
+
+# ── Annotation display lines ─────────────────────────────────────────────────────
+
+def _local_annotation_lines(anns: list, host: str) -> tuple[str, ...]:
+    out = []
+    for a in anns:
+        t = a.term
+        noun = "tag" if t.kind == "tag" else "data attribute"
+        if t.tw_id is not None and t.tw_host == host:
+            name, state = t.tw_name, ""
+        elif t.tw_id is None:
+            name, state = t.name, " (local only — never sent)"
+        else:
+            name, state = t.name, " (link not verified here)"
+        out.append(f"{noun} {name}" + (f" = {a.value}" if a.value else "") + state)
+    return tuple(out)
+
+
+def _tw_annotation_lines(tags: list, data: list) -> tuple[str, ...]:
+    return tuple([f"tag {t.name}" for t in tags]
+                 + [f"data attribute {d.name} = {d.value}" for d in data])
+
+
+# ── The comparison ───────────────────────────────────────────────────────────────
+
+_DEMOTED = "another association on this specimen could not be compared"
+
+
+def compare_associations(session: Session, *, repository_id: int,
+                         specimens: list[tuple[str, int, int]], ambiguous: tuple[str, ...],
+                         tw_assocs: dict[int, TwAssociation],
+                         names: dict[int, TwName | None],
+                         tw_tags: dict, tw_data: dict, host: str) -> AssociationCompareResult:
+    """Pure computation, no I/O (spec "What is compared"). ``specimens`` is
+    ``(catalog_number, local co id, TW co id)`` from ``tw_media_compare.specimens_on_tw``."""
+    on_tw = {co_id: (cat, tw_id) for cat, co_id, tw_id in specimens}
+    tw_co_ids = {tw_id for _cat, _co, tw_id in specimens}
+    tw_to_co = {tw_id: co_id for _cat, co_id, tw_id in specimens}
+    ambiguous_set = set(ambiguous)
+    repo_ids = select(CollectionObject.id).where(CollectionObject.repository_id == repository_id)
+
+    terms = ann.list_terms(session)
+    verified_terms = {t.id: t for t in terms if t.tw_id is not None and t.tw_host == host}
+    unverified_terms = tuple(sorted({t.name for t in terms
+                                     if t.tw_id is not None and t.tw_host != host}))
+
+    # ── local associations touching this collection (sub-selects: no IN-list limit)
+    local_rows = (session.query(BiologicalAssociation)
+                  .filter((BiologicalAssociation.subject_collection_object_id.in_(repo_ids))
+                          | (BiologicalAssociation.object_collection_object_id.in_(repo_ids))
+                          | ((BiologicalAssociation.subject_taxon_id.isnot(None))
+                             & BiologicalAssociation.object_collection_object_id.is_(None)))
+                  .order_by(BiologicalAssociation.id).all())
+    not_on_tw = numberless = taxon_subject = 0
+    locals_by_anchor: dict[int, list[_Local]] = defaultdict(list)
+    for a in local_rows:
+        if a.subject_taxon_id is not None:
+            taxon_subject += 1
+            continue
+        s, o = a.subject_collection_object_id, a.object_collection_object_id
+        if s in on_tw:
+            locals_by_anchor[s].append(_local_entry(session, a, s, True))
+        elif o is not None and o in on_tw:
+            locals_by_anchor[o].append(_local_entry(session, a, o, False))
+        else:
+            side = a.subject_collection_object if a.subject_collection_object.repository_id \
+                == repository_id else a.object_collection_object
+            if side.catalog_number is None:
+                numberless += 1
+            elif side.catalog_number not in ambiguous_set:
+                not_on_tw += 1
+
+    tw_by_anchor: dict[int, list[TwAssociation]] = defaultdict(list)
+    for t in sorted(tw_assocs.values(), key=lambda x: x.id):
+        anchor_subject = _tw_anchor_is_subject(t, tw_co_ids)
+        anchor_tw = t.subject.id if anchor_subject else t.object.id
+        tw_by_anchor[tw_to_co[anchor_tw]].append(t)
+
+    # local annotations of every association involved, batch-loaded, ordered like
+    # annotations_for (tags first, then by name)
+    local_ids = sorted({e.a.id for es in locals_by_anchor.values() for e in es})
+    anns_by_ba: dict[int, list] = defaultdict(list)
+    if local_ids:
+        for an in (session.query(Annotation)
+                   .join(AnnotationTerm, Annotation.term_id == AnnotationTerm.id)
+                   .filter(Annotation.biological_association_id.in_(local_ids))
+                   .order_by(AnnotationTerm.kind.desc(), func.lower(AnnotationTerm.name))):
+            anns_by_ba[an.biological_association_id].append(an)
+
+    confirmed = 0
+    to_add: list[AssociationRow] = []
+    only: list[AssociationRow] = []
+    differs: list[AssociationRow] = []
+    cant: list[AssociationRow] = []
+    ann_findings: list[AssociationAnnotationFinding] = []
+
+    for co_id in sorted(set(locals_by_anchor) | set(tw_by_anchor),
+                        key=lambda c: on_tw[c][0]):
+        cat, tw_specimen = on_tw[co_id]
+
+        def local_row(e: _Local, **kw) -> AssociationRow:
+            return AssociationRow(cat, tw_specimen, e.a.biological_relationship.name, e.host,
+                                  e.host_kind, local_id=e.a.id, notes=e.notes,
+                                  annotations=_local_annotation_lines(
+                                      anns_by_ba.get(e.a.id, []), host), **kw)
+
+        def tw_row(t: TwAssociation, anchor_subject: bool, **kw) -> AssociationRow:
+            other = _other(t, anchor_subject)
+            return AssociationRow(cat, tw_specimen, t.relationship_name, other.label,
+                                  other.type, tw_id=t.id,
+                                  annotations=_tw_annotation_lines(
+                                      tw_tags.get(t.id, []), tw_data.get(t.id, [])), **kw)
+
+        # comparable vs can't-compare, both sides
+        ls, ts = [], []
+        blocked = False
+        for e in locals_by_anchor.get(co_id, []):
+            rel = e.a.biological_relationship
+            if not _verified(rel, host):
+                why = (f"relationship '{rel.name}' is not linked to TaxonWorks"
+                       if rel.tw_id is None else
+                       f"relationship '{rel.name}' is linked but not verified on {host}")
+                cant.append(local_row(e, reason=why))
+                blocked = True
+            elif e.taxon is None:
+                cant.append(local_row(e, reason="the other side has no current identification"))
+                blocked = True
+            else:
+                ls.append(e)
+        for t in tw_by_anchor.get(co_id, []):
+            anchor_subject = _tw_anchor_is_subject(t, tw_co_ids)
+            other = _other(t, anchor_subject)
+            if other.otu_id is None:
+                cant.append(tw_row(t, anchor_subject,
+                                   reason="TaxonWorks gives no OTU for the other side"))
+                blocked = True
+            elif names[other.otu_id] is None:
+                cant.append(tw_row(t, anchor_subject,
+                                   reason=f"TaxonWorks OTU {other.otu_id} has no taxon name"))
+                blocked = True
+            else:
+                ts.append((t, anchor_subject, names[other.otu_id]))
+
+        # pair: exact names first, then subgenus-only; ascending ids within a tier
+        paired_l: set[int] = set()
+        paired_t: set[int] = set()
+        for tier in ("match", "subgenus"):
+            for e in ls:
+                if e.a.id in paired_l:
+                    continue
+                name = taxa.compose_scientific_name(session, e.taxon)
+                for t, anchor_subject, tw_name in ts:
+                    if t.id in paired_t or anchor_subject != e.anchor_is_subject:
+                        continue
+                    if t.relationship_id != e.a.biological_relationship.tw_id:
+                        continue
+                    verdict, _notes = host_verdict(name, e.taxon.scientific_name_authorship,
+                                                   tw_name)
+                    if verdict != tier:
+                        continue
+                    paired_l.add(e.a.id)
+                    paired_t.add(t.id)
+                    confirmed += 1
+                    before = []
+                    ann_cmp._diff(before, cat, t.id, "association", anns_by_ba.get(e.a.id, []),
+                                  tw_tags.get(t.id, []), tw_data.get(t.id, []), verified_terms)
+                    label = f"{e.a.biological_relationship.name} → {e.host}"
+                    ann_findings.extend(AssociationAnnotationFinding(cat, tw_specimen, label, f)
+                                        for f in before)
+                    break
+
+        left_l = [e for e in ls if e.a.id not in paired_l]
+        left_t = [x for x in ts if x[0].id not in paired_t]
+        if blocked:
+            cant.extend(local_row(e, reason=_DEMOTED) for e in left_l)
+            cant.extend(tw_row(t, s, reason=_DEMOTED) for t, s, _n in left_t)
+            continue
+        groups: dict[tuple[bool, int], tuple[list, list]] = defaultdict(lambda: ([], []))
+        for e in left_l:
+            groups[(e.anchor_is_subject, e.a.biological_relationship.tw_id)][0].append(e)
+        for x in left_t:
+            groups[(x[1], x[0].relationship_id)][1].append(x)
+        for (_s, _rel), (gl, gt) in groups.items():
+            if len(gl) == 1 and len(gt) == 1:
+                e, (t, anchor_subject, tw_name) = gl[0], gt[0]
+                _v, why = host_verdict(taxa.compose_scientific_name(session, e.taxon),
+                                       e.taxon.scientific_name_authorship, tw_name)
+                differs.append(local_row(e, tw_id=t.id,
+                                         tw_host=_other(t, anchor_subject).label,
+                                         reason="; ".join(why)))
+                continue
+            to_add.extend(local_row(e) for e in gl)
+            only.extend(tw_row(t, s) for t, s, _n in gt)
+
+    return AssociationCompareResult(
+        checked_specimens=len(specimens), confirmed_count=confirmed,
+        to_add=tuple(to_add), only_on_tw=tuple(only), host_differs=tuple(differs),
+        cant_compare=tuple(cant), annotation_findings=tuple(ann_findings),
+        unverified_terms=unverified_terms, not_on_tw_count=not_on_tw,
+        numberless_count=numberless, taxon_subject_count=taxon_subject,
+        ambiguous_catalog_numbers=tuple(ambiguous))
+
+
+async def run_association_compare(session: Session, *, repository_id: int,
+                                  index: CatalogIndex,
+                                  host: str | None = None) -> AssociationCompareResult:
+    """I/O + computation — the entry point the TaxonWorks tab calls."""
+    host = tw.configured_host() if host is None else host
+    specimens, ambiguous = tw_media_compare.specimens_on_tw(
+        session, repository_id=repository_id, index=index)
+    tw_co_ids = sorted({tw_id for _cat, _co, tw_id in specimens})
+    tw_assocs = await fetch_associations(tw_co_ids)
+    co_set = set(tw_co_ids)
+    otu_ids = sorted({_other(t, _tw_anchor_is_subject(t, co_set)).otu_id
+                      for t in tw_assocs.values()} - {None})
+    ba_ids = sorted(tw_assocs)
+    names, tags, data = await _gather(
+        fetch_otu_names(otu_ids),
+        ann_cmp.fetch_tags("BiologicalAssociation", ba_ids),
+        ann_cmp.fetch_data_attributes("BiologicalAssociation", ba_ids))
+    return compare_associations(session, repository_id=repository_id, specimens=specimens,
+                                ambiguous=ambiguous, tw_assocs=tw_assocs, names=names,
+                                tw_tags=tags, tw_data=data, host=host)
