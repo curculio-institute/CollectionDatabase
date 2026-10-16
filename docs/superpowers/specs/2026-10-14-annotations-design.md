@@ -53,7 +53,14 @@ STRICT tables; the migration declares every constraint in DDL (models cannot exp
 STRICT). Update `docs/schema.html` and `docs/data_model.md`; extend
 `tests/test_schema_integrity.py`.
 
-### The TaxonWorks link (shared by both vocabularies)
+### TaxonWorks link columns (on both `annotation_term` and `biological_relationship`)
+
+**Not a table.** "The link" is three columns that both vocabulary tables carry, defined
+once here because both follow the same rules. `annotation_term` declares all three;
+`biological_relationship` adds `tw_name` and `tw_host` and reuses its existing
+`taxonworksID` as `tw_id`. Columns rather than a separate link table because a term has
+**at most one** link (below): with one link per row, plain columns suffice and let the
+CHECK and UNIQUE rules be enforced on the term row itself.
 
 | Column | Rule |
 |--------|------|
