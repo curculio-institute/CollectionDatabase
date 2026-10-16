@@ -339,9 +339,7 @@ annotations on terms that are not linked locally are seen too.
 - Only terms whose link is **verified on the configured host** are compared: a `tw_id`
   from another instance names something else. Linked-but-unverified terms are listed as
   not compared, never joined.
-- Biological-association annotations: `associations_not_compared = True` on
-  `AnnotationCompareResult`, stated in the report — the same pattern as
-  `media_not_compared`.
+- Biological-association annotations are compared by the association compare (`docs/superpowers/specs/2026-10-17-association-compare-design.md`), on matched associations only.
 - `/data_attributes`' `api_index` has **no `ORDER BY`** (`data_attributes_controller.rb:50`),
   so pages are not stable: rows are de-duplicated by id and a pull whose distinct ids fall
   short of `pagination-total` is a lookup failure. A TW `ImportAttribute` has no predicate
