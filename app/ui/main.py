@@ -8,7 +8,6 @@ All DB access goes through app.services — no ORM queries in this file.
 """
 from __future__ import annotations
 
-import asyncio
 import os
 import sys
 
@@ -42,7 +41,6 @@ from app.ui.records_tab import build_records_tab
 from app.ui.explore import build_explore_panel
 import app.ui.record_summary as _record_summary
 from app.ui.confirm_dialog import confirm as confirm_dialog
-from app.services.biological import sync_biological_relationships
 
 # ---------------------------------------------------------------------------
 # Engine (module-level, created once)
@@ -1072,17 +1070,6 @@ def index():
         ui.timer(0.6, lambda m=_app_fb: ui.notify(
             m, type="warning", multi_line=True, timeout=12000, close_button="OK"),
             once=True)
-
-    # ── Sync TW biological relationships once per session (background) ───
-    async def _bio_sync():
-        try:
-            with _sf() as s:
-                with s.begin():
-                    await sync_biological_relationships(s)
-        except Exception:
-            pass  # TW unreachable — local rows serve as fallback
-
-    asyncio.create_task(_bio_sync())
 
     # Cross-tab refresh registry — populated as tabs build, called by earlier tabs.
     _refreshers: dict[str, callable] = {}

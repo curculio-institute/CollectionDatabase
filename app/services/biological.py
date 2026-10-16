@@ -1,62 +1,63 @@
-"""Biological association CRUD and TaxonWorks relationship sync.
+"""Biological association CRUD and the biological-relationship vocabulary.
 
-Session-start workflow:
-  Call sync_biological_relationships(session) once per session.
-  It fetches the TW relationship list and upserts into the local table by
-  taxonworksID.  If TW is unreachable the function returns silently and the
-  UI falls back to whatever rows are already in the local table.
+Relationships are a local controlled vocabulary with an optional TaxonWorks link
+(``tw_links.py``), managed in Controlled Vocabularies → Biological relationships. The old
+launch sync is gone (spec 2026-10-14 "Removed: the launch sync"): it renamed local rows to
+the TW name on every launch — after a host change that could re-label a relationship with
+a *different* TW relationship's name, changing what existing associations say — and it
+swallowed every error.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass
 
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.models.base import _utcnow
 from app.models.biological import BiologicalAssociation, BiologicalRelationship
+from app.services.vocab import Vocabulary
 
 
-# ---------------------------------------------------------------------------
-# Relationship sync
-# ---------------------------------------------------------------------------
+relationship_vocab = Vocabulary(
+    BiologicalRelationship, ref_table="biological_relationship", noun="relationship")
 
-async def sync_biological_relationships(session: Session) -> None:
-    """Fetch TW biological_relationships and upsert into local table by taxonworksID.
 
-    Safe to call multiple times (idempotent).  Never deletes local rows so
-    existing BiologicalAssociation FK references are always valid.
-    """
-    try:
-        import app.services.taxonworks as tw_svc
-        tw_rows = await tw_svc.fetch_biological_relationships()
-    except Exception:
-        return  # TW unreachable — use cached local rows
+def _clean_relationship_name(session: Session, name: str,
+                             exclude_id: int | None = None) -> str:
+    clean = (name or "").strip()
+    if not clean:
+        raise ValueError("A relationship needs a name.")
+    q = session.query(BiologicalRelationship).filter(
+        func.lower(BiologicalRelationship.name) == clean.lower())
+    if exclude_id is not None:
+        q = q.filter(BiologicalRelationship.id != exclude_id)
+    if session.query(q.exists()).scalar():
+        raise ValueError(f"A relationship named '{clean}' already exists.")
+    return clean
 
-    now = _utcnow()
-    for tw in tw_rows:
-        tw_id   = tw.get("id")
-        tw_name = (tw.get("name") or "").strip()
-        if not tw_id or not tw_name:
-            continue
 
-        existing = (
-            session.query(BiologicalRelationship)
-            .filter(BiologicalRelationship.taxonworks_id == tw_id)
-            .first()
-        )
-        if existing:
-            if existing.name != tw_name:
-                existing.name       = tw_name
-                existing.updated_at = now
-        else:
-            session.add(BiologicalRelationship(
-                name=tw_name,
-                taxonworks_id=tw_id,
-                created_at=now,
-                updated_at=now,
-            ))
+def create_relationship(session: Session, name: str) -> BiologicalRelationship:
+    return relationship_vocab.create(session, name=_clean_relationship_name(session, name))
 
-    session.flush()
+
+def rename_relationship(session: Session, rel_id: int, name: str) -> BiologicalRelationship:
+    """Rename the LOCAL name. A link's ``tw_name`` is TaxonWorks' and is not touched — the
+    two may differ by design (spec "keep local name")."""
+    return relationship_vocab.update(
+        session, rel_id, name=_clean_relationship_name(session, name, exclude_id=rel_id))
+
+
+def merge_relationships(session: Session, keep_id: int, absorb_id: int) -> None:
+    """De-duplicate two relationships (spec "Merge rules"): the absorbed one must be
+    local only — a merge never discards or moves a TaxonWorks link."""
+    absorb = session.get(BiologicalRelationship, absorb_id)
+    if absorb is None:
+        raise ValueError("relationship not found")
+    if absorb.tw_id is not None:
+        raise ValueError(f"Unlink '{absorb.name}' from TaxonWorks first — a merge never "
+                         f"discards or moves a link.")
+    relationship_vocab.merge(session, keep_id=keep_id, absorb_id=absorb_id)
 
 
 # ---------------------------------------------------------------------------

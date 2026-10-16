@@ -419,23 +419,6 @@ async def fetch_full_classification(tw_id: int, _depth: int = 0) -> dict | None:
     return augmented
 
 
-async def fetch_biological_relationships() -> list[dict]:
-    """Return all BiologicalRelationship records from TW for this project.
-
-    Each record: {id, name, definition, inverted_name, …}
-    Used by sync_biological_relationships() at session start.
-    Verified endpoint: GET /api/v1/biological_relationships (no show endpoint).
-    """
-    _require_configured()
-    async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
-        r = await client.get(
-            f"{_base()}/biological_relationships",
-            params={"project_token": _token(), "per": 500},
-        )
-        r.raise_for_status()
-        return r.json()
-
-
 async def fetch_taxon_names_exact(name: str, per: int = 50) -> list[dict]:
     """Exact-match lookup against `cached` — the documented `name[]` + `name_exact` filter
     (rdoc.taxonworks.org/Queries/TaxonName/Filter.html: "`name` (Array): Matches against
