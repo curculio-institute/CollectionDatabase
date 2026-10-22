@@ -191,6 +191,19 @@ jobs, **not records**: nothing is written to `taxon_determination`.
   `row.collection_object` for a determination row again, or a plain label is silently
   skipped. Single write seam: `enqueue_plain_determinations`. UI: `app/ui/plain_det_labels.py`.
 
+**Event locality labels (decided 2026-10-20; migration 0074).** Locality (data) labels can
+be queued for an existing **collecting event with no specimen** — the Labels tab card
+"Locality labels" (pick an event + a count) and the **Print labels** button on the Records
+event sheet. Like plain identification labels they are print jobs, not records.
+
+- `print_queue.collecting_event_id` (FK, ON DELETE CASCADE); the arc's data arm is a
+  specimen **xor** an event. The label is read live from the event through the same
+  renderer as a specimen's data label, minus the hosts (associations belong to a specimen).
+- One row per physical label, all in one "Locality labels" group, each its own column.
+- **One owner of "specimen's or event's locality label":** `print_queue._row_data_label`
+  (+ `_is_data_row`, `_data_column_key`); never branch on `row.collection_object` for a
+  data row. Single write seam: `enqueue_event_data`. UI: `app/ui/event_locality_labels.py`.
+
 **How the queued labels are rendered** (the grouped, column-aligned sheet — groups,
 per-specimen columns, archival, the planned reprint path) is a UI/layout concern and is
 specified in `docs/design.md` → "Grouped print sheet layout". This table is the authoritative

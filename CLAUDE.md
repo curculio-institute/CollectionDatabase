@@ -93,7 +93,7 @@ as a possible later analytics layer (do not introduce yet).
 
 ## 4. Data model → `docs/data_model.md`, `docs/vocabularies_geography.md`, `docs/taxonomy.md`
 
-Schema is in production use (migrations through 0073). Rules that apply everywhere:
+Schema is in production use (migrations through 0074). Rules that apply everywhere:
 
 - **DwC column naming:** SQLite columns are named `dwc:columnName` (colon, camelCase);
   SQLAlchemy maps them to snake_case attributes; Mermaid diagrams use plain camelCase.
@@ -151,6 +151,8 @@ Schema is in production use (migrations through 0073). Rules that apply everywhe
   `blocked`, never fabricated; dedup is the DB's own `UNIQUE(repository_id, catalogNumber)`.
 - **Plain identification labels** are print jobs, not records. Every reader goes through
   `print_queue._row_det_label`; never branch on `row.collection_object` for a determination row.
+  Likewise **event locality labels** (no specimen): every data-row reader goes through
+  `print_queue._row_data_label`.
 - **Label edits are print-only overrides** (`print_queue.text_override`); the record stays
   master and identifier rows are read-only. An override is sanitised on the way in
   (`labels.canonical_override`, idempotent); one that renders to nothing is `None`; identical

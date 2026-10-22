@@ -6,17 +6,19 @@ from .base import Base, TimestampMixin
 from .taxon_determination import _QUAL_CHECK_SQL, _NO_INTERVAL_SQL
 
 ARC_CHECK_SQL = (
-    "(label_type = 'data'"
-    "  AND collection_object_id IS NOT NULL"
-    "  AND label_code_id IS NULL AND taxon_id IS NULL)"
+    "(label_type = 'data' AND label_code_id IS NULL AND taxon_id IS NULL"
+    "  AND ((collection_object_id IS NOT NULL AND collecting_event_id IS NULL)"
+    "    OR (collection_object_id IS NULL AND collecting_event_id IS NOT NULL)))"
     " OR "
     "(label_type = 'determination' AND label_code_id IS NULL"
+    "  AND collecting_event_id IS NULL"
     "  AND ((collection_object_id IS NOT NULL AND taxon_id IS NULL)"
     "    OR (collection_object_id IS NULL AND taxon_id IS NOT NULL)))"
     " OR "
     "(label_type = 'identifier'"
     "  AND label_code_id IS NOT NULL"
-    "  AND collection_object_id IS NULL AND taxon_id IS NULL)"
+    "  AND collection_object_id IS NULL AND taxon_id IS NULL"
+    "  AND collecting_event_id IS NULL)"
 )
 
 # The plain-label content columns exist only on a plain row, which in turn is never
@@ -80,19 +82,29 @@ class PrintQueue(Base, TimestampMixin):
     identification_qualifier: Mapped[Optional[str]] = mapped_column("dwc:identificationQualifier", String, nullable=True)
     sex: Mapped[Optional[str]] = mapped_column("dwc:sex", String, nullable=True)
 
+    # ── Event locality label (migration 0074) ────────────────────────────────────
+    # A 'data' row queued for a collecting event WITHOUT a specimen (Labels tab /
+    # Records event sheet): the label is read live from the event. A data row has a
+    # specimen XOR an event (ck_print_queue_exclusive_arc).
+    collecting_event_id: Mapped[Optional[int]] = mapped_column(
+        Integer, ForeignKey("collecting_event.id", ondelete="CASCADE"), nullable=True
+    )
+
     collection_object  = relationship("CollectionObject")
     label_code         = relationship("LabelCode")
     taxon_determination = relationship("TaxonDetermination")
     taxon               = relationship("Taxon")
     identified_by_person = relationship("Person", foreign_keys=[identified_by_id])
+    collecting_event    = relationship("CollectingEvent")
 
     __table_args__ = (
         CheckConstraint(
             "label_type IN ('data', 'determination', 'identifier')",
             name="ck_print_queue_label_type",
         ),
-        # Exactly one source per row: a specimen (data / determination), a taxon (a
-        # plain determination label, 0071), or a label code (identifier).
+        # Exactly one source per row: a specimen (data / determination), an event (a
+        # specimen-free locality label, 0074), a taxon (a plain determination label,
+        # 0071), or a label code (identifier).
         CheckConstraint(ARC_CHECK_SQL, name="ck_print_queue_exclusive_arc"),
         CheckConstraint(PLAIN_FIELDS_CHECK_SQL, name="ck_print_queue_plain_fields"),
         # Same two rules as taxon_determination (0058 / 0069), for the same reasons.

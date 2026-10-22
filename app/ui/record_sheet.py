@@ -307,13 +307,16 @@ def build_event_sheet(session_factory, ev_id: int, *, on_edit, on_open_specimen=
         nearby = ev_svc.nearest_events(s, ev_id, n=5)
         ann_html = annotations_html(ann_svc.views_for(s, "event", ev_id))
 
+    from app.ui.event_locality_labels import open_event_locality_dialog
     _render_event(place, ev_data, detail, media, specimens, nearby,
                   on_edit=on_edit, on_open_specimen=on_open_specimen, on_open_event=on_open_event,
+                  on_print_labels=lambda: open_event_locality_dialog(session_factory, ev_id),
                   annotations=ann_html)
 
 
 def _render_event(place, ev, detail, media, specimens, nearby, *,
-                  on_edit, on_open_specimen, on_open_event, annotations: str = "") -> None:
+                  on_edit, on_open_specimen, on_open_event, on_print_labels=None,
+                  annotations: str = "") -> None:
     # ── locality banner ──
     with ui.card().classes("w-full shadow-sm"):
         with ui.row().classes("items-start gap-3 w-full no-wrap"):
@@ -326,7 +329,14 @@ def _render_event(place, ev, detail, media, specimens, nearby, *,
                     ev["habitat"], ev["protocol"]) if x)
                 if meta:
                     ui.html(f'<div class="rsheet-muted">{_html.escape(meta)}</div>')
-            ui.button("Edit", icon="edit", on_click=on_edit).props("no-caps unelevated")
+            # Same order as the specimen sheet: Edit, then its print action.
+            with ui.row().classes("items-center gap-2 shrink-0"):
+                ui.button("Edit", icon="edit", on_click=on_edit).props("no-caps unelevated")
+                if on_print_labels:
+                    # Locality labels for this event without a specimen (nothing recorded).
+                    ui.button("Print labels", icon="print", on_click=on_print_labels) \
+                        .props("no-caps outline") \
+                        .tooltip("Add locality labels for this event to the print queue")
 
     with ui.row().classes("w-full gap-4 items-start"):
         with ui.column().classes("flex-1 min-w-0 gap-4"):

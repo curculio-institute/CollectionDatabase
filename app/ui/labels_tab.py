@@ -17,6 +17,7 @@ import app.services.repositories as repo_svc
 import app.services.print_queue as pq_svc
 from app.config import get_config, printed_pdf_dir
 from app.ui.plain_det_labels import build_plain_det_labels_card
+from app.ui.event_locality_labels import build_event_locality_labels_card
 
 
 def build_labels_tab(session_factory, *, refreshers, records_handle, main_tabs):
@@ -406,6 +407,9 @@ def build_labels_tab(session_factory, *, refreshers, records_handle, main_tabs):
 
             # ── Mode B: plain identification labels (no specimen) ─────
             build_plain_det_labels_card(_sf, on_queued=lambda: _refresh_queue())
+
+            # ── Mode C: locality labels for an event (no specimen) ────
+            build_event_locality_labels_card(_sf, on_queued=lambda: _refresh_queue())
 
         # ── Reserved codes viewer ────────────────────────────────
         with ui.card().classes("w-full shadow-sm"):

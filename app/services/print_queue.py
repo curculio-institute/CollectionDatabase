@@ -4,7 +4,9 @@ Labels accumulate as specimens are digitized or identifications/identifiers are 
 Call build_pdf() to render everything queued, then clear_queue() once printed.
 
 Three label types:
-  'data'          — locality label, sourced from collection_object → collecting_event
+  'data'          — locality label, sourced from collection_object → collecting_event,
+                    OR an event's locality label with no specimen (Labels tab / Records
+                    event sheet; migration 0074)
   'determination' — taxon label, sourced from collection_object → current determination,
                     OR a *plain* identification label with no specimen, whose content
                     sits on the queue row itself (Labels tab; migration 0071)
@@ -19,7 +21,8 @@ from sqlalchemy.orm import Session
 
 from sqlalchemy import func
 
-from app.models import PrintQueue, CollectionObject, Taxon, TaxonDetermination, LabelCode
+from app.models import (PrintQueue, CollectionObject, CollectingEvent, Taxon,
+                        TaxonDetermination, LabelCode)
 from app.models.base import _utcnow
 from app.services import taxa as taxa_svc
 import app.services.labels as lbl
@@ -30,10 +33,12 @@ SOURCE_MOUNTING    = "Mounting Session"
 SOURCE_IDENTIFIERS = "New identifiers"
 SOURCE_REPRINT     = "Reprint"
 SOURCE_IDENTIFICATIONS = "Identification labels"
+SOURCE_LOCALITY    = "Locality labels"
 
 # Upper bound on one plain-label batch — one queue row per label, and the preview
 # re-renders every row. Enforced by the write seam, not only the form's widget.
 MAX_PLAIN_LABELS = 500
+MAX_LOCALITY_LABELS = 500
 
 
 # ---------------------------------------------------------------------------
@@ -131,6 +136,32 @@ def enqueue_plain_determinations(
     return count
 
 
+def enqueue_event_data(session: Session, *, collecting_event_id: int, count: int) -> int:
+    """Queue ``count`` locality labels for one collecting event, with no specimen behind
+    them (Labels tab "Locality labels" card, Records event sheet). One row per physical
+    label, all in one "Locality labels" group. Returns how many were added.
+
+    The label is the event's own locality text — the same renderer as a specimen's data
+    label, minus the specimen's hosts (associations belong to a specimen, not an event).
+    """
+    if not isinstance(count, int) or isinstance(count, bool):
+        raise ValueError("Number of labels must be a whole number.")
+    if not 1 <= count <= MAX_LOCALITY_LABELS:
+        raise ValueError(f"Number of labels must be between 1 and {MAX_LOCALITY_LABELS}.")
+    if session.get(CollectingEvent, collecting_event_id) is None:
+        raise ValueError(f"Collecting event #{collecting_event_id} not found.")
+    gid = next_print_group_id(session)
+    for _ in range(count):
+        session.add(PrintQueue(
+            label_type="data",
+            collecting_event_id=collecting_event_id,
+            print_group_id=gid, source=SOURCE_LOCALITY,
+            created_at=_utcnow(), updated_at=_utcnow(),
+        ))
+    session.flush()
+    return count
+
+
 def requeue_batch_identifiers(session: Session, batch_id: int) -> int:
     """Re-add a batch's reserved (unprinted/unassigned) identifier codes to the
     print queue, so codes are never lost — a cleared queue can always be rebuilt
@@ -196,12 +227,20 @@ def _co_to_data_label(
     # (bio.association_host) — reading ba.object_taxon alone dropped every fo-backed
     # host from the printed data label.
     from app.services import biological as bio_svc
-    ev = co.collecting_event
     assoc_names = [
         host[1]
         for ba in co.subject_associations
         if (host := bio_svc.association_host(session, ba)) and host[1]
     ]
+    return _ev_to_data_label(co.collecting_event, assoc_names, text_override)
+
+
+def _ev_to_data_label(
+    ev: CollectingEvent | None, assoc_names: list[str] | None = None,
+    text_override: str | None = None,
+) -> lbl.DataLabel:
+    """Compose a locality label from a collecting event (plus a specimen's hosts, when
+    there is a specimen). The one builder behind both kinds of data row."""
     return lbl.DataLabel(
         text_override            = text_override,
         country                  = (ev.country_obj.name if ev and ev.country_obj else None),
@@ -265,6 +304,29 @@ def _det_label(t: Taxon, src, text_override: str | None = None) -> lbl.Determina
     )
 
 
+def _is_data_row(row: PrintQueue) -> bool:
+    """A renderable data row: a specimen's, or an event's (no specimen)."""
+    return row.label_type == "data" and bool(row.collection_object or row.collecting_event)
+
+
+def _row_data_label(session: Session, row: PrintQueue, *, override: bool = False) -> lbl.DataLabel:
+    """The locality label a data row prints — THE one place that knows a row is either
+    a specimen's or an event's. ``override=False`` gives the auto label; True applies
+    the row's print-only edit."""
+    ov = row.text_override if override else None
+    if row.collection_object is not None:
+        return _co_to_data_label(session, row.collection_object, ov)
+    return _ev_to_data_label(row.collecting_event, None, ov)
+
+
+def _data_column_key(row: PrintQueue) -> tuple:
+    """Sheet column for a data row: a specimen's column, or its own column for an
+    event's locality label (there is nothing to line it up with)."""
+    if row.collection_object_id is not None:
+        return ("co", row.collection_object_id)
+    return ("event", row.id)
+
+
 def _is_det_row(row: PrintQueue) -> bool:
     """A renderable determination row: a specimen's, or a plain one (taxon on the row)."""
     return row.label_type == "determination" and bool(row.collection_object or row.taxon)
@@ -315,18 +377,16 @@ def queued_groups(session: Session) -> list[lbl.LabelGroup]:
         bucket = buckets.setdefault(gkey, {"source": row.source, "columns": {}})
         columns = bucket["columns"]
 
-        if row.label_type == "data" and row.collection_object:
-            ckey = ("co", row.collection_object_id)
-            col = columns.setdefault(ckey, lbl.SpecimenLabels())
-            col.data = _co_to_data_label(session, row.collection_object, row.text_override)
+        if _is_data_row(row):
+            col = columns.setdefault(_data_column_key(row), lbl.SpecimenLabels())
+            col.data = _row_data_label(session, row, override=True)
             # Preview-only metadata (ignored by the print PDF): row id + identity of
             # the AUTO text so the WYSIWYG preview can click-map and group identical
             # labels. Identity is the auto (override-independent) text, matching
             # preview_model / set_override_for_identical.
             col.data_qid = row.id
-            col.data_ident = _ident(lbl.label_plaintext(
-                _co_to_data_label(session, row.collection_object)))
-            col.co_id = row.collection_object_id
+            col.data_ident = _ident(lbl.label_plaintext(_row_data_label(session, row)))
+            col.co_id = row.collection_object_id     # None for an event's label
         elif _is_det_row(row):
             # A single-ID specimen (every create path) still renders as one column.
             ckey = _det_column_key(row, columns, lambda c: c.determination is not None)
@@ -366,8 +426,8 @@ def _row_auto_identity(session: Session, row: PrintQueue) -> str | None:
     """Identity of a data/determination row's AUTO label text (override-independent),
     so identical labels group together for hover-highlight and batch edit. None for
     identifier rows / rows with no renderable label."""
-    if row.label_type == "data" and row.collection_object:
-        return _ident(lbl.label_plaintext(_co_to_data_label(session, row.collection_object)))
+    if _is_data_row(row):
+        return _ident(lbl.label_plaintext(_row_data_label(session, row)))
     if _is_det_row(row):
         dl = _row_det_label(row)
         return _ident(lbl.label_plaintext(dl)) if dl else None
@@ -402,18 +462,17 @@ def preview_model(session: Session) -> list[dict]:
                 "id_code": None, "id_qid": None,
             })
 
-        if row.label_type == "data" and row.collection_object:
-            co = row.collection_object
-            col = _col(("co", row.collection_object_id))
-            auto = lbl.label_plaintext(_co_to_data_label(session, co))
-            dl = _co_to_data_label(session, co, row.text_override)
+        if _is_data_row(row):
+            col = _col(_data_column_key(row))
+            auto = lbl.label_plaintext(_row_data_label(session, row))
+            dl = _row_data_label(session, row, override=True)
             col["data_auto"] = auto
             col["data"] = row.text_override if row.text_override is not None else auto
             col["data_html"] = lbl._data_inner_html(dl)
             col["data_auto_html"] = lbl.label_auto_html(dl)
             col["data_qid"] = row.id
             col["data_ident"] = _ident(auto)
-            col["co_id"] = co.id
+            col["co_id"] = row.collection_object_id     # None for an event's label
         elif _is_det_row(row):
             # Same column rule as queued_groups (one shared owner), so the preview
             # matches the printed sheet.
@@ -451,8 +510,8 @@ def row_auto_html(session: Session, queue_id: int) -> str:
     row = session.get(PrintQueue, queue_id)
     if row is None:
         return ""
-    if row.label_type == "data" and row.collection_object:
-        return lbl.label_auto_html(_co_to_data_label(session, row.collection_object))
+    if _is_data_row(row):
+        return lbl.label_auto_html(_row_data_label(session, row))
     if _is_det_row(row):
         dl = _row_det_label(row)
         return lbl.label_auto_html(dl) if dl else ""
@@ -465,8 +524,8 @@ def row_current_html(session: Session, queue_id: int) -> str:
     row = session.get(PrintQueue, queue_id)
     if row is None:
         return ""
-    if row.label_type == "data" and row.collection_object:
-        return lbl._data_inner_html(_co_to_data_label(session, row.collection_object, row.text_override))
+    if _is_data_row(row):
+        return lbl._data_inner_html(_row_data_label(session, row, override=True))
     if _is_det_row(row):
         dl = _row_det_label(row, override=True)
         return lbl._det_inner_html(dl) if dl else ""
