@@ -203,6 +203,13 @@ event sheet. Like plain identification labels they are print jobs, not records.
 - **One owner of "specimen's or event's locality label":** `print_queue._row_data_label`
   (+ `_is_data_row`, `_data_column_key`); never branch on `row.collection_object` for a
   data row. Single write seam: `enqueue_event_data`. UI: `app/ui/event_locality_labels.py`.
+- **Mounting "Save event only"** saves just the shared collecting event (+ its staged
+  annotations) when the specimens are not ready, queues nothing, and links the form to the
+  saved event so a later "Save Specimens" reuses it. It refuses while biological
+  associations are staged (they need a specimen) and on an empty event.
+- **Mounting "Recent events" card** (`app/ui/recent_events.py`): the latest 8 events, each
+  expandable to its specimens (capped at 25, with a count of the rest); "Use" links the
+  event into the form — the way back to an event saved with "Save event only".
 
 **How the queued labels are rendered** (the grouped, column-aligned sheet — groups,
 per-specimen columns, archival, the planned reprint path) is a UI/layout concern and is

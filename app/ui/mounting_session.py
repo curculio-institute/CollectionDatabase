@@ -77,6 +77,10 @@ def build_mounting_session_section(
     confirm_event_annotations=None,  # async (event_id) -> bool: the tab's "add staged
                                      # event annotations to an existing event?" stop;
                                      # False cancels the save
+    event_has_content=lambda: True,  # () -> bool: the shared event form holds anything
+    on_event_saved=None,    # (event_id) -> None: after "Save event only" — the tab links
+                            # the form to the new event, so a later specimen save
+                            # reuses it instead of creating a duplicate
 ) -> dict:
     """Render the Mounting Session specimen UI. Returns {"wipe": callable}."""
 
@@ -508,10 +512,68 @@ def build_mounting_session_section(
         wipe()
         on_saved()
 
+    # ── save event only ─────────────────────────────────────────────────────
+
+    async def _do_save_event_only() -> None:
+        """Save just the collecting event (and its staged annotations) — for when the
+        specimens are not ready yet. The specimen rows are left as they are."""
+        if event_id_getter() is not None:
+            ui.notify("This event is already saved (it is selected in the event picker).",
+                      type="info")
+            return
+        if confirm_pending is not None and not await confirm_pending():
+            return
+        if bio_state["associations"]:
+            # An association belongs to a specimen; saving the event alone would leave
+            # it with nothing to attach to. Refuse rather than drop it.
+            ui.notify("Biological associations are saved with a specimen — save the "
+                      "specimens, or remove the associations to save the event alone.",
+                      type="warning")
+            return
+        if not event_has_content():
+            ui.notify("The collecting event is empty — fill it in first.", type="warning")
+            return
+        err = validate_event_fields(collect_event_fields())
+        if err:
+            ui.notify(err, type="negative")
+            return
+        try:
+            proceed = await confirm_incomplete_event(
+                collect_event_fields(), recorded_by=bool(recorded_by_getter())
+            )
+        except Exception as exc:
+            ui.notify(f"Save failed: {exc}", type="negative")
+            return
+        if not proceed:
+            return
+        try:
+            with session_factory() as s:
+                with s.begin():
+                    event_ids = commit_event(s)
+                    ev = svc.create_collecting_event(
+                        s, **{**collect_event_fields(), **event_ids})
+                    if commit_event_annotations is not None:
+                        commit_event_annotations(s, ev.id)
+                    event_id = ev.id
+        except Exception as exc:
+            ui.notify(f"Save failed: {exc}", type="negative")
+            return
+
+        ui.notify(f"Saved collecting event #{event_id} — no specimens were saved.",
+                  type="positive")
+        if on_event_saved is not None:
+            on_event_saved(event_id)
+
     # ── save bar ────────────────────────────────────────────────────────────
 
     with ui.row().classes("w-full items-center gap-4 px-1 mt-2"):
         ui.space()
+        (
+            ui.button("Save event only", icon="place", on_click=_do_save_event_only)
+            .props("outline no-caps")
+            .tooltip("Save the collecting event without specimens — e.g. to print "
+                     "its locality labels from the Labels tab")
+        )
         (
             ui.button("Save Specimens and Print labels", icon="print", on_click=_do_save)
             .classes("btn-save")

@@ -23,6 +23,7 @@ from app.ui.taxon_search import build_taxon_search
 from app.ui.choice_field import build_choice_field
 from app.ui.identification_list import build_identification_list
 from app.ui.mounting_session import build_mounting_session_section
+from app.ui.recent_events import build_recent_events_card
 from app.ui.specimen_form import build_specimen_form
 from app.ui.collecting_event_form import build_collecting_event_form
 from app.ui.event_reuse import build_event_share_banner
@@ -530,7 +531,14 @@ def build_digitize_tab(session_factory, *, refreshers, mode_state, mark_form_cle
                 confirm_pending=lambda: _resolve_pending(),
                 confirm_event_annotations=lambda ev_id: confirm_staged_on_existing_event(
                     _sf, event_ann, ev_id),
+                event_has_content=lambda: ce["has_content"](),
+                on_event_saved=lambda eid: _ms_on_event_saved(eid),
             )
+            # Recent events, expandable to their specimens; "Use" links one into
+            # the event form (e.g. one saved earlier with "Save event only").
+            recent_events = build_recent_events_card(
+                _sf, on_use_event=lambda eid: _use_event(eid))
+            _refreshers["recent_events"] = recent_events["refresh"]
         ms_section.set_visibility(False)
 
         # ── SAVE BAR ─────────────────────────────────────────────
@@ -1030,6 +1038,17 @@ def build_digitize_tab(session_factory, *, refreshers, mode_state, mark_form_cle
             event_ann["clear"]()
             event_sel.set_options(_event_opts())
             _refresh_table()
+            _mark_form_clean("Specimen Digitization")
+            for fn in _refreshers.values():
+                fn()
+
+        def _ms_on_event_saved(eid: int):
+            # "Save event only": the staged event annotations are now on the event; link
+            # the form to the saved event (read-only + reuse banner) so a later "Save
+            # Specimens" reuses it rather than creating a second, identical event.
+            event_ann["clear"]()
+            event_sel.set_options(_event_opts())
+            _use_event(eid)
             _mark_form_clean("Specimen Digitization")
             for fn in _refreshers.values():
                 fn()
