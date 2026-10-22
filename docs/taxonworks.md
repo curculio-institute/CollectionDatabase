@@ -283,6 +283,21 @@ with a per-name manual fix. Choosing between homonyms is the user's judgement �
 tiebreaker (§5c). **Clearing an id is a legitimate fix:** for a name absent from this instance, an id
 captured elsewhere is a false claim about this server, where an empty column claims nothing (§2).
 
+### Association compare (decided 2026-10-17)
+
+Associations cannot be imported, so Compare lists their divergence for entry by hand
+(`tw_association_compare.py`; design `docs/superpowers/specs/2026-10-17-association-compare-design.md`).
+Anchored on specimens on TaxonWorks (catalog number); the relationship joins on its verified
+`tw_id`; the other side is compared **by taxon name** (TaxonWorks OTU → taxon name; OTU ids
+are never compared), with the name pre-flight's rules (subgenus-only = match with note;
+differing authorship = differs; transliteration = note). An anatomical-part host is compared
+by its OTU only (`/biological_associations/basic` gives `object_otu_id`; §5b). Groups: To add
+on TaxonWorks / Only on TaxonWorks / Host differs (only for a single leftover pair) / Can't
+compare. **A false "to add" is worse than no answer**: on a specimen with any Can't-compare
+association its other unmatched ones are Can't compare too. Tags and data attributes on
+matched associations are compared like a specimen's, and listed with every row to add.
+Any lookup failure fails the whole section.
+
 ### Verified API facts (probed 2026-07-25; do not re-derive)
 
 Parameters cross-checked three ways: the OpenAPI specs (the user's reference clone at

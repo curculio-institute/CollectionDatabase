@@ -95,6 +95,7 @@ from sqlalchemy.orm import selectinload
 
 import app.services.identifiers as id_svc
 import app.services.tw_annotation_compare as tw_annotation_compare
+import app.services.tw_association_compare as tw_association_compare
 import app.services.repositories as repo_svc
 import app.services.taxonworks as tw_svc
 import app.services.tw_compare as tw_compare
@@ -653,10 +654,80 @@ def build_tw_sync_tab(session_factory, refreshers: dict | None = None,
             ui.label("Not compared — catalog number held by more than one TaxonWorks "
                      "record: " + ", ".join(ann_result.ambiguous_catalog_numbers)) \
                 .classes("text-xs mt-1").style("color:var(--tp-base-soft)")
-        if ann_result.associations_not_compared:
-            ui.label("Annotations on biological associations are not compared — "
-                     "TaxonWorks cannot import associations.").classes("text-xs mt-1") \
-                .style("color:var(--tp-base-soft)")
+
+    def _render_association_results(assoc_result, error: str | None) -> None:
+        """Spec 2026-10-17 (association compare): diagnostic only — associations are
+        entered on TaxonWorks by hand; Compare again after adding them."""
+        soft = "color:var(--tp-base-soft)"
+        if assoc_result is None:
+            ui.label("Biological associations were not checked"
+                     + (f": {error}" if error else ".")).classes("text-xs mt-2").style(soft)
+            return
+        ui.label("Biological associations").classes("text-sm font-semibold mt-3")
+        if assoc_result.checked_specimens == 0:
+            ui.label("No specimens on TaxonWorks yet — nothing to compare associations "
+                     "against.").classes("text-xs").style(soft)
+        else:
+            ui.label(f"{assoc_result.confirmed_count} association(s) confirmed on TaxonWorks "
+                     f"across {assoc_result.checked_specimens} specimen(s).") \
+                .classes("text-xs").style(soft)
+        for title, rows in (("To add on TaxonWorks", assoc_result.to_add),
+                            ("Only on TaxonWorks", assoc_result.only_on_tw),
+                            ("Host differs", assoc_result.host_differs),
+                            ("Can't compare", assoc_result.cant_compare),
+                            ("Confirmed with notes", assoc_result.confirmed_with_notes)):
+            if not rows:
+                continue
+            with ui.expansion(f"{title} ({len(rows)})").classes("w-full"):
+                for r in rows:
+                    text = (f"{id_svc.catalog_label(r.catalog_number)} · {r.relationship} → "
+                            f"{r.host} ({r.host_kind})")
+                    if r.tw_host:
+                        text += f" — TaxonWorks: {r.tw_host}"
+                    if r.reason:
+                        text += f" — {r.reason}"
+                    with ui.row().classes("items-center gap-2"):
+                        ui.label(text).classes("text-xs")
+                        ui.button("show here", icon="open_in_new",
+                                  on_click=lambda _, c=r.catalog_number: _open_catalog_numbers(
+                                      [c], f"Associations — {c}")) \
+                            .props("flat dense no-caps size=sm")
+                        ui.link("open in TaxonWorks", tw_compare.edit_url(r.tw_specimen_id),
+                                new_tab=True).classes("text-xs")
+                    for line in r.notes + r.annotations:
+                        ui.label(line).classes("text-xs ml-6").style(soft)
+        if assoc_result.annotation_findings:
+            n = len(assoc_result.annotation_findings)
+            with ui.expansion(f"Tags and data attributes on matched associations ({n})") \
+                    .classes("w-full"):
+                for af in assoc_result.annotation_findings:
+                    f = af.finding
+                    vals = " · ".join(x for x in (
+                        f"here: {f.local_value}" if f.local_value else "",
+                        f"TaxonWorks: {f.tw_value}" if f.tw_value else "") if x)
+                    with ui.row().classes("items-center gap-2"):
+                        ui.label(f"{id_svc.catalog_label(af.catalog_number)} · {af.association}"
+                                 f" · {_ANN_CATEGORY[f.category]}: {f.name}"
+                                 + (f" — {vals}" if vals else "")).classes("text-xs")
+                        ui.link("open in TaxonWorks", tw_compare.edit_url(af.tw_specimen_id),
+                                new_tab=True).classes("text-xs")
+        for count, what in (
+                (assoc_result.not_on_tw_count,
+                 "association(s) on specimens not on TaxonWorks yet — export them first"),
+                (assoc_result.numberless_count,
+                 "association(s) on specimens without a catalog number — never exported"),
+                (assoc_result.taxon_subject_count,
+                 "association(s) with a taxon as subject — not compared")):
+            if count:
+                ui.label(f"Not compared: {count} {what}.").classes("text-xs mt-1").style(soft)
+        if assoc_result.ambiguous_catalog_numbers:
+            ui.label("Not compared — catalog number held by more than one TaxonWorks "
+                     "record: " + ", ".join(assoc_result.ambiguous_catalog_numbers)) \
+                .classes("text-xs mt-1").style(soft)
+        if assoc_result.unverified_terms:
+            ui.label("Association tags/data attributes not compared — link not verified on "
+                     "this instance: " + ", ".join(assoc_result.unverified_terms)) \
+                .classes("text-xs mt-1").style(soft)
 
     def _render_media_results(media_result) -> None:
         """#149 step 1.6. Diagnostic only — TaxonWorks has no import path for media at
@@ -1785,6 +1856,8 @@ def build_tw_sync_tab(session_factory, refreshers: dict | None = None,
 
                         _render_media_results(data.get("media"))
                         _render_annotation_results(data.get("annotations"))
+                        _render_association_results(data.get("associations"),
+                                                    data.get("associations_error"))
 
                         _render_blocking_names(checks)
 
@@ -1905,6 +1978,18 @@ def build_tw_sync_tab(session_factory, refreshers: dict | None = None,
                                 f"name and media results below are unaffected.",
                                 type="warning", multi_line=True, timeout=8000,
                             )
+
+                        _status(f"Checking {row['collection']} — comparing biological "
+                                f"associations…")
+                        assoc_result = None
+                        assoc_error = None
+                        try:
+                            with session_factory() as s:
+                                assoc_result = await tw_association_compare \
+                                    .run_association_compare(s, repository_id=repo_id,
+                                                             index=index)
+                        except tw_svc.TaxonWorksUnreachable as assoc_exc:
+                            assoc_error = str(assoc_exc)
                     except tw_svc.TaxonWorksUnreachable as exc:
                         ui.notify(str(exc), type="negative", multi_line=True,
                                   timeout=8000)
@@ -1916,6 +2001,7 @@ def build_tw_sync_tab(session_factory, refreshers: dict | None = None,
                     state["compare"][repo_id] = {
                         "result": cmp_result, "checks": checks, "media": media_result,
                         "annotations": ann_result,
+                        "associations": assoc_result, "associations_error": assoc_error,
                         "label": row["collection"],
                     }
                     _status(f"Checked {row['collection']}.")

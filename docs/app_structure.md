@@ -95,6 +95,7 @@ arrow-key event, chip styling) is design.md's concern → "Digitize layout modes
 | `tw_links.py` | The single owner of link / fetch / unlink / verify for TW keywords, data-attribute predicates and biological relationships. `tw_host` is stamped from the fetch, never assumed. The launch sync is gone; verification is explicit. |
 | `annotation_export.py` | `TW:Tag` / `TW:DataAttribute` columns for the DwC export, plus the term pre-flight that blocks the download. |
 | `tw_annotation_compare.py` | Compare for annotations (TaxonWorks tab). |
+| `tw_association_compare.py` | Read-only association compare (#149): TaxonWorks associations per specimen (`/basic` + plain, joined), host OTU → taxon name, matching and divergence groups, association tags / data attributes |
 | `biological.py` | Biological-association CRUD plus the biological-relationship vocabulary: `relationship_vocab`, `create_` / `rename_` / `merge_relationships` (merge refuses a linked absorbed entry). The launch sync is removed; linking and verifying live in `tw_links.py`. |
 
 ### UI modules for annotations (`app/ui/`)
