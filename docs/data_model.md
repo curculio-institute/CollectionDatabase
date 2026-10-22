@@ -41,6 +41,14 @@ attributes. Mermaid diagrams use plain camelCase. Do not deviate from this patte
 | `annotation` | One tag / data attribute on exactly one specimen, collecting event or biological association (exclusive arc, CASCADE). Composite FK `(term_id, term_kind)` → `annotation_term(id, kind)`: a tag has no value, a data attribute must have one; one per (record, term). Migration 0073. |
 | `life_stage_record` | Reared-specimen life-stage history: per-specimen `(dwc:lifeStage, dwc:basisOfRecord, dwc:eventDate)` rows for *earlier* stages of the same individual (e.g. the wild larva). FK → `collection_object` ON DELETE CASCADE; `basisOfRecord` CHECK mirrors `collection_object`'s. No duplicate specimen/event rows. Migration 0038. |
 
+### Elevation: a single value is exact (decided 2026-10-20)
+
+When only one of `dwc:minimumElevationInMeters` / `dwc:maximumElevationInMeters` is given,
+it is an exact elevation, not an open range: every event write (`events._normalize_event_fields`
+for create / exact-match reuse, `update_collecting_event`) copies it into the empty bound,
+so min = max. Labels print one value (`labels.format_elevation`: `1650 m`, a range only when
+the two differ, no trailing `.0`). No existing row had a lone bound, so nothing was backfilled.
+
 ### Media storage (decided, #48)
 
 Files attached to a specimen / event / association are **copied into a managed,

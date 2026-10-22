@@ -32,6 +32,7 @@ import app.services.print_queue as pq_svc
 from app.services import dwc_export
 from app.services.taxa import format_scientific_name
 from app.services.label_text import format_place
+from app.services.labels import format_elevation
 
 _CAT_ICON = {"Image": "image", "Sound": "volume_up", "Video": "movie",
              "Document": "description", "Sequence": "biotech", "Other": "insert_drive_file"}
@@ -295,6 +296,9 @@ def build_event_sheet(session_factory, ev_id: int, *, on_edit, on_open_specimen=
             "County": ev.county_obj.name if ev.county_obj else None,
             "Municipality": ev.municipality,
             "Island": ev.island_obj.name if ev.island_obj else None,
+            "Elevation": format_elevation(ev.minimum_elevation_in_meters,
+                                          ev.maximum_elevation_in_meters) or None,
+            "Verbatim elevation": ev.verbatim_elevation,
             "Verbatim locality": ev.verbatim_locality,
             "Verbatim date": ev.verbatim_event_date,
         }

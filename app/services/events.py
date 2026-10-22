@@ -21,6 +21,19 @@ _FLOAT_ATTRS = frozenset({
     "maximum_elevation_in_meters",
 })
 
+_ELEV_MIN, _ELEV_MAX = "minimum_elevation_in_meters", "maximum_elevation_in_meters"
+
+
+def _mirror_single_elevation(get, put) -> None:
+    """One elevation given → it is an exact elevation, not an open range: copy it into the
+    empty bound so min == max (decided 2026-10-20). Applied on every event write."""
+    lo, hi = get(_ELEV_MIN), get(_ELEV_MAX)
+    if lo is None and hi is not None:
+        put(_ELEV_MIN, hi)
+    elif hi is None and lo is not None:
+        put(_ELEV_MAX, lo)
+
+
 # Free-text event field names that are actually FK-backed geography vocabularies.
 # The form / importer pass them as names; resolve name → *_id (get_or_create) in one
 # place so every write path is covered. administrative_region has no DwC term.
@@ -253,6 +266,7 @@ def update_collecting_event(session: Session, event_id: int, **fields) -> Collec
                 raise ValueError(
                     f"{attr.replace('_', ' ')} must be a number (got {val!r}).")
         setattr(ev, attr, val)
+    _mirror_single_elevation(lambda a: getattr(ev, a), lambda a, v: setattr(ev, a, v))
     ev.updated_at = _utcnow()
     session.flush()
     return ev
@@ -408,6 +422,7 @@ def _normalize_event_fields(session: Session, fields: dict) -> dict:
                     f"{col.replace('_', ' ')} must be a number (got {raw!r}).")
         else:
             target[col] = raw
+    _mirror_single_elevation(target.get, target.__setitem__)
     return target
 
 

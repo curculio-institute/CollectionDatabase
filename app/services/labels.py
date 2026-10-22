@@ -399,6 +399,22 @@ def _data_inner_html(lbl: DataLabel) -> str:
                    for t in [_data_line1(lbl), _data_line2(lbl)] if t)
 
 
+def _num(v: float) -> str:
+    """1200.0 → '1200', 1200.5 → '1200.5' (elevations are stored as floats)."""
+    return f"{v:g}" if float(v) != int(v) else str(int(v))
+
+
+def format_elevation(lo: float | None, hi: float | None) -> str:
+    """Elevation for a label: one value, or a range when min and max differ. A lone
+    bound (a legacy row; new saves mirror it into the other) prints as that one value —
+    never dropped."""
+    vals = [v for v in (lo, hi) if v is not None]
+    if not vals:
+        return ""
+    lo, hi = vals[0], vals[-1]
+    return f"{_num(lo)} m" if lo == hi else f"{_num(lo)}–{_num(hi)} m"
+
+
 def _data_line1(lbl: DataLabel) -> str:
     _c_text, _s_text = format_geo_prefix(lbl.country, lbl.country_code,
                                          lbl.state_province, lbl.state_province_code)
@@ -414,10 +430,8 @@ def _data_line1(lbl: DataLabel) -> str:
     if coords:
         parts.append(coords)
 
-    if lbl.elevation_min is not None:
-        elev = (f"{lbl.elevation_min}–{lbl.elevation_max} m"
-                if lbl.elevation_max and lbl.elevation_max != lbl.elevation_min
-                else f"{lbl.elevation_min} m")
+    elev = format_elevation(lbl.elevation_min, lbl.elevation_max)
+    if elev:
         parts.append(elev)
 
     if lbl.habitat:
